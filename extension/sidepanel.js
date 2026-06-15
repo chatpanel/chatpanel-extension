@@ -1322,14 +1322,29 @@ function wireComposerResize() {
 }
 
 // --------------------------------------------------------------------------
-// Prompt autocomplete (Pro, opt-in) — as the user pauses typing, ask the active
-// API model for a short continuation and offer it as ghost text ("Tab to
-// complete"). Off by default; enabled in Settings → Preferences. Skipped for
-// bridge agents (too slow/costly to fire on every keystroke pause).
+// Prompt autocomplete (Pro, opt-in) — as the user pauses typing, ask a fast API
+// model for a short continuation and offer it as ghost text ("Tab to complete").
+// Off by default; enabled in Settings → Preferences. Uses an API endpoint even
+// when the chat agent is a local bridge agent (see autocompleteTarget).
 // --------------------------------------------------------------------------
 let acTimer = null;
 let acController = null;
 let acSuggestion = '';
+let acHintShown = false;
+
+// Autocomplete must be FAST, so it uses an API endpoint (OpenAI/Anthropic-style),
+// never a local bridge agent (Claude Code/Codex/Gemini runs are too slow/costly to
+// fire on every typing pause). Prefer the active agent if it's an API endpoint;
+// otherwise fall back to any configured API endpoint that has a model.
+function autocompleteTarget() {
+  const active = resolveTarget(currentAgent(), state.settings);
+  if (active && active.kind !== 'bridge' && active.model) return active;
+  for (const ep of state.settings.endpoints || []) {
+    const t = resolveTarget(ep, state.settings);
+    if (t && t.kind !== 'bridge' && t.model) return t;
+  }
+  return null;
+}
 
 function clearPromptSuggest() {
   clearTimeout(acTimer);
@@ -1359,12 +1374,24 @@ function scheduleAutocomplete() {
   // Need enough to continue, cursor at the very end, not a slash command.
   if (text.trim().length < 6 || text.startsWith('/')) return;
   if (input.selectionStart !== text.length) return;
-  acTimer = setTimeout(() => requestAutocomplete(text), 500);
+  // Autocomplete needs a fast API model. If none is configured, say so once so it
+  // isn't silently dead (e.g. when chatting with a local bridge agent only).
+  const target = autocompleteTarget();
+  if (!target) {
+    if (!acHintShown) {
+      acHintShown = true;
+      const el = $('prompt-suggest');
+      el.innerHTML = '<span class="ps-ghost">Autocomplete needs an API model — add one in Settings → API.</span>';
+      el.classList.remove('hidden');
+      el.onclick = () => chrome.runtime.openOptionsPage();
+    }
+    return;
+  }
+  acTimer = setTimeout(() => requestAutocomplete(text, target), 500);
 }
 
-async function requestAutocomplete(text) {
-  const target = resolveTarget(currentAgent(), state.settings);
-  if (!target || target.kind === 'bridge') return; // API models only
+async function requestAutocomplete(text, target) {
+  if (!target) return;
   acController = new AbortController();
   const sys =
     'You autocomplete a prompt the user is typing to an AI assistant. Continue ' +
