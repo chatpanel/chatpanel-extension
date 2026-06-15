@@ -1381,10 +1381,12 @@ function clearPromptSuggest() {
     acController = null;
   }
   acSuggestion = '';
-  const el = $('prompt-suggest');
-  if (el) {
-    el.classList.add('hidden');
-    el.innerHTML = '';
+  const ghost = $('input-ghost');
+  if (ghost) ghost.innerHTML = '';
+  const hint = $('prompt-suggest');
+  if (hint) {
+    hint.classList.add('hidden');
+    hint.innerHTML = '';
   }
 }
 
@@ -1418,14 +1420,28 @@ function scheduleAutocomplete() {
   acTimer = setTimeout(() => requestAutocomplete(text, source), 500);
 }
 
+// A short, de-duplicated slice of the attached context (the page/tabs/url the
+// user has on), so completions are relevant to what they're looking at.
+function autocompleteContext() {
+  const parts = (state.attachments || []).map((a) => `${a.title ? a.title + ': ' : ''}${a.text || ''}`.trim());
+  const ctx = parts.filter(Boolean).join('\n').replace(/\s+/g, ' ').trim();
+  return ctx.slice(0, 1200);
+}
+
 async function requestAutocomplete(text, source) {
   if (!source) return;
   acController = new AbortController();
+  const ctx = autocompleteContext();
+  // Strict: continue the user's UNFINISHED message — never answer it.
   const sys =
-    'You autocomplete a prompt the user is typing to an AI assistant. Continue ' +
-    'their text naturally and briefly — a few words, at most one short sentence. ' +
-    'Reply with ONLY the continuation that comes AFTER their text (include a leading ' +
-    'space if needed). Never repeat what they already wrote. No quotes.';
+    'You are an inline autocomplete for a chat input box, like a code editor. The ' +
+    'user is typing an unfinished message/question to an AI assistant. Output ONLY ' +
+    'the few words that should come NEXT to finish their sentence. Do NOT answer ' +
+    'their question. Do NOT start a new sentence or a new question. Do NOT repeat ' +
+    'what they already wrote. No quotes, no explanation — only the continuation text.';
+  const prompt =
+    (ctx ? `For context, the user is viewing this page:\n"""\n${ctx}\n"""\n\n` : '') +
+    `Finish the user's unfinished message. Their message so far:\n${text}`;
   let out = '';
   try {
     if (source.kind === 'bridge') {
@@ -1434,7 +1450,7 @@ async function requestAutocomplete(text, source) {
       const res = await fetch(`${base}/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent: source.engine, prompt: text, model: source.model }),
+        body: JSON.stringify({ agent: source.engine, prompt, model: source.model, system: sys }),
         signal: acController.signal,
       });
       if (!res.ok) return;
@@ -1443,7 +1459,7 @@ async function requestAutocomplete(text, source) {
       const model = await smallModelFor(source.target); // smallest available
       await streamChat({
         agent: { ...source.target, model, systemPrompt: sys, maxTokens: 24, temperature: 0.2 },
-        messages: [{ role: 'user', content: text }],
+        messages: [{ role: 'user', content: prompt }],
         settings: state.settings,
         signal: acController.signal,
         onDelta: (d) => {
@@ -1464,31 +1480,30 @@ async function requestAutocomplete(text, source) {
   }
   s = s.replace(/\n[\s\S]*$/, ''); // first line only
   if (!s.trim()) return;
-  acSuggestion = s;
-  showPromptSuggest(s.trim());
+  // Join with a space unless the boundary already has one.
+  acSuggestion = (/\s$/.test(text) || /^\s/.test(s) ? '' : ' ') + s.trim();
+  renderGhost(text, acSuggestion);
 }
 
-function showPromptSuggest(display) {
-  const el = $('prompt-suggest');
+// Inline ghost text: mirror the typed text (transparent) + the suggestion (dim)
+// so it appears right after the cursor, VS Code style.
+function renderGhost(typed, suggestion) {
+  const el = $('input-ghost');
   el.innerHTML = '';
-  const ghost = document.createElement('span');
-  ghost.className = 'ps-ghost';
-  ghost.textContent = '… ' + display;
-  const key = document.createElement('span');
-  key.className = 'ps-key';
-  key.textContent = 'Tab ⇥';
-  el.append(ghost, key);
-  el.classList.remove('hidden');
-  el.onclick = acceptPromptSuggest;
+  el.appendChild(document.createTextNode(typed));
+  const s = document.createElement('span');
+  s.className = 'gs';
+  s.textContent = suggestion;
+  el.appendChild(s);
+  el.scrollTop = $('input').scrollTop;
 }
 
 function acceptPromptSuggest() {
   if (!acSuggestion) return;
   const input = $('input');
-  const sep = /\s$/.test(input.value) || /^\s/.test(acSuggestion) ? '' : ' ';
-  input.value = input.value + sep + acSuggestion.trimStart();
+  input.value = input.value + acSuggestion; // acSuggestion already includes any leading space
   acSuggestion = '';
-  $('prompt-suggest').classList.add('hidden');
+  $('input-ghost').innerHTML = '';
   autoGrow();
   input.focus();
   input.selectionStart = input.selectionEnd = input.value.length;
@@ -1541,6 +1556,10 @@ function wireEvents() {
     }
   };
   input.onblur = () => setTimeout(clearPromptSuggest, 150);
+  input.addEventListener('scroll', () => {
+    const g = $('input-ghost');
+    if (g) g.scrollTop = input.scrollTop;
+  });
 
   // Agent menu
   $('agent-button').onclick = (e) => {

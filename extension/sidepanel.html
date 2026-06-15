@@ -62,14 +62,17 @@
     <!-- Skill suggestion -->
     <div id="skill-suggest" class="skill-suggest hidden"></div>
 
-    <!-- AI prompt autocomplete (Pro, opt-in) -->
+    <!-- Autocomplete hint (Pro, opt-in) — shown only when no model is available -->
     <div id="prompt-suggest" class="prompt-suggest hidden"></div>
 
     <!-- Composer -->
     <footer class="composer">
       <div id="composer-resize" class="composer-resize" title="Drag to resize · double-click to reset"></div>
       <button id="btn-attach" class="tool-btn" title="Add context">📎</button>
-      <textarea id="input" class="input" rows="1" placeholder="Message your agent… (paste a URL to analyze it)"></textarea>
+      <div class="input-wrap">
+        <textarea id="input" class="input" rows="1" placeholder="Message your agent… (paste a URL to analyze it)"></textarea>
+        <div id="input-ghost" class="input-ghost" aria-hidden="true"></div>
+      </div>
       <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI">✨</button>
       <button id="btn-skills" class="tool-btn" title="Skills">⚡</button>
       <button id="btn-send" class="send-btn" title="Send">➤</button>

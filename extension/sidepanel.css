@@ -244,11 +244,24 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 /* Anchor each composer menu under its own button. */
 #attach-menu { left: 8px; }
 #skills-menu { left: auto; right: 8px; }
+.input-wrap { position: relative; flex: 1; display: flex; }
 .input {
-  flex: 1; resize: none; max-height: 75vh; min-height: 38px;
+  flex: 1; width: 100%; resize: none; max-height: 75vh; min-height: 38px;
   padding: 9px 12px; border: 1px solid var(--border); border-radius: 18px;
   background: var(--bg-soft); color: var(--text); font: inherit; line-height: 1.4;
 }
+/* Inline VS Code-style ghost text: an overlay that mirrors the textarea's box
+   exactly, shows the typed text transparent (just spacing) and the suggestion
+   dimmed, so it appears right after the cursor. */
+.input-ghost {
+  position: absolute; inset: 0; pointer-events: none; z-index: 1;
+  padding: 9px 12px; border: 1px solid transparent; border-radius: 18px;
+  font: inherit; line-height: 1.4;
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+  overflow: hidden; color: transparent;
+}
+.input-ghost .gs { color: var(--text-dim); }
+.input-ghost:empty { display: none; }
 /* Drag handle to resize the composer (double-click resets to auto-grow). */
 .composer-resize { position: absolute; top: -4px; left: 0; right: 0; height: 9px; cursor: ns-resize; z-index: 6; }
 .composer-resize::before {
