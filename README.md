@@ -60,7 +60,7 @@ one-click option; until then, use Option B.
 Chrome and Edge can both run an extension you load manually. It takes ~1 minute.
 
 1. **Download the latest build:**
-   **[⬇ chatpanel-extension.zip](https://github.com/chatpanel/chatpanel-extension/releases/latest/download/chatpanel-extension.zip)**
+   **[⬇ chatpanel-extension.zip](https://dl.chatpanel.net/extension.zip)**
    *(always points at the newest release — see [all releases](https://github.com/chatpanel/chatpanel-extension/releases))*
 2. **Unzip it** to a folder you'll keep (e.g. `~/chatpanel-extension`). The
    browser loads it from this folder, so don't delete it afterward.

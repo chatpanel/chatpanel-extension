@@ -10,7 +10,7 @@
 
 const REPO = 'chatpanel/chatpanel-extension';
 export const RELEASES_URL = `https://github.com/${REPO}/releases/latest`;
-export const DOWNLOAD_URL = `https://github.com/${REPO}/releases/latest/download/chatpanel-extension.zip`;
+export const DOWNLOAD_URL = 'https://dl.chatpanel.net/extension.zip';
 const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 
 const K_CHECK = 'chatpanel:updateCheck'; // { checkedAt, latest }
