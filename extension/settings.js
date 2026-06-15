@@ -70,18 +70,34 @@ function wireTabs() {
       .querySelectorAll('.panel')
       .forEach((p) => p.classList.toggle('hidden', p.dataset.panel !== name));
   };
-  tabs.forEach((t) => (t.onclick = () => {
-    show(t.dataset.tab);
+  const exists = (name) => !!document.querySelector(`.tab[data-tab="${name}"]`);
+  const select = (name) => {
+    show(name);
     // Use replaceState, NOT location.hash: a panel like "skills" shares its id
     // with the <div id="skills"> list, so setting location.hash would make the
     // browser scroll to that element (the "jump"). replaceState updates the URL
     // without scrolling.
-    history.replaceState(null, '', '#' + t.dataset.tab);
+    history.replaceState(null, '', '#' + name);
+    // Remember the last tab so the gear icon reopens where you left off.
+    chrome.storage.local.set({ [K_SETTINGS_TAB]: name }).catch(() => {});
+  };
+  tabs.forEach((t) => (t.onclick = () => {
+    select(t.dataset.tab);
     window.scrollTo({ top: 0 });
   }));
-  const initial = (location.hash || '').replace('#', '');
-  if (initial && document.querySelector(`.tab[data-tab="${initial}"]`)) show(initial);
+  // Priority: an explicit #hash (e.g. the Pro chip opens #license), else the
+  // last-opened tab, else the default (API).
+  const fromHash = (location.hash || '').replace('#', '');
+  if (fromHash && exists(fromHash)) {
+    show(fromHash);
+    return;
+  }
+  chrome.storage.local.get(K_SETTINGS_TAB).then((g) => {
+    const last = g[K_SETTINGS_TAB];
+    if (last && exists(last)) show(last);
+  });
 }
+const K_SETTINGS_TAB = 'chatpanel:settingsTab';
 
 // --------------------------------------------------------------------------
 // Model picker (a real <select> populated from the endpoint, + a Custom… entry)

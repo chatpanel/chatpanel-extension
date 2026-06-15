@@ -1523,11 +1523,9 @@ function wireEvents() {
   $('btn-stop').onclick = stopStream;
   $('btn-new').onclick = () => startConversation();
   $('btn-settings').onclick = () => chrome.runtime.openOptionsPage();
-  $('btn-upgrade').onclick = () => {
-    // Pro users: the badge opens Settings to manage; Free users: start checkout.
-    if (isPro(state.license)) chrome.runtime.openOptionsPage();
-    else startSubscribe('pro');
-  };
+  // The plan chip (Pro badge or ✨ Upgrade) always opens the License tab.
+  $('btn-upgrade').onclick = () =>
+    chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#license') });
   $('btn-assist').onclick = improvePrompt;
 
   wireComposerResize();
