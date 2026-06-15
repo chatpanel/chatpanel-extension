@@ -14,7 +14,7 @@ import {
   conversationToMarkdown,
   updateSettings,
 } from './js/store.js';
-import { streamChat, checkBridge } from './js/providers.js';
+import { streamChat, checkBridge, listModels, smallestModel } from './js/providers.js';
 import {
   listTabs,
   getActiveTab,
@@ -1285,7 +1285,9 @@ function autoGrow() {
     return;
   }
   i.style.height = 'auto';
-  i.style.height = Math.min(i.scrollHeight, Math.round(window.innerHeight * 0.45)) + 'px';
+  // Expand generously so a long prompt is visible without scrolling; only cap
+  // near the full panel height (it still scrolls past that, but rarely needed).
+  i.style.height = Math.min(i.scrollHeight, Math.round(window.innerHeight * 0.75)) + 'px';
 }
 
 function wireComposerResize() {
@@ -1331,17 +1333,43 @@ let acTimer = null;
 let acController = null;
 let acSuggestion = '';
 let acHintShown = false;
+const acSmallModel = new Map(); // endpoint → smallest model id (cached)
 
-// Autocomplete must be FAST, so it uses an API endpoint (OpenAI/Anthropic-style),
-// never a local bridge agent (Claude Code/Codex/Gemini runs are too slow/costly to
-// fire on every typing pause). Prefer the active agent if it's an API endpoint;
-// otherwise fall back to any configured API endpoint that has a model.
-function autocompleteTarget() {
+// For an API endpoint, query its models once and cache the smallest one to use
+// for autocomplete (e.g. a 0.5B local model instead of the big chat model).
+// Falls back to the endpoint's configured model if listing isn't available.
+async function smallModelFor(target) {
+  const key = target.baseUrl || target.name || 'default';
+  if (acSmallModel.has(key)) return acSmallModel.get(key) || target.model;
+  let small = null;
+  try {
+    small = smallestModel(await listModels(target));
+  } catch {
+    /* listing unavailable — fall back below */
+  }
+  acSmallModel.set(key, small);
+  return small || target.model;
+}
+
+// Default fast model per bridge engine for autocomplete. Claude → Haiku (in-process,
+// snappy). Codex/Gemini spawn a CLI process per call, so they use their default
+// model unless the agent sets `autocompleteModel`.
+const FAST_MODEL = { claude: 'haiku', codex: '', gemini: '' };
+
+// Where autocomplete should get its suggestion, fastest first:
+//   1) the active agent if it's an API endpoint (OpenAI/Anthropic-style);
+//   2) the active agent if it's a bridge agent → bridge /complete with a fast model;
+//   3) any other configured API endpoint with a model.
+function autocompleteSource() {
   const active = resolveTarget(currentAgent(), state.settings);
-  if (active && active.kind !== 'bridge' && active.model) return active;
+  if (active && active.kind !== 'bridge' && active.model) return { kind: 'api', target: active };
+  if (active && active.kind === 'bridge') {
+    const engine = active.bridgeAgent || 'claude';
+    return { kind: 'bridge', engine, model: active.autocompleteModel || FAST_MODEL[engine] || '' };
+  }
   for (const ep of state.settings.endpoints || []) {
     const t = resolveTarget(ep, state.settings);
-    if (t && t.kind !== 'bridge' && t.model) return t;
+    if (t && t.kind !== 'bridge' && t.model) return { kind: 'api', target: t };
   }
   return null;
 }
@@ -1374,24 +1402,24 @@ function scheduleAutocomplete() {
   // Need enough to continue, cursor at the very end, not a slash command.
   if (text.trim().length < 6 || text.startsWith('/')) return;
   if (input.selectionStart !== text.length) return;
-  // Autocomplete needs a fast API model. If none is configured, say so once so it
-  // isn't silently dead (e.g. when chatting with a local bridge agent only).
-  const target = autocompleteTarget();
-  if (!target) {
+  // Resolve where the suggestion comes from. If nothing usable (e.g. a bridge
+  // agent that's offline and no API endpoint), say so once instead of silence.
+  const source = autocompleteSource();
+  if (!source) {
     if (!acHintShown) {
       acHintShown = true;
       const el = $('prompt-suggest');
-      el.innerHTML = '<span class="ps-ghost">Autocomplete needs an API model — add one in Settings → API.</span>';
+      el.innerHTML = '<span class="ps-ghost">Autocomplete needs a model — pick an agent or add an API endpoint.</span>';
       el.classList.remove('hidden');
       el.onclick = () => chrome.runtime.openOptionsPage();
     }
     return;
   }
-  acTimer = setTimeout(() => requestAutocomplete(text, target), 500);
+  acTimer = setTimeout(() => requestAutocomplete(text, source), 500);
 }
 
-async function requestAutocomplete(text, target) {
-  if (!target) return;
+async function requestAutocomplete(text, source) {
+  if (!source) return;
   acController = new AbortController();
   const sys =
     'You autocomplete a prompt the user is typing to an AI assistant. Continue ' +
@@ -1400,16 +1428,30 @@ async function requestAutocomplete(text, target) {
     'space if needed). Never repeat what they already wrote. No quotes.';
   let out = '';
   try {
-    await streamChat({
-      agent: { ...target, systemPrompt: sys, maxTokens: 24, temperature: 0.2 },
-      messages: [{ role: 'user', content: text }],
-      settings: state.settings,
-      signal: acController.signal,
-      onDelta: (d) => {
-        out += d;
-      },
-      onEvent: () => {},
-    });
+    if (source.kind === 'bridge') {
+      // Fast path through the local bridge using the agent's fast model.
+      const base = (state.settings.bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
+      const res = await fetch(`${base}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent: source.engine, prompt: text, model: source.model }),
+        signal: acController.signal,
+      });
+      if (!res.ok) return;
+      out = (await res.json()).text || '';
+    } else {
+      const model = await smallModelFor(source.target); // smallest available
+      await streamChat({
+        agent: { ...source.target, model, systemPrompt: sys, maxTokens: 24, temperature: 0.2 },
+        messages: [{ role: 'user', content: text }],
+        settings: state.settings,
+        signal: acController.signal,
+        onDelta: (d) => {
+          out += d;
+        },
+        onEvent: () => {},
+      });
+    }
   } catch {
     return; // aborted or failed — no suggestion
   }

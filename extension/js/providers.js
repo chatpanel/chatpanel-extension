@@ -265,6 +265,25 @@ export async function testAgent(agent, settings) {
 // Works for any OpenAI-compatible server (Ollama, LM Studio, OpenAI, OpenRouter,
 // Together) via GET /models, and for the Anthropic API via GET /v1/models.
 // Returns a sorted array of model ids; throws an actionable error on failure.
+// Rough "how small is this model" score (lower = smaller/faster), for picking an
+// autocomplete model. Prefers an explicit param size (e.g. "0.5b" < "7b" < "70b"),
+// then small-tier keywords (nano/mini/flash/haiku/lite…), else treats it as large.
+function modelSizeScore(id) {
+  const s = String(id).toLowerCase();
+  const m = s.match(/(\d+(?:\.\d+)?)\s*b(?![a-z])/); // 0.5b, 7b, 70b
+  if (m) return parseFloat(m[1]);
+  if (/nano/.test(s)) return 0.3;
+  if (/(mini|micro|tiny|flash-lite|haiku|lite)/.test(s)) return 1;
+  if (/(flash|small|gemma)/.test(s)) return 3;
+  return 50;
+}
+
+// Pick the smallest/fastest model id from a list (for autocomplete).
+export function smallestModel(ids) {
+  if (!ids || !ids.length) return null;
+  return ids.slice().sort((a, b) => modelSizeScore(a) - modelSizeScore(b))[0];
+}
+
 export async function listModels(agent) {
   if (agent.kind === 'anthropic') {
     const base = (agent.baseUrl || 'https://api.anthropic.com').replace(/\/$/, '');

@@ -245,7 +245,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 #attach-menu { left: 8px; }
 #skills-menu { left: auto; right: 8px; }
 .input {
-  flex: 1; resize: none; max-height: 60vh; min-height: 38px;
+  flex: 1; resize: none; max-height: 75vh; min-height: 38px;
   padding: 9px 12px; border: 1px solid var(--border); border-radius: 18px;
   background: var(--bg-soft); color: var(--text); font: inherit; line-height: 1.4;
 }
