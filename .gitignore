@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output / packaged extension
+dist/
+*.zip
+
+# Secrets — NEVER commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Local tool/editor state
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/settings.local.json
+extension/assets/*.png.bak

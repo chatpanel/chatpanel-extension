@@ -1,0 +1,123 @@
+:root {
+  --bg: #f3f4f6; --card: #ffffff; --border: #e3e6ea; --text: #1b1f24;
+  --muted: #6b7280; --accent: #4f46e5; --danger: #dc2626; --ok: #16a34a;
+  --radius: 12px; --mono: ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14161a; --card: #1d2026; --border: #2c313a; --text: #e8eaed; --muted: #9aa1ac; --accent: #818cf8; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); }
+.wrap { max-width: 760px; margin: 0 auto; padding: 28px 20px 60px; }
+.hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.hdr h1 { font-size: 22px; margin: 0; display: flex; align-items: center; gap: 8px; }
+.hdr h1 .brand-ico { width: 24px; height: 24px; border-radius: 5px; }
+.plan-badge { font-size: 12px; font-weight: 700; padding: 4px 12px; border-radius: 20px; background: #e5e7eb; color: #374151; }
+.plan-badge.pro { background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; }
+
+/* "✨ Pro" pill marking a gated control, and the dimmed look of a locked field. */
+.pro-badge { display: inline-block; font-size: 10px; font-weight: 700; line-height: 1.5; padding: 0 7px; margin-left: 6px; border-radius: 10px; background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; vertical-align: middle; letter-spacing: .2px; }
+input.locked, textarea.locked, select.locked { opacity: .55; cursor: not-allowed; }
+/* "★ Free" marker / "Use on Free" picker on endpoint & agent cards. */
+.free-slot { font-size: 11px; white-space: nowrap; }
+.free-slot.on { font-weight: 700; color: var(--accent); padding: 4px 6px; }
+.btn.free-slot { font-size: 12px; padding: 4px 10px; }
+
+.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px; }
+.card h2 { margin: 0 0 4px; font-size: 16px; }
+.card h2 .sub { color: var(--muted); font-weight: 400; font-size: 13px; }
+.card-head { display: flex; justify-content: space-between; align-items: center; }
+.muted { color: var(--muted); font-size: 13px; margin: 4px 0 14px; }
+.muted code { font-family: var(--mono); background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 4px; }
+
+.row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.row label { width: 110px; flex: 0 0 auto; color: var(--muted); font-size: 13px; }
+.row.half { gap: 16px; }
+.row.half > div { display: flex; align-items: center; gap: 8px; flex: 1; }
+.row.half label { width: auto; }
+input, select, textarea {
+  flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font: inherit; min-width: 0;
+}
+textarea { resize: vertical; font-family: inherit; }
+.check { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 14px; }
+/* Checkboxes/radios must NOT inherit the text-input styling (border/padding/
+   flex:1 + min-width:0), which collapsed them to an invisible sliver. */
+.check input,
+input[type="checkbox"],
+input[type="radio"] {
+  flex: 0 0 auto; width: 16px; height: 16px; min-width: 16px; padding: 0; margin: 0;
+  border: 0; background: none; box-shadow: none; -webkit-appearance: auto; appearance: auto;
+  accent-color: var(--accent);
+}
+
+.btn { border: 1px solid var(--border); background: var(--card); color: var(--text); padding: 7px 14px; border-radius: 8px; cursor: pointer; font: inherit; text-decoration: none; display: inline-block; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn.danger { color: var(--danger); border-color: transparent; }
+.btn.ghost { background: transparent; }
+
+.entity { border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin: 12px 0; }
+.entity-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.entity-head .e-name, .entity-head .s-name { font-weight: 600; }
+.entity-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 10px; }
+.fields { border-top: 1px dashed var(--border); padding-top: 8px; margin-top: 4px; }
+
+.status { font-size: 12px; color: var(--muted); }
+.status.ok { color: var(--ok); } .status.err { color: var(--danger); }
+
+.tip { font-size: 13px; color: var(--muted); margin: 0 0 14px; border: 1px dashed var(--border); border-radius: 8px; padding: 10px 12px; }
+.tip summary { cursor: pointer; color: var(--text); font-weight: 600; }
+.tip summary code { font-weight: 700; }
+.tip p { margin: 8px 0; }
+.tip p:last-child { margin-bottom: 0; }
+.tip code { font-family: var(--mono); background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 4px; }
+.tip pre { margin: 8px 0; background: rgba(127,127,127,.15); padding: 8px 10px; border-radius: 6px; overflow-x: auto; }
+.tip pre code { background: none; padding: 0; font-size: 12px; }
+
+.hidden { display: none !important; }
+.ftr { text-align: center; color: var(--muted); font-size: 12px; margin-top: 24px; }
+a { color: var(--accent); }
+
+/* Tabs */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 18px; flex-wrap: wrap; }
+.tab { appearance: none; border: none; background: none; color: var(--muted); font: inherit; font-weight: 600; padding: 10px 14px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 8px 8px 0 0; }
+.tab:hover { color: var(--text); background: rgba(127,127,127,.06); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.panel { animation: fade .14s ease; }
+@keyframes fade { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+
+/* Accent button — for "Load models" so it's obviously the thing to click */
+.btn.accent { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.btn.accent:hover { filter: brightness(1.08); border-color: var(--accent); }
+
+/* Pro pill */
+.pro-pill { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .03em; padding: 1px 6px; border-radius: 10px; background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; vertical-align: middle; margin-left: 4px; }
+
+/* Toast (paywall nudges, hints) */
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #111827; color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px; box-shadow: 0 8px 28px rgba(0,0,0,.28); z-index: 50; max-width: 92vw; }
+.toast-action { color: #c7d2fe; font-weight: 700; text-decoration: none; margin-left: 4px; }
+.toast-action:hover { text-decoration: underline; }
+
+/* ✨ Improve button (prompt-assist) and the prompt row that holds it */
+.row.prompt-row { align-items: flex-start; }
+.btn.assist { background: transparent; color: var(--accent); border-color: var(--border); font-weight: 600; white-space: nowrap; }
+.btn.assist:hover { border-color: var(--accent); background: rgba(127,127,127,.06); }
+.btn.assist:disabled { opacity: .6; cursor: default; }
+
+/* Pro-gated cards (e.g. the whole Skills tab on Free) + the upsell banner */
+button.locked, .btn.locked { opacity: .55; cursor: not-allowed; }
+.locked-card { opacity: .92; }
+.gate-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; border: 1px dashed var(--accent); border-radius: 10px; padding: 12px 14px; margin: 6px 0 14px; background: rgba(127,127,127,.05); font-size: 13.5px; }
+.gate-banner .btn { white-space: nowrap; }
+
+/* License: seamless subscribe + restore + key fallback */
+.tiny { font-size: 12px; }
+#subscribe-hint { margin: 6px 0 12px; }
+#restore-box, #key-box { margin: 8px 0; }
+#restore-box > summary, #key-box > summary {
+  cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0; user-select: none;
+}
+#restore-box[open] > summary, #key-box[open] > summary { color: var(--text); font-weight: 600; }
+#restore-box .row, #key-box .row { margin-top: 8px; }
+#btn-subscribe-pro { font-weight: 600; }

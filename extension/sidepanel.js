@@ -1,0 +1,1413 @@
+// ChatPanel side panel controller.
+import {
+  getSettings,
+  getTarget,
+  resolveTarget,
+  getIndex,
+  getConversation,
+  createConversation,
+  saveConversation,
+  renameConversation,
+  deleteConversation,
+  clearAllConversations,
+  conversationToMarkdown,
+  updateSettings,
+} from './js/store.js';
+import { streamChat, checkBridge } from './js/providers.js';
+import {
+  listTabs,
+  getActiveTab,
+  captureActiveTab,
+  captureTab,
+  captureSelection,
+  captureUrl,
+} from './js/context.js';
+import { renderMarkdown } from './js/markdown.js';
+import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
+import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
+import { assistPrompt } from './js/assist.js';
+
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  settings: null,
+  license: null,
+  conv: null, // active conversation
+  index: [], // history index
+  attachments: [], // pending context for the next message
+  usePage: true, // auto-include the current tab as context
+  activeTab: null, // { id, title, url } of the tab the panel is looking at
+  bridge: { ok: false, agents: [] },
+  convCache: new Map(), // id -> live conv object (kept so streams survive switches)
+  streams: new Map(), // convId -> { controller, started, lastEvent }
+  bubbles: new Map(), // messageId -> bubble element (active view only)
+};
+
+// --------------------------------------------------------------------------
+// Boot
+// --------------------------------------------------------------------------
+async function init() {
+  state.settings = await getSettings();
+  state.license = await getLicense();
+  ensureUsableActiveAgent();
+  state.usePage = state.settings.ui.autoAttachActiveTab !== false;
+  applyTheme();
+  state.index = await getIndex();
+
+  await startConversation();
+  wireEvents();
+  refreshBridge();
+  refreshActiveTab();
+  renderUpgradeChip();
+  maybeShowUpdateBanner();
+
+  // Right-click "Ask ChatPanel" seed.
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.type === 'context-seed') applySeed(msg);
+  });
+  const { pendingSeed } = await chrome.storage.session.get('pendingSeed').catch(() => ({}));
+  if (pendingSeed) {
+    applySeed(pendingSeed);
+    chrome.storage.session.remove('pendingSeed').catch(() => {});
+  }
+}
+
+async function startConversation(existing) {
+  const conv =
+    existing || (await createConversation({ agentId: state.settings.activeAgentId }));
+  state.convCache.set(conv.id, conv);
+  state.conv = conv;
+  state.bubbles.clear();
+  state.attachments = [];
+  renderAgentName();
+  renderMessages();
+  renderContextBar();
+  updateComposerUI();
+  renderActivity();
+}
+
+// Is the conversation currently on screen mid-response?
+function isActiveStreaming() {
+  return state.streams.has(state.conv.id);
+}
+
+// Parse a leading "/command args" into its skill (or null). The caller applies
+// the skill's context/agent and substitutes variables — see applySkillPrep.
+function matchSlashSkill(text) {
+  const m = /^\/([a-z0-9_-]+)\s*([\s\S]*)$/i.exec(text);
+  if (!m) return null;
+  const skill = state.settings.skills.find(
+    (s) => (s.command || '').toLowerCase() === m[1].toLowerCase(),
+  );
+  return skill ? { skill, args: m[2].trim() } : null;
+}
+
+// --------------------------------------------------------------------------
+// Agents
+// --------------------------------------------------------------------------
+function currentAgent() {
+  return getTarget(state.settings, state.conv.agentId || state.settings.activeAgentId);
+}
+
+// On Free, the active agent must be one of the unlocked slots. If it isn't
+// (default points elsewhere, or the user downgraded from Pro), repoint to the
+// free agent slot so chatting never targets a locked agent.
+function ensureUsableActiveAgent() {
+  if (isPro(state.license)) return;
+  const cur = getTarget(state.settings, state.settings.activeAgentId);
+  if (cur && canUseAgent(state.license, state.settings, cur)) return;
+  const id = freeAgentId(state.settings) || freeEndpointId(state.settings);
+  if (id && id !== state.settings.activeAgentId) {
+    state.settings.activeAgentId = id;
+    updateSettings({ activeAgentId: id });
+  }
+}
+
+// `target` may be an endpoint, a model agent, or a bridge agent.
+function agentAvailability(target) {
+  if (!target) return { ok: false, reason: 'None' };
+  if (target.kind === 'bridge') {
+    if (!state.bridge.ok) return { ok: false, reason: 'Bridge not running' };
+    const found = state.bridge.agents.find((a) => a.id === target.bridgeAgent);
+    if (!found) return { ok: false, reason: 'Not detected' };
+    return { ok: found.available, reason: found.reason };
+  }
+  // Endpoint or model agent — usable once it resolves to an endpoint + a model.
+  const eff = resolveTarget(target, state.settings);
+  if (!eff?.baseUrl) return { ok: false, reason: 'No endpoint' };
+  if (!eff.model) return { ok: false, reason: 'Pick a model' };
+  return { ok: true };
+}
+
+async function refreshBridge() {
+  state.bridge = await checkBridge(state.settings.bridgeUrl);
+  renderAgentName();
+}
+
+function renderAgentName() {
+  const a = currentAgent();
+  $('agent-name').textContent = a?.name || 'Select agent';
+}
+
+function renderAgentMenu() {
+  const menu = $('agent-menu');
+  menu.innerHTML = '';
+  const s = state.settings;
+
+  const addItem = (target, badge) => {
+    const avail = agentAvailability(target);
+    const usable = canUseAgent(state.license, s, target); // Pro, or the free pick
+    const item = document.createElement('button');
+    item.className =
+      'menu-item' +
+      (target.id === state.conv.agentId ? ' active' : '') +
+      (usable ? '' : ' locked');
+    const dot = document.createElement('span');
+    dot.className = 'dot ' + (avail.ok ? 'on' : 'off');
+    const label = document.createElement('span');
+    label.style.flex = '1';
+    const model = target.kind === 'bridge' ? '' : resolveTarget(target, s)?.model || '';
+    const sub = !avail.ok
+      ? `<span class="mi-sub">— ${escapeAttr(avail.reason)}</span>`
+      : model
+        ? `<span class="mi-sub">${escapeAttr(model)}</span>`
+        : '';
+    label.innerHTML = `${escapeAttr(target.name)} ${sub}`;
+    item.append(dot, label);
+    // Locked (Pro) items keep a 🔒 tag; free ones keep their existing badge.
+    if (!usable) {
+      const lock = document.createElement('span');
+      lock.className = 'badge lock';
+      lock.textContent = '🔒 Pro';
+      item.appendChild(lock);
+    } else if (badge) {
+      const b = document.createElement('span');
+      b.className = 'badge';
+      b.textContent = badge;
+      item.appendChild(b);
+    }
+    item.onclick = () => {
+      if (!usable) {
+        closeMenus();
+        return upsell('agents', '✨ Free uses 1 model + 1 agent — Pro unlocks all. Pick yours in Settings.');
+      }
+      state.conv.agentId = target.id;
+      state.settings.activeAgentId = target.id;
+      updateSettings({ activeAgentId: target.id });
+      saveConversation(state.conv);
+      renderAgentName();
+      closeMenus();
+    };
+    menu.appendChild(item);
+  };
+
+  const endpoints = s.endpoints || [];
+  const bridge = (s.agents || []).filter((a) => a.kind === 'bridge');
+  if (endpoints.length) {
+    menu.appendChild(sectionLabel('API'));
+    endpoints.forEach((e) => addItem(e));
+  }
+  if (bridge.length) {
+    menu.appendChild(sectionLabel('Agents'));
+    bridge.forEach((a) => addItem(a, 'local'));
+  }
+  const manage = document.createElement('button');
+  manage.className = 'menu-item';
+  manage.innerHTML = '⚙ <span>Manage in Settings…</span>';
+  manage.onclick = () => chrome.runtime.openOptionsPage();
+  menu.appendChild(manage);
+}
+
+// --------------------------------------------------------------------------
+// Messages
+// --------------------------------------------------------------------------
+function renderMessages() {
+  const root = $('messages');
+  root.querySelectorAll('.msg').forEach((n) => n.remove());
+  state.bubbles.clear();
+  const empty = $('empty');
+  if (!state.conv.messages.length) {
+    empty.classList.remove('hidden');
+    renderSuggestions();
+  } else {
+    empty.classList.add('hidden');
+    for (const m of state.conv.messages) root.appendChild(renderMessage(m));
+  }
+  scrollToBottom();
+}
+
+function renderMessage(m) {
+  const wrap = document.createElement('div');
+  wrap.className = `msg ${m.role}${m.error ? ' error' : ''}${m.queued ? ' queued' : ''}`;
+  wrap.dataset.id = m.id;
+
+  if (m.role === 'assistant') {
+    const who = document.createElement('div');
+    who.className = 'who';
+    who.textContent = m.agentName || 'Assistant';
+    wrap.appendChild(who);
+  }
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  if (m.role === 'assistant') {
+    bubble.innerHTML = assistantBody(m);
+    if (m.pending && !m.content && !m.thinking) bubble.classList.add('cursor-blink');
+    enhanceCode(bubble);
+  } else {
+    // user bubble: plain text + attachment note
+    bubble.textContent = m.content;
+    if (m.attachments?.length) {
+      const note = document.createElement('div');
+      note.className = 'who';
+      note.style.marginTop = '6px';
+      note.textContent = '📎 ' + m.attachments.map((a) => a.title || a.url).join(', ');
+      bubble.appendChild(note);
+    }
+    if (m.queued) {
+      const q = document.createElement('div');
+      q.className = 'who';
+      q.style.marginTop = '4px';
+      q.textContent = '⏳ Queued';
+      bubble.appendChild(q);
+    }
+  }
+  wrap.appendChild(bubble);
+  state.bubbles.set(m.id, bubble);
+
+  // hover actions
+  const actions = document.createElement('div');
+  actions.className = 'msg-actions';
+  const copy = miniBtn('Copy', () => navigator.clipboard.writeText(m.content));
+  actions.appendChild(copy);
+  if (m.role === 'assistant' && !m.pending) {
+    actions.appendChild(miniBtn('Retry', () => retryFrom(m)));
+  }
+  wrap.appendChild(actions);
+  return wrap;
+}
+
+function updateBubble(m) {
+  const bubble = state.bubbles.get(m.id);
+  if (!bubble) return;
+  bubble.classList.toggle('cursor-blink', !!m.pending && !m.content && !m.thinking);
+  bubble.innerHTML = assistantBody(m);
+  enhanceCode(bubble);
+}
+
+// Assistant bubble = an optional streamed "thinking" disclosure + the answer.
+function assistantBody(m) {
+  let html = '';
+  if (m.thinking) {
+    const open = m.pending ? ' open' : '';
+    html += `<details class="thinking"${open}><summary>💭 Thinking</summary><div class="thinking-body">${escapeAttr(
+      m.thinking,
+    )}</div></details>`;
+  }
+  html += m.content ? renderMarkdown(m.content) : '';
+  return html;
+}
+
+function enhanceCode(bubble) {
+  bubble.querySelectorAll('pre').forEach((pre) => {
+    if (pre.querySelector('.copy-code')) return;
+    const btn = document.createElement('button');
+    btn.className = 'copy-code';
+    btn.textContent = 'Copy';
+    btn.onclick = () => {
+      navigator.clipboard.writeText(pre.querySelector('code')?.textContent || '');
+      btn.textContent = 'Copied';
+      setTimeout(() => (btn.textContent = 'Copy'), 1200);
+    };
+    pre.appendChild(btn);
+  });
+}
+
+function renderSuggestions() {
+  const box = $('empty-suggestions');
+  box.innerHTML = '';
+  const ideas = [
+    'Summarize this tab',
+    'What are the key points on this page?',
+    'Explain the code in this repo',
+  ];
+  for (const idea of ideas) {
+    const b = document.createElement('button');
+    b.className = 'suggestion';
+    b.textContent = idea;
+    b.onclick = () => {
+      // The current page is already auto-included via the 🌐 chip — don't
+      // attach it again here or we'd send the page twice.
+      $('input').value = idea;
+      autoGrow();
+      $('input').focus();
+    };
+    box.appendChild(b);
+  }
+}
+
+// --------------------------------------------------------------------------
+// Sending + streaming
+// --------------------------------------------------------------------------
+// Conversations currently mid-send (between the click and the stream starting).
+// Taken synchronously so a rapid double Enter/click can't fire two requests.
+const sendingLock = new Set();
+
+async function send() {
+  const input = $('input');
+  const raw = input.value.trim();
+  const conv = state.conv; // capture: the user may switch chats while this streams
+  // Guard BEFORE any await: a second fast Enter would otherwise slip through the
+  // gap while we read the page, producing duplicate requests.
+  if (
+    (!raw && !state.attachments.length) ||
+    state.streams.has(conv.id) ||
+    sendingLock.has(conv.id)
+  ) {
+    return;
+  }
+  sendingLock.add(conv.id);
+  try {
+    // A /command invokes its skill: switch agent, attach its context, and fill
+    // {{variables}} — all before the page auto-attach below reads state.usePage.
+    // Skills are Pro; on Free the command is sent as literal text with a nudge.
+    let text = raw;
+    const sk = matchSlashSkill(raw);
+    if (sk && !skillsAllowed()) {
+      upsell('customSkills');
+    } else if (sk) {
+      await applySkillPrep(sk.skill);
+      text = await substituteVars(sk.skill.prompt + (sk.args ? `\n\n${sk.args}` : ''), { args: sk.args });
+    }
+
+    // Include the current page fresh (read at send time) unless the user turned it
+    // off or already attached this exact tab manually.
+    if (state.usePage && state.activeTab && !state.attachments.some((a) => a.url === state.activeTab.url)) {
+      try {
+        toast('Reading this page…');
+        state.attachments.unshift(await captureTab(state.activeTab.id));
+      } catch {
+        toast("⚠ Couldn't read this page; sending without it", 2200);
+      }
+    }
+
+    // Auto-attach any URLs found in the message (the "paste a URL" flow).
+    await autoAttachUrls(text);
+
+    // Final guard: never send the same source twice (e.g. live page + a manual
+    // attach of the same tab).
+    const seen = new Set();
+    const attachments = state.attachments.filter((a) => {
+      const key = a.url || a.id;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    const userMsg = { id: uid(), role: 'user', content: text, attachments, ts: Date.now() };
+    const queued = state.streams.has(conv.id); // a reply is already in flight
+    userMsg.queued = queued;
+    conv.messages.push(userMsg);
+    input.value = '';
+    autoGrow();
+    suggestSuppressed = false;
+    $('skill-suggest').classList.add('hidden');
+    state.attachments = [];
+    renderContextBar();
+
+    $('empty').classList.add('hidden');
+    $('messages').appendChild(renderMessage(userMsg));
+    scrollToBottom();
+    await saveConversation(conv);
+    refreshHistory();
+
+    if (queued) {
+      // Queue: the running response picks it up when it finishes. (Hit Stop to
+      // answer it now instead — i.e. steer.)
+      toast('Queued — sends after the current reply');
+      return;
+    }
+
+    const agent = agentForConv(conv);
+    const assistant = makeAssistant(agent);
+    conv.messages.push(assistant);
+    $('messages').appendChild(renderMessage(assistant));
+    scrollToBottom();
+    // runStream registers the stream synchronously, so releasing the lock in the
+    // finally below safely hands off to the state.streams guard.
+    runStream(agent, assistant, conv); // not awaited — keeps other chats usable
+  } finally {
+    sendingLock.delete(conv.id);
+  }
+}
+
+function agentForConv(conv) {
+  return getTarget(state.settings, conv.agentId || state.settings.activeAgentId);
+}
+
+function makeAssistant(agent) {
+  return {
+    id: uid(),
+    role: 'assistant',
+    content: '',
+    agentId: agent.id,
+    agentName: agent.name,
+    ts: Date.now(),
+    pending: true,
+  };
+}
+
+// After a response finishes, answer any messages the user queued while it ran.
+// Several consecutive queued messages are answered together in one turn.
+function maybeDrainQueue(conv) {
+  if (state.streams.has(conv.id)) return;
+  const last = conv.messages[conv.messages.length - 1];
+  if (!last || last.role !== 'user') return;
+  for (let i = conv.messages.length - 1; i >= 0 && conv.messages[i].role === 'user'; i--) {
+    conv.messages[i].queued = false;
+  }
+  const agent = agentForConv(conv);
+  const assistant = makeAssistant(agent);
+  conv.messages.push(assistant);
+  if (conv.id === state.conv.id) renderMessages();
+  runStream(agent, assistant, conv);
+}
+
+// Streams a response into `conv` (which may not be the one on screen). UI is only
+// touched when conv is the active conversation, so concurrent chats don't fight.
+async function runStream(agent, assistant, conv) {
+  const controller = new AbortController();
+  state.streams.set(conv.id, { controller, started: Date.now(), lastEvent: '' });
+  if (conv.id === state.conv.id) updateComposerUI();
+  ensureActivityTimer();
+  renderActivity();
+
+  let pending = '';
+  let raf = 0;
+  const flush = () => {
+    raf = 0;
+    if (conv.id === state.conv.id) {
+      updateBubble(assistant);
+      scrollToBottom();
+    }
+  };
+
+  try {
+    await streamChat({
+      agent: resolveTarget(agent, state.settings),
+      messages: conv.messages.filter((m) => m !== assistant),
+      settings: state.settings,
+      signal: controller.signal,
+      onDelta: (d) => {
+        pending += d;
+        assistant.content = pending; // keep the object current for switch-back
+        if (!raf) raf = requestAnimationFrame(flush);
+      },
+      onEvent: (ev) => {
+        // Stream reasoning/thinking text into a collapsible block as it arrives.
+        if (ev.type === 'reasoning' && ev.text) {
+          assistant.thinking = (assistant.thinking || '') + ev.text;
+          if (!raf) raf = requestAnimationFrame(flush);
+        }
+        recordActivity(conv.id, ev);
+      },
+    });
+    assistant.content = pending;
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      assistant.content = pending + (pending ? '\n\n_(stopped)_' : '_(stopped)_');
+    } else {
+      assistant.content = `⚠ ${e.message}`;
+      assistant.error = true;
+    }
+  } finally {
+    if (raf) cancelAnimationFrame(raf);
+    assistant.pending = false;
+    state.streams.delete(conv.id);
+    ensureActivityTimer();
+    if (conv.id === state.conv.id) {
+      updateComposerUI();
+      renderActivity();
+      const node = $('messages').querySelector(`.msg[data-id="${assistant.id}"]`);
+      if (node) node.replaceWith(renderMessage(assistant));
+    }
+    await saveConversation(conv);
+    refreshHistory();
+    // Answer anything the user queued while this ran. This also powers "steer":
+    // hitting Stop ends the current reply, then the queued message is answered.
+    maybeDrainQueue(conv);
+  }
+}
+
+function stopStream() {
+  const s = state.streams.get(state.conv.id);
+  if (s) s.controller.abort();
+}
+
+async function retryFrom(assistantMsg) {
+  if (isActiveStreaming()) return;
+  const conv = state.conv;
+  const idx = conv.messages.indexOf(assistantMsg);
+  if (idx < 0) return;
+  // Drop this assistant turn and re-run from the prior user message.
+  conv.messages.splice(idx, 1);
+  const agent = currentAgent();
+  const assistant = {
+    id: uid(),
+    role: 'assistant',
+    content: '',
+    agentId: agent.id,
+    agentName: agent.name,
+    ts: Date.now(),
+    pending: true,
+  };
+  conv.messages.push(assistant);
+  renderMessages();
+  runStream(agent, assistant, conv);
+}
+
+// Send is ALWAYS available now: a send while a reply streams queues the next
+// turn. Stop lives in the activity strip. (Kept as a function since several
+// places call it; the composer stop button stays hidden.)
+function updateComposerUI() {
+  $('btn-send').classList.remove('hidden');
+  $('btn-stop').classList.add('hidden');
+}
+
+// Activity strip: latest tool/status for the active stream + elapsed seconds.
+function recordActivity(convId, ev) {
+  const s = state.streams.get(convId);
+  if (!s) return;
+  if (ev.type === 'tool') s.lastEvent = `${ev.name || 'tool'}${ev.summary ? ': ' + ev.summary : ''}`;
+  else if (ev.type === 'status') s.lastEvent = ev.text || s.lastEvent;
+  else if (ev.type === 'reasoning') s.lastEvent = 'Thinking';
+  if (convId === state.conv.id) renderActivity();
+}
+
+function renderActivity() {
+  const strip = $('activity');
+  const s = state.streams.get(state.conv.id);
+  if (!s) {
+    strip.classList.add('hidden');
+    return;
+  }
+  const secs = Math.floor((Date.now() - s.started) / 1000);
+  strip.classList.remove('hidden');
+  strip.innerHTML = '<span class="spinner"></span>';
+  const label = document.createElement('span');
+  label.textContent = `${s.lastEvent || 'Working'}… ${secs}s`;
+  const stop = document.createElement('button');
+  stop.className = 'activity-stop';
+  stop.textContent = 'Stop';
+  stop.onclick = (e) => {
+    e.stopPropagation();
+    stopStream();
+  };
+  strip.append(label, stop);
+}
+
+let activityInterval = null;
+function ensureActivityTimer() {
+  if (state.streams.size && !activityInterval) {
+    activityInterval = setInterval(renderActivity, 1000);
+  } else if (!state.streams.size && activityInterval) {
+    clearInterval(activityInterval);
+    activityInterval = null;
+  }
+}
+
+// --------------------------------------------------------------------------
+// Context / attachments
+// --------------------------------------------------------------------------
+// Track which tab the panel is "looking at" so the page chip stays accurate.
+async function refreshActiveTab() {
+  try {
+    const tab = await getActiveTab();
+    state.activeTab =
+      tab && /^https?:/.test(tab.url || '')
+        ? { id: tab.id, title: tab.title || tab.url, url: tab.url }
+        : null;
+  } catch {
+    state.activeTab = null;
+  }
+  renderContextBar();
+}
+
+async function addAttachment(producer) {
+  // Enforce free-tier attachment limit.
+  if (
+    state.attachments.length >= FREE_LIMITS.attachmentsPerMessage &&
+    !can(state.license, 'multiTab')
+  ) {
+    return upsell('multiTab');
+  }
+  try {
+    toast('Reading…');
+    const att = await producer();
+    state.attachments.push(att);
+    renderContextBar();
+    toast(`Attached: ${att.title}`);
+  } catch (e) {
+    toast('⚠ ' + e.message, 2600);
+  }
+}
+
+async function autoAttachUrls(text) {
+  const urls = [...new Set((text.match(/https?:\/\/[^\s)]+/gi) || []))].slice(0, 3);
+  for (const url of urls) {
+    if (state.attachments.find((a) => a.url === url)) continue;
+    // First URL is free; additional ones need Pro (multi-context).
+    if (state.attachments.length >= FREE_LIMITS.attachmentsPerMessage && !can(state.license, 'multiTab')) break;
+    try {
+      const att = await captureUrl(url);
+      state.attachments.push(att);
+    } catch {
+      /* leave the bare URL in the text */
+    }
+  }
+  renderContextBar();
+}
+
+// "Whole-window context" (Pro): grab every readable tab in the current window in
+// one shot. Capped so we don't blow past a model's context window.
+const WINDOW_TAB_CAP = 10;
+async function attachWholeWindow() {
+  if (!can(state.license, 'multiTab')) return upsell('multiTab');
+  const all = (await listTabs({ currentWindowOnly: true })).filter(
+    (t) => !state.attachments.some((a) => a.url === t.url),
+  );
+  const targets = all.slice(0, WINDOW_TAB_CAP);
+  if (!targets.length) return toast('No new tabs to attach in this window');
+  toast(`Reading ${targets.length} tab${targets.length === 1 ? '' : 's'}…`, 4000);
+  const results = await Promise.allSettled(targets.map((t) => captureTab(t.id)));
+  let n = 0;
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      state.attachments.push(r.value);
+      n++;
+    }
+  }
+  renderContextBar();
+  const extra = all.length > WINDOW_TAB_CAP ? ` (first ${WINDOW_TAB_CAP} of ${all.length})` : '';
+  toast(n ? `Attached ${n} tab${n === 1 ? '' : 's'}${extra}` : 'Could not read those tabs', 2600);
+}
+
+function renderContextBar() {
+  const bar = $('context-bar');
+  bar.innerHTML = '';
+  const showPage = state.usePage && state.activeTab;
+  if (!state.attachments.length && !showPage) {
+    bar.classList.add('hidden');
+    return;
+  }
+  bar.classList.remove('hidden');
+
+  // The "live page" chip: the current tab, auto-included and read fresh at send.
+  if (showPage) {
+    const chip = document.createElement('div');
+    chip.className = 'ctx-chip page-chip';
+    chip.title = `This page is included as context — ${state.activeTab.url}`;
+    chip.innerHTML = `<span class="ctx-kind">🌐</span><span class="ctx-title">${escapeAttr(
+      state.activeTab.title,
+    )}</span>`;
+    const x = document.createElement('button');
+    x.className = 'ctx-x';
+    x.textContent = '✕';
+    x.title = 'Stop including this page';
+    x.onclick = () => {
+      state.usePage = false;
+      renderContextBar();
+      toast('Page context off — add it back with 📎');
+    };
+    chip.appendChild(x);
+    bar.appendChild(chip);
+  }
+
+  state.attachments.forEach((att, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'ctx-chip';
+    const kind = { page: '🗎', url: '🔗', selection: '✂️' }[att.kind] || '📎';
+    chip.innerHTML = `<span class="ctx-kind">${kind}</span><span class="ctx-title">${escapeAttr(
+      att.title || att.url,
+    )}</span>`;
+    const x = document.createElement('button');
+    x.className = 'ctx-x';
+    x.textContent = '✕';
+    x.onclick = () => {
+      state.attachments.splice(i, 1);
+      renderContextBar();
+    };
+    chip.appendChild(x);
+    bar.appendChild(chip);
+  });
+}
+
+async function renderAttachMenu() {
+  const menu = $('attach-menu');
+  menu.innerHTML = '';
+  // Toggle for auto-including the current page (the default behavior).
+  const toggle = actionItem(state.usePage ? '✅' : '⬜️', 'Include this page automatically', () => {
+    state.usePage = !state.usePage;
+    refreshActiveTab();
+    toast(state.usePage ? 'This page will be included' : 'Page context off');
+  });
+  menu.appendChild(toggle);
+  menu.appendChild(actionItem('🗎', 'Current tab (once)', () => addAttachment(() => captureActiveTab())));
+  menu.appendChild(actionItem('✂️', 'Current selection', () => addAttachment(() => captureSelection())));
+  // Whole-window context (Pro): attach every readable tab in this window at once.
+  const proWindow = can(state.license, 'multiTab');
+  menu.appendChild(
+    actionItem('🪟', `All tabs in this window${proWindow ? '' : ' — Pro'}`, () => attachWholeWindow()),
+  );
+
+  // URL input
+  const urlWrap = document.createElement('div');
+  urlWrap.style.padding = '6px 8px';
+  const urlInput = document.createElement('input');
+  urlInput.type = 'url';
+  urlInput.placeholder = 'Paste a URL to analyze…';
+  urlInput.style.cssText =
+    'width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:8px;background:var(--bg-soft);color:var(--text);';
+  urlInput.onkeydown = (e) => {
+    if (e.key === 'Enter' && urlInput.value.trim()) {
+      const v = urlInput.value.trim();
+      closeMenus();
+      addAttachment(() => captureUrl(v));
+    }
+  };
+  urlWrap.appendChild(urlInput);
+  menu.appendChild(urlWrap);
+
+  menu.appendChild(sectionLabel('Open tabs'));
+  const tabs = await listTabs();
+  for (const t of tabs.slice(0, 25)) {
+    const item = document.createElement('button');
+    item.className = 'menu-item';
+    const fav = t.favIconUrl
+      ? `<img src="${escapeAttr(t.favIconUrl)}" width="14" height="14" style="border-radius:3px"/>`
+      : '🗎';
+    item.innerHTML = `${fav}<span class="ctx-title" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeAttr(
+      t.title,
+    )}</span>`;
+    item.onclick = () => {
+      closeMenus();
+      addAttachment(() => captureTab(t.id));
+    };
+    menu.appendChild(item);
+  }
+  if (!can(state.license, 'multiTab')) {
+    const hint = document.createElement('div');
+    hint.className = 'menu-section';
+    hint.textContent = 'Pro: attach several tabs at once';
+    menu.appendChild(hint);
+  }
+}
+
+// --------------------------------------------------------------------------
+// Skills
+// --------------------------------------------------------------------------
+function renderSkillsMenu() {
+  const menu = $('skills-menu');
+  menu.innerHTML = '';
+  menu.appendChild(sectionLabel('Skills'));
+  for (const skill of state.settings.skills) {
+    const item = document.createElement('button');
+    item.className = 'menu-item';
+    item.innerHTML = `<span>${skill.icon || '⚡'}</span><span>${escapeAttr(skill.name)}</span><span class="mi-sub">/${escapeAttr(
+      skill.command || '',
+    )}</span>`;
+    item.onclick = () => {
+      applySkill(skill);
+      closeMenus();
+    };
+    menu.appendChild(item);
+  }
+  const manage = document.createElement('button');
+  manage.className = 'menu-item';
+  manage.innerHTML = '⚙ <span>Manage skills…</span>';
+  manage.onclick = () => chrome.runtime.openOptionsPage();
+  menu.appendChild(manage);
+}
+
+// Apply a skill from the ⚡ menu: prep agent/context, fill variables, drop the
+// prompt into the composer for the user to review and send.
+async function applySkill(skill) {
+  const input = $('input');
+  await applySkillPrep(skill);
+  const text = await substituteVars(skill.prompt, { args: '' });
+  input.value = text + (input.value ? '\n\n' + input.value : '');
+  autoGrow();
+  input.focus();
+}
+
+// Per-skill agent + context: switch the conversation's agent and attach the
+// context the skill declares (page / selection / all-tabs / none / auto).
+async function applySkillPrep(skill) {
+  if (skill.agentId && getTarget(state.settings, skill.agentId)) {
+    state.conv.agentId = skill.agentId;
+    state.settings.activeAgentId = skill.agentId;
+    updateSettings({ activeAgentId: skill.agentId });
+    renderAgentName();
+  }
+  switch (skill.context || 'auto') {
+    case 'none':
+      state.usePage = false;
+      renderContextBar();
+      break;
+    case 'page':
+      state.usePage = true;
+      renderContextBar();
+      break;
+    case 'selection':
+      await addAttachment(() => captureSelection()).catch(() => {});
+      break;
+    case 'tabs':
+      await attachWholeWindow();
+      break;
+    default: // 'auto' — leave the current page/attachment behavior as-is.
+      break;
+  }
+}
+
+// Fill {{placeholders}} in a skill prompt. {{input}} (and {{input:label}}) take
+// the text typed after the command; {{url}}/{{title}}/{{date}} are sync; only
+// {{selection}} costs a tab read, and only when present.
+async function substituteVars(text, { args = '' } = {}) {
+  if (!text.includes('{{')) return text;
+  let out = text
+    .replace(/\{\{\s*input(?::[^}]*)?\s*\}\}/gi, args || '')
+    .replace(/\{\{\s*url\s*\}\}/gi, state.activeTab?.url || '')
+    .replace(/\{\{\s*title\s*\}\}/gi, state.activeTab?.title || '')
+    .replace(/\{\{\s*date\s*\}\}/gi, new Date().toLocaleDateString());
+  if (/\{\{\s*selection\s*\}\}/i.test(out)) {
+    let sel = '';
+    try {
+      sel = (await captureSelection()).text || '';
+    } catch {
+      /* nothing selected */
+    }
+    out = out.replace(/\{\{\s*selection\s*\}\}/gi, sel);
+  }
+  return out;
+}
+
+// ✨ Improve the composer's draft with the user's configured model, streamed in.
+async function improvePrompt() {
+  const input = $('input');
+  const btn = $('btn-assist');
+  if (btn.disabled) return;
+  const before = input.value;
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = '⏳';
+  let streamed = false;
+  try {
+    await assistPrompt({
+      draft: before,
+      settings: state.settings,
+      onDelta: (full) => {
+        streamed = true;
+        input.value = full;
+        autoGrow();
+      },
+    });
+    input.focus();
+  } catch (e) {
+    // Only roll back if nothing streamed — keep a good (or partial) result even
+    // if the model throws a late/benign error after the text already arrived.
+    if (streamed && input.value.trim()) {
+      toast('⚠ ' + e.message, 2600);
+      input.focus();
+    } else {
+      input.value = before;
+      toast('✕ ' + e.message, 2800);
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+// Skills (the ⚡ menu, /commands, suggestions) are a Pro feature.
+function skillsAllowed() {
+  return can(state.license, 'customSkills');
+}
+
+// Lightweight, free, instant: suggest the skill whose name/command/description
+// best matches what the user is typing.
+let suggestSuppressed = false;
+function suggestSkill(text) {
+  if (!skillsAllowed()) return null; // no skills for Free users
+  const t = (text || '').toLowerCase().trim();
+  if (t.length < 8 || t.startsWith('/')) return null;
+  const words = new Set(t.split(/\W+/).filter((w) => w.length > 3));
+  let best = null;
+  let bestScore = 0;
+  for (const skill of state.settings.skills || []) {
+    const hay = `${skill.name} ${skill.command} ${skill.description || ''}`.toLowerCase();
+    const keys = hay.split(/\W+/).filter((w) => w.length > 3);
+    let score = 0;
+    for (const w of words) if (keys.includes(w)) score += 1;
+    for (const k of keys) if (t.includes(k)) score += 0.5;
+    if (score > bestScore) {
+      bestScore = score;
+      best = skill;
+    }
+  }
+  return bestScore >= 1.5 ? best : null;
+}
+
+function renderSuggest() {
+  const box = $('skill-suggest');
+  const skill = suggestSuppressed ? null : suggestSkill($('input').value);
+  if (!skill) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  box.innerHTML = '';
+  const chip = document.createElement('button');
+  chip.className = 'suggest-chip';
+  chip.innerHTML = `💡 Use <b>/${escapeAttr(skill.command)}</b> — ${escapeAttr(skill.description || skill.name)}`;
+  chip.onclick = () => {
+    box.classList.add('hidden');
+    applySkill(skill);
+  };
+  const x = document.createElement('button');
+  x.className = 'suggest-x';
+  x.textContent = '✕';
+  x.title = 'Dismiss';
+  x.onclick = () => {
+    suggestSuppressed = true;
+    box.classList.add('hidden');
+  };
+  box.append(chip, x);
+  box.classList.remove('hidden');
+}
+
+// --------------------------------------------------------------------------
+// History
+// --------------------------------------------------------------------------
+async function refreshHistory() {
+  state.index = await getIndex();
+  if (!$('history').classList.contains('hidden')) renderHistory();
+}
+
+function renderHistory(filter = '') {
+  const list = $('history-list');
+  list.innerHTML = '';
+  const f = filter.toLowerCase();
+  const items = state.index.filter((e) => !f || e.title.toLowerCase().includes(f));
+  if (!items.length) {
+    list.innerHTML = '<div class="menu-section">No chats yet</div>';
+    return;
+  }
+  for (const e of items) {
+    const item = document.createElement('div');
+    item.className = 'history-item' + (e.id === state.conv.id ? ' active' : '');
+    const main = document.createElement('div');
+    main.className = 'hi-main';
+    main.innerHTML = `<div class="hi-title">${escapeAttr(e.title)}</div><div class="hi-meta">${relTime(
+      e.updatedAt,
+    )} · ${e.msgs} msgs</div>`;
+    if (state.streams.has(e.id)) {
+      const dot = document.createElement('span');
+      dot.className = 'dot on';
+      dot.title = 'Responding…';
+      main.querySelector('.hi-meta').append(' · ', dot);
+    }
+    main.onclick = () => openConversation(e.id);
+    const actions = document.createElement('div');
+    actions.className = 'hi-actions';
+    actions.appendChild(miniBtn('✎', () => startRename(e, item), 'Rename'));
+    actions.appendChild(miniBtn('⤓', () => exportConv(e.id), 'Export as Markdown'));
+    actions.appendChild(miniBtn('🗑', () => removeConv(e.id), 'Delete'));
+    item.append(main, actions);
+    list.appendChild(item);
+  }
+}
+
+async function openConversation(id) {
+  // Prefer the in-memory copy if it exists (it may be mid-stream).
+  const conv = state.convCache.get(id) || (await getConversation(id));
+  if (!conv) return;
+  await startConversation(conv);
+  $('history').classList.add('hidden');
+}
+
+// Inline rename (window.prompt is unreliable in side panels).
+function startRename(e, itemEl) {
+  const titleEl = itemEl.querySelector('.hi-title');
+  if (!titleEl) return;
+  const input = document.createElement('input');
+  input.className = 'hi-rename';
+  input.value = e.title;
+  input.onclick = (ev) => ev.stopPropagation();
+  let done = false;
+  const commit = async () => {
+    if (done) return;
+    done = true;
+    const name = input.value.trim() || e.title;
+    await renameConversation(e.id, name);
+    const c = state.convCache.get(e.id);
+    if (c) c.title = name;
+    if (state.conv.id === e.id) state.conv.title = name;
+    refreshHistory();
+  };
+  input.onkeydown = (ev) => {
+    ev.stopPropagation();
+    if (ev.key === 'Enter') commit();
+    else if (ev.key === 'Escape') {
+      done = true;
+      refreshHistory();
+    }
+  };
+  input.onblur = commit;
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
+// Delete immediately (confirm() is unreliable in side panels) with an Undo.
+async function removeConv(id) {
+  const conv = state.convCache.get(id) || (await getConversation(id));
+  const s = state.streams.get(id);
+  if (s) {
+    s.controller.abort();
+    state.streams.delete(id);
+  }
+  await deleteConversation(id);
+  state.convCache.delete(id);
+  if (state.conv.id === id) await startConversation();
+  refreshHistory();
+  if (conv) {
+    toastAction('Chat deleted', 'Undo', async () => {
+      await saveConversation(conv);
+      state.convCache.set(conv.id, conv);
+      refreshHistory();
+    });
+  }
+}
+
+// Export one conversation as a downloaded Markdown file (Pro). Free users get an
+// upsell — keeping the affordance visible is itself an upgrade nudge.
+async function exportConv(id) {
+  if (!can(state.license, 'exportChats')) return upsell('exportChats');
+  const conv = state.convCache.get(id) || (await getConversation(id));
+  if (!conv) return;
+  const md = conversationToMarkdown(conv);
+  const blob = new Blob([md], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = (conv.title || 'chat').replace(/[^\w.-]+/g, '_').slice(0, 60) + '.md';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast('Exported as Markdown');
+}
+
+// --------------------------------------------------------------------------
+// Misc UI
+// --------------------------------------------------------------------------
+// Top-bar chip: an "✨ Upgrade" call-to-action for Free users, or a "Pro"/"Team"
+// status badge once subscribed. Always visible (it's the plan indicator).
+function renderUpgradeChip() {
+  const el = $('btn-upgrade');
+  el.classList.remove('hidden');
+  if (isPro(state.license)) {
+    el.textContent = planLabel(state.license); // "Pro" / "Team"
+    el.title = `${planLabel(state.license)} active — manage in Settings`;
+    el.classList.add('is-active');
+    el.classList.remove('is-upgrade');
+  } else {
+    el.textContent = '✨ Upgrade';
+    el.title = 'Upgrade to Pro';
+    el.classList.add('is-upgrade');
+    el.classList.remove('is-active');
+  }
+}
+
+// Manual ("Load unpacked") builds don't auto-update — surface a one-click update
+// when a newer release is out. No-ops on Web Store installs and stays dismissed
+// per-version so it never nags.
+async function maybeShowUpdateBanner() {
+  let info;
+  try {
+    info = await checkForUpdate();
+  } catch {
+    return;
+  }
+  if (!info.updateAvailable || (await isDismissed(info.latest))) return;
+  const banner = $('update-banner');
+  $('update-banner-text').textContent = `ChatPanel ${info.latest} is available (you have ${info.current}).`;
+  const link = $('update-banner-link');
+  link.href = info.downloadUrl;
+  $('update-banner-dismiss').onclick = async () => {
+    await dismiss(info.latest);
+    banner.classList.add('hidden');
+  };
+  banner.classList.remove('hidden');
+}
+
+function applyTheme() {
+  const t = state.settings.ui?.theme || 'system';
+  if (t === 'system') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+}
+
+function applySeed(seed) {
+  const input = $('input');
+  if (seed.selection) {
+    state.attachments.push({
+      id: uid(),
+      kind: 'selection',
+      title: seed.title || 'Selection',
+      url: seed.url,
+      text: seed.selection,
+      chars: seed.selection.length,
+    });
+    renderContextBar();
+  } else if (seed.url) {
+    input.value = `Tell me about ${seed.url}`;
+  }
+  autoGrow();
+  input.focus();
+}
+
+function toast(text, ms = 1400) {
+  const t = $('toast');
+  t.textContent = text;
+  t.classList.remove('hidden');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.add('hidden'), ms);
+}
+
+// Toast with an action button (used for Undo).
+function toastAction(text, label, fn, ms = 5000) {
+  const t = $('toast');
+  t.innerHTML = '';
+  const span = document.createElement('span');
+  span.textContent = text + '  ';
+  const btn = document.createElement('button');
+  btn.className = 'toast-action';
+  btn.textContent = label;
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    t.classList.add('hidden');
+    fn();
+  };
+  t.append(span, btn);
+  t.classList.remove('hidden');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.add('hidden'), ms);
+}
+
+function upsell(feature, msg) {
+  const plan = tierFor(feature) === 'team' ? 'team' : 'pro';
+  const tier = plan === 'team' ? 'Team' : 'Pro';
+  // High-intent moment — open checkout and auto-activate on return (no key). The
+  // storage listener flips the UI to Pro once the entitlement lands.
+  toastAction(msg || `✨ ${tier} feature`, `Upgrade to ${tier}`, () => startSubscribe(plan), 4500);
+}
+
+// Seamless, keyless subscribe from the side panel: open checkout, poll, and let
+// the user know the moment Pro turns on (the storage listener re-renders the UI).
+function startSubscribe(plan = 'pro') {
+  toast('Opening checkout… Pro activates automatically when you finish.', 2600);
+  subscribe(plan, { onActivated: () => toast('✓ Pro is now active. Thank you!', 2600) });
+}
+
+function autoGrow() {
+  const i = $('input');
+  i.style.height = 'auto';
+  i.style.height = Math.min(i.scrollHeight, 160) + 'px';
+}
+
+function scrollToBottom() {
+  const m = $('messages');
+  const nearBottom = m.scrollHeight - m.scrollTop - m.clientHeight < 200;
+  if (nearBottom) m.scrollTop = m.scrollHeight;
+}
+
+// --------------------------------------------------------------------------
+// Events
+// --------------------------------------------------------------------------
+function wireEvents() {
+  $('btn-send').onclick = send;
+  $('btn-stop').onclick = stopStream;
+  $('btn-new').onclick = () => startConversation();
+  $('btn-settings').onclick = () => chrome.runtime.openOptionsPage();
+  $('btn-upgrade').onclick = () => {
+    // Pro users: the badge opens Settings to manage; Free users: start checkout.
+    if (isPro(state.license)) chrome.runtime.openOptionsPage();
+    else startSubscribe('pro');
+  };
+  $('btn-assist').onclick = improvePrompt;
+
+  const input = $('input');
+  input.oninput = () => {
+    autoGrow();
+    if (!input.value.trim()) suggestSuppressed = false;
+    renderSuggest();
+  };
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && state.settings.ui.sendOnEnter) {
+      e.preventDefault();
+      send();
+    }
+  };
+
+  // Agent menu
+  $('agent-button').onclick = (e) => {
+    e.stopPropagation();
+    const m = $('agent-menu');
+    const opening = m.classList.contains('hidden');
+    closeMenus();
+    if (opening) {
+      renderAgentMenu();
+      m.classList.remove('hidden');
+      // Re-poll the bridge so availability is fresh (it may have just started or
+      // gained a new agent like Gemini); re-render the menu if it's still open.
+      refreshBridge().then(() => {
+        if (!m.classList.contains('hidden')) renderAgentMenu();
+      });
+    }
+  };
+
+  // Attach + skills menus
+  $('btn-attach').onclick = async (e) => {
+    e.stopPropagation();
+    const m = $('attach-menu');
+    const opening = m.classList.contains('hidden');
+    closeMenus();
+    if (opening) {
+      await renderAttachMenu();
+      m.classList.remove('hidden');
+    }
+  };
+  $('btn-skills').onclick = (e) => {
+    e.stopPropagation();
+    closeMenus();
+    if (!skillsAllowed()) return upsell('customSkills'); // Skills are Pro
+    const m = $('skills-menu');
+    const opening = m.classList.contains('hidden');
+    if (opening) {
+      renderSkillsMenu();
+      m.classList.remove('hidden');
+    }
+  };
+
+  // History drawer
+  $('btn-history').onclick = () => {
+    renderHistory($('history-search').value);
+    $('history').classList.remove('hidden');
+  };
+  $('history-close').onclick = () => $('history').classList.add('hidden');
+  $('history-search').oninput = (e) => renderHistory(e.target.value);
+  // Two-click confirm (confirm() is unreliable in side panels).
+  let clearArmed = false;
+  $('history-clear').onclick = async (e) => {
+    e.stopPropagation();
+    const btn = $('history-clear');
+    if (!clearArmed) {
+      clearArmed = true;
+      btn.textContent = 'Click again to confirm';
+      setTimeout(() => {
+        clearArmed = false;
+        btn.textContent = 'Clear all history';
+      }, 3000);
+      return;
+    }
+    clearArmed = false;
+    btn.textContent = 'Clear all history';
+    for (const s of state.streams.values()) s.controller.abort();
+    state.streams.clear();
+    state.convCache.clear();
+    ensureActivityTimer();
+    await clearAllConversations();
+    await startConversation();
+    refreshHistory();
+  };
+
+  // Keep clicks inside an open menu (e.g. the URL input) from closing it.
+  ['agent-menu', 'attach-menu', 'skills-menu'].forEach((id) =>
+    $(id).addEventListener('click', (e) => e.stopPropagation()),
+  );
+  document.body.onclick = () => closeMenus();
+
+  // Keep the page chip pointed at whatever tab the user is on.
+  chrome.tabs.onActivated.addListener(() => refreshActiveTab());
+  chrome.tabs.onUpdated.addListener((_id, info, tab) => {
+    if (tab.active && (info.status === 'complete' || info.title)) refreshActiveTab();
+  });
+  chrome.windows?.onFocusChanged?.addListener(() => refreshActiveTab());
+
+  // React to settings changes from the options page (saved to storage).
+  chrome.storage.onChanged.addListener(async (changes, area) => {
+    if (area !== 'local') return;
+    if (changes['chatpanel:settings']) {
+      state.settings = await getSettings();
+      applyTheme();
+      renderAgentName();
+      refreshBridge();
+    }
+    if (changes['chatpanel:license']) {
+      state.license = await getLicense();
+      ensureUsableActiveAgent();
+      renderUpgradeChip();
+      renderAgentName();
+    }
+  });
+}
+
+function closeMenus() {
+  document.querySelectorAll('.menu').forEach((m) => m.classList.add('hidden'));
+}
+
+// --------------------------------------------------------------------------
+// Tiny helpers
+// --------------------------------------------------------------------------
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+function miniBtn(label, onClick, title) {
+  const b = document.createElement('button');
+  b.className = 'mini-btn';
+  b.textContent = label;
+  if (title) b.title = title;
+  b.onclick = (e) => {
+    e.stopPropagation();
+    onClick();
+  };
+  return b;
+}
+function actionItem(icon, label, onClick) {
+  const b = document.createElement('button');
+  b.className = 'menu-item';
+  b.innerHTML = `<span>${icon}</span><span>${escapeAttr(label)}</span>`;
+  b.onclick = () => {
+    closeMenus();
+    onClick();
+  };
+  return b;
+}
+function sectionLabel(text) {
+  const d = document.createElement('div');
+  d.className = 'menu-section';
+  d.textContent = text;
+  return d;
+}
+function escapeAttr(s) {
+  return String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function relTime(ts) {
+  const s = (Date.now() - ts) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+init();

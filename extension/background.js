@@ -1,0 +1,69 @@
+// ChatPanel service worker.
+//
+// Responsibilities are deliberately small: open the side panel when the toolbar
+// icon is clicked, wire up a right-click "Ask ChatPanel about this" menu, and
+// relay the occasional one-off message. All real work (chat, context capture,
+// provider calls) happens in the side panel page itself, which has full DOM +
+// fetch + streaming and is where the user is looking. The one background job is
+// re-validating a paid license daily so a lapsed subscription downgrades itself.
+
+import { revalidate } from './js/license.js';
+
+const REVALIDATE_ALARM = 'chatpanel-revalidate-license';
+
+// Let the toolbar icon toggle the side panel open. (Requires Chrome 116+.)
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.sidePanel
+    .setPanelBehavior({ openPanelOnActionClick: true })
+    .catch((e) => console.warn('[chatpanel] setPanelBehavior', e));
+
+  chrome.contextMenus.create({
+    id: 'chatpanel-ask',
+    title: 'Ask ChatPanel about this page',
+    contexts: ['page', 'selection', 'link'],
+  });
+
+  // Daily license re-check (period is in minutes; 720 = 12h, so we catch a lapse
+  // within ~half a day even if the browser is rarely restarted).
+  chrome.alarms.create(REVALIDATE_ALARM, { periodInMinutes: 720 });
+  revalidate({ force: true }).catch(() => {});
+});
+
+// Re-check on browser start and on the alarm. revalidate() self-throttles and
+// fails open, so calling it liberally is safe.
+chrome.runtime.onStartup.addListener(() => revalidate().catch(() => {}));
+chrome.alarms.onAlarm.addListener((a) => {
+  if (a.name === REVALIDATE_ALARM) revalidate().catch(() => {});
+});
+
+// Open the panel and hand it the click target. The panel listens for
+// `chrome.runtime.onMessage` and seeds a new message with the selection / link.
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId !== 'chatpanel-ask') return;
+  try {
+    if (tab?.windowId != null) await chrome.sidePanel.open({ windowId: tab.windowId });
+  } catch (e) {
+    console.warn('[chatpanel] sidePanel.open', e);
+  }
+  // The panel may still be booting; a tiny delay then broadcast. The panel also
+  // re-requests any pending seed on load, so this is best-effort.
+  const seed = {
+    type: 'context-seed',
+    selection: info.selectionText || '',
+    url: info.linkUrl || info.pageUrl || tab?.url || '',
+    title: tab?.title || '',
+    tabId: tab?.id ?? null,
+  };
+  setTimeout(() => chrome.runtime.sendMessage(seed).catch(() => {}), 350);
+  // Stash it too so a freshly-opened panel can pull it.
+  chrome.storage.session.set({ pendingSeed: seed }).catch(() => {});
+});
+
+// Keyboard / programmatic open requests from the panel (e.g. "open settings").
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === 'open-options') {
+    chrome.runtime.openOptionsPage();
+    sendResponse?.({ ok: true });
+  }
+  return false;
+});

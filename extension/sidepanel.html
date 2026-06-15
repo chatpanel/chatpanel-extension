@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ChatPanel</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <!-- Top bar -->
+    <header class="topbar">
+      <button id="btn-history" class="icon-btn" title="Chat history" aria-label="History">☰</button>
+      <div class="agent-select">
+        <button id="agent-button" class="agent-button" title="Choose agent">
+          <span id="agent-name">Claude Code</span>
+          <span class="caret">▾</span>
+        </button>
+        <div id="agent-menu" class="menu hidden" role="menu"></div>
+      </div>
+      <div class="topbar-spacer"></div>
+      <button id="btn-new" class="icon-btn" title="New chat" aria-label="New chat">＋</button>
+      <button id="btn-upgrade" class="chip hidden" title="Upgrade to Pro">✨ Upgrade</button>
+      <button id="btn-settings" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
+    </header>
+
+    <!-- Update notice (manual/unpacked builds only; hidden on Web Store installs) -->
+    <div id="update-banner" class="update-banner hidden" role="status">
+      <span id="update-banner-text"></span>
+      <a id="update-banner-link" class="update-banner-link" target="_blank" rel="noopener">Download</a>
+      <button id="update-banner-dismiss" class="update-banner-x" aria-label="Dismiss">✕</button>
+    </div>
+
+    <!-- History drawer -->
+    <aside id="history" class="history hidden">
+      <div class="history-head">
+        <input id="history-search" type="search" placeholder="Search chats…" />
+        <button id="history-close" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div id="history-list" class="history-list"></div>
+      <div class="history-foot">
+        <button id="history-clear" class="text-btn danger">Clear all history</button>
+      </div>
+    </aside>
+
+    <!-- Messages -->
+    <main id="messages" class="messages">
+      <div id="empty" class="empty">
+        <div class="empty-logo"><img src="assets/icon128.png" alt="ChatPanel" /></div>
+        <h1>ChatPanel</h1>
+        <p>Chat with Claude Code, Codex, or your own model — with the context of
+          your tabs.</p>
+        <div id="empty-suggestions" class="suggestions"></div>
+      </div>
+    </main>
+
+    <!-- Activity strip (coding-agent tool use / status) -->
+    <div id="activity" class="activity hidden"></div>
+
+    <!-- Context chips -->
+    <div id="context-bar" class="context-bar hidden"></div>
+
+    <!-- Skill suggestion -->
+    <div id="skill-suggest" class="skill-suggest hidden"></div>
+
+    <!-- Composer -->
+    <footer class="composer">
+      <button id="btn-attach" class="tool-btn" title="Add context">📎</button>
+      <textarea id="input" class="input" rows="1" placeholder="Message your agent… (paste a URL to analyze it)"></textarea>
+      <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI">✨</button>
+      <button id="btn-skills" class="tool-btn" title="Skills">⚡</button>
+      <button id="btn-send" class="send-btn" title="Send">➤</button>
+      <button id="btn-stop" class="send-btn stop hidden" title="Stop">■</button>
+      <div id="attach-menu" class="menu up hidden"></div>
+      <div id="skills-menu" class="menu up hidden"></div>
+    </footer>
+
+    <!-- URL paste prompt -->
+    <div id="toast" class="toast hidden"></div>
+
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

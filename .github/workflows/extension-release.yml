@@ -1,0 +1,88 @@
+# Package the extension and publish it to a GitHub Release (and, when the
+# CHROME_* secrets are present, to the Chrome Web Store).
+#
+# Trigger by pushing a tag like `ext-v0.2.1`. The tag is informational; the
+# version that ships is whatever is in extension/manifest.json.
+#
+# The release attaches BOTH a versioned zip (chatpanel-extension-v<x>.zip) and a
+# stable-named zip (chatpanel-extension.zip). The stable name powers a permanent
+# download URL that never changes between versions:
+#
+#   https://github.com/chatpanel/chatpanel-extension/releases/latest/download/chatpanel-extension.zip
+name: Release extension
+
+on:
+  push:
+    tags: ['ext-v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to the Web Store (false = build only)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      CWS_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Package extension
+        run: node tools/package-extension.mjs
+
+      - name: Publish to Chrome Web Store
+        if: ${{ env.CWS_TOKEN != '' && (github.event_name == 'push' || inputs.publish) }}
+        env:
+          CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+        run: |
+          set -euo pipefail
+          echo "Requesting access token…"
+          TOKEN=$(curl -sf -X POST https://oauth2.googleapis.com/token \
+            -d "client_id=$CLIENT_ID" \
+            -d "client_secret=$CLIENT_SECRET" \
+            -d "refresh_token=$REFRESH_TOKEN" \
+            -d "grant_type=refresh_token" | jq -r .access_token)
+          [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ] || { echo "Could not get access token"; exit 1; }
+
+          echo "Uploading package…"
+          UPLOAD=$(curl -sf -X PUT -T dist/chatpanel-extension.zip \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "x-goog-api-version: 2" \
+            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/$EXTENSION_ID")
+          echo "$UPLOAD"
+          echo "$UPLOAD" | jq -e '.uploadState == "SUCCESS"' >/dev/null \
+            || { echo "Upload failed"; exit 1; }
+
+          echo "Publishing…"
+          curl -sf -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "x-goog-api-version: 2" \
+            -H "Content-Length: 0" \
+            "https://www.googleapis.com/chromewebstore/v1.1/items/$EXTENSION_ID/publish"
+          echo "Submitted for review."
+
+      - name: Skip notice
+        if: ${{ env.CWS_TOKEN == '' }}
+        run: echo "::notice::Built the zip but skipped Web Store publish — set CHROME_EXTENSION_ID, CHROME_CLIENT_ID, CHROME_CLIENT_SECRET, CHROME_REFRESH_TOKEN to enable."
+
+      - name: Attach zips to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          # Both the versioned zip AND the stable name (for the permanent
+          # /releases/latest/download/chatpanel-extension.zip link).
+          files: |
+            dist/chatpanel-extension.zip
+            dist/chatpanel-extension-*.zip
