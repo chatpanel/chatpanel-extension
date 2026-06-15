@@ -8,8 +8,8 @@
 //   team  → cloud/server features that run on OUR infra (hard-gated, recurring).
 //
 // Pro/Team entitlement is verified by the ChatPanel server. Activation happens
-// in-app — there's no license key to paste — and follows the user's purchase
-// across their devices (with a one-tap email restore as a fallback).
+// in-app and follows the user's purchase across their devices (with a one-tap
+// email restore as a fallback).
 
 const K_LICENSE = 'chatpanel:license'; // local: the active entitlement
 const K_INSTALL = 'chatpanel:install'; // local: this device's stable id

@@ -61,8 +61,8 @@ list without loading every message.
 ## Plans
 
 ChatPanel is free to use, with optional **Pro** features you can unlock from
-**Settings → License**. Pro activates right in the app — there's no license key to
-copy or paste — and follows your purchase email across your devices. See
+**Settings → License**. Pro activates right in the app and follows your purchase
+email across your devices. See
 [chatpanel.net](https://chatpanel.net) for what each plan includes.
 
 ## Message flow (one turn)
