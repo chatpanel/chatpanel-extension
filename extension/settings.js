@@ -459,11 +459,18 @@ function renderPrefs() {
   $('pref-theme').value = settings.ui.theme || 'system';
   $('pref-enter').checked = settings.ui.sendOnEnter !== false;
   $('pref-stream').checked = settings.ui.streamResponses !== false;
+  // Autocomplete is a Pro feature — gate the toggle for Free users.
+  const ac = $('pref-autocomplete');
+  const pro = isPro(license);
+  ac.checked = pro && !!settings.ui.autocomplete;
+  ac.disabled = !pro;
+  $('pref-autocomplete-row').classList.toggle('locked', !pro);
 }
 async function savePrefs() {
   settings.ui.theme = $('pref-theme').value;
   settings.ui.sendOnEnter = $('pref-enter').checked;
   settings.ui.streamResponses = $('pref-stream').checked;
+  settings.ui.autocomplete = isPro(license) && $('pref-autocomplete').checked;
   await saveSettings(settings);
 }
 
@@ -630,6 +637,10 @@ function wire() {
   $('pref-theme').onchange = savePrefs;
   $('pref-enter').onchange = savePrefs;
   $('pref-stream').onchange = savePrefs;
+  $('pref-autocomplete').onchange = () => {
+    if (!isPro(license)) { upsell('Autocomplete is a Pro feature'); $('pref-autocomplete').checked = false; return; }
+    savePrefs();
+  };
 
   $('btn-subscribe-pro').onclick = () => subscribePro($('btn-subscribe-pro'));
 

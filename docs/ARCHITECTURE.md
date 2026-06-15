@@ -52,26 +52,18 @@ go through the Bridge.
 chatpanel:settings        → { bridgeUrl, agents[], skills[], ui, activeAgentId }
 chatpanel:convIndex       → [{ id, title, agentId, updatedAt, msgs }]   (lightweight)
 chatpanel:conv:<id>       → { id, title, agentId, messages[], createdAt, updatedAt }
-chatpanel:license         → { plan, status, source, sub?, token?, key?, expiresAt }
-chatpanel:install         → "<uuid>"   (this device's stable id; local only)
-chatpanel:claim (sync)    → "<token>"  (portable "this account has a sub"; syncs across devices)
+chatpanel:license         → { plan, status }
 ```
 
 Splitting the index from per-conversation blobs keeps a long history cheap to
 list without loading every message.
 
-## Licensing (keyless)
+## Plans
 
-Pro/Team entitlement is server-authoritative. The extension generates a stable
-`install_id`, passes it through Lemon Squeezy checkout, and the license worker
-seats that device under the subscription. The extension then polls the worker and
-receives a **signed entitlement token** (ECDSA P-256) it verifies with an embedded
-**public** key — the private signing key never leaves the server, so this
-open-source client can't forge a "pro" plan. No license key is shown or pasted.
-Other devices the same person owns self-restore via `chrome.storage.sync` (same
-Chrome profile) or a one-tap email magic link. A rolling active-device cap makes a
-leaked credential useless. `js/license.js` is the client; the license worker lives
-in the private backend repo.
+ChatPanel is free to use, with optional **Pro** features you can unlock from
+**Settings → License**. Pro activates right in the app — there's no license key to
+copy or paste — and follows your purchase email across your devices. See
+[chatpanel.net](https://chatpanel.net) for what each plan includes.
 
 ## Message flow (one turn)
 

@@ -7,16 +7,9 @@
 //           system prompts, exports (soft-gated client features).
 //   team  → cloud/server features that run on OUR infra (hard-gated, recurring).
 //
-// The agent/model gate lives in the client we ship (see canUseAgent): it's
-// visible friction, not security — a determined user can edit chrome.storage.
-// Real, unbypassable revenue is the `team` tier and the SIGNED entitlement below.
-//
-// Entitlement (Pro/Team) comes two ways, both server-authoritative:
-//   • Keyless (default): an `install_id` rides through checkout; the server seats
-//     it and hands back a SIGNED token we verify here with a public key. No key
-//     to paste, nothing to share. Other devices self-restore via sync or email.
-//   • License key (fallback): paste a key; the server validates it.
-// See docs/ARCHITECTURE.md and the license worker (private) for the server side.
+// Pro/Team entitlement is verified by the ChatPanel server. Activation happens
+// in-app — there's no license key to paste — and follows the user's purchase
+// across their devices (with a one-tap email restore as a fallback).
 
 const K_LICENSE = 'chatpanel:license'; // local: the active entitlement
 const K_INSTALL = 'chatpanel:install'; // local: this device's stable id
@@ -31,8 +24,7 @@ const CLAIM_ENDPOINT = `${API_BASE}/entitlement/claim`; // keyless auto-restore
 const RELEASE_ENDPOINT = `${API_BASE}/entitlement/release`; // free this device's seat
 const RESTORE_ENDPOINT = `${API_BASE}/restore`; // keyless email magic-link
 
-// PUBLIC verification key (ECDSA P-256). The matching PRIVATE key lives only on
-// the server, so a fork of this open-source client cannot forge "plan: pro".
+// Public key used to verify the entitlement token returned by the server.
 const ENTITLEMENT_PUBLIC_JWK = {
   kty: 'EC',
   crv: 'P-256',

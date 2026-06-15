@@ -141,6 +141,15 @@
           </div>
           <label class="check"><input type="checkbox" id="pref-enter" /> Send message on Enter (Shift+Enter for newline)</label>
           <label class="check"><input type="checkbox" id="pref-stream" /> Stream responses as they arrive</label>
+          <label class="check" id="pref-autocomplete-row">
+            <input type="checkbox" id="pref-autocomplete" />
+            <span>Autocomplete my prompts as I type <span class="pro-badge">✨ Pro</span></span>
+          </label>
+          <p class="muted tiny">
+            As you pause typing, your API model suggests a short continuation — press
+            <strong>Tab</strong> to accept. Uses small, fast requests; works with your
+            bring-your-own-model endpoints (not local bridge agents).
+          </p>
         </div>
 
         <div class="card" id="about-card">

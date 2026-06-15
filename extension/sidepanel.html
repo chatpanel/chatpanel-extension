@@ -47,8 +47,8 @@
       <div id="empty" class="empty">
         <div class="empty-logo"><img src="assets/icon128.png" alt="ChatPanel" /></div>
         <h1>ChatPanel</h1>
-        <p>Chat with Claude Code, Codex, or your own model — with the context of
-          your tabs.</p>
+        <p>Chat with Claude Code, Codex, Gemini CLI, or your own model — with the
+          context of your tabs.</p>
         <div id="empty-suggestions" class="suggestions"></div>
       </div>
     </main>
@@ -62,8 +62,12 @@
     <!-- Skill suggestion -->
     <div id="skill-suggest" class="skill-suggest hidden"></div>
 
+    <!-- AI prompt autocomplete (Pro, opt-in) -->
+    <div id="prompt-suggest" class="prompt-suggest hidden"></div>
+
     <!-- Composer -->
     <footer class="composer">
+      <div id="composer-resize" class="composer-resize" title="Drag to resize · double-click to reset"></div>
       <button id="btn-attach" class="tool-btn" title="Add context">📎</button>
       <textarea id="input" class="input" rows="1" placeholder="Message your agent… (paste a URL to analyze it)"></textarea>
       <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI">✨</button>
