@@ -334,7 +334,11 @@ export async function getConversation(id) {
 }
 
 export async function createConversation({ agentId, title } = {}) {
-  const conv = {
+  // A brand-new chat is kept IN MEMORY only — we don't persist it (or add it to
+  // the history index) until it gets its first message (see saveConversation).
+  // This stops empty "New chat · 0 msgs" entries from piling up every time the
+  // side panel opens.
+  return {
     id: uid(),
     title: title || 'New chat',
     agentId: agentId || null,
@@ -342,11 +346,17 @@ export async function createConversation({ agentId, title } = {}) {
     updatedAt: Date.now(),
     messages: [],
   };
-  await chrome.storage.local.set({ [convKey(conv.id)]: conv });
+}
+
+// Remove empty (0-message) conversations — both leftovers from older builds that
+// persisted them eagerly, and any abandoned ones. Safe: they hold no content.
+export async function pruneEmptyConversations() {
   const index = await getIndex();
-  index.unshift(indexEntry(conv));
-  await saveIndex(index);
-  return conv;
+  const empties = index.filter((e) => !e.msgs);
+  if (!empties.length) return 0;
+  await chrome.storage.local.remove(empties.map((e) => convKey(e.id)));
+  await saveIndex(index.filter((e) => e.msgs));
+  return empties.length;
 }
 
 function indexEntry(conv) {

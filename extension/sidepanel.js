@@ -9,6 +9,7 @@ import {
   saveConversation,
   renameConversation,
   deleteConversation,
+  pruneEmptyConversations,
   clearAllConversations,
   conversationToMarkdown,
   updateSettings,
@@ -52,6 +53,7 @@ async function init() {
   ensureUsableActiveAgent();
   state.usePage = state.settings.ui.autoAttachActiveTab !== false;
   applyTheme();
+  await pruneEmptyConversations(); // clear stale empty "New chat" entries
   state.index = await getIndex();
 
   await startConversation();

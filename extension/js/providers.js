@@ -71,12 +71,12 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent }) {
   const headers = { 'Content-Type': 'application/json', ...(agent.headers || {}) };
   if (agent.apiKey) headers['Authorization'] = `Bearer ${agent.apiKey}`;
 
-  const res = await fetch(`${base}/chat/completions`, {
+  const res = await reachableFetch(`${base}/chat/completions`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
     signal,
-  });
+  }, agent, base);
   if (!res.ok) throw new Error(openAiError(agent, base, res.status, await safeText(res)));
 
   let full = '';
@@ -268,13 +268,13 @@ export async function testAgent(agent, settings) {
 export async function listModels(agent) {
   if (agent.kind === 'anthropic') {
     const base = (agent.baseUrl || 'https://api.anthropic.com').replace(/\/$/, '');
-    const res = await fetch(`${base}/v1/models`, {
+    const res = await reachableFetch(`${base}/v1/models`, {
       headers: {
         'x-api-key': agent.apiKey || '',
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-    });
+    }, agent, base);
     if (!res.ok) throw new Error(openAiError(agent, base, res.status, await safeText(res)));
     const json = await res.json();
     return (json.data || []).map((m) => m.id).filter(Boolean).sort();
@@ -282,12 +282,31 @@ export async function listModels(agent) {
   const base = (agent.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
   const headers = { ...(agent.headers || {}) };
   if (agent.apiKey) headers['Authorization'] = `Bearer ${agent.apiKey}`;
-  const res = await fetch(`${base}/models`, { headers });
+  const res = await reachableFetch(`${base}/models`, { headers }, agent, base);
   if (!res.ok) throw new Error(openAiError(agent, base, res.status, await safeText(res)));
   const json = await res.json();
   // OpenAI/Ollama: {data:[{id}]}. A few servers use {models:[{id|name}]}.
   const list = json.data || json.models || [];
   return list.map((m) => m.id || m.name).filter(Boolean).sort();
+}
+
+// fetch() that turns a CONNECTION failure (server not running, wrong URL, or a
+// blocked origin) into a clear, actionable message instead of the opaque
+// "Failed to fetch". A refused connection rejects the promise (no HTTP status),
+// so we catch it here and explain what to check.
+async function reachableFetch(url, opts, agent, base) {
+  try {
+    return await fetch(url, opts);
+  } catch {
+    const where = base || url;
+    const isOllama = /11434|ollama/i.test(where);
+    const isLocal = /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(where);
+    let hint;
+    if (isOllama) hint = ' Is Ollama running? Start it with  OLLAMA_ORIGINS="*" ollama serve';
+    else if (isLocal) hint = ' Is the local server running, and is the Base URL correct?';
+    else hint = ' Check the Base URL and your connection.';
+    throw new Error(`${agent?.name || 'Endpoint'}: couldn't reach ${where}.${hint}`);
+  }
 }
 
 // Turn the two failures local Ollama users hit most into actionable messages.

@@ -272,3 +272,12 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   font-size: 12px; line-height: 1; padding: 2px 4px;
 }
 .update-banner .update-banner-x:hover { color: var(--text); }
+
+/* "New chat" — a labelled action, clearer than a bare + icon */
+.new-chat-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: 1px solid var(--border, rgba(127,127,127,.3)); border-radius: 8px;
+  background: transparent; color: var(--text); cursor: pointer;
+  font-size: 12px; font-weight: 600; padding: 5px 10px; white-space: nowrap;
+}
+.new-chat-btn:hover { background: rgba(127,127,127,.12); }
