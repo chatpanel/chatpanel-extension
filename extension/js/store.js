@@ -89,6 +89,10 @@ export function defaultSettings() {
       sendOnEnter: true,
       autoAttachActiveTab: true,
       streamResponses: true,
+      // Live-meeting context window, in minutes, auto-included per message. 0 = the
+      // full transcript so far; a positive value keeps only the last N minutes so
+      // long meetings don't grow the prompt every question.
+      meetingWindowMin: 0,
     },
   };
 }
@@ -139,7 +143,48 @@ export function defaultSkills() {
         'Review the code on this page/diff for correctness bugs and clear simplifications. Be specific and cite lines.',
       builtin: true,
     },
+    meetingNotesSkill(),
   ];
+}
+
+// Structured meeting notes from the live transcript. The transcript auto-attaches
+// while capture is active (context:'auto' — no extra page read), so this skill is
+// just the prompt. Output structure mirrors a battle-tested meeting-insights
+// format: TL;DR, Topics, tagged Key Moments, and owner/due-dated action items.
+export function meetingNotesSkill() {
+  return {
+    id: 'meeting-notes',
+    name: 'Meeting notes',
+    command: 'notes',
+    icon: '📝',
+    description: 'Structured notes from the live meeting transcript',
+    context: 'auto',
+    builtin: true,
+    prompt: [
+      'You are taking notes from a meeting transcript. It may be PARTIAL/LIVE — write everything "as of now" and never invent a meeting end, decision, owner, or date.',
+      'Ground every line strictly in the transcript. Attribute an owner or due date ONLY when it is explicitly stated; otherwise leave it off. Do not pad or speculate.',
+      '',
+      'Output GitHub-flavored Markdown with these sections, and OMIT any section that has no real content:',
+      '',
+      '## TL;DR',
+      '3–6 bullets: the bottom line — what was aligned on, the key decisions, current status, and the biggest open issue.',
+      '',
+      '## Topics',
+      'A short bullet list of the distinct topics discussed.',
+      '',
+      '## Key Moments',
+      'Bullets, each prefixed with exactly one tag in bold: **[decision]**, **[highlight]**, **[risk]**, or **[question]**. Example:',
+      '- **[decision]** The team will ship the queued-state API after end-to-end validation.',
+      '- **[risk]** Metering downtime is still being billed today.',
+      '- **[question]** Is the use case NTR-only or also TR-side?',
+      '',
+      '## Action Items',
+      'A GitHub task list. Add an owner in _(parentheses)_ only if named, and a due date as — _date_ only if stated:',
+      '- [ ] Task described concretely. _(Owner)_ — _due date_',
+      '',
+      'Be concise and specific; prefer concrete paraphrased statements over vague summaries.',
+    ].join('\n'),
+  };
 }
 
 // --------------------------------------------------------------------------
@@ -179,6 +224,11 @@ function mergeSettings(base, stored) {
   // Keep the user's agents/skills verbatim if present; otherwise the defaults.
   out.agents = Array.isArray(stored.agents) && stored.agents.length ? stored.agents : base.agents;
   out.skills = Array.isArray(stored.skills) ? stored.skills : base.skills;
+  // Inject newer built-in skills that didn't exist when the user's skills were
+  // saved. Safe one-time add (a brand-new built-in can't have been user-deleted).
+  if (!out.skills.some((s) => s.id === 'meeting-notes')) {
+    out.skills = [...out.skills, meetingNotesSkill()];
+  }
   out.endpoints = Array.isArray(stored.endpoints) ? stored.endpoints : null;
 
   // v2 migration: include the current page as context by default.

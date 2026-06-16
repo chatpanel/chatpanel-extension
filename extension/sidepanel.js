@@ -22,6 +22,11 @@ import {
   captureTab,
   captureSelection,
   captureUrl,
+  captureMeetingTranscript,
+  meetingPlatform,
+  probeMeeting,
+  startMeeting,
+  stopMeeting,
 } from './js/context.js';
 import { renderMarkdown } from './js/markdown.js';
 import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
@@ -383,9 +388,36 @@ async function send() {
       text = await substituteVars(sk.skill.prompt + (sk.args ? `\n\n${sk.args}` : ''), { args: sk.args });
     }
 
+    // Live meeting: if capture is active on this tab, automatically include a FRESH
+    // transcript snapshot (read at send time) so the user doesn't have to hit Attach
+    // for every question. Replaces any earlier meeting attachment so we never send a
+    // stale copy, and skips the generic page-read below (the meeting shell page has
+    // no useful text — the transcript IS the context).
+    let meetingIncluded = false;
+    if (state.activeTab && meetingPlatform(state.activeTab.url || '') && can(state.license, 'liveMeetings')) {
+      try {
+        const probe = await probeMeeting(state.activeTab.id);
+        if (probe?.ok && probe.capturing) {
+          // Rolling window: 0 = full transcript; N = last N minutes only.
+          const win = state.settings?.ui?.meetingWindowMin || 0;
+          const sinceTs = win ? Date.now() - win * 60_000 : 0;
+          state.attachments = state.attachments.filter((a) => a.kind !== 'meeting');
+          state.attachments.unshift(await captureMeetingTranscript(state.activeTab.id, { sinceTs }));
+          meetingIncluded = true;
+        }
+      } catch {
+        /* no transcript yet — fall through and send without it */
+      }
+    }
+
     // Include the current page fresh (read at send time) unless the user turned it
-    // off or already attached this exact tab manually.
-    if (state.usePage && state.activeTab && !state.attachments.some((a) => a.url === state.activeTab.url)) {
+    // off, already attached this exact tab manually, or we included a live meeting.
+    if (
+      !meetingIncluded &&
+      state.usePage &&
+      state.activeTab &&
+      !state.attachments.some((a) => a.url === state.activeTab.url)
+    ) {
       try {
         toast('Reading this page…');
         state.attachments.unshift(await captureTab(state.activeTab.id));
@@ -688,6 +720,104 @@ async function refreshActiveTab() {
     state.activeTab = null;
   }
   renderContextBar();
+  renderMeetingBar();
+}
+
+// Meeting companion status bar. Shown only when the active tab is a recognised
+// meeting platform; tells the user whether capture is wired up and lets them
+// start/stop/attach the live transcript. Probing the content script is async, so
+// a sequence token guards against an older tab's result landing after a newer one.
+let _meetingBarSeq = 0;
+const MEETING_LABELS = { zoom: 'Zoom', meet: 'Google Meet', teams: 'Teams', webex: 'Webex' };
+
+// Rolling-window choices (minutes) for how much transcript rides along each message.
+// 0 = the whole meeting so far; positive = last N minutes (cheaper per question).
+const MEETING_WINDOWS = [0, 30, 15, 5];
+function meetingWindowLabel() {
+  const m = state.settings?.ui?.meetingWindowMin || 0;
+  return m ? `Last ${m}m` : 'Full';
+}
+async function cycleMeetingWindow() {
+  const cur = state.settings?.ui?.meetingWindowMin || 0;
+  const next = MEETING_WINDOWS[(MEETING_WINDOWS.indexOf(cur) + 1) % MEETING_WINDOWS.length];
+  state.settings = await updateSettings({ ui: { meetingWindowMin: next } });
+  renderMeetingBar();
+  toast(`Meeting context: ${meetingWindowLabel()}`);
+}
+
+async function renderMeetingBar() {
+  const bar = $('meeting-bar');
+  const tab = state.activeTab;
+  const platform = tab && meetingPlatform(tab.url || '');
+  if (!platform) {
+    bar.classList.add('hidden');
+    bar.innerHTML = '';
+    return;
+  }
+  const seq = ++_meetingBarSeq;
+  const label = MEETING_LABELS[platform] || platform;
+  const probe = await probeMeeting(tab.id); // null if the content script isn't loaded
+  if (seq !== _meetingBarSeq) return; // a newer render superseded us
+
+  const render = (icon, text, buttons = []) => {
+    bar.classList.remove('hidden');
+    bar.innerHTML = '';
+    const dot = document.createElement('span');
+    dot.className = 'meeting-ico';
+    dot.textContent = icon;
+    const span = document.createElement('span');
+    span.className = 'meeting-text';
+    span.textContent = text;
+    bar.append(dot, span);
+    for (const b of buttons) {
+      const btn = document.createElement('button');
+      btn.className = 'meeting-btn' + (b.primary ? ' primary' : '');
+      btn.textContent = b.label;
+      btn.onclick = b.onClick;
+      bar.appendChild(btn);
+    }
+  };
+
+  // Content script not responding → the tab loaded before the extension did.
+  if (!probe?.ok) {
+    render('🎙', `${label} detected — reload the tab to enable capture`, [
+      { label: 'Reload', onClick: () => chrome.tabs.reload(tab.id) },
+    ]);
+    return;
+  }
+  // Platform recognised but adapter not implemented yet (Meet/Teams/Webex stubs).
+  if (probe.ready === false) {
+    render('🎙', `${label} — live capture coming soon (Zoom supported today)`);
+    return;
+  }
+  // Gated behind Pro.
+  if (!can(state.license, 'liveMeetings')) {
+    render('🎙', `${label} meeting — Live notes are Pro`, [
+      { label: '✨ Upgrade', primary: true, onClick: () => upsell('liveMeetings') },
+    ]);
+    return;
+  }
+  // Pro + ready (Zoom). Capture is auto-included on every message (see send()),
+  // so the controls are just the rolling-window size and Stop.
+  if (probe.capturing) {
+    render('🔴', `Capturing ${label} · ${meetingWindowLabel()} added per message`, [
+      { label: `🕑 ${meetingWindowLabel()}`, onClick: cycleMeetingWindow },
+      { label: 'Stop', primary: true, onClick: async () => { await stopMeeting(tab.id); renderMeetingBar(); } },
+    ]);
+    return;
+  }
+  const capsHint = probe.live ? 'captions on' : 'turn on captions to capture speech';
+  render('🎙', `${label} ready · ${capsHint}`, [
+    {
+      label: 'Start notes',
+      primary: true,
+      onClick: async () => {
+        await startMeeting(tab.id);
+        renderMeetingBar();
+        toast('Capturing — ask away, the transcript rides along automatically');
+      },
+    },
+  ]);
 }
 
 async function addAttachment(producer) {
@@ -816,6 +946,17 @@ async function renderAttachMenu() {
   menu.appendChild(
     actionItem('🪟', `All tabs in this window${proWindow ? '' : ' — Pro'}`, () => attachWholeWindow()),
   );
+
+  // Live meeting transcript (Pro) — only shown when the active tab is a meeting.
+  if (state.activeTab && meetingPlatform(state.activeTab.url || '')) {
+    const proMeet = can(state.license, 'liveMeetings');
+    menu.appendChild(
+      actionItem('🎙', `Live meeting transcript${proMeet ? '' : ' — Pro'}`, () => {
+        if (!proMeet) return upsell('liveMeetings');
+        addAttachment(() => captureMeetingTranscript(state.activeTab.id));
+      }),
+    );
+  }
 
   // URL input
   const urlWrap = document.createElement('div');

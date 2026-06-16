@@ -56,6 +56,9 @@
     <!-- Activity strip (coding-agent tool use / status) -->
     <div id="activity" class="activity hidden"></div>
 
+    <!-- Meeting companion status (shown only on a meeting tab) -->
+    <div id="meeting-bar" class="meeting-bar hidden"></div>
+
     <!-- Context chips -->
     <div id="context-bar" class="context-bar hidden"></div>
 
@@ -68,15 +71,20 @@
     <!-- Composer -->
     <footer class="composer">
       <div id="composer-resize" class="composer-resize" title="Drag to resize · double-click to reset"></div>
-      <button id="btn-attach" class="tool-btn" title="Add context">📎</button>
-      <div class="input-wrap">
-        <textarea id="input" class="input" rows="1" placeholder="Message your agent… (paste a URL to analyze it)"></textarea>
-        <div id="input-ghost" class="input-ghost" aria-hidden="true"></div>
+      <div class="composer-box">
+        <div class="input-wrap">
+          <textarea id="input" class="input" rows="1" placeholder="Message your agent…  ( / for skills · paste a URL to analyze it )"></textarea>
+          <div id="input-ghost" class="input-ghost" aria-hidden="true"></div>
+        </div>
+        <div class="composer-tools">
+          <button id="btn-attach" class="tool-btn" title="Add context" aria-label="Add context">＋</button>
+          <button id="btn-skills" class="tool-btn" title="Skills" aria-label="Skills">⚡</button>
+          <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI" aria-label="Improve prompt">✨</button>
+          <div class="composer-tools-spacer"></div>
+          <button id="btn-send" class="send-btn" title="Send" aria-label="Send">↑</button>
+          <button id="btn-stop" class="send-btn stop hidden" title="Stop" aria-label="Stop">■</button>
+        </div>
       </div>
-      <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI">✨</button>
-      <button id="btn-skills" class="tool-btn" title="Skills">⚡</button>
-      <button id="btn-send" class="send-btn" title="Send">➤</button>
-      <button id="btn-stop" class="send-btn stop hidden" title="Stop">■</button>
       <div id="attach-menu" class="menu up hidden"></div>
       <div id="skills-menu" class="menu up hidden"></div>
     </footer>

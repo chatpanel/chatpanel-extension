@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatPanel — Local AI Agents",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "description": "Chat from any tab with Claude Code, Codex, Gemini CLI, or your own API. Tab context, URL analysis, history, agents & skills.",
   "minimum_chrome_version": "116",
   "permissions": [
@@ -11,10 +11,32 @@
     "scripting",
     "activeTab",
     "contextMenus",
-    "alarms"
+    "alarms",
+    "unlimitedStorage",
+    "webNavigation"
   ],
   "host_permissions": [
     "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.zoom.us/wc/*",
+        "https://meet.google.com/*",
+        "https://teams.microsoft.com/*",
+        "https://teams.live.com/*",
+        "https://*.webex.com/*"
+      ],
+      "js": [
+        "content/adapter-zoom.js",
+        "content/adapter-meet.js",
+        "content/adapter-teams.js",
+        "content/adapter-webex.js",
+        "content/meeting-core.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
   ],
   "background": {
     "service_worker": "background.js",

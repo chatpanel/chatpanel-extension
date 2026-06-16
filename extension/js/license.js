@@ -68,6 +68,7 @@ export const FEATURE_TIER = {
   exportChats: 'pro',
   promptLibrary: 'pro',
   fileAttachments: 'pro',
+  liveMeetings: 'pro',
   // team — server-side / collaboration (enforced once the backend ships)
   cloudSync: 'team',
   sharedLibrary: 'team',
@@ -82,6 +83,7 @@ export const PRO_FEATURES = {
   customSkills: 'Create & edit your own skills',
   advancedAgent: 'Per-agent system prompts & working directories',
   exportChats: 'Export conversations as Markdown',
+  liveMeetings: 'Live meeting notes — capture Zoom/Meet/Teams transcripts',
 };
 export const TEAM_FEATURES = {
   cloudSync: 'Sync chats across your devices',

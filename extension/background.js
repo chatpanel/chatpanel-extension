@@ -8,6 +8,7 @@
 // re-validating a paid license daily so a lapsed subscription downgrades itself.
 
 import { revalidate } from './js/license.js';
+import { persistMeeting, pruneMeetings } from './js/store-meetings.js';
 
 const REVALIDATE_ALARM = 'chatpanel-revalidate-license';
 
@@ -64,6 +65,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'open-options') {
     chrome.runtime.openOptionsPage();
     sendResponse?.({ ok: true });
+    return false;
+  }
+  // Single persist path for meeting capture: the content script (any frame) hands
+  // us its buffer; we cap size + encrypt at rest here so it's done once, correctly.
+  if (msg?.type === 'CP_MEETING_PERSIST' && msg.record) {
+    persistMeeting(msg.record)
+      .then(() => sendResponse?.({ ok: true }))
+      .catch((e) => sendResponse?.({ ok: false, error: String(e) }));
+    return true; // async response
   }
   return false;
 });
+
+// Tidy old meetings opportunistically so transcript history can't grow unbounded.
+chrome.runtime.onStartup.addListener(() => pruneMeetings().catch(() => {}));
+chrome.runtime.onInstalled.addListener(() => pruneMeetings().catch(() => {}));

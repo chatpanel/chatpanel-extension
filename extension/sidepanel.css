@@ -235,33 +235,67 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .ctx-chip.page-chip { border-color: var(--accent); background: var(--accent-soft); }
 .ctx-chip.page-chip .ctx-title { color: var(--accent); font-weight: 600; }
 
-/* Composer */
-.composer {
-  display: flex; align-items: flex-end; gap: 6px; padding: 10px;
-  border-top: 1px solid var(--border); background: var(--bg-elev); flex: 0 0 auto; position: relative;
+/* Meeting companion status bar */
+.meeting-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px; border-top: 1px solid var(--border);
+  background: var(--accent-soft); font-size: 12px; color: var(--text);
 }
-.composer .tool-btn { flex: 0 0 auto; align-self: flex-end; height: 38px; }
-/* Anchor each composer menu under its own button. */
+.meeting-bar .meeting-ico { flex: 0 0 auto; font-size: 13px; }
+.meeting-bar .meeting-text { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meeting-btn {
+  flex: 0 0 auto; cursor: pointer; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--border); background: var(--bg-elev); color: var(--text);
+  border-radius: 14px; padding: 3px 12px;
+}
+.meeting-btn:hover { filter: brightness(1.05); }
+.meeting-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* Composer — a single rounded box: textarea on top, an inline tool row beneath
+   (attach / skills / assist on the left, send on the right), like the Claude
+   sidebar input. */
+.composer {
+  padding: 10px 10px 12px; border-top: 1px solid var(--border);
+  background: var(--bg-elev); flex: 0 0 auto; position: relative;
+}
+/* The bordered container that holds the input and its tool row. */
+.composer-box {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 8px 6px; border: 1px solid var(--border); border-radius: 16px;
+  background: var(--bg-soft); transition: border-color .15s, box-shadow .15s;
+}
+.composer-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+/* Anchor the composer menus near the left tool group they belong to. */
 #attach-menu { left: 8px; }
-#skills-menu { left: auto; right: 8px; }
+#skills-menu { left: 8px; }
 .input-wrap { position: relative; flex: 1; display: flex; }
 .input {
-  flex: 1; width: 100%; resize: none; max-height: 75vh; min-height: 38px;
-  padding: 9px 12px; border: 1px solid var(--border); border-radius: 18px;
-  background: var(--bg-soft); color: var(--text); font: inherit; line-height: 1.4;
+  flex: 1; width: 100%; resize: none; max-height: 75vh; min-height: 46px;
+  padding: 6px 6px 2px; border: none; border-radius: 0;
+  background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 1.45;
 }
+.input:focus { outline: none; }
 /* Inline VS Code-style ghost text: an overlay that mirrors the textarea's box
    exactly, shows the typed text transparent (just spacing) and the suggestion
    dimmed, so it appears right after the cursor. */
 .input-ghost {
   position: absolute; inset: 0; pointer-events: none; z-index: 1;
-  padding: 9px 12px; border: 1px solid transparent; border-radius: 18px;
-  font: inherit; line-height: 1.4;
+  padding: 6px 6px 2px; border: none;
+  font: inherit; font-size: 14px; line-height: 1.45;
   white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
   overflow: hidden; color: transparent;
 }
 .input-ghost .gs { color: var(--text-dim); }
 .input-ghost:empty { display: none; }
+/* Inline tool row inside the box. */
+.composer-tools { display: flex; align-items: center; gap: 2px; }
+.composer-tools-spacer { flex: 1 1 auto; }
+.composer-tools .tool-btn {
+  flex: 0 0 auto; width: 32px; height: 32px; padding: 0; border-radius: 8px; font-size: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+/* The box itself is --bg-soft, so the default tool-btn hover would be invisible. */
+.composer-tools .tool-btn:hover { background: var(--bg-elev); }
 /* Drag handle to resize the composer (double-click resets to auto-grow). */
 .composer-resize { position: absolute; top: -4px; left: 0; right: 0; height: 9px; cursor: ns-resize; z-index: 6; }
 .composer-resize::before {
@@ -269,10 +303,10 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   width: 38px; height: 3px; border-radius: 2px; background: var(--text-dim); opacity: 0; transition: opacity .15s;
 }
 .composer:hover .composer-resize::before, .composer-resize:hover::before { opacity: .6; }
-.input:focus { outline: none; border-color: var(--accent); }
 .send-btn {
-  width: 38px; height: 38px; border-radius: 50%; border: none;
-  background: var(--accent); color: #fff; cursor: pointer; font-size: 15px; flex: 0 0 auto;
+  width: 34px; height: 34px; border-radius: 10px; border: none;
+  background: var(--accent); color: #fff; cursor: pointer; font-size: 17px; line-height: 1; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 .send-btn:disabled { opacity: .4; cursor: default; }
 .send-btn.stop { background: var(--danger); }
