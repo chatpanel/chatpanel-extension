@@ -56,6 +56,24 @@
     <!-- Activity strip (coding-agent tool use / status) -->
     <div id="activity" class="activity hidden"></div>
 
+    <!-- Live scribe drawer: Summary + Transcript tabs, searchable & downloadable -->
+    <aside id="live-notes-drawer" class="live-notes-drawer hidden">
+      <div class="live-notes-head">
+        <span class="live-notes-title">📝 Meeting</span>
+        <span id="live-notes-status" class="live-notes-status"></span>
+        <button id="live-notes-download" class="icon-btn" title="Download this tab" aria-label="Download">⬇</button>
+        <button id="live-notes-copy" class="icon-btn" title="Copy this tab" aria-label="Copy">⧉</button>
+        <button id="live-notes-close" class="icon-btn" title="Close" aria-label="Close">✕</button>
+      </div>
+      <div class="live-notes-tabs" role="tablist">
+        <button id="ln-tab-summary" class="ln-tab active" role="tab">Summary</button>
+        <button id="ln-tab-transcript" class="ln-tab" role="tab">Transcript</button>
+      </div>
+      <input id="live-notes-search" class="live-notes-search hidden" type="search" placeholder="Search transcript…" />
+      <div id="live-notes-summary" class="live-notes-body"></div>
+      <div id="live-notes-transcript" class="live-notes-body live-notes-transcript hidden"></div>
+    </aside>
+
     <!-- Meeting companion status (shown only on a meeting tab) -->
     <div id="meeting-bar" class="meeting-bar hidden"></div>
 

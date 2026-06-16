@@ -32,9 +32,9 @@ const MAX_SEGMENTS = 4000;
 // Only Zoom is fully implemented today — the rest are stubs.
 export const PLATFORMS = {
   zoom: { label: 'Zoom', match: /:\/\/[^/]*\.zoom\.us\/wc\//, ready: true },
-  meet: { label: 'Google Meet', match: /:\/\/meet\.google\.com\/[a-z]/, ready: false },
-  teams: { label: 'Microsoft Teams', match: /:\/\/teams\.(microsoft|live)\.com\//, ready: false },
-  webex: { label: 'Webex', match: /:\/\/[^/]*\.webex\.com\/(meet|wbxmjs|webappng)/, ready: false },
+  meet: { label: 'Google Meet', match: /:\/\/meet\.google\.com\/[a-z]/, ready: true },
+  teams: { label: 'Microsoft Teams', match: /:\/\/([^/]*\.)?teams\.(microsoft|live)\.com\//, ready: true },
+  webex: { label: 'Webex', match: /:\/\/[^/]*\.webex\.com\/(meet|wbxmjs|webappng|meeting|cisco)/, ready: true },
 };
 
 // Return the platform key for a URL, or null if it isn't a known meeting page.

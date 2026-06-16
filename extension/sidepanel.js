@@ -13,6 +13,7 @@ import {
   clearAllConversations,
   conversationToMarkdown,
   updateSettings,
+  meetingNotesSkill,
 } from './js/store.js';
 import { streamChat, checkBridge, listModels, smallestModel } from './js/providers.js';
 import {
@@ -27,7 +28,9 @@ import {
   probeMeeting,
   startMeeting,
   stopMeeting,
+  getMeetingRecord,
 } from './js/context.js';
+import { meetingToText } from './js/store-meetings.js';
 import { renderMarkdown } from './js/markdown.js';
 import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
@@ -729,6 +732,8 @@ async function refreshActiveTab() {
 // a sequence token guards against an older tab's result landing after a newer one.
 let _meetingBarSeq = 0;
 const MEETING_LABELS = { zoom: 'Zoom', meet: 'Google Meet', teams: 'Teams', webex: 'Webex' };
+// Short names for the scribe brand label ("ChatPanel Zoom Scribe", …).
+const MEETING_SHORT = { zoom: 'Zoom', meet: 'Meet', teams: 'Teams', webex: 'Webex' };
 // Meetings the user explicitly Stopped — we don't auto-restart these until they
 // manually Start again. Keyed by meeting id/key so it survives tab switches.
 const _autoStartSuppressed = new Set();
@@ -748,6 +753,272 @@ async function cycleMeetingWindow() {
   toast(`Meeting context: ${meetingWindowLabel()}`);
 }
 
+// --------------------------------------------------------------------------
+// Live scribe — one running minutes doc, merge-refreshed on an interval.
+// --------------------------------------------------------------------------
+const LIVE_NOTES_INTERVALS = [0, 2, 3, 5, 10]; // minutes; 0 = off
+const liveNotes = {
+  key: null, text: '', transcript: '', updatedAt: 0, lastTs: 0,
+  busy: false, timer: null, failures: 0, tab: 'summary', title: 'Meeting',
+};
+
+function liveNotesIntervalMin() {
+  return state.settings?.ui?.liveNotesIntervalMin || 0;
+}
+
+async function cycleLiveNotesInterval() {
+  const cur = liveNotesIntervalMin();
+  const next = LIVE_NOTES_INTERVALS[(LIVE_NOTES_INTERVALS.indexOf(cur) + 1) % LIVE_NOTES_INTERVALS.length];
+  state.settings = await updateSettings({ ui: { liveNotesIntervalMin: next } });
+  scheduleLiveNotes({ force: true });
+  renderMeetingBar();
+  toast(next ? `Live notes refreshing every ${next} min` : 'Live notes off');
+  if (next) openLiveNotes();
+}
+
+function resetLiveNotes() {
+  liveNotes.key = null;
+  liveNotes.text = '';
+  liveNotes.updatedAt = 0;
+  liveNotes.lastTs = 0;
+  liveNotes.failures = 0;
+}
+
+function stopLiveNotes() {
+  clearTimeout(liveNotes.timer);
+  liveNotes.timer = null;
+}
+
+// (Re)arm the loop. `force` reschedules immediately (e.g. after changing interval);
+// otherwise it only arms if nothing is pending, so frequent re-renders don't thrash.
+function scheduleLiveNotes({ force = false, delayMs } = {}) {
+  const min = liveNotesIntervalMin();
+  if (!min) { stopLiveNotes(); return; }
+  if (!state.activeTab || !meetingPlatform(state.activeTab.url || '')) { stopLiveNotes(); return; }
+  if (liveNotes.timer && !force) return;
+  clearTimeout(liveNotes.timer);
+  liveNotes.timer = setTimeout(runLiveNotesTick, delayMs ?? (liveNotes.text ? min * 60_000 : 2000));
+}
+
+async function runLiveNotesTick() {
+  liveNotes.timer = null;
+  const min = liveNotesIntervalMin();
+  const tab = state.activeTab;
+  if (!min || !tab || !meetingPlatform(tab.url || '')) return;
+  if (liveNotes.busy) { scheduleLiveNotes({ force: true, delayMs: 15_000 }); return; }
+  liveNotes.busy = true;
+  try {
+    const rec = await getMeetingRecord(tab.id);
+    const segs = rec?.segments || [];
+    if (!segs.length) { scheduleLiveNotes({ force: true, delayMs: min * 60_000 }); return; }
+    if (liveNotes.key && liveNotes.key !== rec.meetingKey) resetLiveNotes(); // new meeting
+    liveNotes.key = rec.meetingKey;
+    // Keep the transcript tab in sync with each summary refresh.
+    liveNotes.transcript = meetingToText(rec, { sinceTs: 0 });
+    liveNotes.title = rec.title || liveNotes.title;
+    if (liveNotesDrawerOpen() && liveNotes.tab === 'transcript') renderTranscript();
+
+    const isFirst = !liveNotes.text;
+    const latestTs = segs[segs.length - 1]?.t || Date.now();
+    if (!isFirst && latestTs <= liveNotes.lastTs) { // nothing new said
+      setLiveNotesStatus();
+      scheduleLiveNotes({ force: true, delayMs: min * 60_000 });
+      return;
+    }
+    const delta = meetingToText(rec, { sinceTs: isFirst ? 0 : liveNotes.lastTs });
+    await mergeLiveNotes(delta, isFirst);
+    liveNotes.lastTs = latestTs;
+    liveNotes.updatedAt = Date.now();
+    liveNotes.failures = 0;
+    setLiveNotesStatus();
+    scheduleLiveNotes({ force: true, delayMs: min * 60_000 });
+  } catch {
+    // Never give up while the loop is on — retry with a short backoff, keeping the
+    // last good notes intact.
+    liveNotes.failures += 1;
+    setLiveNotesStatus('update failed — retrying…');
+    scheduleLiveNotes({ force: true, delayMs: Math.min(15_000 * liveNotes.failures, 60_000) });
+  } finally {
+    liveNotes.busy = false;
+  }
+}
+
+// Run the agent to produce/merge the running notes, streaming into the drawer.
+async function mergeLiveNotes(deltaText, isFirst) {
+  const agent = getTarget(state.settings, state.settings.activeAgentId);
+  const prompt = isFirst
+    ? `${meetingNotesSkill().prompt}\n\n--- MEETING TRANSCRIPT SO FAR ---\n${deltaText}`
+    : [
+        'You are a live meeting scribe maintaining ONE running minutes document.',
+        'Update the CURRENT running notes by merging in the NEW transcript below — do not start over.',
+        'Rules: keep the same sections (TL;DR, Topics, Key Moments tagged [decision]/[highlight]/[risk]/[question], Action Items with owners/dues). Merge new items into the right place; refine or correct earlier entries if the new transcript clarifies them; never duplicate; keep stable items stable. Output ONLY the complete updated document.',
+        '',
+        '--- CURRENT RUNNING NOTES ---',
+        liveNotes.text,
+        '',
+        '--- NEW TRANSCRIPT SINCE LAST UPDATE ---',
+        deltaText,
+      ].join('\n');
+
+  setLiveNotesStatus('updating…');
+  let out = '';
+  await streamChat({
+    agent,
+    messages: [{ role: 'user', content: prompt }],
+    settings: state.settings,
+    onDelta: (d) => {
+      out += d;
+      renderLiveNotesBody(out);
+    },
+  });
+  if (out.trim()) {
+    liveNotes.text = out.trim();
+    renderLiveNotesBody(liveNotes.text);
+  }
+}
+
+function liveNotesDrawerOpen() {
+  return !$('live-notes-drawer').classList.contains('hidden');
+}
+
+// Summary tab (rendered markdown). Kept as renderLiveNotesBody so the streaming
+// merge can call it on each delta.
+function renderLiveNotesBody(text) {
+  const body = $('live-notes-summary');
+  if (!body) return;
+  body.innerHTML = text
+    ? renderMarkdown(text)
+    : '<div class="empty-notes">No summary yet. Turn on 📝 Live (or send a /notes message) to generate one.</div>';
+}
+
+function escHtml(s) {
+  return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
+// Transcript tab — one line per segment, optionally filtered+highlighted by the
+// search box. Speaker is dimmed so the spoken text reads cleanly.
+function renderTranscript() {
+  const body = $('live-notes-transcript');
+  if (!body) return;
+  const q = ($('live-notes-search').value || '').trim().toLowerCase();
+  const lines = (liveNotes.transcript || '').split('\n').filter((l) => l.trim());
+  if (!lines.length) {
+    body.innerHTML = '<div class="empty-notes">No transcript captured yet — make sure captions are on.</div>';
+    return;
+  }
+  const shown = q ? lines.filter((l) => l.toLowerCase().includes(q)) : lines;
+  if (!shown.length) {
+    body.innerHTML = `<div class="empty-notes">No lines match “${escHtml(q)}”.</div>`;
+    return;
+  }
+  const hi = (text) => {
+    if (!q) return escHtml(text);
+    const i = text.toLowerCase().indexOf(q);
+    if (i < 0) return escHtml(text);
+    return escHtml(text.slice(0, i)) + '<mark>' + escHtml(text.slice(i, i + q.length)) + '</mark>' + escHtml(text.slice(i + q.length));
+  };
+  body.innerHTML = shown.map((l) => `<div class="ln-line">${hi(l)}</div>`).join('');
+}
+
+// Pull the full transcript from the capturing frame into liveNotes.transcript.
+async function refreshTranscript() {
+  const tab = state.activeTab;
+  if (!tab) return;
+  try {
+    const rec = await getMeetingRecord(tab.id);
+    if (rec) {
+      liveNotes.transcript = meetingToText(rec, { sinceTs: 0 });
+      liveNotes.title = rec.title || 'Meeting';
+    }
+  } catch {
+    /* leave the last transcript in place */
+  }
+}
+
+function relAgo(ts) {
+  if (!ts) return 'never';
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  return m < 60 ? `${m}m ago` : `${Math.round(m / 60)}h ago`;
+}
+
+function setLiveNotesStatus(override) {
+  const el = $('live-notes-status');
+  if (!el) return;
+  if (override) { el.textContent = override; return; }
+  if (liveNotes.tab === 'transcript') {
+    const n = (liveNotes.transcript || '').split('\n').filter((l) => l.trim()).length;
+    el.textContent = `${n} line${n === 1 ? '' : 's'}`;
+    return;
+  }
+  const iv = liveNotesIntervalMin();
+  el.textContent = `${iv ? `every ${iv}m · ` : 'off · '}updated ${relAgo(liveNotes.updatedAt)}`;
+}
+
+function switchLiveNotesTab(tab) {
+  liveNotes.tab = tab;
+  const isT = tab === 'transcript';
+  $('ln-tab-summary').classList.toggle('active', !isT);
+  $('ln-tab-transcript').classList.toggle('active', isT);
+  $('live-notes-summary').classList.toggle('hidden', isT);
+  $('live-notes-transcript').classList.toggle('hidden', !isT);
+  $('live-notes-search').classList.toggle('hidden', !isT);
+  if (isT) renderTranscript();
+  else renderLiveNotesBody(liveNotes.text);
+  setLiveNotesStatus();
+}
+
+async function openLiveNotes() {
+  $('live-notes-drawer').classList.remove('hidden');
+  await refreshTranscript();
+  switchLiveNotesTab(liveNotes.tab);
+  // Keep the transcript live while the drawer is open (independent of the summary
+  // interval, so the Transcript tab updates even with Live notes off).
+  clearInterval(liveNotes.transcriptTimer);
+  liveNotes.transcriptTimer = setInterval(async () => {
+    if (!liveNotesDrawerOpen()) return;
+    await refreshTranscript();
+    if (liveNotes.tab === 'transcript') { renderTranscript(); setLiveNotesStatus(); }
+  }, 5000);
+}
+function closeLiveNotes() {
+  $('live-notes-drawer').classList.add('hidden');
+  clearInterval(liveNotes.transcriptTimer);
+  liveNotes.transcriptTimer = null;
+}
+
+// Download the active tab: Summary → .md, Transcript → .txt.
+function downloadText(filename, text, mime) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function liveNotesFileBase() {
+  return (liveNotes.title || 'meeting').replace(/[^\w.-]+/g, '_').slice(0, 50);
+}
+function downloadLiveNotesActive() {
+  if (liveNotes.tab === 'transcript') {
+    if (!liveNotes.transcript) return toast('No transcript yet');
+    downloadText(`${liveNotesFileBase()}_transcript.txt`, liveNotes.transcript, 'text/plain');
+  } else {
+    if (!liveNotes.text) return toast('No summary yet');
+    downloadText(`${liveNotesFileBase()}_notes.md`, liveNotes.text, 'text/markdown');
+  }
+  toast('Downloaded');
+}
+function copyLiveNotesActive() {
+  const text = liveNotes.tab === 'transcript' ? liveNotes.transcript : liveNotes.text;
+  navigator.clipboard.writeText(text || '').then(() => toast('Copied')).catch(() => {});
+}
+
 async function renderMeetingBar() {
   const bar = $('meeting-bar');
   const tab = state.activeTab;
@@ -762,16 +1033,20 @@ async function renderMeetingBar() {
   const probe = await probeMeeting(tab.id); // null if the content script isn't loaded
   if (seq !== _meetingBarSeq) return; // a newer render superseded us
 
-  const render = (icon, text, buttons = []) => {
+  // Brand the bar as the scribe rather than a "recording" — we read live captions,
+  // not audio/video, so no red dot.
+  const scribe = `ChatPanel ${MEETING_SHORT[platform] || label} Scribe`;
+  const render = (text, buttons = []) => {
     bar.classList.remove('hidden');
     bar.innerHTML = '';
-    const dot = document.createElement('span');
-    dot.className = 'meeting-ico';
-    dot.textContent = icon;
+    const logo = document.createElement('img');
+    logo.className = 'meeting-logo';
+    logo.src = 'assets/icon16.png';
+    logo.alt = '';
     const span = document.createElement('span');
     span.className = 'meeting-text';
     span.textContent = text;
-    bar.append(dot, span);
+    bar.append(logo, span);
     for (const b of buttons) {
       const btn = document.createElement('button');
       btn.className = 'meeting-btn' + (b.primary ? ' primary' : '');
@@ -783,41 +1058,48 @@ async function renderMeetingBar() {
 
   // Content script not responding → the tab loaded before the extension did.
   if (!probe?.ok) {
-    render('🎙', `${label} detected — reload the tab to enable capture`, [
+    render(`${scribe} · reload the tab to enable`, [
       { label: 'Reload', onClick: () => chrome.tabs.reload(tab.id) },
     ]);
     return;
   }
-  // Platform recognised but adapter not implemented yet (Meet/Teams/Webex stubs).
+  // Platform recognised but adapter not implemented yet.
   if (probe.ready === false) {
-    render('🎙', `${label} — live capture coming soon (Zoom supported today)`);
+    render(`${scribe} · coming soon`);
     return;
   }
   // Gated behind Pro.
   if (!can(state.license, 'liveMeetings')) {
-    render('🎙', `${label} meeting — Live notes are Pro`, [
+    render(`${scribe} · Pro`, [
       { label: '✨ Upgrade', primary: true, onClick: () => upsell('liveMeetings') },
     ]);
     return;
   }
-  // Pro + ready (Zoom). Capture is auto-included on every message (see send()),
-  // so the controls are just the rolling-window size and Stop.
+  // Pro + active. Capture is auto-included on every message; controls are the live
+  // notes interval, the rolling window, and Stop.
   const key = probe.meetingKey || tab.url;
   if (probe.capturing) {
-    render('🔴', `Capturing ${label} · ${meetingWindowLabel()} added per message`, [
+    const iv = liveNotesIntervalMin();
+    render(scribe, [
+      { label: '📄 View', onClick: openLiveNotes },
+      { label: `📝 Live ${iv ? iv + 'm' : 'Off'}`, onClick: cycleLiveNotesInterval },
       { label: `🕑 ${meetingWindowLabel()}`, onClick: cycleMeetingWindow },
       {
         label: 'Stop',
         primary: true,
         onClick: async () => {
           _autoStartSuppressed.add(key); // don't auto-restart after an explicit stop
+          stopLiveNotes();
           await stopMeeting(tab.id);
           renderMeetingBar();
         },
       },
     ]);
+    scheduleLiveNotes(); // arm the scribe loop if an interval is set (idempotent)
     return;
   }
+  // Not capturing → the scribe loop should not run.
+  stopLiveNotes();
 
   // Not capturing: auto-start the moment we see a ready meeting tab, so the user
   // never has to click Start — unless they explicitly Stopped this meeting.
@@ -829,16 +1111,16 @@ async function renderMeetingBar() {
   }
 
   // Suppressed (user Stopped) — offer a manual restart.
-  const capsHint = probe.live ? 'captions on' : 'turn on captions to capture speech';
-  render('🎙', `${label} ready · ${capsHint}`, [
+  const capsHint = probe.live ? 'captions on' : 'turn on captions';
+  render(`${scribe} · paused · ${capsHint}`, [
     {
-      label: 'Start notes',
+      label: 'Start',
       primary: true,
       onClick: async () => {
         _autoStartSuppressed.delete(key);
         await startMeeting(tab.id);
         renderMeetingBar();
-        toast('Capturing — ask away, the transcript rides along automatically');
+        toast('Scribe on — ask away, the transcript rides along automatically');
       },
     },
   ]);
@@ -1771,6 +2053,13 @@ function wireEvents() {
   };
   $('history-close').onclick = () => $('history').classList.add('hidden');
   $('history-search').oninput = (e) => renderHistory(e.target.value);
+  // Live-notes drawer controls (Summary / Transcript tabs, search, copy, download).
+  $('live-notes-close').onclick = () => closeLiveNotes();
+  $('live-notes-copy').onclick = () => copyLiveNotesActive();
+  $('live-notes-download').onclick = () => downloadLiveNotesActive();
+  $('ln-tab-summary').onclick = () => switchLiveNotesTab('summary');
+  $('ln-tab-transcript').onclick = () => switchLiveNotesTab('transcript');
+  $('live-notes-search').oninput = () => renderTranscript();
   // Two-click confirm (confirm() is unreliable in side panels).
   let clearArmed = false;
   $('history-clear').onclick = async (e) => {

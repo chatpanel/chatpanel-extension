@@ -51,6 +51,10 @@
   const lastEntryIndexBySpeaker = new Map();
   const chatTranscript = [];           // [{ t, sender, receiver, text }]
   const seenChat = new Set();
+  // Discrete-caption platforms (Teams/Meet/Webex): each utterance is its own
+  // element that grows in place. We key finalized entries by the adapter's stable
+  // caption id and update them, rather than running the sliding-window merge.
+  const discreteIndex = new Map();     // caption id -> index in finalizedTranscript
 
   const RESUME_MERGE_LOOKBACK = 6;
   const RESUME_MIN_OVERLAP = 12;
@@ -136,6 +140,21 @@
     scheduleFlush();
   }
 
+  // Upsert a discrete caption line keyed by the adapter's stable id. New id →
+  // append; known id → update its text in place as the line grows.
+  function feedDiscrete(id, speaker, text) {
+    if (id == null || !text) return;
+    const idx = discreteIndex.get(id);
+    if (idx !== undefined) {
+      const e = finalizedTranscript[idx];
+      if (e && e.text !== text) { e.text = text; e.t = Date.now(); scheduleFlush(); }
+      return;
+    }
+    finalizedTranscript.push({ t: Date.now(), speaker: speaker || 'Speaker', text });
+    discreteIndex.set(id, finalizedTranscript.length - 1);
+    scheduleFlush();
+  }
+
   function addChat(c) {
     const k = `${c.sender}|${c.text}|${c.t}`;
     if (seenChat.has(k)) return;
@@ -187,10 +206,18 @@
 
   // ---- observer ----------------------------------------------------------
   function startObserver() {
+    const discrete = adapter.captionMode === 'discrete';
     observer = new MutationObserver((mutations) => {
       for (const m of mutations) {
-        const cap = safe(() => adapter.readCaption(m));
-        if (cap && cap.speaker && cap.text) feedCaption(cap.speaker, cap.text.trim());
+        if (discrete) {
+          const caps = safe(() => adapter.readDiscreteCaptions(m));
+          if (Array.isArray(caps)) {
+            for (const c of caps) if (c && c.text) feedDiscrete(c.id, c.speaker, c.text.trim());
+          }
+        } else {
+          const cap = safe(() => adapter.readCaption(m));
+          if (cap && cap.speaker && cap.text) feedCaption(cap.speaker, cap.text.trim());
+        }
         const chats = adapter.readChat ? safe(() => adapter.readChat(m)) : null;
         if (Array.isArray(chats)) for (const c of chats) addChat(c);
       }
@@ -214,6 +241,7 @@
     currentSpokenEntry = null;
     lastUtteranceMap.clear();
     lastEntryIndexBySpeaker.clear();
+    discreteIndex.clear();
     chatTranscript.length = 0;
     seenChat.clear();
   }

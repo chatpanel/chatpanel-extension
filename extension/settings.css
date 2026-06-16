@@ -121,3 +121,12 @@ button.locked, .btn.locked { opacity: .55; cursor: not-allowed; }
 #restore-box[open] > summary, #key-box[open] > summary { color: var(--text); font-weight: 600; }
 #restore-box .row, #key-box .row { margin-top: 8px; }
 #btn-subscribe-pro { font-weight: 600; }
+
+/* Plan feature lists (License tab) — shows what Pro/Team unlock, with ✓/🔒. */
+.plan-features { display: flex; gap: 16px; flex-wrap: wrap; margin: 12px 0 4px; }
+.plan-group { flex: 1; min-width: 220px; }
+.plan-group h3 { margin: 0 0 6px; font-size: 13px; }
+.feature-list { list-style: none; margin: 0; padding: 0; }
+.feature-list li { font-size: 12.5px; padding: 3px 0; color: var(--text); }
+.feature-list li.locked { color: var(--muted); }
+.feature-list li.has { color: var(--ok); }

@@ -1,21 +1,123 @@
-// ChatPanel — Google Meet capture adapter (STUB).
+// ChatPanel — Google Meet capture adapter (content script, classic).
 //
-// Interface is in place so the manifest + core treat Meet as a known platform;
-// the DOM scraping is not implemented yet. Meet renders captions in a live region
-// (roughly `[role="region"][aria-label*="Captions" i]` with per-speaker rows) and,
-// like Zoom, only when the user has turned captions ON. To finish: fill in
-// isLive()/readCaption() against the live Meet DOM and flip `ready` to true.
+// Meet renders live captions as discrete blocks (speaker + a text span that grows
+// in place), so it uses the core's `discrete` caption path. Ported from the Meet
+// Caption Capture userscript. Requires captions to be turned ON.
 (function () {
   'use strict';
+
+  const BLOCK_SEL = '.nMcdL.bj4p3b';   // one caption block
+  const SPEAKER_SEL = '.NWpY1d';        // speaker name within a block
+  const TEXT_SEL = '.ygicle.VbkSUe';    // caption text span (updates in place)
+
+  let _idc = 0;
+  let _ids = new WeakMap();
+  function idFor(el) {
+    let id = _ids.get(el);
+    if (!id) { id = 'g' + ++_idc; _ids.set(el, id); }
+    return id;
+  }
+
+  function myName() {
+    // "You" in the roster — resolve to the real name when present.
+    const you = document.querySelector('div[role="listitem"].cxdMu .NnTWjc');
+    return you?.closest('div[role="listitem"].cxdMu')?.querySelector('span.zWGUib')?.textContent?.trim() || '';
+  }
+
+  // Text spans touched by a mutation (new blocks + in-place growth).
+  function textElsFrom(m) {
+    const out = new Set();
+    if (m.type === 'characterData') {
+      const el = m.target.parentElement?.closest(TEXT_SEL);
+      if (el) out.add(el);
+    } else if (m.type === 'childList') {
+      for (const node of m.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        if (node.matches?.(TEXT_SEL)) out.add(node);
+        node.querySelectorAll?.(TEXT_SEL).forEach((e) => out.add(e));
+        // new block that contains a text span
+        if (node.matches?.(BLOCK_SEL)) node.querySelectorAll?.(TEXT_SEL).forEach((e) => out.add(e));
+      }
+      if (m.target?.nodeType === 1) {
+        const el = m.target.closest?.(TEXT_SEL);
+        if (el) out.add(el);
+      }
+    }
+    return [...out];
+  }
+
   const adapter = {
     platform: 'meet',
-    ready: false,
+    ready: true,
+    captionMode: 'discrete',
+
     match: (url) => /:\/\/meet\.google\.com\/[a-z]/.test(url),
-    meetingKey: (url) => new URL(url).pathname.replace(/\//g, '') || 'meeting',
-    title: () => document.title.replace(/\s*[-—].*$/, '').trim() || 'Google Meet',
-    isLive: () => false, // TODO: detect captions container
-    readCaption: () => null, // TODO: parse [role="region"] caption rows → {speaker,text}
-    participants: () => [],
+
+    meetingKey(url) {
+      const m = new URL(url).pathname.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/i);
+      return m ? m[1] : 'meeting';
+    },
+
+    title: () => document.title.replace(/\s*[-–—].*$/, '').replace(/^Meet\s*[—-]\s*/i, '').trim() || 'Google Meet',
+
+    isLive: () => !!document.querySelector(`${BLOCK_SEL}, ${TEXT_SEL}`),
+
+    onStart() { _idc = 0; _ids = new WeakMap(); },
+
+    readDiscreteCaptions(m) {
+      const els = textElsFrom(m);
+      if (!els.length) return null;
+      const me = myName();
+      return els.map((el) => {
+        const block = el.closest(BLOCK_SEL) || el.parentElement;
+        let speaker = block?.querySelector(SPEAKER_SEL)?.textContent?.trim() || 'Speaker';
+        if (speaker === 'You' && me) speaker = me;
+        return { id: idFor(el), speaker, text: (el.textContent || '').trim() };
+      });
+    },
+
+    readChat(m) {
+      if (m.type !== 'childList') return null;
+      const out = [];
+      for (const node of m.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        const blocks = node.matches?.('div.Ss4fHf')
+          ? [node]
+          : Array.from(node.querySelectorAll?.('div.Ss4fHf') || []);
+        for (const b of blocks) {
+          const sender = b.querySelector('.poVWob')?.textContent?.trim() || 'Unknown';
+          b.querySelectorAll('div[jsname="dTKtvb"]').forEach((mn) => {
+            const text = mn.textContent?.trim();
+            if (text) out.push({ t: Date.now(), sender, receiver: 'Everyone', text });
+          });
+        }
+      }
+      return out.length ? out : null;
+    },
+
+    participants() {
+      const out = [];
+      document.querySelectorAll('div[role="listitem"].cxdMu').forEach((p) => {
+        const name = p.querySelector('span.zWGUib')?.textContent?.trim();
+        if (name) {
+          out.push({
+            name,
+            role: p.querySelector('.d93U2d')?.textContent?.trim() || '',
+            initials: name.split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase(),
+          });
+        }
+      });
+      return out;
+    },
+
+    debug() {
+      return {
+        blocks: document.querySelectorAll(BLOCK_SEL).length,
+        textSpans: document.querySelectorAll(TEXT_SEL).length,
+        sampleCaption: document.querySelector(TEXT_SEL)?.textContent?.trim()?.slice(0, 80) || null,
+      };
+    },
   };
+
   (window.__cpMeetingAdapters = window.__cpMeetingAdapters || []).push(adapter);
 })();

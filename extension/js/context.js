@@ -185,6 +185,15 @@ export async function stopMeeting(tabId) {
   return sendToTab(tabId, { type: 'CP_MEETING_STOP' }, f?.frameId);
 }
 
+// Fetch the raw meeting record (segments + chat) from the capturing frame, or null
+// if nothing is capturing. Used by the live scribe to compute the transcript delta.
+export async function getMeetingRecord(tabId) {
+  const f = await resolveMeetingFrame(tabId);
+  if (!f?.ping?.ok || !f.ping.capturing) return null;
+  const res = await sendToTab(tabId, { type: 'CP_MEETING_GET' }, f.frameId);
+  return res?.record || null;
+}
+
 // Run the in-page caption probe in EVERY frame and return one report per frame, so
 // we can see both the shell (with its iframe src) and the meeting frame at once.
 export async function diagnoseMeeting(tabId, needle = '') {

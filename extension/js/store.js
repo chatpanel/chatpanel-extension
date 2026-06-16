@@ -93,6 +93,9 @@ export function defaultSettings() {
       // full transcript so far; a positive value keeps only the last N minutes so
       // long meetings don't grow the prompt every question.
       meetingWindowMin: 0,
+      // Live scribe: auto-refresh the running meeting notes every N minutes by
+      // merging new transcript into the existing summary. 0 = off.
+      liveNotesIntervalMin: 0,
     },
   };
 }

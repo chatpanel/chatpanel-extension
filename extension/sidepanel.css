@@ -235,6 +235,42 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .ctx-chip.page-chip { border-color: var(--accent); background: var(--accent-soft); }
 .ctx-chip.page-chip .ctx-title { color: var(--accent); font-weight: 600; }
 
+/* Live scribe drawer — a running minutes doc, auto-refreshed on an interval. */
+.live-notes-drawer {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 88%; max-width: 380px;
+  background: var(--bg-elev); border-left: 1px solid var(--border);
+  z-index: 50; display: flex; flex-direction: column; box-shadow: var(--shadow);
+}
+.live-notes-head {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.live-notes-title { font-weight: 600; }
+.live-notes-status { flex: 1; font-size: 11px; color: var(--text-dim); }
+.live-notes-tabs { display: flex; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); }
+.ln-tab {
+  border: none; background: transparent; color: var(--text-dim); cursor: pointer;
+  padding: 7px 12px; font-size: 13px; font-weight: 600; border-bottom: 2px solid transparent;
+}
+.ln-tab:hover { color: var(--text); }
+.ln-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.live-notes-search {
+  margin: 8px 12px 0; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-soft); color: var(--text); font: inherit; font-size: 12px;
+}
+.live-notes-body { flex: 1; overflow: auto; padding: 12px 14px; font-size: 13px; line-height: 1.5; }
+.live-notes-transcript { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.live-notes-transcript mark { background: var(--accent-soft); color: var(--accent); border-radius: 2px; }
+.live-notes-transcript .ln-line { padding: 1px 0; }
+.live-notes-transcript .ln-dim { color: var(--text-dim); }
+.live-notes-body h1, .live-notes-body h2, .live-notes-body h3 {
+  margin: 14px 0 6px; font-size: 13px; font-weight: 700; color: var(--accent);
+}
+.live-notes-body h1:first-child, .live-notes-body h2:first-child { margin-top: 0; }
+.live-notes-body ul { margin: 4px 0; padding-left: 18px; }
+.live-notes-body li { margin: 3px 0; }
+.live-notes-body .empty-notes { color: var(--text-dim); font-size: 12px; }
+
 /* Meeting companion status bar */
 .meeting-bar {
   display: flex; align-items: center; gap: 8px;
@@ -242,6 +278,8 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   background: var(--accent-soft); font-size: 12px; color: var(--text);
 }
 .meeting-bar .meeting-ico { flex: 0 0 auto; font-size: 13px; }
+.meeting-bar .meeting-logo { flex: 0 0 auto; width: 16px; height: 16px; border-radius: 4px; }
+.meeting-bar .meeting-text { font-weight: 600; }
 .meeting-bar .meeting-text { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meeting-btn {
   flex: 0 0 auto; cursor: pointer; font-size: 12px; font-weight: 600;

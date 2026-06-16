@@ -22,6 +22,8 @@ import {
   freeEndpointId,
   freeAgentId,
   FREE_LIMITS,
+  PRO_FEATURES,
+  TEAM_FEATURES,
 } from './js/license.js';
 
 const $ = (id) => document.getElementById(id);
@@ -502,6 +504,7 @@ function renderLicense() {
   $('license-state').innerHTML = active
     ? `<p class="status ok">✓ ${label} is active${license.key ? ` — key ${maskKey(license.key)}` : ''}.</p>`
     : '<p class="muted">You are on the Free plan — local agents (Claude Code, Codex) and bring-your-own models are included. Upgrade for power &amp; team features.</p>';
+  renderPlanFeatures();
   // Subscribe + restore + key entry are for Free users; active users see Deactivate.
   $('btn-subscribe-pro').classList.toggle('hidden', active);
   $('subscribe-hint').classList.toggle('hidden', active);
@@ -510,6 +513,22 @@ function renderLicense() {
 }
 function maskKey(k) {
   return k.length > 8 ? k.slice(0, 6) + '…' + k.slice(-2) : k;
+}
+
+// Data-driven feature lists so every gated feature (incl. the live meeting scribe)
+// is visibly attributed to its tier. A checkmark means the current plan has it.
+function renderPlanFeatures() {
+  const el = $('plan-features');
+  if (!el) return;
+  const pro = isPro(license);
+  const team = planOf(license) === 'team';
+  const esc = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const row = (text, has) => `<li class="${has ? 'has' : 'locked'}">${has ? '✓' : '🔒'} ${esc(text)}</li>`;
+  const proItems = Object.values(PRO_FEATURES).map((t) => row(t, pro)).join('');
+  const teamItems = Object.values(TEAM_FEATURES).map((t) => row(t, team)).join('');
+  el.innerHTML =
+    `<div class="plan-group"><h3>✨ Pro</h3><ul class="feature-list">${proItems}</ul></div>` +
+    `<div class="plan-group"><h3>👥 Team</h3><ul class="feature-list">${teamItems}</ul></div>`;
 }
 
 // About & updates. Manual ("Load unpacked") builds don't auto-update, so we show

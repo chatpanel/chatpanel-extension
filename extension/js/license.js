@@ -83,7 +83,7 @@ export const PRO_FEATURES = {
   customSkills: 'Create & edit your own skills',
   advancedAgent: 'Per-agent system prompts & working directories',
   exportChats: 'Export conversations as Markdown',
-  liveMeetings: 'Live meeting notes — capture Zoom/Meet/Teams transcripts',
+  liveMeetings: 'Live meeting scribe — capture & summarize Zoom, Google Meet, Teams & Webex',
 };
 export const TEAM_FEATURES = {
   cloudSync: 'Sync chats across your devices',
