@@ -729,6 +729,9 @@ async function refreshActiveTab() {
 // a sequence token guards against an older tab's result landing after a newer one.
 let _meetingBarSeq = 0;
 const MEETING_LABELS = { zoom: 'Zoom', meet: 'Google Meet', teams: 'Teams', webex: 'Webex' };
+// Meetings the user explicitly Stopped — we don't auto-restart these until they
+// manually Start again. Keyed by meeting id/key so it survives tab switches.
+const _autoStartSuppressed = new Set();
 
 // Rolling-window choices (minutes) for how much transcript rides along each message.
 // 0 = the whole meeting so far; positive = last N minutes (cheaper per question).
@@ -799,19 +802,40 @@ async function renderMeetingBar() {
   }
   // Pro + ready (Zoom). Capture is auto-included on every message (see send()),
   // so the controls are just the rolling-window size and Stop.
+  const key = probe.meetingKey || tab.url;
   if (probe.capturing) {
     render('🔴', `Capturing ${label} · ${meetingWindowLabel()} added per message`, [
       { label: `🕑 ${meetingWindowLabel()}`, onClick: cycleMeetingWindow },
-      { label: 'Stop', primary: true, onClick: async () => { await stopMeeting(tab.id); renderMeetingBar(); } },
+      {
+        label: 'Stop',
+        primary: true,
+        onClick: async () => {
+          _autoStartSuppressed.add(key); // don't auto-restart after an explicit stop
+          await stopMeeting(tab.id);
+          renderMeetingBar();
+        },
+      },
     ]);
     return;
   }
+
+  // Not capturing: auto-start the moment we see a ready meeting tab, so the user
+  // never has to click Start — unless they explicitly Stopped this meeting.
+  if (!_autoStartSuppressed.has(key)) {
+    await startMeeting(tab.id);
+    if (seq !== _meetingBarSeq) return;
+    toast('🎙 Meeting notes started — ask away, the transcript rides along');
+    return renderMeetingBar();
+  }
+
+  // Suppressed (user Stopped) — offer a manual restart.
   const capsHint = probe.live ? 'captions on' : 'turn on captions to capture speech';
   render('🎙', `${label} ready · ${capsHint}`, [
     {
       label: 'Start notes',
       primary: true,
       onClick: async () => {
+        _autoStartSuppressed.delete(key);
         await startMeeting(tab.id);
         renderMeetingBar();
         toast('Capturing — ask away, the transcript rides along automatically');
