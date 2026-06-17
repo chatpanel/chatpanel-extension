@@ -70,6 +70,7 @@
             <button id="bridge-test" class="btn">Test</button>
           </div>
           <div id="bridge-status" class="status"></div>
+          <div id="bridge-update" class="status hidden"></div>
           <div id="bridge-agents"></div>
         </div>
       </section>
@@ -222,9 +223,9 @@
         <div class="row"><label>Working dir</label><input class="ba-workdir" placeholder="/path/to/project (optional)" /></div>
         <div class="row"><label>Permissions</label>
           <select class="ba-perm">
-            <option value="default">default (ask)</option>
-            <option value="acceptEdits">acceptEdits</option>
-            <option value="bypassPermissions">bypassPermissions (trusted)</option>
+            <option value="default">read-only — asks before writing</option>
+            <option value="acceptEdits">acceptEdits — auto-edit files (recommended)</option>
+            <option value="bypassPermissions">bypassPermissions — full access &amp; shell (trusted)</option>
           </select>
         </div>
         <label class="check" style="margin-left:120px"><input type="checkbox" class="ba-local" /> Use my local skills, MCP &amp; config (uncheck = isolated &amp; faster)</label>

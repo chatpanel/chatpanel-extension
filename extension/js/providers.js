@@ -242,9 +242,23 @@ export async function checkBridge(bridgeUrl) {
     const res = await fetch(`${base}/health`, { method: 'GET' });
     if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
     const json = await res.json();
-    return { ok: true, agents: json.agents || [] };
+    return { ok: true, agents: json.agents || [], version: json.version, update: json.update || null };
   } catch (e) {
     return { ok: false, reason: e.message };
+  }
+}
+
+// Tell the bridge to self-update to the latest release (compiled-binary installs).
+// It swaps its binary and restarts, so the connection drops briefly — callers
+// should wait and re-check /health. Returns { ok, from?, to?, error? }.
+export async function updateBridge(bridgeUrl) {
+  const base = (bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
+  try {
+    const res = await fetch(`${base}/update`, { method: 'POST' });
+    const json = await res.json().catch(() => ({}));
+    return res.ok ? { ok: true, ...json } : { ok: false, error: json.error || `HTTP ${res.status}` };
+  } catch (e) {
+    return { ok: false, error: e.message };
   }
 }
 

@@ -5,7 +5,7 @@
 //   Agents  — the local bridge (CLI) agents: Claude Code, Codex, Gemini CLI,
 //             plus the bridge connection itself.
 import { getSettings, saveSettings, uid } from './js/store.js';
-import { checkBridge, testAgent, listModels } from './js/providers.js';
+import { checkBridge, updateBridge, testAgent, listModels } from './js/providers.js';
 import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
 import {
@@ -253,6 +253,53 @@ function renderBridge() {
 async function refreshBridgeState() {
   bridgeState = await checkBridge(settings.bridgeUrl);
   renderBridgeAgents();
+  renderBridgeUpdate();
+}
+
+// Show a "bridge update available" notice when /health reports a newer release.
+// Compiled-binary installs get a one-click Update (the bridge self-replaces and
+// restarts); npm/npx installs get the update command (they can't swap own files).
+function renderBridgeUpdate() {
+  const el = $('bridge-update');
+  if (!el) return;
+  const u = bridgeState && bridgeState.ok ? bridgeState.update : null;
+  if (!u || !u.updateAvailable) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  el.classList.remove('hidden');
+  el.className = 'status';
+  if (u.canSelfUpdate) {
+    el.textContent = `↑ Bridge v${u.latest} available (you have v${u.current}). `;
+    const btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.textContent = 'Update bridge';
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = 'Updating…';
+      const r = await updateBridge(settings.bridgeUrl);
+      if (!r.ok) {
+        el.textContent = `✕ Bridge update failed: ${r.error || 'unknown'}`;
+        el.className = 'status err';
+        return;
+      }
+      el.textContent = 'Bridge is updating and restarting…';
+      // The bridge restarts (connection drops); poll until it's back on the new version.
+      await new Promise((res) => setTimeout(res, 4000));
+      for (let i = 0; i < 8; i++) {
+        bridgeState = await checkBridge(settings.bridgeUrl);
+        if (bridgeState.ok && bridgeState.version === r.to) break;
+        await new Promise((res) => setTimeout(res, 1500));
+      }
+      renderBridgeAgents();
+      renderBridgeUpdate();
+    };
+    el.appendChild(btn);
+  } else {
+    const cmd = u.npmCommand || 'npm i -g @chatpanel/bridge@latest';
+    el.innerHTML = `↑ Bridge <b>v${u.latest}</b> available (you have v${u.current}). Update with: <code>${cmd}</code>`;
+  }
 }
 
 async function testBridge() {
@@ -270,9 +317,11 @@ async function testBridge() {
     return;
   }
   const lines = bridgeState.agents.map((a) => `${a.available ? '✓' : '✕'} ${a.label}${a.available ? '' : ' — ' + (a.reason || 'unavailable')}`);
-  status.textContent = `Connected. ${lines.join('   ')}`;
+  const ver = bridgeState.version ? ` (v${bridgeState.version})` : '';
+  status.textContent = `Connected${ver}. ${lines.join('   ')}`;
   status.className = 'status ok';
   renderBridgeAgents();
+  renderBridgeUpdate();
 }
 
 function bridgeAgents() {
@@ -291,7 +340,7 @@ function bridgeAgentCard(agent) {
   q('.ba-name').value = agent.name || '';
   q('.ba-kind').value = agent.bridgeAgent || 'claude';
   q('.ba-workdir').value = agent.workingDir || '';
-  q('.ba-perm').value = agent.permissionMode || 'default';
+  q('.ba-perm').value = agent.permissionMode || 'acceptEdits';
   q('.ba-local').checked = agent.useLocalConfig !== false;
   q('.ba-system').value = agent.systemPrompt || '';
   gateField('advancedAgent', q('.ba-system')); // per-agent system prompt is Pro
@@ -332,7 +381,7 @@ function addBridgeAgent() {
     kind: 'bridge',
     bridgeAgent: 'claude',
     workingDir: '',
-    permissionMode: 'default',
+    permissionMode: 'acceptEdits',
     useLocalConfig: true,
     systemPrompt: '',
   });
