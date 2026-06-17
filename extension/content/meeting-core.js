@@ -267,14 +267,28 @@
     flush('ended');
   }
 
-  // SPA navigation watch: if the meeting key changes while capturing (left one
-  // meeting, joined another without a full page load), finalize the old session
-  // and start a clean one so transcripts never bleed across meetings.
+  // No new captions for this long → assume the call ended (the user left but the
+  // tab is still open), so we finalize instead of showing "recording" forever.
+  const IDLE_END_MS = 8 * 60 * 1000;
+  function lastActivityTs() {
+    if (currentSpokenEntry) return currentSpokenEntry.t;
+    return finalizedTranscript.length ? finalizedTranscript[finalizedTranscript.length - 1].t : startedAt;
+  }
+
+  // Lifecycle watch (every 3s while capturing):
+  //  • meeting key changed (SPA: left one meeting, joined another) → finalize + restart clean.
+  //  • navigated off any meeting page → finalize.
+  //  • gone quiet past IDLE_END_MS → finalize (call over, tab left open).
+  // Finalizing flips status→'ended', so it stops showing as live and lands in Past Meetings.
   setInterval(() => {
     if (!capturing) return;
-    if (currentMeetingKey() === activeMeetingKey) return;
-    stop();
-    if (safe(() => adapter.match(location.href))) start();
+    if (currentMeetingKey() !== activeMeetingKey) {
+      stop();
+      if (safe(() => adapter.match(location.href))) start();
+      return;
+    }
+    if (safe(() => adapter.match(location.href)) === false) { stop(); return; }
+    if (Date.now() - lastActivityTs() > IDLE_END_MS) { stop(); return; }
   }, 3000);
 
   // Final flush if the tab is closing mid-meeting. Guarded: during teardown the

@@ -101,6 +101,9 @@ async function init() {
     if (t) { t.textContent = '›'; t.title = 'Show panel rail'; }
   }
   renderRail();
+  // Keep the "recording" indicator + live-meeting cache fresh even when Live notes
+  // is off and the user isn't switching tabs (so it clears soon after a call ends).
+  setInterval(() => renderScribeIndicator(), 30_000);
 
   // Right-click "Ask ChatPanel" seed.
   chrome.runtime.onMessage.addListener((msg) => {
