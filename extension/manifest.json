@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatPanel — Local AI Agents",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Chat from any tab with Claude Code, Codex, Gemini CLI, or your own API. Tab context, URL analysis, history, agents & skills.",
   "minimum_chrome_version": "116",
   "permissions": [

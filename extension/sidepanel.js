@@ -30,7 +30,15 @@ import {
   stopMeeting,
   getMeetingRecord,
 } from './js/context.js';
-import { meetingToText } from './js/store-meetings.js';
+import {
+  meetingToText,
+  meetingToMarkdown,
+  getMeetingIndex,
+  getMeeting,
+  getMeetingNotes,
+  saveMeetingNotes,
+  deleteMeeting,
+} from './js/store-meetings.js';
 import { renderMarkdown } from './js/markdown.js';
 import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
@@ -657,6 +665,14 @@ async function generateTitle(conv, target) {
 }
 
 function stopStream() {
+  // If Watch is running on this conversation, Stop halts the WHOLE job — otherwise
+  // it would only abort the current tick and the loop would reschedule + fire again.
+  // stopWatch hard-aborts the in-flight stream, kills the timer, and logs
+  // "👁 Watch stopped" so it's clear both the message and the watcher stopped.
+  if (state.watch.on && state.watch.convId === state.conv.id) {
+    stopWatch({ hard: true });
+    return;
+  }
   const s = state.streams.get(state.conv.id);
   if (s) s.controller.abort();
 }
@@ -852,6 +868,7 @@ async function runLiveNotesTick() {
     }
     const delta = meetingToText(rec, { sinceTs: isFirst ? 0 : liveNotes.lastTs });
     await mergeLiveNotes(delta, isFirst);
+    saveMeetingNotes(rec.id, liveNotes.text).catch(() => {}); // persist for Past Meetings
     liveNotes.lastTs = latestTs;
     liveNotes.updatedAt = Date.now();
     liveNotes.failures = 0;
@@ -875,14 +892,15 @@ async function runLiveNotesTick() {
 // SINGLE-SHOT agent call so cost stays bounded. The loop is runtime-only; the
 // interval/checkbox/instruction persist in settings.ui.watch.
 // --------------------------------------------------------------------------
-const WATCH_INTERVALS = [
-  [10000, '10s'],
-  [30000, '30s'],
-  [60000, '1m'],
-  [300000, '5m'],
-];
 function watchIntervalLabel(ms) {
-  return (WATCH_INTERVALS.find(([v]) => v === ms) || [0, `${Math.round(ms / 1000)}s`])[1];
+  return ms % 60000 === 0 ? `${ms / 60000}m` : `${Math.round(ms / 1000)}s`;
+}
+// The bridge agent answering this conversation (for the "can it act?" helper).
+// BYO API agents have no MCP/skills, so the permission note doesn't apply to them.
+function currentBridgeAgent() {
+  const id = state.conv.agentId || state.settings.activeAgentId;
+  const a = (state.settings.agents || []).find((x) => x.id === id);
+  return a && a.kind === 'bridge' ? a : null;
 }
 function timeLabel(ts) {
   return new Date(ts || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1085,13 +1103,212 @@ function renderWatchButton() {
 
 function renderWatchMenu() {
   const cfg = (state.settings.ui && state.settings.ui.watch) || {};
-  const sel = $('watch-interval');
-  if (sel) sel.value = String(state.watch.on ? state.watch.intervalMs : cfg.intervalMs || 10000);
+  const ms = state.watch.on ? state.watch.intervalMs : cfg.intervalMs || 10000;
+  const unit = ms % 60000 === 0 && ms >= 60000 ? 60000 : 1000;
+  const nEl = $('watch-interval-n');
+  const unitEl = $('watch-interval-unit');
+  if (nEl) nEl.value = String(Math.max(1, Math.round(ms / unit)));
+  if (unitEl) unitEl.value = String(unit);
   const changed = $('watch-changed');
   if (changed) changed.checked = state.watch.on ? state.watch.onlyWhenChanged : cfg.onlyWhenChanged !== false;
   const instr = $('watch-instruction');
   if (instr) instr.value = state.watch.on ? state.watch.instruction : cfg.instruction || '';
+  renderWatchPerm();
   renderWatchButton();
+}
+
+// Inline permission helper: a watch agent can only post to Slack/MCP, edit, or run
+// shell if its mode is bypassPermissions — otherwise the action is auto-cancelled
+// in headless mode. Make that one click instead of a buried Settings trip.
+function renderWatchPerm() {
+  const el = $('watch-perm');
+  if (!el) return;
+  const agent = currentBridgeAgent();
+  if (!agent) { el.className = 'watch-perm-note'; el.textContent = ''; return; } // BYO API: N/A
+  el.innerHTML = '';
+  if (agent.permissionMode === 'bypassPermissions') {
+    el.className = 'watch-perm-note ok';
+    el.textContent = `✓ “${agent.name}” can take actions (Slack/MCP, edits, shell).`;
+    return;
+  }
+  el.className = 'watch-perm-note warn';
+  el.append(`⚠ “${agent.name}” can read the page but won't post to Slack/MCP or act until allowed. `);
+  const btn = document.createElement('button');
+  btn.className = 'watch-btn';
+  btn.textContent = 'Allow this agent to act';
+  btn.onclick = async () => {
+    agent.permissionMode = 'bypassPermissions';
+    state.settings = await updateSettings({ agents: state.settings.agents });
+    renderWatchPerm();
+    toast('Agent can now take actions');
+  };
+  el.appendChild(btn);
+}
+
+// --------------------------------------------------------------------------
+// Past Meetings — list + reopen recorded meetings (transcript + saved AI summary).
+// Reuses the scribe drawer styles; its own state so a live meeting never conflicts.
+// --------------------------------------------------------------------------
+const meetingsView = { rec: null, notes: '', tab: 'summary', generating: false };
+const PLATFORM_ICON = { zoom: '🟦', meet: '🟩', teams: '🟪', webex: '🟧' };
+
+async function openMeetings() {
+  $('meetings-drawer').classList.remove('hidden');
+  $('meeting-view').classList.add('hidden');
+  $('meetings-list-view').classList.remove('hidden');
+  $('meetings-search').value = '';
+  await renderMeetingsList('');
+}
+function closeMeetings() { $('meetings-drawer').classList.add('hidden'); }
+
+async function renderMeetingsList(query) {
+  const list = $('meetings-list');
+  let index = [];
+  try { index = await getMeetingIndex(); } catch { /* none */ }
+  const q = (query || '').trim().toLowerCase();
+  index = index
+    .filter((e) => !q || (e.title || '').toLowerCase().includes(q))
+    .sort((a, b) => (b.endedAt || b.startedAt || 0) - (a.endedAt || a.startedAt || 0));
+  if (!index.length) {
+    list.innerHTML = '<div class="empty-notes">No meetings yet. Join a Zoom/Meet/Teams/Webex call with captions on and ChatPanel records the transcript.</div>';
+    return;
+  }
+  list.innerHTML = '';
+  for (const e of index) {
+    const live = e.status !== 'ended';
+    const dur = e.endedAt && e.startedAt ? Math.round((e.endedAt - e.startedAt) / 60000) : 0;
+    const meta = [relAgo(e.endedAt || e.startedAt), dur ? `${dur}m` : '', `${e.lines || 0} lines`, live ? '· live' : '']
+      .filter(Boolean).join(' · ');
+    const row = document.createElement('div');
+    row.className = 'meeting-row';
+    const main = document.createElement('button');
+    main.className = 'meeting-row-main';
+    main.innerHTML =
+      `<div class="meeting-row-title">${PLATFORM_ICON[e.platform] || '🎙'} ${escHtml(e.title || 'Meeting')}</div>` +
+      `<div class="meeting-row-meta">${escHtml(meta)}</div>`;
+    main.onclick = () => openStoredMeeting(e.id);
+    const del = miniBtn('✕', async () => {
+      await deleteMeeting(e.id);
+      renderMeetingsList($('meetings-search').value);
+      toast('Meeting deleted');
+    });
+    del.title = 'Delete meeting';
+    del.className = 'mini-btn meeting-row-del';
+    row.appendChild(main);
+    row.appendChild(del);
+    list.appendChild(row);
+  }
+}
+
+async function openStoredMeeting(id) {
+  const rec = await getMeeting(id);
+  if (!rec) { toast('Meeting not found'); return; }
+  meetingsView.rec = rec;
+  meetingsView.notes = await getMeetingNotes(id).catch(() => '');
+  meetingsView.generating = false;
+  $('meeting-view-title').textContent = `${PLATFORM_ICON[rec.platform] || '🎙'} ${rec.title || 'Meeting'}`;
+  $('meetings-list-view').classList.add('hidden');
+  $('meeting-view').classList.remove('hidden');
+  switchMeetingTab('summary');
+}
+
+function meetingBackToList() {
+  $('meeting-view').classList.add('hidden');
+  $('meetings-list-view').classList.remove('hidden');
+  renderMeetingsList($('meetings-search').value);
+}
+
+function switchMeetingTab(tab) {
+  meetingsView.tab = tab;
+  const isT = tab === 'transcript';
+  $('mv-tab-summary').classList.toggle('active', !isT);
+  $('mv-tab-transcript').classList.toggle('active', isT);
+  $('meeting-summary').classList.toggle('hidden', isT);
+  $('meeting-transcript').classList.toggle('hidden', !isT);
+  $('meeting-search').classList.toggle('hidden', !isT);
+  if (isT) renderMeetingTranscript(); else renderMeetingSummary();
+  setMeetingViewStatus();
+}
+
+function renderMeetingSummary() {
+  const body = $('meeting-summary');
+  if (meetingsView.notes) { body.innerHTML = renderMarkdown(meetingsView.notes); return; }
+  body.innerHTML = '<div class="empty-notes">No summary was saved for this meeting.</div>';
+  const btn = document.createElement('button');
+  btn.className = 'watch-btn primary';
+  btn.style.margin = '8px 12px';
+  btn.textContent = 'Generate summary';
+  btn.onclick = () => generateMeetingSummary();
+  body.appendChild(btn);
+}
+
+function renderMeetingTranscript() {
+  const body = $('meeting-transcript');
+  const q = ($('meeting-search').value || '').trim().toLowerCase();
+  const lines = meetingToText(meetingsView.rec, { sinceTs: 0 }).split('\n').filter((l) => l.trim());
+  if (!lines.length) { body.innerHTML = '<div class="empty-notes">No transcript captured.</div>'; return; }
+  const shown = q ? lines.filter((l) => l.toLowerCase().includes(q)) : lines;
+  if (!shown.length) { body.innerHTML = `<div class="empty-notes">No lines match “${escHtml(q)}”.</div>`; return; }
+  const hi = (t) => {
+    if (!q) return escHtml(t);
+    const i = t.toLowerCase().indexOf(q);
+    return i < 0 ? escHtml(t) : escHtml(t.slice(0, i)) + '<mark>' + escHtml(t.slice(i, i + q.length)) + '</mark>' + escHtml(t.slice(i + q.length));
+  };
+  body.innerHTML = shown.map((l) => `<div class="ln-line">${hi(l)}</div>`).join('');
+}
+
+function setMeetingViewStatus() {
+  const el = $('meeting-view-status');
+  if (!el || !meetingsView.rec) return;
+  if (meetingsView.tab === 'transcript') {
+    const n = meetingToText(meetingsView.rec, { sinceTs: 0 }).split('\n').filter((l) => l.trim()).length;
+    el.textContent = `${n} line${n === 1 ? '' : 's'}`;
+  } else {
+    el.textContent = relAgo(meetingsView.rec.endedAt || meetingsView.rec.startedAt);
+  }
+}
+
+async function generateMeetingSummary() {
+  if (meetingsView.generating || !meetingsView.rec) return;
+  meetingsView.generating = true;
+  const body = $('meeting-summary');
+  body.innerHTML = '<div class="empty-notes">Generating summary…</div>';
+  const transcript = meetingToText(meetingsView.rec, { sinceTs: 0 });
+  const agent = agentForConv(state.conv);
+  let text = '';
+  try {
+    await streamChat({
+      agent: resolveTarget(agent, state.settings),
+      messages: [{
+        role: 'user',
+        content: `Summarize this meeting transcript as concise markdown notes — a short summary, key decisions, and action items with owners.\n\n---\n${transcript}`,
+      }],
+      settings: state.settings,
+      onDelta: (d) => { text += d; body.innerHTML = renderMarkdown(text); body.scrollTop = body.scrollHeight; },
+    });
+    meetingsView.notes = text.trim();
+    await saveMeetingNotes(meetingsView.rec.id, meetingsView.notes);
+    renderMeetingSummary();
+    toast('Summary saved');
+  } catch (e) {
+    body.innerHTML = `<div class="empty-notes">⚠ ${escHtml(e.message || String(e))}</div>`;
+  } finally {
+    meetingsView.generating = false;
+  }
+}
+
+function copyMeetingActive() {
+  const t = meetingsView.tab === 'transcript' ? meetingToText(meetingsView.rec, { sinceTs: 0 }) : meetingsView.notes;
+  navigator.clipboard.writeText(t || '').then(() => toast('Copied')).catch(() => {});
+}
+function downloadMeetingActive() {
+  const rec = meetingsView.rec;
+  if (!rec) return;
+  const base = (rec.title || 'meeting').replace(/[^\w]+/g, '_').slice(0, 50) || 'meeting';
+  if (meetingsView.tab === 'transcript') downloadText(`${base}_transcript.txt`, meetingToText(rec, { sinceTs: 0 }), 'text/plain');
+  else if (meetingsView.notes) downloadText(`${base}_notes.md`, meetingsView.notes, 'text/markdown');
+  else downloadText(`${base}.md`, meetingToMarkdown(rec), 'text/markdown');
+  toast('Downloaded');
 }
 
 // Run the agent to produce/merge the running notes, streaming into the drawer.
@@ -2305,12 +2522,15 @@ function wireEvents() {
     closeMenus();
     if (opening) { renderWatchMenu(); m.classList.remove('hidden'); }
   };
-  $('watch-start').onclick = () =>
+  $('watch-start').onclick = () => {
+    const n = Math.max(1, Number($('watch-interval-n').value) || 10);
+    const unit = Number($('watch-interval-unit').value) || 1000;
     startWatch({
       instruction: $('watch-instruction').value.trim(),
-      intervalMs: Number($('watch-interval').value),
+      intervalMs: Math.max(5000, n * unit), // 5s floor — change-gating bounds cost
       onlyWhenChanged: $('watch-changed').checked,
     });
+  };
   $('watch-stop').onclick = () => stopWatch({ hard: true });
 
   // History drawer
@@ -2327,6 +2547,18 @@ function wireEvents() {
   $('ln-tab-summary').onclick = () => switchLiveNotesTab('summary');
   $('ln-tab-transcript').onclick = () => switchLiveNotesTab('transcript');
   $('live-notes-search').oninput = () => renderTranscript();
+
+  // Past Meetings drawer
+  $('btn-meetings').onclick = () => openMeetings();
+  $('meetings-close').onclick = () => closeMeetings();
+  $('meeting-vclose').onclick = () => closeMeetings();
+  $('meeting-back').onclick = () => meetingBackToList();
+  $('meetings-search').oninput = (e) => renderMeetingsList(e.target.value);
+  $('mv-tab-summary').onclick = () => switchMeetingTab('summary');
+  $('mv-tab-transcript').onclick = () => switchMeetingTab('transcript');
+  $('meeting-search').oninput = () => renderMeetingTranscript();
+  $('meeting-copy').onclick = () => copyMeetingActive();
+  $('meeting-download').onclick = () => downloadMeetingActive();
   // Two-click confirm (confirm() is unreliable in side panels).
   let clearArmed = false;
   $('history-clear').onclick = async (e) => {

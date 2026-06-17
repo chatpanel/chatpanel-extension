@@ -398,7 +398,12 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   background: var(--bg-soft); color: var(--text); border: 1px solid var(--border);
   border-radius: 8px; font: inherit; font-size: 13px; resize: vertical;
 }
-.watch-perm-note { font-size: 11px; color: var(--text-dim); padding: 2px 8px 6px; line-height: 1.4; }
+.watch-num { width: 56px; font: inherit; font-size: 12.5px; background: var(--bg-soft); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 2px 4px; }
+.watch-perm-note { font-size: 11px; color: var(--text-dim); padding: 2px 8px 6px; line-height: 1.45; }
+.watch-perm-note:empty { display: none; }
+.watch-perm-note.warn { color: var(--text); }
+.watch-perm-note.warn .watch-btn { margin-top: 4px; padding: 4px 9px; font-size: 11.5px; }
+.watch-perm-note.ok { color: var(--text-dim); }
 .watch-actions { display: flex; gap: 6px; padding: 4px 8px 8px; justify-content: flex-end; }
 .watch-btn {
   font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
@@ -407,3 +412,15 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 }
 .watch-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .watch-status { font-size: 11px; color: var(--text-dim); padding: 2px 8px 6px; }
+
+/* Past Meetings */
+.meetings-list { padding: 2px 0; }
+.meeting-row { display: flex; align-items: stretch; gap: 2px; border-bottom: 1px solid var(--border); }
+.meeting-row-main { flex: 1; text-align: left; background: transparent; border: none; color: var(--text); cursor: pointer; padding: 9px 12px; font: inherit; min-width: 0; }
+.meeting-row-main:hover { background: rgba(127,127,127,.08); }
+.meeting-row-title { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meeting-row-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.meeting-row-del { align-self: center; margin-right: 6px; color: var(--text-dim); }
+.meeting-row-del:hover { color: var(--danger); }
+#meeting-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#meetings-list-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }

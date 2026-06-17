@@ -10,6 +10,7 @@
     <!-- Top bar -->
     <header class="topbar">
       <button id="btn-history" class="icon-btn" title="Chat history" aria-label="History">☰</button>
+      <button id="btn-meetings" class="icon-btn" title="Past meetings" aria-label="Meetings">🎙</button>
       <div class="agent-select">
         <button id="agent-button" class="agent-button" title="Choose agent">
           <span id="agent-name">Claude Code</span>
@@ -74,6 +75,36 @@
       <div id="live-notes-transcript" class="live-notes-body live-notes-transcript hidden"></div>
     </aside>
 
+    <!-- Past Meetings drawer: list of recorded meetings + a reuse of the scribe viewer -->
+    <aside id="meetings-drawer" class="live-notes-drawer hidden">
+      <div id="meetings-list-view">
+        <div class="live-notes-head">
+          <span class="live-notes-title">🎙 Meetings</span>
+          <span class="topbar-spacer"></span>
+          <button id="meetings-close" class="icon-btn" title="Close" aria-label="Close">✕</button>
+        </div>
+        <input id="meetings-search" class="live-notes-search" type="search" placeholder="Search meetings…" />
+        <div id="meetings-list" class="live-notes-body meetings-list"></div>
+      </div>
+      <div id="meeting-view" class="hidden">
+        <div class="live-notes-head">
+          <button id="meeting-back" class="icon-btn" title="Back to list" aria-label="Back">←</button>
+          <span id="meeting-view-title" class="live-notes-title">Meeting</span>
+          <span id="meeting-view-status" class="live-notes-status"></span>
+          <button id="meeting-download" class="icon-btn" title="Download this tab" aria-label="Download">⬇</button>
+          <button id="meeting-copy" class="icon-btn" title="Copy this tab" aria-label="Copy">⧉</button>
+          <button id="meeting-vclose" class="icon-btn" title="Close" aria-label="Close">✕</button>
+        </div>
+        <div class="live-notes-tabs" role="tablist">
+          <button id="mv-tab-summary" class="ln-tab active" role="tab">Summary</button>
+          <button id="mv-tab-transcript" class="ln-tab" role="tab">Transcript</button>
+        </div>
+        <input id="meeting-search" class="live-notes-search hidden" type="search" placeholder="Search transcript…" />
+        <div id="meeting-summary" class="live-notes-body"></div>
+        <div id="meeting-transcript" class="live-notes-body live-notes-transcript hidden"></div>
+      </div>
+    </aside>
+
     <!-- Meeting companion status (shown only on a meeting tab) -->
     <div id="meeting-bar" class="meeting-bar hidden"></div>
 
@@ -109,16 +140,15 @@
       <div id="watch-menu" class="menu up hidden">
         <div class="menu-section">👁 Watch this page</div>
         <label class="watch-row">Re-check every
-          <select id="watch-interval">
-            <option value="10000">10s</option>
-            <option value="30000">30s</option>
-            <option value="60000">1m</option>
-            <option value="300000">5m</option>
+          <input id="watch-interval-n" class="watch-num" type="number" min="1" value="10" />
+          <select id="watch-interval-unit">
+            <option value="1000">seconds</option>
+            <option value="60000">minutes</option>
           </select>
         </label>
         <label class="watch-row"><input type="checkbox" id="watch-changed" checked /> Only when the page changes</label>
         <textarea id="watch-instruction" class="watch-instruction" rows="3" placeholder="When it changes, do this… e.g. “post the new status to #alerts via Slack”"></textarea>
-        <div class="watch-perm-note">Tip: for the agent to use Slack/MCP without prompting, set that agent's permission mode to <b>bypassPermissions</b> in Settings → Agents.</div>
+        <div id="watch-perm" class="watch-perm-note"></div>
         <div class="watch-actions">
           <button id="watch-stop" class="watch-btn hidden">Stop</button>
           <button id="watch-start" class="watch-btn primary">Start watching</button>

@@ -18,6 +18,9 @@ export const MEETING_SCHEMA_VERSION = 1;
 
 const K_MINDEX = 'chatpanel:meetingIndex';
 export const meetingKey = (id) => `chatpanel:meeting:${id}`;
+// The AI scribe summary is stored under a SEPARATE key the side panel owns, so it
+// never races the content-script's single-writer ownership of the meeting record.
+const notesKey = (id) => `chatpanel:meetingNotes:${id}`;
 
 // Size ceilings so one long meeting can't balloon storage. Transcripts are kept as
 // a rolling tail: when a record exceeds these, the OLDEST segments are dropped
@@ -113,15 +116,27 @@ export async function getMeeting(id) {
 }
 
 export async function deleteMeeting(id) {
-  await chrome.storage.local.remove(meetingKey(id));
+  await chrome.storage.local.remove([meetingKey(id), notesKey(id)]);
   const index = (await getMeetingIndex()).filter((e) => e.id !== id);
   await saveIndex(index);
 }
 
 export async function clearAllMeetings() {
   const index = await getMeetingIndex();
-  await chrome.storage.local.remove(index.map((e) => meetingKey(e.id)));
+  await chrome.storage.local.remove(index.flatMap((e) => [meetingKey(e.id), notesKey(e.id)]));
   await saveIndex([]);
+}
+
+// The AI scribe summary (markdown) for a meeting — saved by the side panel as the
+// live notes refresh, so reopening a past meeting shows the last summary.
+export async function saveMeetingNotes(id, text) {
+  if (!id) return;
+  await chrome.storage.local.set({ [notesKey(id)]: await encryptJSON(String(text || '')) });
+}
+export async function getMeetingNotes(id) {
+  const got = await chrome.storage.local.get(notesKey(id));
+  const v = await decryptJSON(got[notesKey(id)]);
+  return typeof v === 'string' ? v : '';
 }
 
 // Keep storage bounded: drop the oldest ended meetings beyond `keep`, and any
