@@ -71,7 +71,7 @@ body.rail-collapsed { --rail-w: 0px; }
 .rail-btn:hover { background: rgba(127,127,127,.14); }
 .rail-btn.active { background: var(--accent-soft); color: var(--accent); }
 .rail-toggle {
-  position: fixed; right: 6px; bottom: 12px; z-index: 56;
+  position: fixed; right: 5px; top: 50%; transform: translateY(-50%); z-index: 56;
   width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border);
   background: var(--bg-elev); color: var(--text-dim); cursor: pointer;
   font-size: 13px; line-height: 1; display: flex; align-items: center; justify-content: center;
