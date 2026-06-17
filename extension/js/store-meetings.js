@@ -88,6 +88,7 @@ export async function persistMeeting(rec) {
   const entry = {
     id: capped.id,
     platform: capped.platform,
+    meetingKey: capped.meetingKey, // lets a restart resume the SAME session (no fragments)
     title: capped.title,
     startedAt: capped.startedAt,
     endedAt: capped.endedAt,
@@ -135,6 +136,16 @@ export async function getMeetingIndex() {
 export async function getMeeting(id) {
   const got = await chrome.storage.local.get(meetingKey(id));
   return (await decryptJSON(got[meetingKey(id)])) || null;
+}
+
+// The most-recently-active record for a platform+meetingKey — so a (re)started
+// capture can RESUME that session instead of forking a new fragment record.
+export async function getLatestSessionRecord(platform, key) {
+  const index = await getMeetingIndex();
+  const matches = index.filter((e) => e.platform === platform && e.meetingKey === key);
+  if (!matches.length) return null;
+  matches.sort((a, b) => (b.persistedAt || b.startedAt || 0) - (a.persistedAt || a.startedAt || 0));
+  return getMeeting(matches[0].id);
 }
 
 export async function deleteMeeting(id) {

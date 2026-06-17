@@ -262,13 +262,27 @@
     seenChat.clear();
   }
 
-  function start() {
+  // Resume a recent session for the same meeting within this window, so reloads /
+  // SPA hops / auto-restarts continue ONE record instead of forking fragments.
+  const RESUME_WINDOW_MS = 3 * 60 * 60 * 1000; // 3h
+  async function start() {
     if (capturing) return meetingId;
-    resetBuffers(); // fresh session — drop any prior meeting's buffer
-    capturing = true;
+    capturing = true; // claim synchronously so a re-entrant tick can't double-start
+    const key = currentMeetingKey();
+    activeMeetingKey = key;
+    resetBuffers();
     startedAt = Date.now();
-    activeMeetingKey = currentMeetingKey();
-    meetingId = `mtg_${adapter.platform}_${activeMeetingKey}_${startedAt.toString(36)}`;
+    meetingId = `mtg_${adapter.platform}_${key}_${startedAt.toString(36)}`;
+    // Ask the worker for the latest record for this meeting; adopt it if recent.
+    try {
+      const r = await chrome.runtime.sendMessage({ type: 'CP_MEETING_LATEST', platform: adapter.platform, meetingKey: key });
+      if (capturing && r && r.id && Date.now() - (r.persistedAt || r.startedAt || 0) < RESUME_WINDOW_MS) {
+        meetingId = r.id;
+        startedAt = r.startedAt || startedAt;
+        finalizedTranscript = Array.isArray(r.segments) ? r.segments.slice() : [];
+      }
+    } catch { /* worker asleep — keep the fresh session */ }
+    if (!capturing) return meetingId; // stopped during the await
     if (adapter.onStart) safe(() => adapter.onStart());
     startObserver();
     flush('live');
@@ -338,8 +352,8 @@
         });
         return; // sync response
       case 'CP_MEETING_START':
-        sendResponse({ ok: true, meetingId: start() });
-        return;
+        start().then((id) => sendResponse({ ok: true, meetingId: id })).catch(() => sendResponse({ ok: true, meetingId }));
+        return true; // async response
       case 'CP_MEETING_STOP':
         stop();
         sendResponse({ ok: true });

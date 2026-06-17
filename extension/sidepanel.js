@@ -477,9 +477,12 @@ async function send() {
     }
 
     // Include the current page fresh (read at send time) unless the user turned it
-    // off, already attached this exact tab manually, or we included a live meeting.
+    // off or already attached this exact tab. We DO include it alongside a live
+    // meeting (ask about both the page AND the call) — only the meeting tab's own
+    // page is skipped (it's just Meet's UI, and the transcript already covers it).
+    const onMeetingTab = !!(state.activeTab && meetingPlatform(state.activeTab.url || ''));
     if (
-      !meetingIncluded &&
+      !onMeetingTab &&
       state.usePage &&
       state.activeTab &&
       !state.attachments.some((a) => a.url === state.activeTab.url)

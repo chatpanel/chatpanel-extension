@@ -8,7 +8,7 @@
 // re-validating a paid license daily so a lapsed subscription downgrades itself.
 
 import { revalidate } from './js/license.js';
-import { persistMeeting, pruneMeetings } from './js/store-meetings.js';
+import { persistMeeting, pruneMeetings, getLatestSessionRecord } from './js/store-meetings.js';
 
 const REVALIDATE_ALARM = 'chatpanel-revalidate-license';
 
@@ -73,6 +73,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     persistMeeting(msg.record)
       .then(() => sendResponse?.({ ok: true }))
       .catch((e) => sendResponse?.({ ok: false, error: String(e) }));
+    return true; // async response
+  }
+  // A capture is (re)starting — hand back the latest record for this meeting so it
+  // can RESUME the same session instead of forking a new fragment.
+  if (msg?.type === 'CP_MEETING_LATEST' && msg.meetingKey) {
+    getLatestSessionRecord(msg.platform, msg.meetingKey)
+      .then((rec) => sendResponse?.(rec || null))
+      .catch(() => sendResponse?.(null));
     return true; // async response
   }
   return false;
