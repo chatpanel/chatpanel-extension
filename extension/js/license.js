@@ -74,6 +74,7 @@ export const FEATURE_TIER = {
   promptLibrary: 'pro',
   fileAttachments: 'pro',
   liveMeetings: 'pro',
+  watch: 'pro',
   // team — server-side / collaboration (enforced once the backend ships)
   cloudSync: 'team',
   sharedLibrary: 'team',
@@ -89,6 +90,7 @@ export const PRO_FEATURES = {
   advancedAgent: 'Per-agent system prompts & working directories',
   exportChats: 'Export conversations as Markdown',
   liveMeetings: 'Live meeting scribe — capture & summarize Zoom, Google Meet, Teams & Webex',
+  watch: 'Watch a page & act on changes — the agent reacts as the page updates',
 };
 export const TEAM_FEATURES = {
   cloudSync: 'Sync chats across your devices',

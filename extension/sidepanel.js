@@ -94,6 +94,7 @@ async function init() {
   refreshActiveTab();
   renderUpgradeChip();
   maybeShowUpdateBanner();
+  scheduleLiveNotes({ force: true }); // arm the global meeting-scribe loop (off-tab safe)
 
   // Right-click "Ask ChatPanel" seed.
   chrome.runtime.onMessage.addListener((msg) => {
@@ -765,6 +766,7 @@ async function refreshActiveTab() {
   }
   renderContextBar();
   renderMeetingBar();
+  renderScribeIndicator();
 }
 
 // Meeting companion status bar. Shown only when the active tab is a recognised
@@ -814,7 +816,7 @@ async function cycleLiveNotesInterval() {
   scheduleLiveNotes({ force: true });
   renderMeetingBar();
   toast(next ? `Live notes refreshing every ${next} min` : 'Live notes off');
-  if (next) openLiveNotes();
+  if (next && state.activeTab) viewActiveMeeting(state.activeTab.id);
 }
 
 function resetLiveNotes() {
@@ -830,58 +832,62 @@ function stopLiveNotes() {
   liveNotes.timer = null;
 }
 
-// (Re)arm the loop. `force` reschedules immediately (e.g. after changing interval);
-// otherwise it only arms if nothing is pending, so frequent re-renders don't thrash.
+// --------------------------------------------------------------------------
+// Live scribe loop — headless & MULTI-MEETING, decoupled from the active tab.
+// The content script persists every capturing meeting's transcript to storage
+// every ~4s regardless of focus, so the loop summarizes ALL live meetings from
+// STORAGE (getMeetingIndex → getMeeting) and saves notes per meeting. This keeps
+// the scribe running while you browse other tabs, and handles multiple calls.
+// (Names kept so existing callers — init, the meeting bar, the interval cycler —
+// keep arming it.) Runs while the side panel is open + a Live interval is set.
+// --------------------------------------------------------------------------
+const scribeState = new Map(); // meetingId → { lastTs }
+let scribeBusy = false;
+
+// `force` reschedules immediately; otherwise only arms if nothing is pending.
 function scheduleLiveNotes({ force = false, delayMs } = {}) {
   const min = liveNotesIntervalMin();
   if (!min) { stopLiveNotes(); return; }
-  if (!state.activeTab || !meetingPlatform(state.activeTab.url || '')) { stopLiveNotes(); return; }
   if (liveNotes.timer && !force) return;
   clearTimeout(liveNotes.timer);
-  liveNotes.timer = setTimeout(runLiveNotesTick, delayMs ?? (liveNotes.text ? min * 60_000 : 2000));
+  liveNotes.timer = setTimeout(runLiveNotesTick, delayMs ?? (scribeState.size ? min * 60_000 : 4000));
 }
 
 async function runLiveNotesTick() {
   liveNotes.timer = null;
   const min = liveNotesIntervalMin();
-  const tab = state.activeTab;
-  if (!min || !tab || !meetingPlatform(tab.url || '')) return;
-  if (liveNotes.busy) { scheduleLiveNotes({ force: true, delayMs: 15_000 }); return; }
-  liveNotes.busy = true;
+  if (!min) return;
+  if (scribeBusy) { scheduleLiveNotes({ force: true, delayMs: 15_000 }); return; }
+  scribeBusy = true;
   try {
-    const rec = await getMeetingRecord(tab.id);
-    const segs = rec?.segments || [];
-    if (!segs.length) { scheduleLiveNotes({ force: true, delayMs: min * 60_000 }); return; }
-    if (liveNotes.key && liveNotes.key !== rec.meetingKey) resetLiveNotes(); // new meeting
-    liveNotes.key = rec.meetingKey;
-    // Keep the transcript tab in sync with each summary refresh.
-    liveNotes.transcript = meetingToText(rec, { sinceTs: 0 });
-    liveNotes.title = rec.title || liveNotes.title;
-    if (liveNotesDrawerOpen() && liveNotes.tab === 'transcript') renderTranscript();
-
-    const isFirst = !liveNotes.text;
-    const latestTs = segs[segs.length - 1]?.t || Date.now();
-    if (!isFirst && latestTs <= liveNotes.lastTs) { // nothing new said
-      setLiveNotesStatus();
-      scheduleLiveNotes({ force: true, delayMs: min * 60_000 });
-      return;
+    let index = [];
+    try { index = await getMeetingIndex(); } catch { /* none yet */ }
+    const live = index.filter((e) => e.status !== 'ended');
+    renderScribeIndicator(live);
+    for (const e of live) {
+      try {
+        const rec = await getMeeting(e.id);
+        const segs = rec?.segments || [];
+        if (!segs.length) continue;
+        const st = scribeState.get(e.id) || { lastTs: 0 };
+        const latestTs = segs[segs.length - 1]?.t || Date.now();
+        const prev = await getMeetingNotes(e.id).catch(() => '');
+        const isFirst = !prev;
+        if (!isFirst && latestTs <= st.lastTs) continue; // nothing new said
+        const delta = meetingToText(rec, { sinceTs: isFirst ? 0 : st.lastTs });
+        if (!delta.trim()) { st.lastTs = latestTs; scribeState.set(e.id, st); continue; }
+        const text = await summarizeMeeting(prev, delta, isFirst);
+        if (text) {
+          await saveMeetingNotes(e.id, text);
+          if (meetingsView.rec && meetingsView.rec.id === e.id) refreshLiveMeetingView();
+        }
+        st.lastTs = latestTs;
+        scribeState.set(e.id, st);
+      } catch { /* skip this meeting this tick, retry next */ }
     }
-    const delta = meetingToText(rec, { sinceTs: isFirst ? 0 : liveNotes.lastTs });
-    await mergeLiveNotes(delta, isFirst);
-    saveMeetingNotes(rec.id, liveNotes.text).catch(() => {}); // persist for Past Meetings
-    liveNotes.lastTs = latestTs;
-    liveNotes.updatedAt = Date.now();
-    liveNotes.failures = 0;
-    setLiveNotesStatus();
-    scheduleLiveNotes({ force: true, delayMs: min * 60_000 });
-  } catch {
-    // Never give up while the loop is on — retry with a short backoff, keeping the
-    // last good notes intact.
-    liveNotes.failures += 1;
-    setLiveNotesStatus('update failed — retrying…');
-    scheduleLiveNotes({ force: true, delayMs: Math.min(15_000 * liveNotes.failures, 60_000) });
   } finally {
-    liveNotes.busy = false;
+    scribeBusy = false;
+    scheduleLiveNotes({ force: true });
   }
 }
 
@@ -917,6 +923,7 @@ function hashText(text) {
 
 async function startWatch({ instruction, intervalMs, onlyWhenChanged }) {
   if (state.watch.on) return;
+  if (!can(state.license, 'watch')) { upsell('watch'); return; } // Pro feature
   if (!state.activeTab) { toast('No readable tab to watch'); return; }
   const w = state.watch;
   Object.assign(w, {
@@ -1149,7 +1156,7 @@ function renderWatchPerm() {
 // Past Meetings — list + reopen recorded meetings (transcript + saved AI summary).
 // Reuses the scribe drawer styles; its own state so a live meeting never conflicts.
 // --------------------------------------------------------------------------
-const meetingsView = { rec: null, notes: '', tab: 'summary', generating: false };
+const meetingsView = { rec: null, notes: '', tab: 'summary', generating: false, live: false, liveTimer: null };
 const PLATFORM_ICON = { zoom: '🟦', meet: '🟩', teams: '🟪', webex: '🟧' };
 
 async function openMeetings() {
@@ -1159,7 +1166,7 @@ async function openMeetings() {
   $('meetings-search').value = '';
   await renderMeetingsList('');
 }
-function closeMeetings() { $('meetings-drawer').classList.add('hidden'); }
+function closeMeetings() { clearInterval(meetingsView.liveTimer); $('meetings-drawer').classList.add('hidden'); }
 
 async function renderMeetingsList(query) {
   const list = $('meetings-list');
@@ -1203,16 +1210,86 @@ async function renderMeetingsList(query) {
 async function openStoredMeeting(id) {
   const rec = await getMeeting(id);
   if (!rec) { toast('Meeting not found'); return; }
+  clearInterval(meetingsView.liveTimer);
   meetingsView.rec = rec;
   meetingsView.notes = await getMeetingNotes(id).catch(() => '');
   meetingsView.generating = false;
-  $('meeting-view-title').textContent = `${PLATFORM_ICON[rec.platform] || '🎙'} ${rec.title || 'Meeting'}`;
+  meetingsView.live = rec.status !== 'ended';
+  $('meeting-view-title').textContent =
+    `${PLATFORM_ICON[rec.platform] || '🎙'} ${rec.title || 'Meeting'}${meetingsView.live ? ' · live' : ''}`;
   $('meetings-list-view').classList.add('hidden');
   $('meeting-view').classList.remove('hidden');
   switchMeetingTab('summary');
+  // Live meeting → keep the view fresh (transcript + summary) while open.
+  if (meetingsView.live) meetingsView.liveTimer = setInterval(refreshLiveMeetingView, 5000);
+}
+
+// Re-read the currently-viewed live meeting from storage and re-render (called on a
+// timer while viewing a live meeting, and by the scribe loop right after it saves).
+async function refreshLiveMeetingView() {
+  const cur = meetingsView.rec;
+  if (!cur) return;
+  const rec = await getMeeting(cur.id);
+  if (!rec) return;
+  meetingsView.rec = rec;
+  meetingsView.notes = await getMeetingNotes(cur.id).catch(() => meetingsView.notes);
+  meetingsView.live = rec.status !== 'ended';
+  if (meetingsView.tab === 'transcript') renderMeetingTranscript();
+  else if (!meetingsView.generating) renderMeetingSummary();
+  setMeetingViewStatus();
+  if (!meetingsView.live) clearInterval(meetingsView.liveTimer);
+}
+
+// "View" on the meeting bar → open the active tab's meeting in the unified viewer.
+async function viewActiveMeeting(tabId) {
+  const rec = await getMeetingRecord(tabId);
+  if (!rec?.id) { toast('No transcript captured yet'); return; }
+  $('meetings-drawer').classList.remove('hidden');
+  await openStoredMeeting(rec.id);
+}
+
+// Attach the viewed meeting's transcript as context and focus the composer, so the
+// user can ask about it from ANY tab.
+function askAboutMeeting() {
+  const rec = meetingsView.rec;
+  if (!rec) return;
+  const text = meetingToText(rec, { sinceTs: 0 });
+  state.attachments = state.attachments || [];
+  if (!state.attachments.some((a) => typeof a.id === 'string' && a.id.startsWith(`mtg_${rec.id}`))) {
+    state.attachments.unshift({
+      id: `mtg_${rec.id}_${Date.now()}`,
+      kind: 'meeting',
+      title: `🎙 ${rec.title || 'Meeting'}`,
+      url: rec.url || '',
+      text: text.slice(0, 30000),
+      chars: text.length,
+    });
+  }
+  closeMeetings();
+  renderContextBar();
+  $('input').focus();
+  toast('Meeting attached — ask your question');
+}
+
+// Slim "N meetings recording" strip, shown from any non-meeting tab.
+async function renderScribeIndicator(liveOpt) {
+  const el = $('scribe-indicator');
+  if (!el) return;
+  let live = liveOpt;
+  if (!live) {
+    try { live = (await getMeetingIndex()).filter((e) => e.status !== 'ended'); } catch { live = []; }
+  }
+  const onMeetingTab = state.activeTab && meetingPlatform(state.activeTab.url || '');
+  if (live.length && !onMeetingTab) {
+    el.classList.remove('hidden');
+    el.textContent = `🎙 ${live.length} meeting${live.length === 1 ? '' : 's'} recording — view`;
+  } else {
+    el.classList.add('hidden');
+  }
 }
 
 function meetingBackToList() {
+  clearInterval(meetingsView.liveTimer);
   $('meeting-view').classList.add('hidden');
   $('meetings-list-view').classList.remove('hidden');
   renderMeetingsList($('meetings-search').value);
@@ -1312,7 +1389,10 @@ function downloadMeetingActive() {
 }
 
 // Run the agent to produce/merge the running notes, streaming into the drawer.
-async function mergeLiveNotes(deltaText, isFirst) {
+// Produce/merge a meeting's running notes from `prevNotes` + the new transcript
+// delta. Headless — returns the merged markdown (the scribe loop saves it to
+// storage; viewers read it from there). No drawer/UI coupling.
+async function summarizeMeeting(prevNotes, deltaText, isFirst) {
   const agent = getTarget(state.settings, state.settings.activeAgentId);
   const prompt = isFirst
     ? `${meetingNotesSkill().prompt}\n\n--- MEETING TRANSCRIPT SO FAR ---\n${deltaText}`
@@ -1322,27 +1402,20 @@ async function mergeLiveNotes(deltaText, isFirst) {
         'Rules: keep the same sections (TL;DR, Topics, Key Moments tagged [decision]/[highlight]/[risk]/[question], Action Items with owners/dues). Merge new items into the right place; refine or correct earlier entries if the new transcript clarifies them; never duplicate; keep stable items stable. Output ONLY the complete updated document.',
         '',
         '--- CURRENT RUNNING NOTES ---',
-        liveNotes.text,
+        prevNotes,
         '',
         '--- NEW TRANSCRIPT SINCE LAST UPDATE ---',
         deltaText,
       ].join('\n');
 
-  setLiveNotesStatus('updating…');
   let out = '';
   await streamChat({
     agent,
     messages: [{ role: 'user', content: prompt }],
     settings: state.settings,
-    onDelta: (d) => {
-      out += d;
-      renderLiveNotesBody(out);
-    },
+    onDelta: (d) => { out += d; },
   });
-  if (out.trim()) {
-    liveNotes.text = out.trim();
-    renderLiveNotesBody(liveNotes.text);
-  }
+  return out.trim();
 }
 
 function liveNotesDrawerOpen() {
@@ -1549,7 +1622,7 @@ async function renderMeetingBar() {
   if (probe.capturing) {
     const iv = liveNotesIntervalMin();
     render(scribe, [
-      { label: '📄 View', onClick: openLiveNotes },
+      { label: '📄 View', onClick: () => viewActiveMeeting(tab.id) },
       { label: `📝 Live ${iv ? iv + 'm' : 'Off'}`, onClick: cycleLiveNotesInterval },
       { label: `🕑 ${meetingWindowLabel()}`, onClick: cycleMeetingWindow },
       {
@@ -1557,17 +1630,16 @@ async function renderMeetingBar() {
         primary: true,
         onClick: async () => {
           _autoStartSuppressed.add(key); // don't auto-restart after an explicit stop
-          stopLiveNotes();
-          await stopMeeting(tab.id);
+          await stopMeeting(tab.id); // flips status→ended; the scribe loop then skips it
           renderMeetingBar();
         },
       },
     ]);
-    scheduleLiveNotes(); // arm the scribe loop if an interval is set (idempotent)
+    scheduleLiveNotes(); // ensure the global scribe loop is armed (idempotent)
     return;
   }
-  // Not capturing → the scribe loop should not run.
-  stopLiveNotes();
+  // Not capturing on THIS tab — but the global scribe loop keeps running for any
+  // OTHER live meetings, so we intentionally do not stop it here.
 
   // Not capturing: auto-start the moment we see a ready meeting tab, so the user
   // never has to click Start — unless they explicitly Stopped this meeting.
@@ -2517,6 +2589,7 @@ function wireEvents() {
   // Watch mode: 👁 opens the popover; Start/Stop control the loop.
   $('btn-watch').onclick = (e) => {
     e.stopPropagation();
+    if (!can(state.license, 'watch')) return upsell('watch'); // Watch is a Pro feature
     const m = $('watch-menu');
     const opening = m.classList.contains('hidden');
     closeMenus();
@@ -2559,6 +2632,8 @@ function wireEvents() {
   $('meeting-search').oninput = () => renderMeetingTranscript();
   $('meeting-copy').onclick = () => copyMeetingActive();
   $('meeting-download').onclick = () => downloadMeetingActive();
+  $('meeting-ask').onclick = () => askAboutMeeting();
+  $('scribe-indicator').onclick = () => openMeetings();
   // Two-click confirm (confirm() is unreliable in side panels).
   let clearArmed = false;
   $('history-clear').onclick = async (e) => {

@@ -10,7 +10,6 @@
     <!-- Top bar -->
     <header class="topbar">
       <button id="btn-history" class="icon-btn" title="Chat history" aria-label="History">☰</button>
-      <button id="btn-meetings" class="icon-btn" title="Past meetings" aria-label="Meetings">🎙</button>
       <div class="agent-select">
         <button id="agent-button" class="agent-button" title="Choose agent">
           <span id="agent-name">Claude Code</span>
@@ -42,6 +41,9 @@
         <button id="history-clear" class="text-btn danger">Clear all history</button>
       </div>
     </aside>
+
+    <!-- "N meetings recording" strip — shown from any non-meeting tab -->
+    <button id="scribe-indicator" class="scribe-indicator hidden"></button>
 
     <!-- Messages -->
     <main id="messages" class="messages">
@@ -91,6 +93,7 @@
           <button id="meeting-back" class="icon-btn" title="Back to list" aria-label="Back">←</button>
           <span id="meeting-view-title" class="live-notes-title">Meeting</span>
           <span id="meeting-view-status" class="live-notes-status"></span>
+          <button id="meeting-ask" class="icon-btn" title="Ask about this meeting" aria-label="Ask">💬</button>
           <button id="meeting-download" class="icon-btn" title="Download this tab" aria-label="Download">⬇</button>
           <button id="meeting-copy" class="icon-btn" title="Copy this tab" aria-label="Copy">⧉</button>
           <button id="meeting-vclose" class="icon-btn" title="Close" aria-label="Close">✕</button>
@@ -130,6 +133,7 @@
           <button id="btn-skills" class="tool-btn" title="Skills" aria-label="Skills">⚡</button>
           <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI" aria-label="Improve prompt">✨</button>
           <button id="btn-watch" class="tool-btn" title="Watch this page &amp; act on changes" aria-label="Watch this page">👁</button>
+          <button id="btn-meetings" class="tool-btn" title="Meetings — live &amp; past" aria-label="Meetings">🎙</button>
           <div class="composer-tools-spacer"></div>
           <button id="btn-send" class="send-btn" title="Send" aria-label="Send">↑</button>
           <button id="btn-stop" class="send-btn stop hidden" title="Stop" aria-label="Stop">■</button>

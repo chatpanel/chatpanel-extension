@@ -424,3 +424,9 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .meeting-row-del:hover { color: var(--danger); }
 #meeting-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 #meetings-list-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.scribe-indicator {
+  display: block; width: 100%; text-align: left; border: none; cursor: pointer;
+  background: var(--accent-soft); color: var(--accent); font: inherit; font-size: 12px;
+  font-weight: 600; padding: 6px 14px; border-bottom: 1px solid var(--border);
+}
+.scribe-indicator:hover { filter: brightness(1.06); }
