@@ -1260,7 +1260,12 @@ async function openStoredMeeting(id) {
 async function refreshLiveMeetingView() {
   const cur = meetingsView.rec;
   if (!cur) return;
-  const rec = await getMeeting(cur.id);
+  // For the live meeting, read the FRESH in-memory record (real-time even when its
+  // tab is backgrounded); else the persisted record.
+  const rec =
+    state.liveMeeting && state.liveMeeting.id === cur.id
+      ? (await getLiveMeetingRecord()) || (await getMeeting(cur.id))
+      : await getMeeting(cur.id);
   if (!rec) return;
   meetingsView.rec = rec;
   meetingsView.notes = await getMeetingNotes(cur.id).catch(() => meetingsView.notes);

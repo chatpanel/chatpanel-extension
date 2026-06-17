@@ -199,9 +199,25 @@
     }
   }
 
+  // Persist as captions arrive. Triggered by the MutationObserver (a real DOM
+  // event, NOT a timer), so it still fires in a backgrounded tab where Chrome
+  // throttles setTimeout to ~1/min. We flush IMMEDIATELY once FLUSH_DEBOUNCE_MS has
+  // elapsed since the last write (coalescing bursts), so the persisted transcript
+  // stays within a few seconds of live and a tab-discard loses almost nothing.
+  let lastFlushAt = 0;
   function scheduleFlush() {
-    if (!capturing || flushTimer) return;
-    flushTimer = setTimeout(() => { flushTimer = null; flush('live'); }, FLUSH_DEBOUNCE_MS);
+    if (!capturing) return;
+    const now = Date.now();
+    if (now - lastFlushAt >= FLUSH_DEBOUNCE_MS) {
+      lastFlushAt = now;
+      flush('live'); // timer-free → works while backgrounded
+      return;
+    }
+    // Trailing backstop for the tail of a burst (may be throttled in background,
+    // but the next caption's immediate path above usually beats it).
+    if (!flushTimer) {
+      flushTimer = setTimeout(() => { flushTimer = null; lastFlushAt = Date.now(); flush('live'); }, FLUSH_DEBOUNCE_MS);
+    }
   }
 
   // ---- observer ----------------------------------------------------------
