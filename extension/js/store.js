@@ -96,6 +96,9 @@ export function defaultSettings() {
       // Live scribe: auto-refresh the running meeting notes every N minutes by
       // merging new transcript into the existing summary. 0 = off.
       liveNotesIntervalMin: 0,
+      // Watch mode: re-read the current tab on an interval and re-run the agent
+      // when the page changes. Remembered config (the loop is runtime-only).
+      watch: { intervalMs: 10000, onlyWhenChanged: true, instruction: '' },
     },
   };
 }

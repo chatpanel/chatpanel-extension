@@ -50,6 +50,22 @@ const state = {
   convCache: new Map(), // id -> live conv object (kept so streams survive switches)
   streams: new Map(), // convId -> { controller, started, lastEvent }
   bubbles: new Map(), // messageId -> bubble element (active view only)
+  // Watch mode: re-read a FIXED tab on an interval and re-run the agent on change.
+  watch: {
+    on: false,
+    timer: null,
+    busy: false,
+    tabId: null, // the tab captured at Start (not whatever's active later)
+    tabTitle: '',
+    convId: null, // the conversation watch runs append to
+    lastHash: null,
+    runs: 0,
+    errored: false,
+    instruction: '',
+    intervalMs: 10000,
+    onlyWhenChanged: true,
+    maxRuns: 50,
+  },
 };
 
 // --------------------------------------------------------------------------
@@ -247,6 +263,15 @@ function renderMessages() {
 }
 
 function renderMessage(m) {
+  // Watch-mode log row — a compact dim line, not a chat bubble.
+  if (m.role === 'watch') {
+    const row = document.createElement('div');
+    row.className = 'msg watch-log';
+    row.dataset.id = m.id;
+    row.textContent = `👁 ${m.content} · ${timeLabel(m.ts)}`;
+    return row;
+  }
+
   const wrap = document.createElement('div');
   wrap.className = `msg ${m.role}${m.error ? ' error' : ''}${m.queued ? ' queued' : ''}`;
   wrap.dataset.id = m.id;
@@ -254,7 +279,7 @@ function renderMessage(m) {
   if (m.role === 'assistant') {
     const who = document.createElement('div');
     who.className = 'who';
-    who.textContent = m.agentName || 'Assistant';
+    who.textContent = m.watch ? `👁 watch run · ${timeLabel(m.watchAt)}` : m.agentName || 'Assistant';
     wrap.appendChild(who);
   }
 
@@ -841,6 +866,232 @@ async function runLiveNotesTick() {
   } finally {
     liveNotes.busy = false;
   }
+}
+
+// --------------------------------------------------------------------------
+// Watch mode — re-read a FIXED tab on an interval and re-run the agent when the
+// page changes, so ChatPanel can act on a live page (e.g. post to Slack on change).
+// Mirrors the live-notes loop (setTimeout reschedule + busy guard); each run is a
+// SINGLE-SHOT agent call so cost stays bounded. The loop is runtime-only; the
+// interval/checkbox/instruction persist in settings.ui.watch.
+// --------------------------------------------------------------------------
+const WATCH_INTERVALS = [
+  [10000, '10s'],
+  [30000, '30s'],
+  [60000, '1m'],
+  [300000, '5m'],
+];
+function watchIntervalLabel(ms) {
+  return (WATCH_INTERVALS.find(([v]) => v === ms) || [0, `${Math.round(ms / 1000)}s`])[1];
+}
+function timeLabel(ts) {
+  return new Date(ts || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+// Cheap FNV-1a hash of the captured text — detect change without storing the page.
+function hashText(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h.toString(16);
+}
+
+async function startWatch({ instruction, intervalMs, onlyWhenChanged }) {
+  if (state.watch.on) return;
+  if (!state.activeTab) { toast('No readable tab to watch'); return; }
+  const w = state.watch;
+  Object.assign(w, {
+    on: true,
+    busy: false,
+    errored: false,
+    tabId: state.activeTab.id,
+    tabTitle: state.activeTab.title || state.activeTab.url,
+    convId: state.conv.id,
+    lastHash: null,
+    runs: 0,
+    instruction: instruction || '',
+    intervalMs: intervalMs || 10000,
+    onlyWhenChanged: onlyWhenChanged !== false,
+  });
+  state.settings = await updateSettings({
+    ui: { watch: { intervalMs: w.intervalMs, onlyWhenChanged: w.onlyWhenChanged, instruction: w.instruction } },
+  });
+  appendWatchLog(`Watching “${w.tabTitle}” every ${watchIntervalLabel(w.intervalMs)}`);
+  closeMenus();
+  renderWatchButton();
+  scheduleWatch({ force: true, delayMs: 0 }); // immediate first run for instant feedback
+}
+
+function stopWatch({ reason, hard } = {}) {
+  const w = state.watch;
+  if (!w.on && !w.timer) return;
+  clearTimeout(w.timer);
+  w.timer = null;
+  const was = w.on;
+  w.on = false;
+  if (hard) state.streams.get(w.convId)?.controller.abort();
+  if (was) appendWatchLog(`Watch stopped${reason ? ' — ' + reason : ''}`);
+  renderWatchButton();
+}
+
+function scheduleWatch({ force = false, delayMs } = {}) {
+  const w = state.watch;
+  if (!w.on) { clearTimeout(w.timer); w.timer = null; return; }
+  if (w.timer && !force) return;
+  clearTimeout(w.timer);
+  w.timer = setTimeout(runWatchTick, delayMs ?? w.intervalMs);
+}
+
+async function runWatchTick() {
+  const w = state.watch;
+  w.timer = null;
+  if (!w.on) return;
+  const conv = state.convCache.get(w.convId) || state.conv;
+  // Never overlap a manual send or a still-streaming watch run.
+  if (w.busy || state.streams.has(conv.id)) {
+    scheduleWatch({ force: true, delayMs: Math.min(w.intervalMs, 5000) });
+    return;
+  }
+  if (w.runs >= w.maxRuns) { stopWatch({ reason: `reached ${w.maxRuns} runs` }); return; }
+  w.busy = true;
+  try {
+    const cap = await captureTab(w.tabId);
+    const h = hashText(cap.text || '');
+    const first = w.lastHash === null;
+    const changed = first || h !== w.lastHash;
+    w.lastHash = h;
+    if (w.onlyWhenChanged && !changed) {
+      appendWatchLog('no change');
+      scheduleWatch({ force: true });
+      return;
+    }
+    await runWatchRun(conv, cap, first); // reschedules in runWatchStream's finally
+    if (w.errored) stopWatch({ reason: 'stopped on error' });
+  } catch (e) {
+    appendWatchLog(`⚠ ${e.message || e}`);
+    stopWatch({ reason: 'stopped on error' });
+  } finally {
+    w.busy = false;
+  }
+}
+
+async function runWatchRun(conv, cap, first) {
+  const w = state.watch;
+  const instr =
+    (w.instruction || 'Briefly report what this page shows now.') +
+    (first ? '' : '\n\n(The watched page changed since the last check.)');
+  const userMsg = { id: uid(), role: 'user', content: instr, attachments: [cap], ts: Date.now(), watch: true };
+  conv.messages.push(userMsg);
+  if (conv.id === state.conv.id) $('messages').appendChild(renderMessage(userMsg));
+  const agent = agentForConv(conv);
+  const assistant = makeAssistant(agent);
+  assistant.watch = true;
+  assistant.watchAt = Date.now();
+  conv.messages.push(assistant);
+  if (conv.id === state.conv.id) { $('messages').appendChild(renderMessage(assistant)); scrollToBottom(); }
+  w.runs += 1;
+  renderWatchButton();
+  await runWatchStream(agent, assistant, conv, userMsg);
+}
+
+// Fork of runStream(): SINGLE-SHOT messages ([userMsg]) instead of full history, and
+// it reschedules the watch loop when the turn ends.
+async function runWatchStream(agent, assistant, conv, userMsg) {
+  const controller = new AbortController();
+  state.streams.set(conv.id, { controller, started: Date.now(), lastEvent: '' });
+  if (conv.id === state.conv.id) updateComposerUI();
+  ensureActivityTimer();
+  renderActivity();
+
+  let pending = '';
+  let raf = 0;
+  const flush = () => {
+    raf = 0;
+    if (conv.id === state.conv.id) { updateBubble(assistant); scrollToBottom(); }
+  };
+
+  try {
+    await streamChat({
+      agent: resolveTarget(agent, state.settings),
+      messages: [userMsg], // single-shot: just this tick's instruction + page capture
+      settings: state.settings,
+      signal: controller.signal,
+      onDelta: (d) => {
+        pending += d;
+        assistant.content = pending;
+        if (!raf) raf = requestAnimationFrame(flush);
+      },
+      onEvent: (ev) => {
+        if (ev.type === 'reasoning' && ev.text) {
+          assistant.thinking = (assistant.thinking || '') + ev.text;
+          if (!raf) raf = requestAnimationFrame(flush);
+        }
+        recordActivity(conv.id, ev);
+      },
+    });
+    assistant.content = pending;
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      assistant.content = pending + (pending ? '\n\n_(stopped)_' : '_(stopped)_');
+    } else {
+      assistant.content = `⚠ ${e.message}`;
+      assistant.error = true;
+      state.watch.errored = true; // the tick will stop the loop
+    }
+  } finally {
+    if (raf) cancelAnimationFrame(raf);
+    assistant.pending = false;
+    state.streams.delete(conv.id);
+    ensureActivityTimer();
+    if (conv.id === state.conv.id) {
+      updateComposerUI();
+      renderActivity();
+      const node = $('messages').querySelector(`.msg[data-id="${assistant.id}"]`);
+      if (node) node.replaceWith(renderMessage(assistant));
+    }
+    await saveConversation(conv);
+    refreshHistory();
+    maybeDrainQueue(conv); // answer anything the user queued mid-watch
+    if (state.watch.on && !state.watch.errored) scheduleWatch({ force: true });
+  }
+}
+
+// A compact, dim log row in the watched conversation (role 'watch' is filtered out
+// of every model call by providers.js, so it never leaks into a prompt).
+function appendWatchLog(text) {
+  const conv = state.convCache.get(state.watch.convId) || state.conv;
+  const m = { id: uid(), role: 'watch', kind: 'watch-log', content: text, ts: Date.now() };
+  conv.messages.push(m);
+  if (conv.id === state.conv.id) { $('messages').appendChild(renderMessage(m)); scrollToBottom(); }
+  saveConversation(conv);
+}
+
+function renderWatchButton() {
+  const btn = $('btn-watch');
+  if (btn) btn.classList.toggle('watching', state.watch.on);
+  const status = $('watch-status');
+  if (status) {
+    status.classList.toggle('hidden', !state.watch.on);
+    if (state.watch.on) {
+      status.textContent = `Watching every ${watchIntervalLabel(state.watch.intervalMs)} · ${state.watch.runs} run${state.watch.runs === 1 ? '' : 's'}`;
+    }
+  }
+  const start = $('watch-start');
+  const stop = $('watch-stop');
+  if (start) start.classList.toggle('hidden', state.watch.on);
+  if (stop) stop.classList.toggle('hidden', !state.watch.on);
+}
+
+function renderWatchMenu() {
+  const cfg = (state.settings.ui && state.settings.ui.watch) || {};
+  const sel = $('watch-interval');
+  if (sel) sel.value = String(state.watch.on ? state.watch.intervalMs : cfg.intervalMs || 10000);
+  const changed = $('watch-changed');
+  if (changed) changed.checked = state.watch.on ? state.watch.onlyWhenChanged : cfg.onlyWhenChanged !== false;
+  const instr = $('watch-instruction');
+  if (instr) instr.value = state.watch.on ? state.watch.instruction : cfg.instruction || '';
+  renderWatchButton();
 }
 
 // Run the agent to produce/merge the running notes, streaming into the drawer.
@@ -2046,6 +2297,22 @@ function wireEvents() {
     }
   };
 
+  // Watch mode: 👁 opens the popover; Start/Stop control the loop.
+  $('btn-watch').onclick = (e) => {
+    e.stopPropagation();
+    const m = $('watch-menu');
+    const opening = m.classList.contains('hidden');
+    closeMenus();
+    if (opening) { renderWatchMenu(); m.classList.remove('hidden'); }
+  };
+  $('watch-start').onclick = () =>
+    startWatch({
+      instruction: $('watch-instruction').value.trim(),
+      intervalMs: Number($('watch-interval').value),
+      onlyWhenChanged: $('watch-changed').checked,
+    });
+  $('watch-stop').onclick = () => stopWatch({ hard: true });
+
   // History drawer
   $('btn-history').onclick = () => {
     renderHistory($('history-search').value);
@@ -2086,10 +2353,15 @@ function wireEvents() {
   };
 
   // Keep clicks inside an open menu (e.g. the URL input) from closing it.
-  ['agent-menu', 'attach-menu', 'skills-menu'].forEach((id) =>
+  ['agent-menu', 'attach-menu', 'skills-menu', 'watch-menu'].forEach((id) =>
     $(id).addEventListener('click', (e) => e.stopPropagation()),
   );
   document.body.onclick = () => closeMenus();
+
+  // Stop watching if the watched tab is closed.
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    if (state.watch.on && tabId === state.watch.tabId) stopWatch({ reason: 'watched tab closed' });
+  });
 
   // Keep the page chip pointed at whatever tab the user is on.
   chrome.tabs.onActivated.addListener(() => refreshActiveTab());

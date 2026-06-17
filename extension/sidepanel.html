@@ -98,6 +98,7 @@
           <button id="btn-attach" class="tool-btn" title="Add context" aria-label="Add context">＋</button>
           <button id="btn-skills" class="tool-btn" title="Skills" aria-label="Skills">⚡</button>
           <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI" aria-label="Improve prompt">✨</button>
+          <button id="btn-watch" class="tool-btn" title="Watch this page &amp; act on changes" aria-label="Watch this page">👁</button>
           <div class="composer-tools-spacer"></div>
           <button id="btn-send" class="send-btn" title="Send" aria-label="Send">↑</button>
           <button id="btn-stop" class="send-btn stop hidden" title="Stop" aria-label="Stop">■</button>
@@ -105,6 +106,25 @@
       </div>
       <div id="attach-menu" class="menu up hidden"></div>
       <div id="skills-menu" class="menu up hidden"></div>
+      <div id="watch-menu" class="menu up hidden">
+        <div class="menu-section">👁 Watch this page</div>
+        <label class="watch-row">Re-check every
+          <select id="watch-interval">
+            <option value="10000">10s</option>
+            <option value="30000">30s</option>
+            <option value="60000">1m</option>
+            <option value="300000">5m</option>
+          </select>
+        </label>
+        <label class="watch-row"><input type="checkbox" id="watch-changed" checked /> Only when the page changes</label>
+        <textarea id="watch-instruction" class="watch-instruction" rows="3" placeholder="When it changes, do this… e.g. “post the new status to #alerts via Slack”"></textarea>
+        <div class="watch-perm-note">Tip: for the agent to use Slack/MCP without prompting, set that agent's permission mode to <b>bypassPermissions</b> in Settings → Agents.</div>
+        <div class="watch-actions">
+          <button id="watch-stop" class="watch-btn hidden">Stop</button>
+          <button id="watch-start" class="watch-btn primary">Start watching</button>
+        </div>
+        <div id="watch-status" class="watch-status hidden"></div>
+      </div>
     </footer>
 
     <!-- URL paste prompt -->
