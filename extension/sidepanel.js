@@ -95,6 +95,12 @@ async function init() {
   renderUpgradeChip();
   maybeShowUpdateBanner();
   scheduleLiveNotes({ force: true }); // arm the global meeting-scribe loop (off-tab safe)
+  if (state.settings.ui?.railCollapsed) {
+    document.body.classList.add('rail-collapsed');
+    const t = $('rail-toggle');
+    if (t) { t.textContent = '›'; t.title = 'Show panel rail'; }
+  }
+  renderRail();
 
   // Right-click "Ask ChatPanel" seed.
   chrome.runtime.onMessage.addListener((msg) => {
@@ -1093,6 +1099,7 @@ function appendWatchLog(text) {
 }
 
 function renderWatchButton() {
+  if (typeof renderRail === 'function') renderRail(); // keep the rail 👁 highlight in sync
   const btn = $('btn-watch');
   if (btn) btn.classList.toggle('watching', state.watch.on);
   const status = $('watch-status');
@@ -1166,7 +1173,7 @@ async function openMeetings() {
   $('meetings-search').value = '';
   await renderMeetingsList('');
 }
-function closeMeetings() { clearInterval(meetingsView.liveTimer); $('meetings-drawer').classList.add('hidden'); }
+function closeMeetings() { clearInterval(meetingsView.liveTimer); $('meetings-drawer').classList.add('hidden'); renderRail(); }
 
 async function renderMeetingsList(query) {
   const list = $('meetings-list');
@@ -1293,6 +1300,60 @@ function meetingBackToList() {
   $('meeting-view').classList.add('hidden');
   $('meetings-list-view').classList.remove('hidden');
   renderMeetingsList($('meetings-search').value);
+}
+
+// --------------------------------------------------------------------------
+// Right icon rail — a pluggable home for panes (Meetings, Watch; future: Skills,
+// graph-viz). Add a pane with registerPane({ id, icon, title, open, isOpen, pro? }).
+// --------------------------------------------------------------------------
+const RAIL_PANES = [
+  { id: 'meetings', icon: '🎙', title: 'Meetings — live & past', open: openMeetings,
+    isOpen: () => !$('meetings-drawer').classList.contains('hidden') },
+  { id: 'watch', icon: '👁', title: 'Watch this page & act', pro: 'watch', open: openWatchPane,
+    isOpen: () => !$('watch-menu').classList.contains('hidden') },
+];
+function registerPane(p) { RAIL_PANES.push(p); renderRail(); }
+
+function safePaneOpen(p) { try { return p.isOpen ? p.isOpen() : false; } catch { return false; } }
+function closePane(p) {
+  if (p.id === 'meetings') closeMeetings();
+  else if (p.id === 'watch') $('watch-menu').classList.add('hidden');
+  else if (p.close) p.close();
+}
+function renderRail() {
+  const rail = $('rail');
+  if (!rail) return;
+  rail.innerHTML = '';
+  for (const p of RAIL_PANES) {
+    const btn = document.createElement('button');
+    const active = safePaneOpen(p) || (p.id === 'watch' && state.watch.on); // 👁 stays lit while watching
+    btn.className = 'rail-btn' + (active ? ' active' : '');
+    btn.textContent = p.icon;
+    btn.title = p.title;
+    btn.onclick = (e) => {
+      e.stopPropagation(); // don't let the body click close the popover we just opened
+      if (p.pro && !can(state.license, p.pro)) return upsell(p.pro); // Pro-gated pane
+      if (safePaneOpen(p)) closePane(p);
+      else { RAIL_PANES.forEach((q) => q !== p && safePaneOpen(q) && closePane(q)); p.open(); }
+      renderRail();
+    };
+    rail.appendChild(btn);
+  }
+}
+function openWatchPane() {
+  if (!can(state.license, 'watch')) return upsell('watch');
+  closeMenus();
+  renderWatchMenu();
+  $('watch-menu').classList.remove('hidden');
+}
+function toggleRail() {
+  const collapsed = document.body.classList.toggle('rail-collapsed');
+  const t = $('rail-toggle');
+  if (t) {
+    t.textContent = collapsed ? '›' : '‹';
+    t.title = collapsed ? 'Show panel rail' : 'Collapse panel rail';
+  }
+  updateSettings({ ui: { railCollapsed: collapsed } }).then((s) => (state.settings = s)).catch(() => {});
 }
 
 function switchMeetingTab(tab) {
@@ -2587,14 +2648,7 @@ function wireEvents() {
   };
 
   // Watch mode: 👁 opens the popover; Start/Stop control the loop.
-  $('btn-watch').onclick = (e) => {
-    e.stopPropagation();
-    if (!can(state.license, 'watch')) return upsell('watch'); // Watch is a Pro feature
-    const m = $('watch-menu');
-    const opening = m.classList.contains('hidden');
-    closeMenus();
-    if (opening) { renderWatchMenu(); m.classList.remove('hidden'); }
-  };
+  $('rail-toggle').onclick = toggleRail;
   $('watch-start').onclick = () => {
     const n = Math.max(1, Number($('watch-interval-n').value) || 10);
     const unit = Number($('watch-interval-unit').value) || 1000;
@@ -2622,7 +2676,6 @@ function wireEvents() {
   $('live-notes-search').oninput = () => renderTranscript();
 
   // Past Meetings drawer
-  $('btn-meetings').onclick = () => openMeetings();
   $('meetings-close').onclick = () => closeMeetings();
   $('meeting-vclose').onclick = () => closeMeetings();
   $('meeting-back').onclick = () => meetingBackToList();

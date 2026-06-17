@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
+    <div id="panel-body">
     <!-- Top bar -->
     <header class="topbar">
       <button id="btn-history" class="icon-btn" title="Chat history" aria-label="History">☰</button>
@@ -132,8 +133,6 @@
           <button id="btn-attach" class="tool-btn" title="Add context" aria-label="Add context">＋</button>
           <button id="btn-skills" class="tool-btn" title="Skills" aria-label="Skills">⚡</button>
           <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI" aria-label="Improve prompt">✨</button>
-          <button id="btn-watch" class="tool-btn" title="Watch this page &amp; act on changes" aria-label="Watch this page">👁</button>
-          <button id="btn-meetings" class="tool-btn" title="Meetings — live &amp; past" aria-label="Meetings">🎙</button>
           <div class="composer-tools-spacer"></div>
           <button id="btn-send" class="send-btn" title="Send" aria-label="Send">↑</button>
           <button id="btn-stop" class="send-btn stop hidden" title="Stop" aria-label="Stop">■</button>
@@ -160,6 +159,11 @@
         <div id="watch-status" class="watch-status hidden"></div>
       </div>
     </footer>
+    </div><!-- /#panel-body -->
+
+    <!-- Collapsible right rail — pluggable panes (Meetings, Watch, future) -->
+    <aside id="rail" class="rail"></aside>
+    <button id="rail-toggle" class="rail-toggle" title="Collapse panel" aria-label="Toggle rail">‹</button>
 
     <!-- URL paste prompt -->
     <div id="toast" class="toast hidden"></div>

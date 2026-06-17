@@ -46,7 +46,39 @@ html, body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 14px; color: var(--text); background: var(--bg);
 }
-body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+body { display: flex; flex-direction: row; height: 100vh; overflow: hidden; --rail-w: 46px; }
+body.rail-collapsed { --rail-w: 0px; }
+
+/* The panel content column (everything left of the rail). The right drawers are
+   absolute within this, so they cover content but never the rail. */
+#panel-body {
+  position: relative; flex: 1; min-width: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* Collapsible right icon rail — pluggable panes (Meetings, Watch, future). */
+.rail {
+  flex: 0 0 var(--rail-w); width: var(--rail-w); overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 10px 0; background: var(--bg-elev); border-left: 1px solid var(--border);
+  transition: flex-basis .14s ease, width .14s ease;
+}
+.rail-btn {
+  width: 34px; height: 34px; flex: 0 0 auto; border: none; border-radius: 9px; cursor: pointer;
+  background: transparent; color: var(--text); font-size: 18px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.rail-btn:hover { background: rgba(127,127,127,.14); }
+.rail-btn.active { background: var(--accent-soft); color: var(--accent); }
+.rail-toggle {
+  position: fixed; right: 6px; bottom: 12px; z-index: 56;
+  width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border);
+  background: var(--bg-elev); color: var(--text-dim); cursor: pointer;
+  font-size: 13px; line-height: 1; display: flex; align-items: center; justify-content: center;
+  box-shadow: var(--shadow);
+}
+/* Watch popover opens from the rail now (top-right), not the composer. */
+#watch-menu { position: fixed; top: 46px; right: calc(var(--rail-w) + 8px); left: auto; bottom: auto; z-index: 52; }
 
 .hidden { display: none !important; }
 

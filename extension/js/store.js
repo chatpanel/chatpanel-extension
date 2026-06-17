@@ -100,6 +100,8 @@ export function defaultSettings() {
       // Watch mode: re-read the current tab on an interval and re-run the agent
       // when the page changes. Remembered config (the loop is runtime-only).
       watch: { intervalMs: 10000, onlyWhenChanged: true, instruction: '' },
+      // Right icon-rail collapsed state.
+      railCollapsed: false,
     },
   };
 }
