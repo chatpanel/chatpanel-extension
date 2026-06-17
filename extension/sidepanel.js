@@ -451,14 +451,9 @@ async function send() {
       try {
         const win = state.settings?.ui?.meetingWindowMin || 0; // 0 = full; N = last N min
         const sinceTs = win ? Date.now() - win * 60_000 : 0;
-        // Read the FRESH record at send time — in-memory if on the meeting tab,
-        // else the persisted record (works off-tab).
-        let rec = null;
-        if (state.activeTab && meetingPlatform(state.activeTab.url || '')) {
-          const probe = await probeMeeting(state.activeTab.id);
-          if (probe?.ok && probe.capturing) rec = await getMeetingRecord(state.activeTab.id);
-        }
-        if (!rec) rec = await getMeeting(state.liveMeeting.id);
+        // Read the live in-memory transcript at send time (real-time even when the
+        // meeting tab is backgrounded), not the throttled persisted copy.
+        const rec = await getLiveMeetingRecord();
         if (rec) {
           // Inject BOTH the running summary and the live transcript so the agent
           // answers from up-to-date context. Keep the recent transcript tail if long.
@@ -1276,6 +1271,32 @@ async function refreshLiveMeetingView() {
   if (!meetingsView.live) clearInterval(meetingsView.liveTimer);
 }
 
+// Get the FRESHEST record for the live meeting. Background tabs throttle the
+// content script's storage flush, so the persisted record lags — but the in-memory
+// buffer (read via a message to the tab, which works even when backgrounded) is
+// real-time. Find the meeting's tab and read it live; fall back to storage.
+async function getLiveMeetingRecord() {
+  if (!state.liveMeeting) return null;
+  const id = state.liveMeeting.id;
+  const tryTab = async (tabId) => {
+    if (tabId == null) return null;
+    try { const r = await getMeetingRecord(tabId); return r && r.id === id ? r : null; } catch { return null; }
+  };
+  let rec = await tryTab(state.liveMeeting.tabId); // cached from a prior lookup
+  if (!rec) {
+    try {
+      const tabs = await listTabs({ currentWindowOnly: false }); // meeting may be in another window
+      for (const t of tabs) {
+        if (!meetingPlatform(t.url || '')) continue;
+        const r = await getMeetingRecord(t.id);
+        if (r && r.id === id) { rec = r; state.liveMeeting.tabId = t.id; break; }
+      }
+    } catch { /* fall through */ }
+  }
+  if (!rec) rec = await getMeeting(id); // last resort: persisted (may lag when backgrounded)
+  return rec;
+}
+
 // "View" on the meeting bar → open the active tab's meeting in the unified viewer.
 async function viewActiveMeeting(tabId) {
   const rec = await getMeetingRecord(tabId);
@@ -1333,7 +1354,8 @@ async function renderScribeIndicator(liveOpt) {
   // from ANY tab. When it starts/changes/ends, refresh the context bar.
   const top = [...live].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
   const prevId = state.liveMeeting && state.liveMeeting.id;
-  state.liveMeeting = top ? { id: top.id, title: top.title } : null;
+  const prevTabId = state.liveMeeting && state.liveMeeting.tabId;
+  state.liveMeeting = top ? { id: top.id, title: top.title, tabId: top.id === prevId ? prevTabId : undefined } : null;
   if ((state.liveMeeting && state.liveMeeting.id) !== prevId) renderContextBar();
 
   const el = $('scribe-indicator');
