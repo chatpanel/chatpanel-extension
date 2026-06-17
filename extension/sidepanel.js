@@ -436,16 +436,40 @@ async function send() {
     // for every question. Replaces any earlier meeting attachment so we never send a
     // stale copy, and skips the generic page-read below (the meeting shell page has
     // no useful text — the transcript IS the context).
+    // Live meeting rides along on EVERY message, from any tab, unless excluded —
+    // so you never have to navigate to a button to ask about an in-progress call.
     let meetingIncluded = false;
-    if (state.activeTab && meetingPlatform(state.activeTab.url || '') && can(state.license, 'liveMeetings')) {
+    if (
+      can(state.license, 'liveMeetings') &&
+      state.liveMeeting &&
+      state.excludedMeetingId !== state.liveMeeting.id
+    ) {
       try {
-        const probe = await probeMeeting(state.activeTab.id);
-        if (probe?.ok && probe.capturing) {
-          // Rolling window: 0 = full transcript; N = last N minutes only.
-          const win = state.settings?.ui?.meetingWindowMin || 0;
-          const sinceTs = win ? Date.now() - win * 60_000 : 0;
+        const win = state.settings?.ui?.meetingWindowMin || 0; // 0 = full; N = last N min
+        const sinceTs = win ? Date.now() - win * 60_000 : 0;
+        // Read the FRESH record at send time — in-memory if on the meeting tab,
+        // else the persisted record (works off-tab).
+        let rec = null;
+        if (state.activeTab && meetingPlatform(state.activeTab.url || '')) {
+          const probe = await probeMeeting(state.activeTab.id);
+          if (probe?.ok && probe.capturing) rec = await getMeetingRecord(state.activeTab.id);
+        }
+        if (!rec) rec = await getMeeting(state.liveMeeting.id);
+        if (rec) {
+          // Inject BOTH the running summary and the live transcript so the agent
+          // answers from up-to-date context. Keep the recent transcript tail if long.
+          const transcript = meetingToText(rec, { sinceTs });
+          const notes = await getMeetingNotes(state.liveMeeting.id).catch(() => '');
+          let body = (notes ? `RUNNING SUMMARY (so far):\n${notes}\n\n` : '') + 'LIVE TRANSCRIPT:\n';
+          const cap = 40000;
+          const room = Math.max(2000, cap - body.length);
+          body += transcript.length > room ? '…' + transcript.slice(-room) : transcript;
           state.attachments = state.attachments.filter((a) => a.kind !== 'meeting');
-          state.attachments.unshift(await captureMeetingTranscript(state.activeTab.id, { sinceTs }));
+          state.attachments.unshift({
+            id: `mtg_${rec.id}_${Date.now()}`, kind: 'meeting',
+            title: `🎙 ${rec.title || 'Meeting'} (live)`, url: rec.url || '',
+            text: body, chars: body.length,
+          });
           meetingIncluded = true;
         }
       } catch {
@@ -1260,18 +1284,21 @@ async function viewActiveMeeting(tabId) {
 function askAboutMeeting() {
   const rec = meetingsView.rec;
   if (!rec) return;
-  const text = meetingToText(rec, { sinceTs: 0 });
+  const transcript = meetingToText(rec, { sinceTs: 0 });
+  const notes = meetingsView.notes || '';
+  let body = (notes ? `SUMMARY:\n${notes}\n\n` : '') + 'TRANSCRIPT:\n';
+  const room = Math.max(2000, 40000 - body.length);
+  body += transcript.length > room ? '…' + transcript.slice(-room) : transcript;
   state.attachments = state.attachments || [];
-  if (!state.attachments.some((a) => typeof a.id === 'string' && a.id.startsWith(`mtg_${rec.id}`))) {
-    state.attachments.unshift({
-      id: `mtg_${rec.id}_${Date.now()}`,
-      kind: 'meeting',
-      title: `🎙 ${rec.title || 'Meeting'}`,
-      url: rec.url || '',
-      text: text.slice(0, 30000),
-      chars: text.length,
-    });
-  }
+  state.attachments = state.attachments.filter((a) => !(typeof a.id === 'string' && a.id.startsWith(`mtg_${rec.id}`)));
+  state.attachments.unshift({
+    id: `mtg_${rec.id}_${Date.now()}`,
+    kind: 'meeting',
+    title: `🎙 ${rec.title || 'Meeting'}`,
+    url: rec.url || '',
+    text: body,
+    chars: body.length,
+  });
   closeMeetings();
   renderContextBar();
   $('input').focus();
@@ -1280,12 +1307,19 @@ function askAboutMeeting() {
 
 // Slim "N meetings recording" strip, shown from any non-meeting tab.
 async function renderScribeIndicator(liveOpt) {
-  const el = $('scribe-indicator');
-  if (!el) return;
   let live = liveOpt;
   if (!live) {
     try { live = (await getMeetingIndex()).filter((e) => e.status !== 'ended'); } catch { live = []; }
   }
+  // Cache the most-recent live meeting so it can auto-attach + show a context chip
+  // from ANY tab. When it starts/changes/ends, refresh the context bar.
+  const top = [...live].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
+  const prevId = state.liveMeeting && state.liveMeeting.id;
+  state.liveMeeting = top ? { id: top.id, title: top.title } : null;
+  if ((state.liveMeeting && state.liveMeeting.id) !== prevId) renderContextBar();
+
+  const el = $('scribe-indicator');
+  if (!el) return;
   const onMeetingTab = state.activeTab && meetingPlatform(state.activeTab.url || '');
   if (live.length && !onMeetingTab) {
     el.classList.remove('hidden');
@@ -1790,11 +1824,35 @@ function renderContextBar() {
   const bar = $('context-bar');
   bar.innerHTML = '';
   const showPage = state.usePage && state.activeTab;
-  if (!state.attachments.length && !showPage) {
+  const showMeeting = !!state.liveMeeting && state.excludedMeetingId !== state.liveMeeting.id;
+  if (!state.attachments.length && !showPage && !showMeeting) {
     bar.classList.add('hidden');
     return;
   }
   bar.classList.remove('hidden');
+
+  // Live meeting chip — its transcript is read fresh from the DB and included on
+  // EVERY message, from any tab, until you dismiss it (then it stays off for this
+  // meeting). No navigating to a button.
+  if (showMeeting) {
+    const chip = document.createElement('div');
+    chip.className = 'ctx-chip page-chip';
+    chip.title = 'Live meeting transcript — included on every message (read fresh each send)';
+    chip.innerHTML = `<span class="ctx-kind">🎙</span><span class="ctx-title">${escapeAttr(
+      (state.liveMeeting.title || 'Meeting') + ' · live',
+    )}</span>`;
+    const x = document.createElement('button');
+    x.className = 'ctx-x';
+    x.textContent = '✕';
+    x.title = 'Stop including this meeting';
+    x.onclick = () => {
+      state.excludedMeetingId = state.liveMeeting.id;
+      renderContextBar();
+      toast('Meeting context off for this meeting');
+    };
+    chip.appendChild(x);
+    bar.appendChild(chip);
+  }
 
   // The "live page" chip: the current tab, auto-included and read fresh at send.
   if (showPage) {
