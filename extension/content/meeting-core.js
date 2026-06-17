@@ -291,6 +291,11 @@
     if (Date.now() - lastActivityTs() > IDLE_END_MS) { stop(); return; }
   }, 3000);
 
+  // Heartbeat: persist periodically while capturing (even during silence) so the
+  // side panel can tell a live meeting is still alive vs a zombie (tab closed /
+  // call left, so this script is gone and the record stops getting fresh writes).
+  setInterval(() => { if (capturing) flush('live'); }, 20000);
+
   // Final flush if the tab is closing mid-meeting. Guarded: during teardown the
   // extension context may already be gone, so swallow anything stop() throws.
   window.addEventListener('pagehide', () => { try { if (capturing) stop(); } catch { /* detached */ } }, { once: true });

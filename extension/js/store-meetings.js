@@ -93,11 +93,33 @@ export async function persistMeeting(rec) {
     endedAt: capped.endedAt,
     status: capped.status,
     lines: capped.segments.length,
+    persistedAt: Date.now(), // last heartbeat — lets the side panel detect zombies
   };
   const i = index.findIndex((e) => e.id === capped.id);
   if (i >= 0) index[i] = entry;
   else index.unshift(entry);
   await saveIndex(index);
+}
+
+// Force a meeting to 'ended' (used to clean up a "zombie" live meeting whose tab/
+// content script is gone, so it stops showing as recording). Safe only when no
+// content script is still writing it — the side panel calls this on stale records.
+export async function markMeetingEnded(id) {
+  const index = await getMeetingIndex();
+  const e = index.find((x) => x.id === id);
+  let changed = false;
+  if (e && e.status !== 'ended') {
+    e.status = 'ended';
+    e.endedAt = e.endedAt || Date.now();
+    changed = true;
+  }
+  if (changed) await saveIndex(index);
+  const rec = await getMeeting(id);
+  if (rec && rec.status !== 'ended') {
+    rec.status = 'ended';
+    rec.endedAt = rec.endedAt || Date.now();
+    await chrome.storage.local.set({ [meetingKey(id)]: await encryptJSON(rec) });
+  }
 }
 
 // --------------------------------------------------------------------------

@@ -38,6 +38,7 @@ import {
   getMeetingNotes,
   saveMeetingNotes,
   deleteMeeting,
+  markMeetingEnded,
 } from './js/store-meetings.js';
 import { renderMarkdown } from './js/markdown.js';
 import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
@@ -1315,6 +1316,19 @@ async function renderScribeIndicator(liveOpt) {
   if (!live) {
     try { live = (await getMeetingIndex()).filter((e) => e.status !== 'ended'); } catch { live = []; }
   }
+  // Drop + finalize "zombie" meetings: a live entry whose heartbeat (persistedAt)
+  // went stale means its tab/content script is gone (call left, tab closed), so it
+  // never flips to ended on its own. Finalize it so it stops auto-attaching/showing.
+  // (No persistedAt = pre-heartbeat record → also treat as stale.)
+  const now = Date.now();
+  const ZOMBIE_MS = 90_000;
+  const fresh = [];
+  for (const e of live) {
+    if (e.persistedAt && now - e.persistedAt < ZOMBIE_MS) fresh.push(e);
+    else markMeetingEnded(e.id).catch(() => {});
+  }
+  live = fresh;
+
   // Cache the most-recent live meeting so it can auto-attach + show a context chip
   // from ANY tab. When it starts/changes/ends, refresh the context bar.
   const top = [...live].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
