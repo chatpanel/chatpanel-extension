@@ -39,6 +39,17 @@ jobs:
       - name: Package extension
         run: node tools/package-extension.mjs
 
+      # Always upload the built zips as a run artifact, so a `workflow_dispatch`
+      # (publish=false) build can be downloaded and sanity-checked WITHOUT a tag
+      # or a Web Store submission. Tagged runs also get this, in addition to the
+      # attached GitHub Release below.
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatpanel-extension-zip
+          path: dist/chatpanel-extension*.zip
+          if-no-files-found: error
+
       - name: Publish to Chrome Web Store
         if: ${{ env.CWS_TOKEN != '' && (github.event_name == 'push' || inputs.publish) }}
         env:
