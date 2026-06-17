@@ -543,7 +543,10 @@ async function renderAbout() {
   status.className = 'status';
   let info;
   try {
-    info = await checkForUpdate();
+    // Settings is an explicit, user-initiated check — bypass the 12h cache so it
+    // always reflects the newest GitHub release (the side-panel banner stays
+    // throttled for background checks).
+    info = await checkForUpdate({ force: true });
   } catch {
     status.textContent = '';
     return;
@@ -675,6 +678,12 @@ function wire() {
   $('pref-autocomplete').onchange = () => {
     if (!isPro(license)) { upsell('Autocomplete is a Pro feature'); $('pref-autocomplete').checked = false; return; }
     savePrefs();
+  };
+
+  $('check-updates').onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try { await renderAbout(); } finally { btn.disabled = false; }
   };
 
   $('btn-subscribe-pro').onclick = () => subscribePro($('btn-subscribe-pro'));
