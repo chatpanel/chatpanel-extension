@@ -94,8 +94,9 @@ export function defaultSettings() {
       // long meetings don't grow the prompt every question.
       meetingWindowMin: 0,
       // Live scribe: auto-refresh the running meeting notes every N minutes by
-      // merging new transcript into the existing summary. 0 = off.
-      liveNotesIntervalMin: 0,
+      // merging new transcript into the existing summary. 0 = off. Default 2m so
+      // meetings are summarized (and saved to Past Meetings) out of the box.
+      liveNotesIntervalMin: 2,
       // Watch mode: re-read the current tab on an interval and re-run the agent
       // when the page changes. Remembered config (the loop is runtime-only).
       watch: { intervalMs: 10000, onlyWhenChanged: true, instruction: '' },
