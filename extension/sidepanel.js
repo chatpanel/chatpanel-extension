@@ -1191,6 +1191,7 @@ const meetingsView = { rec: null, notes: '', tab: 'summary', generating: false, 
 const PLATFORM_ICON = { zoom: '🟦', meet: '🟩', teams: '🟪', webex: '🟧' };
 
 async function openMeetings() {
+  if (!can(state.license, 'liveMeetings')) return upsell('liveMeetings'); // Pro — covers all entry points
   $('meetings-drawer').classList.remove('hidden');
   $('meeting-view').classList.add('hidden');
   $('meetings-list-view').classList.remove('hidden');
@@ -1341,9 +1342,9 @@ function meetingBackToList() {
 // graph-viz). Add a pane with registerPane({ id, icon, title, open, isOpen, pro? }).
 // --------------------------------------------------------------------------
 const RAIL_PANES = [
-  { id: 'meetings', icon: '🎙', title: 'Meetings — live & past', open: openMeetings,
+  { id: 'meetings', icon: '🎙', label: 'Meet', title: 'Meetings — live & past', pro: 'liveMeetings', open: openMeetings,
     isOpen: () => !$('meetings-drawer').classList.contains('hidden') },
-  { id: 'watch', icon: '👁', title: 'Watch this page & act', pro: 'watch', open: openWatchPane,
+  { id: 'watch', icon: '👁', label: 'Watch', title: 'Watch this page & act', pro: 'watch', open: openWatchPane,
     isOpen: () => !$('watch-menu').classList.contains('hidden') },
 ];
 function registerPane(p) { RAIL_PANES.push(p); renderRail(); }
@@ -1362,7 +1363,16 @@ function renderRail() {
     const btn = document.createElement('button');
     const active = safePaneOpen(p) || (p.id === 'watch' && state.watch.on); // 👁 stays lit while watching
     btn.className = 'rail-btn' + (active ? ' active' : '');
-    btn.textContent = p.icon;
+    const ico = document.createElement('span');
+    ico.className = 'rail-ico';
+    ico.textContent = p.icon;
+    btn.appendChild(ico);
+    if (p.label) {
+      const lab = document.createElement('span');
+      lab.className = 'rail-label';
+      lab.textContent = p.label;
+      btn.appendChild(lab);
+    }
     btn.title = p.title;
     btn.onclick = (e) => {
       e.stopPropagation(); // don't let the body click close the popover we just opened
