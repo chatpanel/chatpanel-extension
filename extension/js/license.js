@@ -35,17 +35,22 @@ const ENTITLEMENT_PUBLIC_JWK = {
 // Where "Upgrade" sends people.
 //
 // UPGRADE_URL is the "compare plans" overview (the marketing pricing section).
-// Checkout goes through store.chatpanel.net — a branded redirect that 302s to
-// whatever checkout provider is live (see /store), so the provider can change
-// without re-releasing the extension.
+// Both it and checkoutUrl() now point at the site pricing page, so plans, prices,
+// coupons and the checkout provider can all change without re-releasing the
+// extension — the extension only ever opens a stable URL + passes install_id.
 export const UPGRADE_URL = 'https://chatpanel.net/#pricing';
-const STORE_BASE = 'https://store.chatpanel.net/buy';
 
-// Direct-to-checkout link for a plan, carrying this install's id through the
-// checkout `custom` field so the server can seat THIS device automatically.
+// "Subscribe" opens the SITE pricing page rather than a fixed checkout link, so
+// plans, prices, coupons and limited offers all live on the site + Stripe and can
+// change WITHOUT re-releasing the extension. We pass this install's id so whichever
+// plan the user picks seats THIS device; the extension then polls /entitlement (see
+// subscribe()) and flips Pro on automatically. The site forwards install_id onto
+// the buy buttons. `plan` is accepted for compatibility but the page is the picker.
 export function checkoutUrl(plan = 'pro', installId = '') {
-  const base = `${STORE_BASE}/${plan === 'team' ? 'team' : 'pro'}`;
-  return installId ? `${base}?checkout[custom][install_id]=${encodeURIComponent(installId)}` : base;
+  const u = new URL('https://chatpanel.net/');
+  if (installId) u.searchParams.set('install_id', installId);
+  u.hash = 'pricing';
+  return u.toString();
 }
 
 // Plans, lowest → highest. A feature is unlocked when the user's plan rank is
