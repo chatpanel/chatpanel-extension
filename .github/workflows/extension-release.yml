@@ -1,8 +1,14 @@
-# Package the extension and publish it to a GitHub Release (and, when the
-# CHROME_* secrets are present, to the Chrome Web Store).
+# Build the extension, attach it to a GitHub Release, and (separately) publish to
+# the Chrome Web Store. These are DECOUPLED so you can test before publishing:
 #
-# Trigger by pushing a tag like `ext-v0.2.1`. The tag is informational; the
-# version that ships is whatever is in extension/manifest.json.
+#   • Push a tag `ext-v*`  → builds the zip + creates the GitHub Release ONLY.
+#                            Nothing goes to the Web Store. Download the zip from
+#                            the release (or dl.chatpanel.net) and test it.
+#   • Run this workflow manually (workflow_dispatch) with publish=true → uploads
+#                            the build to the Chrome Web Store for review.
+#
+# So the flow is: tag → test the GitHub build → manually dispatch to publish.
+# The version that ships is whatever is in extension/manifest.json.
 #
 # The release attaches BOTH a versioned zip (chatpanel-extension-v<x>.zip) and a
 # stable-named zip (chatpanel-extension.zip). The stable name powers a permanent
@@ -51,7 +57,9 @@ jobs:
           if-no-files-found: error
 
       - name: Publish to Chrome Web Store
-        if: ${{ env.CWS_TOKEN != '' && (github.event_name == 'push' || inputs.publish) }}
+        # Decoupled from tagging: ONLY a manual workflow_dispatch with publish=true
+        # submits to the store. A tag push builds + releases but never publishes.
+        if: ${{ env.CWS_TOKEN != '' && github.event_name == 'workflow_dispatch' && inputs.publish }}
         env:
           CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
