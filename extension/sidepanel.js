@@ -2573,6 +2573,10 @@ function scheduleAutocomplete() {
   }
   acSuggestion = '';
   $('prompt-suggest').classList.add('hidden');
+  // Wipe any rendered ghost immediately — on every edit (incl. backspace) the
+  // prior suggestion is stale, so it must not linger over the input/placeholder.
+  const ghost = $('input-ghost');
+  if (ghost) ghost.innerHTML = '';
   if (!state.settings.ui?.autocomplete || !isPro(state.license) || isActiveStreaming()) return;
   const input = $('input');
   const text = input.value;
