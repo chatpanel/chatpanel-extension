@@ -5,7 +5,7 @@
 //   Agents  — the local bridge (CLI) agents: Claude Code, Codex, Gemini CLI,
 //             plus the bridge connection itself.
 import { getSettings, saveSettings, uid } from './js/store.js';
-import { checkBridge, updateBridge, testAgent, listModels } from './js/providers.js';
+import { checkBridge, updateBridge, testAgent, listModels, checkAgentCommand } from './js/providers.js';
 import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
 import {
@@ -343,22 +343,54 @@ function bridgeAgentCard(agent) {
   q('.ba-perm').value = agent.permissionMode || 'acceptEdits';
   q('.ba-local').checked = agent.useLocalConfig !== false;
   q('.ba-system').value = agent.systemPrompt || '';
+  // Custom ("bring your own CLI") fields.
+  q('.ba-command').value = agent.command || '';
+  q('.ba-args').value = agent.args || '';
+  q('.ba-promptvia').value = agent.promptVia || 'stdin';
+  q('.ba-format').value = agent.format || 'text';
   gateField('advancedAgent', q('.ba-system')); // per-agent system prompt is Pro
   applyFreeSlot(node, agent, 'bridge'); // Free uses one agent — the user's pick
 
-  const av = (bridgeState.agents || []).find((x) => x.id === agent.bridgeAgent);
-  if (!bridgeState.ok) setStatus(q('.ba-avail'), 'Bridge not running', '');
-  else setStatus(q('.ba-avail'), av?.available ? '✓ available' : `✕ ${av?.reason || 'unavailable'}`, av?.available ? 'ok' : 'err');
+  const proCustom = can(license, 'customAgents'); // BYO CLI is a hard Pro gate
+
+  // Show/hide the custom block and refresh the availability line for the kind.
+  const syncKind = () => {
+    const isCustom = q('.ba-kind').value === 'custom';
+    q('.ba-custom').classList.toggle('hidden', !isCustom);
+    // local skills/MCP & per-agent system prompt only apply to the built-in CLIs.
+    q('.ba-local').closest('.check').classList.toggle('hidden', isCustom);
+    if (isCustom && !proCustom) {
+      setStatus(q('.ba-avail'), '✨ Pro — upgrade to bring your own CLI', 'err');
+    } else if (isCustom) {
+      showCustomAvailability(agent, q);
+    } else {
+      const av = (bridgeState.agents || []).find((x) => x.id === q('.ba-kind').value);
+      if (!bridgeState.ok) setStatus(q('.ba-avail'), 'Bridge not running', '');
+      else setStatus(q('.ba-avail'), av?.available ? '✓ available' : `✕ ${av?.reason || 'unavailable'}`, av?.available ? 'ok' : 'err');
+    }
+  };
+  q('.ba-kind').onchange = syncKind;
+  syncKind();
+
+  q('.ba-check').onclick = () => showCustomAvailability(agent, q, q('.ba-command').value.trim());
 
   q('.ba-save').onclick = async () => {
+    const bridgeAgent = q('.ba-kind').value;
+    if (bridgeAgent === 'custom' && !proCustom) {
+      return setStatus(q('.ba-status'), '✨ Custom CLI agents need ChatPanel Pro', 'err');
+    }
     Object.assign(agent, {
       name: q('.ba-name').value.trim() || 'Agent',
       kind: 'bridge',
-      bridgeAgent: q('.ba-kind').value,
+      bridgeAgent,
       workingDir: q('.ba-workdir').value.trim(),
       permissionMode: q('.ba-perm').value,
       useLocalConfig: q('.ba-local').checked,
       systemPrompt: q('.ba-system').value,
+      command: q('.ba-command').value.trim(),
+      args: q('.ba-args').value.trim(),
+      promptVia: q('.ba-promptvia').value,
+      format: q('.ba-format').value,
     });
     await saveSettings(settings);
     setStatus(q('.ba-status'), '✓ Saved', 'ok');
@@ -371,6 +403,22 @@ function bridgeAgentCard(agent) {
   };
 
   return node;
+}
+
+// Ask the bridge whether a custom agent's command resolves (PATH / full path /
+// WSL). `cmd` overrides the saved command (used by the live "Check" button).
+async function showCustomAvailability(agent, q, cmd) {
+  const command = (cmd ?? agent.command ?? '').trim();
+  if (!command) return setStatus(q('.ba-avail'), 'Enter a command', '');
+  setStatus(q('.ba-avail'), 'Checking…', '');
+  const r = await checkAgentCommand(settings.bridgeUrl, command);
+  if (r.legacy) return setStatus(q('.ba-avail'), 'Update the bridge to v0.3.0+ for custom agents', 'err');
+  if (r.ok) {
+    const where = r.via === 'wsl' ? ' (in WSL)' : r.via === 'cmd' || r.via === 'script' ? ' (shim)' : '';
+    setStatus(q('.ba-avail'), `✓ found${where}`, 'ok');
+  } else {
+    setStatus(q('.ba-avail'), `✕ not found${r.reason ? ' — ' + r.reason : ''}`, 'err');
+  }
 }
 
 function addBridgeAgent() {

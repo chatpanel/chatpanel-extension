@@ -216,9 +216,27 @@
             <option value="claude">claude (Claude Code)</option>
             <option value="codex">codex</option>
             <option value="gemini">gemini (Gemini CLI)</option>
+            <option value="custom">custom — bring your own CLI ✨ Pro</option>
           </select>
           <span class="ba-avail status"></span>
           <button class="btn danger ba-del">Delete</button>
+        </div>
+        <!-- Custom ("bring your own CLI") fields — shown only when kind = custom -->
+        <div class="ba-custom hidden">
+          <div class="row"><label>Command</label><input class="ba-command" placeholder="opencode  (or a full path, e.g. /usr/local/bin/opencode)" /><button class="btn ba-check" type="button">Check</button></div>
+          <div class="row"><label>Arguments</label><input class="ba-args" placeholder="optional, space-separated — e.g. run  (use {prompt} to place the message)" /></div>
+          <div class="row"><label>Send prompt via</label>
+            <select class="ba-promptvia">
+              <option value="stdin">stdin (pipe the message in) — most CLIs</option>
+              <option value="arg">argument ({prompt}, or appended)</option>
+            </select>
+          </div>
+          <div class="row"><label>Output</label>
+            <select class="ba-format">
+              <option value="text">plain text (stream stdout) — works with anything</option>
+              <option value="claude-stream-json">Claude stream-json (tools that speak it)</option>
+            </select>
+          </div>
         </div>
         <div class="row"><label>Working dir</label><input class="ba-workdir" placeholder="/path/to/project (optional)" /></div>
         <div class="row"><label>Permissions</label>

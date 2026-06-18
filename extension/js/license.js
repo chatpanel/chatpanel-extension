@@ -4,7 +4,11 @@
 //           URL context, local history, built-in skills. One working agent is
 //           the viral hook; it costs us nothing (user's own compute).
 //   pro   → all your agents & models at once, multi-tab, custom skills, per-agent
-//           system prompts, exports (soft-gated client features).
+//           system prompts, exports (soft-gated client features), AND "bring your
+//           own" custom CLI agents. That last one is HARD-gated, not UI: the local
+//           bridge verifies a server-signed entitlement token (ECDSA P-256, this
+//           file's public key) before it will run a custom command, so it can't be
+//           unlocked by editing the open-source client.
 //   team  → cloud/server features that run on OUR infra (hard-gated, recurring).
 //
 // Pro/Team entitlement is verified by the ChatPanel server. Activation happens
@@ -69,6 +73,7 @@ export const FEATURE_TIER = {
   multiTab: 'pro',
   unlimitedAgents: 'pro',
   customSkills: 'pro',
+  customAgents: 'pro', // "bring your own" CLI agent — HARD-gated, verified by the bridge
   advancedAgent: 'pro',
   exportChats: 'pro',
   promptLibrary: 'pro',
@@ -111,6 +116,16 @@ export const FREE_LIMITS = {
 export async function getLicense() {
   const got = await chrome.storage.local.get(K_LICENSE);
   return got[K_LICENSE] || { plan: 'free', key: '', status: 'inactive' };
+}
+
+// The raw server-signed entitlement token, for handing to the local bridge (which
+// verifies it offline to gate Pro-only features like custom CLI agents). Empty
+// string when not entitled or the token has expired.
+export async function getEntitlementToken() {
+  const lic = await getLicense();
+  if (!lic || !lic.token) return '';
+  if (lic.tokenExp && Date.now() > lic.tokenExp) return '';
+  return lic.token;
 }
 
 async function setLicense(lic) {

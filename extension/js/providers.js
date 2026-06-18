@@ -10,6 +10,8 @@
 // tokens arrive. It also calls onEvent({type,...}) for non-text events (tool
 // use, status) so the UI can show what a coding agent is doing.
 
+import { getEntitlementToken } from './license.js';
+
 // --------------------------------------------------------------------------
 // Shared SSE reader: yields each `data:` payload string from a fetch Response.
 // --------------------------------------------------------------------------
@@ -161,16 +163,30 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent }) {
 // --------------------------------------------------------------------------
 async function streamBridge(agent, messages, { settings, signal, onDelta, onEvent }) {
   const base = (settings.bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
+  const bridgeAgent = agent.bridgeAgent || 'claude';
+  const options = {
+    workingDir: agent.workingDir || '',
+    permissionMode: agent.permissionMode || 'default',
+    model: agent.model || '',
+    // Default ON: use the user's local skills / MCP / config.
+    useLocalConfig: agent.useLocalConfig !== false,
+  };
+  // "Bring your own" custom CLI (Pro) — carry the command spec plus the signed
+  // entitlement token, which the bridge verifies OFFLINE before running anything.
+  if (bridgeAgent === 'custom') {
+    options.custom = {
+      command: agent.command || '',
+      args: agent.args || '',
+      promptVia: agent.promptVia || 'stdin',
+      format: agent.format || 'text',
+      label: agent.name || agent.command || 'Custom',
+    };
+    options.entitlement = await getEntitlementToken();
+  }
   const body = {
-    agent: agent.bridgeAgent || 'claude',
+    agent: bridgeAgent,
     system: agent.systemPrompt || '',
-    options: {
-      workingDir: agent.workingDir || '',
-      permissionMode: agent.permissionMode || 'default',
-      model: agent.model || '',
-      // Default ON: use the user's local skills / MCP / config.
-      useLocalConfig: agent.useLocalConfig !== false,
-    },
+    options,
     messages: toChatMessages(messages),
   };
   let res;
@@ -232,6 +248,25 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
   }
   if (agent.kind === 'anthropic') return streamAnthropic(agent, messages, opts);
   return streamOpenAI(agent, messages, opts);
+}
+
+// Ask the Bridge whether a custom command resolves on this machine (PATH / a full
+// path / inside WSL). Returns { ok, via } — `via` is how it resolved (native /
+// script / cmd / wsl). Older bridges (no /agent-check) → { ok:false, legacy:true }.
+export async function checkAgentCommand(bridgeUrl, command) {
+  const base = (bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
+  try {
+    const res = await fetch(`${base}/agent-check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command }),
+    });
+    if (res.status === 404) return { ok: false, legacy: true };
+    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+    return await res.json();
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
 }
 
 // Ask the Bridge which local agents are alive. Returns { ok, agents: [{id,
