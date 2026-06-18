@@ -22,11 +22,14 @@ chrome.runtime.onInstalled.addListener(() => {
   // persists across those, so create() would throw "duplicate id". Clear first.
   chrome.contextMenus.removeAll(() => {
     void chrome.runtime.lastError; // ignore "nothing to remove" on first install
-    chrome.contextMenus.create({
-      id: 'chatpanel-ask',
-      title: 'Ask ChatPanel about this page',
-      contexts: ['page', 'selection', 'link'],
-    });
+    chrome.contextMenus.create(
+      {
+        id: 'chatpanel-ask',
+        title: 'Ask ChatPanel about this page',
+        contexts: ['page', 'selection', 'link'],
+      },
+      () => void chrome.runtime.lastError, // consume any benign duplicate on reload races
+    );
   });
 
   // Daily license re-check (period is in minutes; 720 = 12h, so we catch a lapse
