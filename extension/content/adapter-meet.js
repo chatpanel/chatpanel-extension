@@ -64,6 +64,16 @@
 
     onStart() { _idc = 0; _ids = new WeakMap(); },
 
+    // Meet exposes a single labelled toggle in the call controls — "Turn on
+    // captions" / "Turn off captions". Reliable and reversible-aware.
+    enableCaptions(ui) {
+      const btn = ui.byName(/turn (on|off) captions/i) || ui.byName(/captions?/i);
+      if (!btn) return null; // toolbar not rendered yet → core retries
+      if (/turn off captions/i.test(btn.getAttribute('aria-label') || '')) return 'on';
+      ui.click(btn);
+      return 'clicked';
+    },
+
     readDiscreteCaptions(m) {
       const els = textElsFrom(m);
       if (!els.length) return null;

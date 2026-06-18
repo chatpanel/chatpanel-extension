@@ -211,6 +211,22 @@
       refreshParticipants();
     },
 
+    // Best-effort, and the least reliable of the four: Zoom buries captions under
+    // More → Captions → Show Captions (the modern app.zoom.us client nests these in
+    // shadow DOM — the core's ui pierces it). Crucially, if the HOST disabled
+    // captions/transcription for the meeting, no toggle exists and nothing here can
+    // force it on — we just give up and the bar keeps hinting "turn on captions".
+    enableCaptions(ui) {
+      const show = ui.byName(/show captions|show subtitle/i);
+      if (show) { ui.click(show); return 'clicked'; }
+      // "Captions" / "Live Transcript" is usually a submenu opener, not the toggle.
+      const capMenu = ui.byName(/^captions$|live transcript|closed caption/i);
+      if (capMenu && !ui.isOn(capMenu)) { ui.click(capMenu); return 'pending'; }
+      const more = ui.byName(/more meeting controls|more options|^more$/i);
+      if (more) { ui.click(more); return 'pending'; }
+      return null;
+    },
+
     // Return { speaker, text } for the current on-screen caption, or null.
     readCaption(mutation) {
       const container = captionContainerFrom(mutation);

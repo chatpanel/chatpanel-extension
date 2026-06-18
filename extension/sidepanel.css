@@ -276,6 +276,19 @@ body.rail-collapsed { --rail-w: 0px; }
   background: var(--bg-elev); border-left: 1px solid var(--border);
   z-index: 50; display: flex; flex-direction: column; box-shadow: var(--shadow);
 }
+/* Drag the left edge to widen/narrow the drawer (persisted). */
+.live-notes-resize {
+  position: absolute; top: 0; left: 0; bottom: 0; width: 7px; margin-left: -3px;
+  cursor: ew-resize; z-index: 51; touch-action: none;
+}
+.live-notes-resize::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px;
+  background: transparent; transition: background 0.12s;
+}
+.live-notes-resize:hover::before, .live-notes-drawer.resizing .live-notes-resize::before {
+  background: var(--accent);
+}
+.live-notes-drawer.resizing { user-select: none; }
 .live-notes-head {
   display: flex; align-items: center; gap: 8px; padding: 10px 12px;
   border-bottom: 1px solid var(--border);

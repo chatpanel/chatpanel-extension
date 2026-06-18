@@ -244,6 +244,89 @@
   function safe(fn) { try { return fn(); } catch { return null; } }
   function currentMeetingKey() { return safe(() => adapter.meetingKey(location.href)) || 'meeting'; }
 
+  // ---- auto-enable captions ----------------------------------------------
+  // Users forget to turn captions on, and we only capture rendered caption text —
+  // no captions, no transcript. So on capture start we try to flip the platform's
+  // captions toggle for them. This is best-effort UI automation: captions render
+  // LOCALLY (nothing is broadcast to other participants), and on failure we just
+  // leave the meeting bar's "turn on captions" hint in place — no toast, no retry
+  // storm. Each adapter supplies enableCaptions(ui); the ui below pierces open
+  // shadow roots (the modern Zoom/Meet clients nest controls in shadow DOM) so the
+  // adapters stay short. enableCaptions returns:
+  //   'on'      → captions already enabled (nothing to do)
+  //   'clicked' → we clicked the toggle (done — never click twice, that toggles off)
+  //   'pending' → opened a menu; call again next tick to click the revealed item
+  //   null      → control not found yet (controls still rendering → retry)
+  const captionUI = (() => {
+    function deepEls(root, acc, depth) {
+      if (depth > 15 || !root || !root.querySelectorAll) return;
+      let els;
+      try { els = root.querySelectorAll('*'); } catch { return; }
+      for (const el of els) { acc.push(el); if (el.shadowRoot) deepEls(el.shadowRoot, acc, depth + 1); }
+    }
+    function name(el) {
+      return (el.getAttribute?.('aria-label') || el.getAttribute?.('title') || el.textContent || '')
+        .replace(/\s+/g, ' ').trim();
+    }
+    function visible(el) {
+      if (!el || el.nodeType !== 1) return false;
+      const r = el.getBoundingClientRect?.();
+      if (!r) return true;
+      return !(r.width === 0 && r.height === 0);
+    }
+    const CLICKABLE = new Set(['button', 'a']);
+    const CLICKABLE_ROLES = new Set(['button', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'checkbox', 'switch']);
+    function clickable(el) {
+      const tag = el.tagName?.toLowerCase();
+      const role = el.getAttribute?.('role');
+      return CLICKABLE.has(tag) || (role && CLICKABLE_ROLES.has(role));
+    }
+    return {
+      // First control whose accessible name matches `re`. Prefers visible ones.
+      byName(re, { all = false } = {}) {
+        const acc = [];
+        deepEls(document, acc, 0);
+        const hits = acc.filter((el) => clickable(el) && re.test(name(el)));
+        if (all) return hits;
+        return hits.find(visible) || hits[0] || null;
+      },
+      // Does this toggle read as already-on? (pressed/checked, or an "off/hide" label)
+      isOn(el) {
+        if (!el) return false;
+        if (el.getAttribute?.('aria-pressed') === 'true') return true;
+        if (el.getAttribute?.('aria-checked') === 'true') return true;
+        return /\b(turn off|hide|disable|stop|off)\b/i.test(name(el));
+      },
+      click(el) {
+        if (!el) return false;
+        try { el.click(); return true; } catch { /* fall through to synthetic */ }
+        try {
+          for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+            el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+          }
+          return true;
+        } catch { return false; }
+      },
+      name,
+      visible,
+    };
+  })();
+
+  async function tryEnableCaptions() {
+    if (typeof adapter.enableCaptions !== 'function') return;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // ~12s of attempts: meeting toolbars/menus can take several seconds to render,
+    // and nested-menu platforms (Teams/Zoom) need a tick per menu level.
+    for (let i = 0; i < 8; i++) {
+      if (!capturing) return;
+      if (safe(() => adapter.isLive())) return; // captions already showing
+      let status = null;
+      try { status = await adapter.enableCaptions(captionUI); } catch { status = null; }
+      if (status === 'on' || status === 'clicked') return; // done — don't toggle back off
+      await sleep(1400); // 'pending' (advance a menu) or null (controls not ready) → retry
+    }
+  }
+
   // ---- lifecycle ---------------------------------------------------------
   // The meeting key this capture session belongs to. Zoom's web client is a SPA,
   // so the script survives leaving one meeting and joining another; we track this
@@ -286,6 +369,7 @@
     if (adapter.onStart) safe(() => adapter.onStart());
     startObserver();
     flush('live');
+    tryEnableCaptions(); // fire-and-forget: turn captions on if the user left them off
     return meetingId;
   }
 

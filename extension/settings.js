@@ -4,7 +4,8 @@
 //             model and optional system prompt/tuning. Chat with one directly.
 //   Agents  — the local bridge (CLI) agents: Claude Code, Codex, Gemini CLI,
 //             plus the bridge connection itself.
-import { getSettings, saveSettings, uid, exportConversations, importConversations } from './js/store.js';
+import { getSettings, saveSettings, uid, exportDataArchive, importAllData } from './js/store.js';
+import { readZipEntry } from './js/zip.js';
 import { checkBridge, updateBridge, testAgent, listModels, checkAgentCommand } from './js/providers.js';
 import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
@@ -45,6 +46,7 @@ async function init() {
         renderEndpoints();
         renderBridgeAgents();
         renderSkills();
+        renderPrefs(); // re-enable the Pro-gated Autocomplete toggle
       }
     });
   });
@@ -674,6 +676,7 @@ function onProActivated(lic) {
   renderEndpoints();
   renderBridgeAgents();
   renderSkills();
+  renderPrefs(); // re-enable the Pro-gated Autocomplete toggle
   setStatus($('license-msg'), '✓ Pro is now active. Thank you!', 'ok');
 }
 
@@ -806,8 +809,9 @@ function wire() {
   wireBackup();
 }
 
-// Back up & restore all conversations (Pro). Pure client-side: the export is a
-// JSON file the user keeps; restore reads it back. Gated like other Pro exports.
+// Back up & restore all data — conversations AND captured meetings (Pro). Pure
+// client-side: the export is a JSON file the user keeps; restore reads it back.
+// Gated like other Pro exports.
 function wireBackup() {
   const msg = $('backup-msg');
 
@@ -817,17 +821,18 @@ function wireBackup() {
     }
     setStatus(msg, 'Exporting…');
     try {
-      const data = await exportConversations();
-      if (!data.count) return setStatus(msg, 'No conversations to export yet.', '');
-      const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+      const { blob, count, meetingsCount } = await exportDataArchive();
+      if (!count && !meetingsCount) return setStatus(msg, 'No data to export yet.', '');
       const url = URL.createObjectURL(blob);
       const stamp = new Date().toISOString().slice(0, 10);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `chatpanel-chats-${stamp}.json`;
+      a.download = `chatpanel-data-${stamp}.zip`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-      setStatus(msg, `✓ Exported ${data.count} conversation${data.count === 1 ? '' : 's'}.`, 'ok');
+      const parts = [`${count} conversation${count === 1 ? '' : 's'}`];
+      if (meetingsCount) parts.push(`${meetingsCount} meeting${meetingsCount === 1 ? '' : 's'}`);
+      setStatus(msg, `✓ Exported ${parts.join(' + ')} (.zip — JSON backup + Markdown).`, 'ok');
     } catch (e) {
       setStatus(msg, '✕ ' + (e.message || e), 'err');
     }
@@ -846,11 +851,24 @@ function wireBackup() {
     if (!file) return;
     setStatus(msg, 'Restoring…');
     try {
-      const data = JSON.parse(await file.text());
+      // Accept our .zip export (pull the JSON out of it) or a bare .json backup.
+      // Detect by magic bytes ('PK') so a renamed file still works.
+      const buf = await file.arrayBuffer();
+      const head = new Uint8Array(buf, 0, 2);
+      let text;
+      if (head[0] === 0x50 && head[1] === 0x4b) {
+        text = await readZipEntry(buf, 'chatpanel-data.json');
+        if (!text) throw new Error('That zip has no chatpanel-data.json — is it a ChatPanel export?');
+      } else {
+        text = new TextDecoder().decode(buf);
+      }
+      const data = JSON.parse(text);
       const mode = $('backup-replace').checked ? 'replace' : 'merge';
-      const { imported, total } = await importConversations(data, { mode });
-      const skipped = total - imported;
-      setStatus(msg, `✓ Restored ${imported} conversation${imported === 1 ? '' : 's'}${skipped ? ` (${skipped} skipped)` : ''}. Reopen ChatPanel to see them.`, 'ok');
+      const { conversations, meetings } = await importAllData(data, { mode });
+      const parts = [`${conversations.imported} conversation${conversations.imported === 1 ? '' : 's'}`];
+      if (meetings.imported) parts.push(`${meetings.imported} meeting${meetings.imported === 1 ? '' : 's'}`);
+      const skipped = (conversations.total - conversations.imported) + (meetings.total - meetings.imported);
+      setStatus(msg, `✓ Restored ${parts.join(' + ')}${skipped ? ` (${skipped} skipped)` : ''}. Reopen ChatPanel to see them.`, 'ok');
     } catch (err) {
       setStatus(msg, '✕ ' + (err.message || err), 'err');
     }

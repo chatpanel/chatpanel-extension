@@ -77,6 +77,23 @@
 
     onStart() { _idc = 0; _ids = new WeakMap(); },
 
+    // Best-effort: Webex usually has a "Closed captions" / "Show captions" control,
+    // sometimes tucked under the "More options" overflow. Click it directly if we
+    // can see it, else open the overflow and let the core's next tick catch it.
+    // Selectors are accessible-name based (resilient to class churn) but unverified
+    // against every Webex build — treat as best-effort.
+    enableCaptions(ui) {
+      const direct = ui.byName(/show captions|closed caption|live caption|^captions?$/i);
+      if (direct) {
+        if (ui.isOn(direct)) return 'on';
+        ui.click(direct);
+        return 'clicked';
+      }
+      const more = ui.byName(/more options|more controls|^more$/i);
+      if (more) { ui.click(more); return 'pending'; }
+      return null;
+    },
+
     readDiscreteCaptions(m) {
       // Only scan when the mutation actually touches caption DOM (keeps us cheap).
       return involvesCaption(m) ? gather() : null;

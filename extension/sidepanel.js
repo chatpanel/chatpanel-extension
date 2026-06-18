@@ -91,6 +91,7 @@ async function init() {
 
   await startConversation();
   wireEvents();
+  wireDrawerResize();
   refreshBridge();
   refreshActiveTab();
   renderUpgradeChip();
@@ -2524,20 +2525,26 @@ async function smallModelFor(target) {
 // model unless the agent sets `autocompleteModel`.
 const FAST_MODEL = { claude: 'haiku', codex: '', gemini: '' };
 
-// Where autocomplete should get its suggestion, fastest first:
-//   1) the active agent if it's an API endpoint (OpenAI/Anthropic-style);
-//   2) the active agent if it's a bridge agent → bridge /complete with a fast model;
-//   3) any other configured API endpoint with a model.
+// Where autocomplete should get its suggestion, FASTEST first. Autocomplete fires
+// on a 500ms pause and is superseded by the next keystroke, so the source must
+// answer in well under a second. API endpoints stream a few tokens almost
+// instantly; bridge agents spawn a CLI process per call (~seconds), so their
+// reply usually arrives stale and gets discarded. Hence we prefer ANY configured
+// API endpoint over the active bridge agent — the bridge agent is only a last
+// resort when no endpoint exists.
+//   1) the active agent if it's itself an API endpoint;
+//   2) any other configured API endpoint with a model;
+//   3) the active bridge agent → bridge /complete (slow; best-effort).
 function autocompleteSource() {
   const active = resolveTarget(currentAgent(), state.settings);
   if (active && active.kind !== 'bridge' && active.model) return { kind: 'api', target: active };
-  if (active && active.kind === 'bridge') {
-    const engine = active.bridgeAgent || 'claude';
-    return { kind: 'bridge', engine, model: active.autocompleteModel || FAST_MODEL[engine] || '' };
-  }
   for (const ep of state.settings.endpoints || []) {
     const t = resolveTarget(ep, state.settings);
     if (t && t.kind !== 'bridge' && t.model) return { kind: 'api', target: t };
+  }
+  if (active && active.kind === 'bridge') {
+    const engine = active.bridgeAgent || 'claude';
+    return { kind: 'bridge', engine, model: active.autocompleteModel || FAST_MODEL[engine] || '' };
   }
   return null;
 }
@@ -2572,6 +2579,10 @@ function scheduleAutocomplete() {
   // Need enough to continue, cursor at the very end, not a slash command.
   if (text.trim().length < 6 || text.startsWith('/')) return;
   if (input.selectionStart !== text.length) return;
+  // A finished sentence has nothing to autocomplete — and asking anyway tends to
+  // make the model ANSWER it instead of predicting the next words. Skip when the
+  // text already ends a sentence (optionally with a closing quote/bracket).
+  if (/[.?!]["'’”)\]]?\s*$/.test(text)) return;
   // Resolve where the suggestion comes from. If nothing usable (e.g. a bridge
   // agent that's offline and no API endpoint), say so once instead of silence.
   const source = autocompleteSource();
@@ -2600,16 +2611,25 @@ async function requestAutocomplete(text, source) {
   if (!source) return;
   acController = new AbortController();
   const ctx = autocompleteContext();
-  // Strict: continue the user's UNFINISHED message — never answer it.
+  // Frame this as a text-continuation engine (ghost text), NOT a chat task —
+  // "finish the message" reads as an instruction and makes models answer. The
+  // few-shot examples teach small/local models the format (raw next words, can
+  // start mid-word, no reply).
   const sys =
-    'You are an inline autocomplete for a chat input box, like a code editor. The ' +
-    'user is typing an unfinished message/question to an AI assistant. Output ONLY ' +
-    'the few words that should come NEXT to finish their sentence. Do NOT answer ' +
-    'their question. Do NOT start a new sentence or a new question. Do NOT repeat ' +
-    'what they already wrote. No quotes, no explanation — only the continuation text.';
+    'You are a text autocomplete engine — like the gray ghost text in a code editor ' +
+    'or a phone keyboard. Predict ONLY the next few words (at most ~6) that continue ' +
+    "the user's current sentence, in their own voice. You are NOT a chat assistant: " +
+    'never answer, reply, explain, greet, or start a new sentence. The continuation ' +
+    'may begin mid-word. Output the raw continuation only — no quotes, no labels. If ' +
+    'the text already reads as a complete sentence, output nothing.\n\n' +
+    'Examples:\n' +
+    'Text: "what are the main diff" -> "erences between them"\n' +
+    'Text: "how do I center a" -> " div with flexbox"\n' +
+    'Text: "can you summarize this" -> " page for me"\n' +
+    'Text: "write a python function to" -> " parse the CSV"';
   const prompt =
-    (ctx ? `For context, the user is viewing this page:\n"""\n${ctx}\n"""\n\n` : '') +
-    `Finish the user's unfinished message. Their message so far:\n${text}`;
+    (ctx ? `Context (the page the user is viewing):\n"""\n${ctx}\n"""\n\n` : '') +
+    `Continue this text with only the next few words. Do not answer it:\n${text}`;
   let out = '';
   try {
     if (source.kind === 'bridge') {
@@ -2626,7 +2646,7 @@ async function requestAutocomplete(text, source) {
     } else {
       const model = await smallModelFor(source.target); // smallest available
       await streamChat({
-        agent: { ...source.target, model, systemPrompt: sys, maxTokens: 24, temperature: 0.2 },
+        agent: { ...source.target, model, systemPrompt: sys, maxTokens: 16, temperature: 0.2 },
         messages: [{ role: 'user', content: prompt }],
         settings: state.settings,
         signal: acController.signal,
@@ -2681,6 +2701,50 @@ function scrollToBottom() {
   const m = $('messages');
   const nearBottom = m.scrollHeight - m.scrollTop - m.clientHeight < 200;
   if (nearBottom) m.scrollTop = m.scrollHeight;
+}
+
+// --------------------------------------------------------------------------
+// Drawer resize — drag the left edge of a side drawer (Meetings / live notes)
+// to widen or narrow it. Both drawers share one persisted width so the layout is
+// consistent. Width is clamped to [MIN, panel width].
+// --------------------------------------------------------------------------
+const DRAWER_WIDTH_KEY = 'cp:drawerWidth';
+const DRAWER_MIN_W = 280;
+
+function applyDrawerWidth(px) {
+  document.querySelectorAll('.live-notes-drawer').forEach((d) => {
+    d.style.width = `${px}px`;
+    d.style.maxWidth = 'none';
+  });
+}
+
+function wireDrawerResize() {
+  const saved = parseInt(localStorage.getItem(DRAWER_WIDTH_KEY) || '', 10);
+  if (saved > 0) applyDrawerWidth(Math.min(saved, window.innerWidth));
+
+  document.querySelectorAll('.live-notes-resize').forEach((handle) => {
+    const drawer = handle.closest('.live-notes-drawer');
+    if (!drawer) return;
+    handle.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      const maxW = (drawer.parentElement || document.body).getBoundingClientRect().width;
+      drawer.classList.add('resizing');
+      handle.setPointerCapture(e.pointerId);
+      const onMove = (ev) => {
+        const w = drawer.getBoundingClientRect().right - ev.clientX; // right edge is fixed
+        applyDrawerWidth(Math.max(DRAWER_MIN_W, Math.min(w, maxW)));
+      };
+      const onUp = () => {
+        handle.releasePointerCapture(e.pointerId);
+        handle.removeEventListener('pointermove', onMove);
+        handle.removeEventListener('pointerup', onUp);
+        drawer.classList.remove('resizing');
+        localStorage.setItem(DRAWER_WIDTH_KEY, String(Math.round(drawer.getBoundingClientRect().width)));
+      };
+      handle.addEventListener('pointermove', onMove);
+      handle.addEventListener('pointerup', onUp);
+    });
+  });
 }
 
 // --------------------------------------------------------------------------

@@ -8,6 +8,9 @@
 //
 // All functions are async and safe to call from the side panel or options page.
 
+import { exportMeetings, importMeetings, meetingToMarkdown } from './store-meetings.js';
+import { makeZip } from './zip.js';
+
 const K_SETTINGS = 'chatpanel:settings';
 const K_INDEX = 'chatpanel:convIndex';
 const convKey = (id) => `chatpanel:conv:${id}`;
@@ -510,6 +513,67 @@ export async function importConversations(data, { mode = 'merge' } = {}) {
   const merged = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
   await saveIndex(merged);
   return { imported, total: data.conversations.length };
+}
+
+// "Export data" — the full backup: conversations AND captured meetings in one
+// file. version 2 adds `meetings`; a v1 (chat-only) file still restores fine
+// (meetings just come back empty). All client-side — nothing is uploaded.
+export async function exportAllData() {
+  const conv = await exportConversations();
+  const meetings = await exportMeetings();
+  return {
+    type: BACKUP_TYPE,
+    version: 2,
+    exportedAt: Date.now(),
+    count: conv.count,
+    conversations: conv.conversations,
+    meetingsCount: meetings.length,
+    meetings,
+  };
+}
+
+// Restore a full backup. Conversations and meetings each honor the same mode
+// ('merge' | 'replace'). Returns per-kind counts.
+export async function importAllData(data, { mode = 'merge' } = {}) {
+  const conversations = await importConversations(data, { mode }); // validates the file
+  const meetings = await importMeetings(data.meetings, { mode });
+  return { conversations, meetings };
+}
+
+// "Export all data" as a ZIP that is BOTH a restorable backup and a browsable
+// archive: chatpanel-data.json (what Restore reads) + human-readable Markdown for
+// every conversation and meeting. Returns { blob, count, meetingsCount }.
+const ARCHIVE_README =
+  'ChatPanel data export\n\n' +
+  '• chatpanel-data.json — the full backup. Use Settings → Restore from file to\n' +
+  '  import it (on this or another machine). Keep this file if you want to restore.\n' +
+  '• conversations/*.md and meetings/*.md — human-readable copies for reading or\n' +
+  '  sharing. These are NOT used by Restore.\n\n' +
+  'Everything here stayed on your device — nothing was uploaded.\n';
+
+export async function exportDataArchive() {
+  const data = await exportAllData();
+  const files = [
+    { name: 'chatpanel-data.json', data: JSON.stringify(data) },
+    { name: 'README.txt', data: ARCHIVE_README },
+  ];
+  const used = new Set();
+  const mdName = (dir, title, ts) => {
+    const date = new Date(ts || Date.now()).toISOString().slice(0, 10);
+    const safe = (title || 'untitled').replace(/[\/\\:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 70);
+    let name = `${dir}/${date} — ${safe}.md`;
+    for (let n = 2; used.has(name); n++) name = `${dir}/${date} — ${safe} (${n}).md`;
+    used.add(name);
+    return name;
+  };
+  for (const conv of data.conversations) {
+    files.push({ name: mdName('conversations', conv.title, conv.createdAt), data: conversationToMarkdown(conv) });
+  }
+  for (const m of data.meetings) {
+    const md = meetingToMarkdown(m.record) + (m.notes ? `\n\n## Summary\n\n${m.notes}\n` : '');
+    files.push({ name: mdName('meetings', m.record.title, m.record.startedAt), data: md });
+  }
+  return { blob: await makeZip(files), count: data.count, meetingsCount: data.meetingsCount };
 }
 
 function titleFrom(text) {

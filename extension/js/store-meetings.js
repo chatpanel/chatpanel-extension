@@ -172,6 +172,45 @@ export async function getMeetingNotes(id) {
   return typeof v === 'string' ? v : '';
 }
 
+// --------------------------------------------------------------------------
+// Backup & restore — meetings travel in the same "export data" file as chats.
+// Each item carries the full transcript record + its AI scribe notes. Decrypted
+// here so the backup file is portable (it re-encrypts on import under whatever
+// key the destination install uses).
+// --------------------------------------------------------------------------
+export async function exportMeetings() {
+  const index = await getMeetingIndex();
+  const meetings = [];
+  for (const e of index) {
+    const record = await getMeeting(e.id);
+    if (!record) continue;
+    meetings.push({ record, notes: await getMeetingNotes(e.id) });
+  }
+  return meetings;
+}
+
+// Restore meetings from a backup. 'merge' (default) adds/updates by id; 'replace'
+// clears existing first. Imported meetings are forced to status 'ended' so a
+// transcript captured live elsewhere never shows as a phantom "recording" here.
+// Returns { imported, total }.
+export async function importMeetings(list, { mode = 'merge' } = {}) {
+  if (!Array.isArray(list)) return { imported: 0, total: 0 };
+  if (mode === 'replace') await clearAllMeetings();
+  let imported = 0;
+  for (const item of list) {
+    const rec = item?.record;
+    if (!rec || !rec.id) continue;
+    if (rec.status !== 'ended') {
+      rec.status = 'ended';
+      rec.endedAt = rec.endedAt || rec.startedAt || Date.now();
+    }
+    await persistMeeting(rec); // caps + encrypts + refreshes the index entry
+    if (typeof item.notes === 'string' && item.notes) await saveMeetingNotes(rec.id, item.notes);
+    imported++;
+  }
+  return { imported, total: list.length };
+}
+
 // Keep storage bounded: drop the oldest ended meetings beyond `keep`, and any
 // older than `maxAgeDays`. Live meetings are never pruned. Call opportunistically
 // (e.g. on side-panel open) so a long history of transcripts can't accumulate

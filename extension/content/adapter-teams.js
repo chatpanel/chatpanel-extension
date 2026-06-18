@@ -56,6 +56,24 @@
 
     onStart() { _idc = 0; _ids = new WeakMap(); },
 
+    // Best-effort: Teams buries captions under More → Language and speech → Turn on
+    // live captions. We walk one menu level per core tick — click the deepest item
+    // we can currently see, else open its parent menu and return 'pending'. Names
+    // are accessible-name based but unverified across all Teams builds.
+    enableCaptions(ui) {
+      const toggle = ui.byName(/turn (on|off) live captions/i);
+      if (toggle) {
+        if (/turn off/i.test(ui.name(toggle))) return 'on';
+        ui.click(toggle);
+        return 'clicked';
+      }
+      const lang = ui.byName(/language and speech/i);
+      if (lang) { ui.click(lang); return 'pending'; }
+      const more = ui.byName(/more actions|more options|^more$/i);
+      if (more) { ui.click(more); return 'pending'; }
+      return null;
+    },
+
     readDiscreteCaptions(m) {
       const els = captionElsFrom(m);
       if (!els.length) return null;
