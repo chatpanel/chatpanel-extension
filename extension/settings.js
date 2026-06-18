@@ -6,7 +6,7 @@
 //             plus the bridge connection itself.
 import { getSettings, saveSettings, uid, exportDataArchive, importAllData } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
-import { checkBridge, updateBridge, testAgent, listModels, checkAgentCommand } from './js/providers.js';
+import { checkBridge, updateBridge, testAgent, listModels, listBridgeModels, checkAgentCommand } from './js/providers.js';
 import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
 import {
@@ -342,6 +342,8 @@ function bridgeAgentCard(agent) {
   q('.ba-name').value = agent.name || '';
   q('.ba-kind').value = agent.bridgeAgent || 'claude';
   q('.ba-workdir').value = agent.workingDir || '';
+  q('.ba-model').value = agent.model || '';
+  q('.ba-acmodel').value = agent.autocompleteModel || '';
   q('.ba-perm').value = agent.permissionMode || 'acceptEdits';
   q('.ba-local').checked = agent.useLocalConfig !== false;
   q('.ba-system').value = agent.systemPrompt || '';
@@ -350,17 +352,45 @@ function bridgeAgentCard(agent) {
   q('.ba-args').value = agent.args || '';
   q('.ba-promptvia').value = agent.promptVia || 'stdin';
   q('.ba-format').value = agent.format || 'text';
+  q('.ba-listargs').value = agent.listModelsArgs || '';
+  q('.ba-modelarg').value = agent.modelArg || '';
   gateField('advancedAgent', q('.ba-system')); // per-agent system prompt is Pro
   applyFreeSlot(node, agent, 'bridge'); // Free uses one agent — the user's pick
 
   const proCustom = can(license, 'customAgents'); // BYO CLI is a hard Pro gate
 
+  // Per-engine model hints. CLIs don't expose a /models list like API endpoints,
+  // so we suggest the common ids and accept any string the CLI takes.
+  const MODEL_HINT = {
+    claude: 'opus · sonnet · haiku  (blank = default)',
+    codex: 'model id  (blank = CLI default)',
+    gemini: 'gemini-2.5-pro · gemini-2.5-flash  (blank = default)',
+  };
+  // Common model ids per engine, offered as a typeahead dropdown (datalist) while
+  // still accepting any custom string — CLIs have no queryable model list.
+  const MODEL_LIST = {
+    claude: ['opus', 'sonnet', 'haiku'],
+    gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+    codex: [],
+  };
+  const dl = document.createElement('datalist');
+  dl.id = `ba-models-${uid()}`;
+  node.appendChild(dl);
+  q('.ba-model').setAttribute('list', dl.id);
+  q('.ba-acmodel').setAttribute('list', dl.id);
+
   // Show/hide the custom block and refresh the availability line for the kind.
   const syncKind = () => {
-    const isCustom = q('.ba-kind').value === 'custom';
+    const kind = q('.ba-kind').value;
+    const isCustom = kind === 'custom';
     q('.ba-custom').classList.toggle('hidden', !isCustom);
     // local skills/MCP & per-agent system prompt only apply to the built-in CLIs.
     q('.ba-local').closest('.check').classList.toggle('hidden', isCustom);
+    // Model fields show for every kind — a custom CLI passes the chosen model via
+    // its configured "Pass model via" arg. Seed the datalist with known ids for
+    // built-ins; custom starts empty until "Load models" populates it.
+    q('.ba-model').placeholder = MODEL_HINT[kind] || "blank = default  ·  use Load models →";
+    dl.replaceChildren(...(MODEL_LIST[kind] || []).map((m) => { const o = document.createElement('option'); o.value = m; return o; }));
     if (isCustom && !proCustom) {
       setStatus(q('.ba-avail'), '✨ Pro — upgrade to bring your own CLI', 'err');
     } else if (isCustom) {
@@ -376,6 +406,32 @@ function bridgeAgentCard(agent) {
 
   q('.ba-check').onclick = () => showCustomAvailability(agent, q, q('.ba-command').value.trim());
 
+  // Load models from the agent's CLI via the unified bridge /list-models endpoint
+  // (built-ins return known ids; custom runs its configured "List models with").
+  q('.ba-loadmodels').onclick = async () => {
+    const st = q('.ba-models-status');
+    setStatus(st, 'Loading…');
+    try {
+      const models = await listBridgeModels({
+        bridgeAgent: q('.ba-kind').value,
+        command: q('.ba-command').value.trim(),
+        listModelsArgs: q('.ba-listargs').value.trim(),
+        workingDir: q('.ba-workdir').value.trim(),
+        name: q('.ba-name').value.trim(),
+      }, settings);
+      if (!models.length) {
+        setStatus(st, q('.ba-kind').value === 'custom'
+          ? 'No models — set “List models with” (e.g. --list-models)'
+          : 'This CLI has no model list — type one', '');
+        return;
+      }
+      dl.replaceChildren(...models.map((m) => { const o = document.createElement('option'); o.value = m; return o; }));
+      setStatus(st, `✓ ${models.length} models — pick from the Model field ▾`, 'ok');
+    } catch (e) {
+      setStatus(st, '✕ ' + (e.message || e), 'err');
+    }
+  };
+
   q('.ba-save').onclick = async () => {
     const bridgeAgent = q('.ba-kind').value;
     if (bridgeAgent === 'custom' && !proCustom) {
@@ -386,6 +442,8 @@ function bridgeAgentCard(agent) {
       kind: 'bridge',
       bridgeAgent,
       workingDir: q('.ba-workdir').value.trim(),
+      model: q('.ba-model').value.trim(),
+      autocompleteModel: q('.ba-acmodel').value.trim(),
       permissionMode: q('.ba-perm').value,
       useLocalConfig: q('.ba-local').checked,
       systemPrompt: q('.ba-system').value,
@@ -393,6 +451,8 @@ function bridgeAgentCard(agent) {
       args: q('.ba-args').value.trim(),
       promptVia: q('.ba-promptvia').value,
       format: q('.ba-format').value,
+      listModelsArgs: q('.ba-listargs').value.trim(),
+      modelArg: q('.ba-modelarg').value.trim(),
     });
     await saveSettings(settings);
     setStatus(q('.ba-status'), '✓ Saved', 'ok');

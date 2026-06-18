@@ -8,7 +8,16 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); }
-.wrap { max-width: 760px; margin: 0 auto; padding: 28px 20px 60px; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 28px 28px 60px; }
+/* Two-column shell: a sticky side rail + a comfortable content column, so the
+   horizontal space is used for structure instead of left as dead margin. */
+.shell { display: flex; align-items: flex-start; gap: 36px; }
+.sidenav { position: sticky; top: 24px; width: 208px; flex: 0 0 auto; display: flex; flex-direction: column; gap: 3px; }
+.content { flex: 1; min-width: 0; max-width: 860px; }
+@media (max-width: 760px) {
+  .shell { flex-direction: column; gap: 12px; }
+  .sidenav { position: static; width: auto; flex-direction: row; flex-wrap: wrap; }
+}
 .hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .hdr h1 { font-size: 22px; margin: 0; display: flex; align-items: center; gap: 8px; }
 .hdr h1 .brand-ico { width: 24px; height: 24px; border-radius: 5px; }
@@ -23,15 +32,15 @@ input.locked, textarea.locked, select.locked { opacity: .55; cursor: not-allowed
 .free-slot.on { font-weight: 700; color: var(--accent); padding: 4px 6px; }
 .btn.free-slot { font-size: 12px; padding: 4px 10px; }
 
-.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px 24px; margin-bottom: 20px; }
 .card h2 { margin: 0 0 4px; font-size: 16px; }
 .card h2 .sub { color: var(--muted); font-weight: 400; font-size: 13px; }
 .card-head { display: flex; justify-content: space-between; align-items: center; }
 .muted { color: var(--muted); font-size: 13px; margin: 4px 0 14px; }
 .muted code { font-family: var(--mono); background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 4px; }
 
-.row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
-.row label { width: 110px; flex: 0 0 auto; color: var(--muted); font-size: 13px; }
+.row { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
+.row label { width: 130px; flex: 0 0 auto; color: var(--muted); font-size: 13px; }
 .row.half { gap: 16px; }
 .row.half > div { display: flex; align-items: center; gap: 8px; flex: 1; }
 .row.half label { width: auto; }
@@ -79,11 +88,16 @@ input[type="radio"] {
 .ftr { text-align: center; color: var(--muted); font-size: 12px; margin-top: 24px; }
 a { color: var(--accent); }
 
-/* Tabs */
-.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 18px; flex-wrap: wrap; }
-.tab { appearance: none; border: none; background: none; color: var(--muted); font: inherit; font-weight: 600; padding: 10px 14px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 8px 8px 0 0; }
-.tab:hover { color: var(--text); background: rgba(127,127,127,.06); }
-.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+/* Side-rail nav (the .sidenav container is laid out above). */
+.tab {
+  appearance: none; display: flex; align-items: center; gap: 10px; width: 100%;
+  text-align: left; border: none; background: none; color: var(--muted);
+  font: inherit; font-weight: 600; font-size: 14px; padding: 9px 12px;
+  cursor: pointer; border-radius: 9px;
+}
+.tab:hover { color: var(--text); background: rgba(127,127,127,.07); }
+.tab.active { color: var(--text); background: rgba(127,127,127,.13); }
+.tab .tab-ico { width: 18px; text-align: center; font-size: 13px; opacity: .85; }
 .panel { animation: fade .14s ease; }
 @keyframes fade { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
 

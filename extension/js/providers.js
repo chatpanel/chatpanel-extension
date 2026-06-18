@@ -179,6 +179,9 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
       args: agent.args || '',
       promptVia: agent.promptVia || 'stdin',
       format: agent.format || 'text',
+      // How to inject the chosen model (options.model) into the CLI's argv, e.g.
+      // "--model {model}" or opencode's "-m {model}". Empty = model not passed.
+      modelArg: agent.modelArg || '',
       label: agent.name || agent.command || 'Custom',
     };
     options.entitlement = await getEntitlementToken();
@@ -229,6 +232,33 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
     }
   }
   return full;
+}
+
+// Ask the bridge to enumerate a CLI agent's models — the unified /list-models
+// interface. For a custom ("bring your own") agent this carries the command +
+// the configured list-models invocation + the signed entitlement (Pro-gated
+// server-side). Built-ins return their known set (claude aliases) or []. `agent`
+// is a plain config object (from the Agents editor). Returns a string[].
+export async function listBridgeModels(agent, settings) {
+  const base = (settings.bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
+  const bridgeAgent = agent.bridgeAgent || 'claude';
+  const options = { workingDir: agent.workingDir || '' };
+  if (bridgeAgent === 'custom') {
+    options.custom = {
+      command: agent.command || '',
+      listModelsArgs: agent.listModelsArgs || '',
+      label: agent.name || agent.command || 'Custom',
+    };
+    options.entitlement = await getEntitlementToken();
+  }
+  const res = await fetch(`${base}/list-models`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent: bridgeAgent, options }),
+  });
+  if (!res.ok) throw new Error(`Bridge: HTTP ${res.status} — ${await safeText(res)}`);
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.models) ? data.models : [];
 }
 
 // --------------------------------------------------------------------------

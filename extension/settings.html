@@ -13,12 +13,14 @@
         <div id="plan-badge" class="plan-badge">Free</div>
       </header>
 
-      <nav class="tabs" id="tabs">
-        <button class="tab active" data-tab="api">API</button>
-        <button class="tab" data-tab="agents">Agents</button>
-        <button class="tab" data-tab="skills">Skills</button>
-        <button class="tab" data-tab="license">License</button>
-      </nav>
+      <div class="shell">
+        <aside class="sidenav" id="tabs">
+          <button class="tab active" data-tab="api"><span class="tab-ico">🔌</span> API</button>
+          <button class="tab" data-tab="agents"><span class="tab-ico">🤖</span> Agents</button>
+          <button class="tab" data-tab="skills"><span class="tab-ico">⚡</span> Skills</button>
+          <button class="tab" data-tab="license"><span class="tab-ico">✦</span> License</button>
+        </aside>
+        <main class="content">
 
       <!-- API (model endpoints) -->
       <section class="panel" data-panel="api">
@@ -188,6 +190,8 @@
           <div id="backup-msg" class="status"></div>
         </div>
       </section>
+        </main>
+      </div>
 
       <footer class="ftr">Settings are stored locally in your browser.</footer>
     </div>
@@ -253,7 +257,11 @@
               <option value="claude-stream-json">Claude stream-json (tools that speak it)</option>
             </select>
           </div>
+          <div class="row"><label>List models with</label><input class="ba-listargs" placeholder="e.g. --list-models  (pi)  ·  models  (opencode) — enables “Load models”" /></div>
+          <div class="row"><label>Pass model via</label><input class="ba-modelarg" placeholder="e.g. --model {model}  ·  -m {model}  ({model} = the chosen id)" /></div>
         </div>
+        <div class="row ba-model-row"><label>Model</label><input class="ba-model" placeholder="blank = the CLI's default model" /><button class="btn ba-loadmodels" type="button" title="List this CLI's available models">Load models</button></div>
+        <div class="row ba-model-row"><label>Autocomplete model</label><input class="ba-acmodel" placeholder="optional — a smaller/faster model just for inline autocomplete" /><span class="ba-models-status status"></span></div>
         <div class="row"><label>Working dir</label><input class="ba-workdir" placeholder="/path/to/project (optional)" /></div>
         <div class="row"><label>Permissions</label>
           <select class="ba-perm">
@@ -262,7 +270,7 @@
             <option value="bypassPermissions">bypassPermissions — full access &amp; shell (trusted)</option>
           </select>
         </div>
-        <label class="check" style="margin-left:120px"><input type="checkbox" class="ba-local" /> Use my local skills, MCP &amp; config (uncheck = isolated &amp; faster)</label>
+        <label class="check" style="margin-left:142px"><input type="checkbox" class="ba-local" /> Use my local skills, MCP &amp; config (uncheck = isolated &amp; faster)</label>
         <div class="row"><label>System prompt</label><textarea class="ba-system" rows="2" placeholder="Optional system / role instructions"></textarea></div>
         <div class="entity-foot"><span class="ba-status status"></span><button class="btn primary ba-save">Save</button></div>
       </div>

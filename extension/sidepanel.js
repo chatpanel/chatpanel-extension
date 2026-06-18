@@ -2211,6 +2211,63 @@ function renderSuggest() {
   box.classList.remove('hidden');
 }
 
+// Slash menu — typing "/" (then a partial command) shows a filterable dropdown
+// of skills, like a command palette. Selecting one completes "/command " in the
+// composer so the user can add args and send (the /command is parsed on send).
+// Reuses the #skill-suggest box (rendered as a list in `slash-menu` mode).
+let slashItems = [];
+let slashActive = -1;
+function slashMenuOpen() { return slashItems.length > 0; }
+
+function renderSlashMenu() {
+  const box = $('skill-suggest');
+  const m = /^\/(\S*)$/.exec($('input').value); // a lone slash + partial command (no space yet)
+  if (!m || !skillsAllowed()) { hideSlashMenu(); return false; }
+  const prefix = m[1].toLowerCase();
+  const matches = (state.settings.skills || []).filter((s) =>
+    (s.command || '').toLowerCase().startsWith(prefix),
+  );
+  if (!matches.length) { hideSlashMenu(); return false; }
+  slashItems = matches;
+  slashActive = Math.max(0, Math.min(slashActive, matches.length - 1));
+  box.innerHTML = '';
+  box.classList.add('slash-menu');
+  matches.forEach((skill, i) => {
+    const item = document.createElement('button');
+    item.className = 'slash-item' + (i === slashActive ? ' active' : '');
+    item.innerHTML =
+      `<span class="si-icon">${skill.icon || '⚡'}</span>` +
+      `<span class="si-cmd">/${escapeAttr(skill.command || '')}</span>` +
+      `<span class="si-desc">${escapeAttr(skill.description || skill.name || '')}</span>`;
+    // mousedown (not click) so we act before the textarea blur hides the menu.
+    item.onmousedown = (e) => { e.preventDefault(); chooseSlash(i); };
+    box.appendChild(item);
+  });
+  box.classList.remove('hidden');
+  return true;
+}
+
+function hideSlashMenu() {
+  if (!slashItems.length) return;
+  const box = $('skill-suggest');
+  box.classList.remove('slash-menu');
+  box.classList.add('hidden');
+  box.innerHTML = '';
+  slashItems = [];
+  slashActive = -1;
+}
+
+function chooseSlash(i) {
+  const skill = slashItems[i];
+  hideSlashMenu();
+  if (!skill) return;
+  const input = $('input');
+  input.value = `/${skill.command || ''} `; // complete the command; user adds args + Enter
+  autoGrow();
+  input.focus();
+  input.selectionStart = input.selectionEnd = input.value.length;
+}
+
 // --------------------------------------------------------------------------
 // History
 // --------------------------------------------------------------------------
@@ -2770,10 +2827,18 @@ function wireEvents() {
   input.oninput = () => {
     autoGrow();
     if (!input.value.trim()) suggestSuppressed = false;
-    renderSuggest();
+    // Slash command palette takes precedence over the natural-language chip.
+    if (!renderSlashMenu()) renderSuggest();
     scheduleAutocomplete();
   };
   input.onkeydown = (e) => {
+    // Slash command palette nav takes priority while it's open.
+    if (slashMenuOpen()) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); slashActive = (slashActive + 1) % slashItems.length; renderSlashMenu(); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); slashActive = (slashActive - 1 + slashItems.length) % slashItems.length; renderSlashMenu(); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); chooseSlash(slashActive); return; }
+      if (e.key === 'Escape') { e.preventDefault(); hideSlashMenu(); return; }
+    }
     // Tab accepts an autocomplete suggestion; Esc dismisses it.
     if (e.key === 'Tab' && !e.shiftKey && acSuggestion) {
       e.preventDefault();
@@ -2789,7 +2854,7 @@ function wireEvents() {
       send();
     }
   };
-  input.onblur = () => setTimeout(clearPromptSuggest, 150);
+  input.onblur = () => setTimeout(() => { clearPromptSuggest(); hideSlashMenu(); }, 150);
   input.addEventListener('scroll', () => {
     const g = $('input-ghost');
     if (g) g.scrollTop = input.scrollTop;
