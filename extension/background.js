@@ -18,10 +18,15 @@ chrome.runtime.onInstalled.addListener(() => {
     .setPanelBehavior({ openPanelOnActionClick: true })
     .catch((e) => console.warn('[chatpanel] setPanelBehavior', e));
 
-  chrome.contextMenus.create({
-    id: 'chatpanel-ask',
-    title: 'Ask ChatPanel about this page',
-    contexts: ['page', 'selection', 'link'],
+  // onInstalled fires on install AND on every update/reload; the context menu
+  // persists across those, so create() would throw "duplicate id". Clear first.
+  chrome.contextMenus.removeAll(() => {
+    void chrome.runtime.lastError; // ignore "nothing to remove" on first install
+    chrome.contextMenus.create({
+      id: 'chatpanel-ask',
+      title: 'Ask ChatPanel about this page',
+      contexts: ['page', 'selection', 'link'],
+    });
   });
 
   // Daily license re-check (period is in minutes; 720 = 12h, so we catch a lapse
