@@ -30,8 +30,7 @@
           <p class="muted">
             Connect to any model — a local server (Ollama, LM Studio) or a hosted
             API (OpenAI, Anthropic, OpenRouter). Pick a model and chat; this is all
-            most people need. <strong>Free uses one endpoint</strong> (mark it
-            “★ Free”); Pro unlocks them all.
+            most people need. <strong>Free uses one endpoint</strong>; Pro unlocks them all.
           </p>
           <details class="tip">
             <summary>Using local Ollama? Fix the <code>403 Forbidden</code> first</summary>
@@ -61,7 +60,7 @@
           <p class="muted">
             Use the coding agents already installed on your machine. Start the
             bridge with <code>npx @chatpanel/bridge</code>, then Test. They run
-            locally; <strong>Free includes one agent</strong> (mark it “★ Free”) —
+            locally; <strong>Free includes one agent</strong> —
             Pro unlocks Claude Code, Codex, Gemini &amp; more together.
           </p>
           <div class="row">
@@ -232,12 +231,12 @@
             <option value="claude">claude (Claude Code)</option>
             <option value="codex">codex</option>
             <option value="gemini">gemini (Gemini CLI)</option>
-            <option value="custom">custom — bring your own CLI ✨ Pro</option>
+            <option value="custom">custom — bring your own Agent ✨ Pro</option>
           </select>
           <span class="ba-avail status"></span>
           <button class="btn danger ba-del">Delete</button>
         </div>
-        <!-- Custom ("bring your own CLI") fields — shown only when kind = custom -->
+        <!-- Custom ("bring your own Agent") fields — shown only when kind = custom -->
         <div class="ba-custom hidden">
           <div class="row"><label>Command</label><input class="ba-command" placeholder="opencode  (or a full path, e.g. /usr/local/bin/opencode)" /><button class="btn ba-check" type="button">Check</button></div>
           <div class="row"><label>Arguments</label><input class="ba-args" placeholder="optional, space-separated — e.g. run  (use {prompt} to place the message)" /></div>
