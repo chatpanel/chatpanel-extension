@@ -171,6 +171,22 @@
             <a id="download-latest" class="btn" target="_blank" rel="noopener">Download latest build</a>
           </div>
         </div>
+
+        <div class="card" id="backup-card">
+          <h2>Back up &amp; restore your chats <span class="pro-pill">Pro</span></h2>
+          <p class="muted">
+            Export every conversation to a single file, then restore it on another
+            machine (or after a reinstall). Everything stays on your device — the
+            file is yours, nothing is uploaded.
+          </p>
+          <div class="row">
+            <button id="backup-export" class="btn">Export all conversations</button>
+            <button id="backup-import" class="btn">Restore from file…</button>
+            <input id="backup-file" type="file" accept="application/json,.json" class="hidden" />
+          </div>
+          <label class="check"><input type="checkbox" id="backup-replace" /> Replace existing chats on restore (default: merge)</label>
+          <div id="backup-msg" class="status"></div>
+        </div>
       </section>
 
       <footer class="ftr">Settings are stored locally in your browser.</footer>

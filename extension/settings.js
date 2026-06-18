@@ -4,7 +4,7 @@
 //             model and optional system prompt/tuning. Chat with one directly.
 //   Agents  — the local bridge (CLI) agents: Claude Code, Codex, Gemini CLI,
 //             plus the bridge connection itself.
-import { getSettings, saveSettings, uid } from './js/store.js';
+import { getSettings, saveSettings, uid, exportConversations, importConversations } from './js/store.js';
 import { checkBridge, updateBridge, testAgent, listModels, checkAgentCommand } from './js/providers.js';
 import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
@@ -801,6 +801,59 @@ function wire() {
     renderEndpoints();
     renderBridgeAgents();
     renderSkills();
+  };
+
+  wireBackup();
+}
+
+// Back up & restore all conversations (Pro). Pure client-side: the export is a
+// JSON file the user keeps; restore reads it back. Gated like other Pro exports.
+function wireBackup() {
+  const msg = $('backup-msg');
+
+  $('backup-export').onclick = async () => {
+    if (!can(license, 'exportChats')) {
+      return setStatus(msg, '✨ Backup & restore is a Pro feature — upgrade above.', 'err');
+    }
+    setStatus(msg, 'Exporting…');
+    try {
+      const data = await exportConversations();
+      if (!data.count) return setStatus(msg, 'No conversations to export yet.', '');
+      const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const stamp = new Date().toISOString().slice(0, 10);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `chatpanel-chats-${stamp}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      setStatus(msg, `✓ Exported ${data.count} conversation${data.count === 1 ? '' : 's'}.`, 'ok');
+    } catch (e) {
+      setStatus(msg, '✕ ' + (e.message || e), 'err');
+    }
+  };
+
+  $('backup-import').onclick = () => {
+    if (!can(license, 'exportChats')) {
+      return setStatus(msg, '✨ Backup & restore is a Pro feature — upgrade above.', 'err');
+    }
+    $('backup-file').click();
+  };
+
+  $('backup-file').onchange = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-selecting the same file later
+    if (!file) return;
+    setStatus(msg, 'Restoring…');
+    try {
+      const data = JSON.parse(await file.text());
+      const mode = $('backup-replace').checked ? 'replace' : 'merge';
+      const { imported, total } = await importConversations(data, { mode });
+      const skipped = total - imported;
+      setStatus(msg, `✓ Restored ${imported} conversation${imported === 1 ? '' : 's'}${skipped ? ` (${skipped} skipped)` : ''}. Reopen ChatPanel to see them.`, 'ok');
+    } catch (err) {
+      setStatus(msg, '✕ ' + (err.message || err), 'err');
+    }
   };
 }
 

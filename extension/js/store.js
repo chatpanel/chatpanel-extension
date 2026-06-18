@@ -470,6 +470,48 @@ export async function clearAllConversations() {
   await saveIndex([]);
 }
 
+// --------------------------------------------------------------------------
+// Backup & restore (Pro) — move chats between machines / survive a reinstall.
+// All local: the export is a plain JSON file the user holds; nothing is uploaded.
+// --------------------------------------------------------------------------
+const BACKUP_TYPE = 'chatpanel-backup';
+
+// Bundle every conversation (full message bodies) into a single serializable
+// object suitable for download.
+export async function exportConversations() {
+  const index = await getIndex();
+  const conversations = [];
+  for (const e of index) {
+    const c = await getConversation(e.id);
+    if (c) conversations.push(c);
+  }
+  return { type: BACKUP_TYPE, version: 1, exportedAt: Date.now(), count: conversations.length, conversations };
+}
+
+// Restore a backup. mode 'merge' (default) keeps existing chats and adds/updates
+// by id; mode 'replace' clears existing first. Original titles/timestamps are
+// preserved (we don't re-stamp via saveConversation). Returns { imported, total }.
+export async function importConversations(data, { mode = 'merge' } = {}) {
+  if (!data || data.type !== BACKUP_TYPE || !Array.isArray(data.conversations)) {
+    throw new Error('That doesn’t look like a ChatPanel backup file.');
+  }
+  if (mode === 'replace') await clearAllConversations();
+  const index = await getIndex();
+  const byId = new Map(index.map((e) => [e.id, e]));
+  const writes = {};
+  let imported = 0;
+  for (const conv of data.conversations) {
+    if (!conv || !conv.id || !Array.isArray(conv.messages)) continue;
+    writes[convKey(conv.id)] = conv;
+    byId.set(conv.id, indexEntry(conv));
+    imported++;
+  }
+  if (imported) await chrome.storage.local.set(writes);
+  const merged = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  await saveIndex(merged);
+  return { imported, total: data.conversations.length };
+}
+
 function titleFrom(text) {
   const clean = (text || '').replace(/\s+/g, ' ').trim();
   if (!clean) return 'New chat';
