@@ -173,7 +173,9 @@ export function freeEndpointId(settings) {
   return eps[0]?.id || null;
 }
 export function freeAgentId(settings) {
-  const bridge = (settings.agents || []).filter((a) => a.kind === 'bridge');
+  // Custom "bring your own" agents are Pro-only, so they can never be the single
+  // free agent slot — only built-in bridge CLIs are eligible.
+  const bridge = (settings.agents || []).filter((a) => a.kind === 'bridge' && a.bridgeAgent !== 'custom');
   const saved = settings.freeAgentId;
   if (saved && bridge.some((a) => a.id === saved)) return saved;
   return bridge[0]?.id || null;
@@ -185,6 +187,9 @@ export function freeAgentId(settings) {
 export function canUseAgent(license, settings, target) {
   if (!target) return false;
   if (isPro(license)) return true;
+  // Custom "bring your own" CLI agents are Pro-only (hard-gated by the bridge);
+  // never usable on Free even if designated as the free slot.
+  if (target.kind === 'bridge' && target.bridgeAgent === 'custom') return false;
   if (target.kind === 'bridge') return target.id === freeAgentId(settings);
   return target.id === freeEndpointId(settings);
 }

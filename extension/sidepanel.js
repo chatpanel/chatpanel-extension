@@ -173,6 +173,11 @@ function agentAvailability(target) {
   if (!target) return { ok: false, reason: 'None' };
   if (target.kind === 'bridge') {
     if (!state.bridge.ok) return { ok: false, reason: 'Bridge not running' };
+    // Custom "bring your own" agents aren't in /health (the bridge can't enumerate
+    // user-defined commands); they're validated when run / via Settings' Check.
+    if (target.bridgeAgent === 'custom') {
+      return target.command ? { ok: true } : { ok: false, reason: 'No command set' };
+    }
     const found = state.bridge.agents.find((a) => a.id === target.bridgeAgent);
     if (!found) return { ok: false, reason: 'Not detected' };
     return { ok: found.available, reason: found.reason };
