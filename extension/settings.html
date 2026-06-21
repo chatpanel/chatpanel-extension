@@ -154,6 +154,23 @@
             <strong>Tab</strong> to accept. Uses small, fast requests; works with your
             bring-your-own-model endpoints (not local bridge agents).
           </p>
+          <label class="check" id="pref-pageact-cdp-row">
+            <input type="checkbox" id="pref-pageact-cdp" />
+            <span>High-reliability page control</span>
+          </label>
+          <p class="muted tiny" id="pref-pageact-cdp-note">
+            When the agent fills forms or clicks (🖋 Act on page), use trusted
+            browser events instead of synthetic ones — far more reliable on heavy
+            web apps like Google Flights. Chrome shows a <strong>“ChatPanel is
+            debugging this browser”</strong> banner while it’s active. Off by
+            default. API agents only.
+          </p>
+          <p class="muted tiny">
+            <strong>Heads up:</strong> acting on the page is best-effort automation
+            driven by an AI model — it can pick the wrong field, choose the wrong
+            option, or misread a layout. <strong>Review before you submit anything
+            that matters.</strong> ChatPanel only clicks and types when you ask it to.
+          </p>
         </div>
 
         <div class="card" id="about-card">

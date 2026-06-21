@@ -451,6 +451,7 @@ body.rail-collapsed { --rail-w: 0px; }
 
 /* Watch mode */
 .composer-tools .tool-btn.watching { color: var(--accent); background: var(--accent-soft); }
+.composer-tools .tool-btn.active { color: var(--accent); background: var(--accent-soft); }
 .msg.watch-log { font-size: 11.5px; color: var(--text-dim); padding: 3px 14px; opacity: .85; }
 .watch-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12.5px; color: var(--text); }
 .watch-row select {

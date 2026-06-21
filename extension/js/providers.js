@@ -12,6 +12,21 @@
 
 import { getEntitlementToken } from './license.js';
 
+// Safety cap on the agent tool-use loop: a turn may call tools at most this many
+// times before we stop, so a confused model can't fill→inspect→fill forever.
+const MAX_TOOL_STEPS = 8;
+
+// Parse a tool-call argument string, tolerating the empty/partial case (a tool
+// with no inputs streams "" or "{}").
+function safeJson(s) {
+  if (!s) return {};
+  try {
+    return JSON.parse(s);
+  } catch {
+    return {};
+  }
+}
+
 // --------------------------------------------------------------------------
 // Shared SSE reader: yields each `data:` payload string from a fetch Response.
 // --------------------------------------------------------------------------
@@ -60,101 +75,201 @@ function toChatMessages(messages) {
 // --------------------------------------------------------------------------
 // OpenAI-compatible
 // --------------------------------------------------------------------------
-async function streamOpenAI(agent, messages, { signal, onDelta, onEvent }) {
+async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }) {
   const base = (agent.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
   const sys = agent.systemPrompt ? [{ role: 'system', content: agent.systemPrompt }] : [];
-  const body = {
-    model: agent.model || 'gpt-4o-mini',
-    messages: [...sys, ...toChatMessages(messages)],
-    stream: true,
-    ...(agent.temperature != null ? { temperature: agent.temperature } : {}),
-    ...(agent.maxTokens ? { max_tokens: agent.maxTokens } : {}),
-  };
   const headers = { 'Content-Type': 'application/json', ...(agent.headers || {}) };
   if (agent.apiKey) headers['Authorization'] = `Bearer ${agent.apiKey}`;
+  const toolSpecs = tools?.specs?.map((s) => ({
+    type: 'function',
+    function: { name: s.name, description: s.description, parameters: s.parameters },
+  }));
 
-  const res = await reachableFetch(`${base}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  }, agent, base);
-  if (!res.ok) throw new Error(openAiError(agent, base, res.status, await safeText(res)));
-
+  // Native OpenAI message list — appended to across tool-use steps.
+  const msgs = [...sys, ...toChatMessages(messages)];
   let full = '';
-  for await (const data of sseLines(res)) {
-    if (data === '[DONE]') break;
-    let json;
-    try {
-      json = JSON.parse(data);
-    } catch {
-      continue;
+
+  // One model turn = one streamed completion. Loops only when the model asks to
+  // call tools; without tools it runs exactly once (unchanged single-shot path).
+  for (let step = 0; step < (tools ? MAX_TOOL_STEPS : 1); step++) {
+    const body = {
+      model: agent.model || 'gpt-4o-mini',
+      messages: msgs,
+      stream: true,
+      ...(toolSpecs?.length ? { tools: toolSpecs } : {}),
+      ...(agent.temperature != null ? { temperature: agent.temperature } : {}),
+      ...(agent.maxTokens ? { max_tokens: agent.maxTokens } : {}),
+    };
+    const res = await reachableFetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    }, agent, base);
+    if (!res.ok) throw new Error(openAiError(agent, base, res.status, await safeText(res)));
+
+    let stepText = '';
+    const calls = {}; // index → { id, name, args } accumulated across deltas
+    let finish = '';
+    for await (const data of sseLines(res)) {
+      if (data === '[DONE]') break;
+      let json;
+      try {
+        json = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      const choice = json.choices?.[0];
+      const delta = choice?.delta?.content;
+      if (delta) {
+        stepText += delta;
+        full += delta;
+        onDelta?.(delta);
+      }
+      const reasoning = choice?.delta?.reasoning ?? choice?.delta?.reasoning_content;
+      if (reasoning) onEvent?.({ type: 'reasoning', text: reasoning });
+      for (const t of choice?.delta?.tool_calls || []) {
+        const slot = (calls[t.index] ||= { id: '', name: '', args: '' });
+        if (t.id) slot.id = t.id;
+        if (t.function?.name) slot.name = t.function.name;
+        if (t.function?.arguments) slot.args += t.function.arguments;
+      }
+      if (choice?.finish_reason) finish = choice.finish_reason;
     }
-    const choice = json.choices?.[0];
-    const delta = choice?.delta?.content;
-    if (delta) {
-      full += delta;
-      onDelta?.(delta);
+
+    const wanted = Object.keys(calls)
+      .sort((a, b) => a - b)
+      .map((k) => calls[k]);
+    if (!tools || finish !== 'tool_calls' || wanted.length === 0) {
+      onEvent?.({ type: 'finish', reason: finish || 'stop' });
+      return full;
     }
-    // Reasoning models (DeepSeek-R1, OpenRouter, etc.) stream thinking on a
-    // separate field — surface it so it can be shown as it arrives.
-    const reasoning = choice?.delta?.reasoning ?? choice?.delta?.reasoning_content;
-    if (reasoning) onEvent?.({ type: 'reasoning', text: reasoning });
-    const finish = choice?.finish_reason;
-    if (finish) onEvent?.({ type: 'finish', reason: finish });
+    // Execute the requested tools and feed results back for the next step.
+    msgs.push({
+      role: 'assistant',
+      content: stepText || null,
+      tool_calls: wanted.map((c) => ({
+        id: c.id,
+        type: 'function',
+        function: { name: c.name, arguments: c.args },
+      })),
+    });
+    for (const c of wanted) {
+      const input = safeJson(c.args);
+      onEvent?.({ type: 'tool', name: c.name, phase: 'start', input });
+      const result = await tools.execute(c.name, input);
+      onEvent?.({ type: 'tool', name: c.name, phase: 'done' });
+      msgs.push({ role: 'tool', tool_call_id: c.id, content: result });
+    }
   }
+  onEvent?.({ type: 'finish', reason: 'tool-step-limit' });
   return full;
 }
 
 // --------------------------------------------------------------------------
 // Anthropic Messages API (direct from the browser)
 // --------------------------------------------------------------------------
-async function streamAnthropic(agent, messages, { signal, onDelta, onEvent }) {
+async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tools }) {
   const base = (agent.baseUrl || 'https://api.anthropic.com').replace(/\/$/, '');
-  const body = {
-    model: agent.model || 'claude-opus-4-8',
-    max_tokens: agent.maxTokens || 4096,
-    stream: true,
-    ...(agent.systemPrompt ? { system: agent.systemPrompt } : {}),
-    ...(agent.temperature != null ? { temperature: agent.temperature } : {}),
-    messages: toChatMessages(messages),
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': agent.apiKey || '',
+    'anthropic-version': '2023-06-01',
+    'anthropic-dangerous-direct-browser-access': 'true',
   };
-  const res = await fetch(`${base}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': agent.apiKey || '',
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!res.ok) throw new Error(`${agent.name}: HTTP ${res.status} — ${await safeText(res)}`);
+  const toolSpecs = tools?.specs?.map((s) => ({
+    name: s.name,
+    description: s.description,
+    input_schema: s.parameters,
+  }));
 
+  // Native Anthropic message list — appended to across tool-use steps.
+  const msgs = toChatMessages(messages);
   let full = '';
-  for await (const data of sseLines(res)) {
-    let json;
-    try {
-      json = JSON.parse(data);
-    } catch {
-      continue;
-    }
-    if (json.type === 'content_block_delta') {
-      if (json.delta?.type === 'text_delta') {
-        full += json.delta.text;
-        onDelta?.(json.delta.text);
-      } else if (json.delta?.type === 'thinking_delta') {
-        // Extended thinking — stream it as reasoning (only fires when the
-        // request enables thinking; harmless otherwise).
-        onEvent?.({ type: 'reasoning', text: json.delta.thinking || '' });
+
+  for (let step = 0; step < (tools ? MAX_TOOL_STEPS : 1); step++) {
+    const body = {
+      model: agent.model || 'claude-opus-4-8',
+      max_tokens: agent.maxTokens || 4096,
+      stream: true,
+      ...(agent.systemPrompt ? { system: agent.systemPrompt } : {}),
+      ...(agent.temperature != null ? { temperature: agent.temperature } : {}),
+      ...(toolSpecs?.length ? { tools: toolSpecs } : {}),
+      messages: msgs,
+    };
+    const res = await fetch(`${base}/v1/messages`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!res.ok) throw new Error(`${agent.name}: HTTP ${res.status} — ${await safeText(res)}`);
+
+    // Reassemble the assistant's content blocks so we can both stream text and
+    // collect tool_use calls. `blocks` is indexed by content_block index.
+    const blocks = [];
+    let stopReason = '';
+    for await (const data of sseLines(res)) {
+      let json;
+      try {
+        json = JSON.parse(data);
+      } catch {
+        continue;
       }
-    } else if (json.type === 'message_stop') {
-      onEvent?.({ type: 'finish', reason: 'stop' });
-    } else if (json.type === 'error') {
-      throw new Error(json.error?.message || 'Anthropic stream error');
+      if (json.type === 'content_block_start') {
+        const b = json.content_block;
+        blocks[json.index] =
+          b?.type === 'tool_use'
+            ? { type: 'tool_use', id: b.id, name: b.name, json: '' }
+            : { type: 'text', text: '' };
+      } else if (json.type === 'content_block_delta') {
+        const b = blocks[json.index];
+        if (json.delta?.type === 'text_delta') {
+          full += json.delta.text;
+          if (b) b.text += json.delta.text;
+          onDelta?.(json.delta.text);
+        } else if (json.delta?.type === 'input_json_delta') {
+          if (b) b.json += json.delta.partial_json || '';
+        } else if (json.delta?.type === 'thinking_delta') {
+          onEvent?.({ type: 'reasoning', text: json.delta.thinking || '' });
+        }
+      } else if (json.type === 'message_delta') {
+        if (json.delta?.stop_reason) stopReason = json.delta.stop_reason;
+      } else if (json.type === 'message_stop') {
+        // handled after the loop via stopReason
+      } else if (json.type === 'error') {
+        throw new Error(json.error?.message || 'Anthropic stream error');
+      }
     }
+
+    const toolUses = blocks.filter((b) => b?.type === 'tool_use');
+    if (!tools || stopReason !== 'tool_use' || toolUses.length === 0) {
+      onEvent?.({ type: 'finish', reason: stopReason || 'stop' });
+      return full;
+    }
+    // Echo the assistant's blocks back, then a user turn carrying tool_results.
+    msgs.push({
+      role: 'assistant',
+      content: blocks
+        // Drop empty text blocks — the API rejects zero-length text content.
+        .filter((b) => b.type === 'tool_use' || b.text)
+        .map((b) =>
+          b.type === 'tool_use'
+            ? { type: 'tool_use', id: b.id, name: b.name, input: safeJson(b.json) }
+            : { type: 'text', text: b.text },
+        ),
+    });
+    const results = [];
+    for (const b of toolUses) {
+      const input = safeJson(b.json);
+      onEvent?.({ type: 'tool', name: b.name, phase: 'start', input });
+      const result = await tools.execute(b.name, input);
+      onEvent?.({ type: 'tool', name: b.name, phase: 'done' });
+      results.push({ type: 'tool_result', tool_use_id: b.id, content: result });
+    }
+    msgs.push({ role: 'user', content: results });
   }
+  onEvent?.({ type: 'finish', reason: 'tool-step-limit' });
   return full;
 }
 
@@ -266,8 +381,10 @@ export async function listBridgeModels(agent, settings) {
 // --------------------------------------------------------------------------
 // `agent` here is a RESOLVED target (see store.resolveTarget): a flat config
 // with kind 'bridge' | 'anthropic' | 'openai' and its connection fields inline.
-export async function streamChat({ agent, messages, settings, signal, onDelta, onEvent }) {
-  const opts = { settings, signal, onDelta, onEvent };
+export async function streamChat({ agent, messages, settings, signal, onDelta, onEvent, tools }) {
+  const opts = { settings, signal, onDelta, onEvent, tools };
+  // Bridge CLIs (Claude Code / Codex / Gemini) run their OWN agentic loop and
+  // can't take our browser tools — only API agents get the tool-use loop.
   if (agent.kind === 'bridge') return streamBridge(agent, messages, opts);
   // Model targets need a model — don't silently fall back to a default the
   // endpoint may not have (the old gpt-4o-mini default hid Ollama mistakes).

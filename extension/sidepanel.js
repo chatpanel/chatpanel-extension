@@ -44,8 +44,36 @@ import { renderMarkdown } from './js/markdown.js';
 import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
 import { assistPrompt } from './js/assist.js';
+import { PAGE_TOOL_SPECS, makePageToolExecutor } from './js/page-tools.js';
 
 const $ = (id) => document.getElementById(id);
+
+// Page-action tools to hand the chat loop, IF the agent can use them: an API
+// agent (bridge CLIs run their own loop), the "Act on page" opt-in is on, and we
+// have a readable tab. Returns undefined otherwise (plain chat, no tools). When
+// the user has explicitly toggled Act-on-page ON but a condition blocks it, we
+// surface WHY — a silent no-op here is what makes the model claim it "has no
+// browser automation," which is impossible to debug from the chat alone.
+//
+// Page-action tools for the chat loop. Requires an API agent (bridge CLIs run
+// their own loop), the 🖋 Act-on-page opt-in, and a readable tab. The user's
+// "High-reliability page control" setting selects the backend per turn: CDP
+// trusted events (js/page-actions-cdp.js) when on, synthetic events otherwise.
+function pageToolsFor(resolvedAgent) {
+  if (!state.settings.ui?.pageActions) return undefined; // feature off — stay silent
+  let reason = '';
+  if (!resolvedAgent || resolvedAgent.kind === 'bridge')
+    reason = 'pick an API agent (OpenAI/Anthropic) — CLI agents run their own tools';
+  else if (!state.activeTab?.id) reason = 'no readable web tab is active';
+  if (reason) {
+    console.warn('[chatpanel] page actions NOT attached —', reason);
+    toast(`🖋 Act on page can’t run: ${reason}`);
+    return undefined;
+  }
+  const cdp = !!state.settings.ui?.pageActionsCdp;
+  console.info('[chatpanel] page actions attached for', resolvedAgent.kind, 'on tab', state.activeTab.id, cdp ? '(trusted/CDP)' : '(synthetic)');
+  return { specs: PAGE_TOOL_SPECS, execute: makePageToolExecutor(state.activeTab.id, { cdp }) };
+}
 
 const state = {
   settings: null,
@@ -603,11 +631,13 @@ async function runStream(agent, assistant, conv) {
   };
 
   try {
+    const resolved = resolveTarget(agent, state.settings);
     await streamChat({
-      agent: resolveTarget(agent, state.settings),
+      agent: resolved,
       messages: conv.messages.filter((m) => m !== assistant),
       settings: state.settings,
       signal: controller.signal,
+      tools: pageToolsFor(resolved),
       onDelta: (d) => {
         pending += d;
         assistant.content = pending; // keep the object current for switch-back
@@ -744,6 +774,7 @@ async function retryFrom(assistantMsg) {
 function updateComposerUI() {
   $('btn-send').classList.remove('hidden');
   $('btn-stop').classList.add('hidden');
+  renderPageActBtn();
 }
 
 // Activity strip: latest tool/status for the active stream + elapsed seconds.
@@ -1145,6 +1176,15 @@ function renderWatchButton() {
   const stop = $('watch-stop');
   if (start) start.classList.toggle('hidden', state.watch.on);
   if (stop) stop.classList.toggle('hidden', !state.watch.on);
+}
+
+// Reflect the "Act on page" toggle on the composer button.
+function renderPageActBtn() {
+  const btn = $('btn-pageact');
+  if (!btn) return;
+  const on = !!state.settings.ui?.pageActions;
+  btn.classList.toggle('active', on);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
 }
 
 function renderWatchMenu() {
@@ -2897,6 +2937,27 @@ function wireEvents() {
     if (opening) {
       renderSkillsMenu();
       m.classList.remove('hidden');
+    }
+  };
+  // "Act on page" — user-triggered toggle that arms the page-action tools for the
+  // chat agent (fill forms / click). Only effective for API agents (bridge CLIs
+  // run their own loop) — we warn but still let them set it.
+  $('btn-pageact').onclick = async (e) => {
+    e.stopPropagation();
+    closeMenus();
+    const on = !state.settings.ui?.pageActions;
+    state.settings = await updateSettings({ ui: { pageActions: on } });
+    renderPageActBtn();
+    const agent = resolveTarget(agentForConv(state.conv), state.settings);
+    if (on && agent?.kind === 'bridge') {
+      toast('Page actions need an API agent — your CLI agent runs its own tools.');
+    } else if (on) {
+      // Disclaimer up front: this is best-effort automation by an LLM.
+      toast(
+        state.activeTab
+          ? '🖋 Act on page on. I’ll fill & click when asked — I can get it wrong, so review before you submit.'
+          : 'Open a web tab to act on.',
+      );
     }
   };
 

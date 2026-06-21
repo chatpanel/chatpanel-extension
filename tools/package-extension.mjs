@@ -1,10 +1,15 @@
-// Package the MV3 extension into a Web Store-ready zip.
+// Package the MV3 extension into a single Web Store-ready zip.
 //
 //   node tools/package-extension.mjs
 //
 // Produces dist/chatpanel-extension.zip (stable name for CI) and a versioned
 // copy dist/chatpanel-extension-v<version>.zip. Zips the CONTENTS of extension/
 // so manifest.json sits at the archive root (required by the Web Store).
+//
+// One build for every channel: the same zip is attached to the GitHub Release
+// (served by dl.chatpanel.net) AND uploaded to the Chrome Web Store. It includes
+// the `debugger` permission so high-reliability CDP/trusted-events page control
+// works everywhere — see js/page-actions-cdp.js.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, existsSync, copyFileSync } from 'node:fs';
 import path from 'node:path';

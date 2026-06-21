@@ -642,6 +642,7 @@ function renderPrefs() {
   ac.checked = pro && !!settings.ui.autocomplete;
   ac.disabled = !pro;
   $('pref-autocomplete-row').classList.toggle('locked', !pro);
+  $('pref-pageact-cdp').checked = !!settings.ui.pageActionsCdp;
 }
 async function savePrefs() {
   settings.ui.theme = $('pref-theme').value;
@@ -838,6 +839,12 @@ function wire() {
   $('pref-autocomplete').onchange = () => {
     if (!isPro(license)) { upsell('Autocomplete is a Pro feature'); $('pref-autocomplete').checked = false; return; }
     savePrefs();
+  };
+  // High-reliability page control. `debugger` is a required permission, so
+  // there's nothing to request — just persist the choice.
+  $('pref-pageact-cdp').onchange = async (e) => {
+    settings.ui.pageActionsCdp = e.currentTarget.checked;
+    await saveSettings(settings);
   };
 
   $('check-updates').onclick = async (e) => {
