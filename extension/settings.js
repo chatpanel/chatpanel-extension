@@ -7,6 +7,8 @@
 import { getSettings, saveSettings, uid, exportDataArchive, importAllData } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
 import { checkBridge, updateBridge, testAgent, listModels, listBridgeModels, checkAgentCommand } from './js/providers.js';
+import { testMcpServer } from './js/mcp-manager.js';
+import { MCP_CATALOG } from './js/mcp-catalog.js';
 import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
 import {
@@ -45,6 +47,7 @@ async function init() {
         renderLicense();
         renderEndpoints();
         renderBridgeAgents();
+        renderMcpServers();
         renderSkills();
         renderPrefs(); // re-enable the Pro-gated Autocomplete toggle
       }
@@ -56,6 +59,7 @@ async function init() {
   wireTabs();
   renderEndpoints();
   renderBridge();
+  renderMcpServers();
   renderSkills();
   renderPrefs();
   renderLicense();
@@ -521,6 +525,112 @@ function addBridgeAgent() {
 }
 
 // --------------------------------------------------------------------------
+// MCP tool servers — Streamable HTTP servers whose tools the in-extension API
+// agent loop can call (alongside "Act on page").
+// --------------------------------------------------------------------------
+function renderMcpServers() {
+  const root = $('mcp-list');
+  if (!root) return;
+  root.innerHTML = '';
+  const list = settings.mcpServers || [];
+  list.forEach((s, i) => root.appendChild(mcpServerCard(s, i)));
+  renderMcpCatalog(); // keep "Added" state in sync
+}
+
+function mcpServerCard(server, index = 0) {
+  const node = $('mcp-server-tpl').content.firstElementChild.cloneNode(true);
+  const q = (sel) => node.querySelector(sel);
+  q('.mcp-name').value = server.name || '';
+  q('.mcp-url').value = server.url || '';
+  q('.mcp-auth').value = server.headers?.Authorization || '';
+  q('.mcp-enabled').checked = server.enabled !== false;
+  const status = q('.mcp-status');
+
+  // Free uses up to FREE_LIMITS.mcpServers; servers past that are visible but
+  // locked behind a Pro upsell (the runtime cap in toolsetFor matches this).
+  const overFreeLimit = !isPro(license) && index >= FREE_LIMITS.mcpServers;
+  if (overFreeLimit) {
+    node.classList.add('locked');
+    status.innerHTML = `🔒 Free includes ${FREE_LIMITS.mcpServers} MCP servers — <a href="#" class="mcp-upsell">upgrade to Pro</a> for more`;
+    status.querySelector('.mcp-upsell').onclick = (e) => {
+      e.preventDefault();
+      upsell(`Free includes ${FREE_LIMITS.mcpServers} MCP servers. Pro unlocks unlimited.`);
+    };
+  }
+
+  const commit = async () => {
+    server.name = q('.mcp-name').value.trim();
+    server.url = q('.mcp-url').value.trim();
+    server.enabled = q('.mcp-enabled').checked;
+    const auth = q('.mcp-auth').value.trim();
+    server.headers = auth ? { Authorization: auth } : {};
+    await saveSettings(settings);
+  };
+  q('.mcp-name').onchange = commit;
+  q('.mcp-url').onchange = commit;
+  q('.mcp-auth').onchange = commit;
+  q('.mcp-enabled').onchange = commit;
+
+  q('.mcp-test').onclick = async () => {
+    await commit();
+    if (!server.url) { status.textContent = 'Enter a URL first'; return; }
+    status.textContent = 'Connecting…';
+    try {
+      const tools = await testMcpServer(server);
+      status.textContent = tools.length
+        ? `✓ ${tools.length} tool${tools.length === 1 ? '' : 's'}: ${tools.map((t) => t.name).slice(0, 6).join(', ')}${tools.length > 6 ? '…' : ''}`
+        : '✓ connected (0 tools)';
+    } catch (e) {
+      status.textContent = `✗ ${e.message}`;
+    }
+  };
+
+  q('.mcp-del').onclick = async () => {
+    settings.mcpServers = (settings.mcpServers || []).filter((x) => x !== server);
+    await saveSettings(settings);
+    renderMcpServers(); // also refreshes the Discover catalog's Added state
+  };
+
+  return node;
+}
+
+function addMcpServer() {
+  settings.mcpServers = settings.mcpServers || [];
+  settings.mcpServers.push({ id: uid(), name: 'New MCP server', url: '', enabled: true, headers: {} });
+  saveSettings(settings);
+  renderMcpServers();
+  $('mcp-list').lastElementChild?.scrollIntoView({ behavior: 'smooth' });
+}
+
+// Discover: one-click add of known public remote MCP servers.
+function renderMcpCatalog() {
+  const root = $('mcp-catalog');
+  if (!root) return;
+  root.innerHTML = '';
+  const have = (url) => (settings.mcpServers || []).some((s) => s.url === url);
+  for (const item of MCP_CATALOG) {
+    const el = document.createElement('div');
+    el.className = 'mcp-cat-item';
+    const added = have(item.url);
+    el.innerHTML =
+      `<div class="mcp-cat-main">` +
+      `<div class="mcp-cat-name">${item.name}${item.auth ? ' <span class="mcp-cat-auth">auth</span>' : ' <span class="mcp-cat-free">no auth</span>'}</div>` +
+      `<div class="mcp-cat-desc">${item.desc}</div>` +
+      `<div class="mcp-cat-url">${item.url}</div>` +
+      `</div>` +
+      `<button class="btn mcp-cat-add"${added ? ' disabled' : ''}>${added ? '✓ Added' : '+ Add'}</button>`;
+    el.querySelector('.mcp-cat-add').onclick = async () => {
+      settings.mcpServers = settings.mcpServers || [];
+      settings.mcpServers.push({ id: uid(), name: item.name, url: item.url, enabled: true, headers: {} });
+      await saveSettings(settings);
+      renderMcpServers();
+      renderMcpCatalog();
+    };
+    root.appendChild(el);
+  }
+}
+
+// --------------------------------------------------------------------------
 // Skills
 // --------------------------------------------------------------------------
 function renderSkills() {
@@ -756,6 +866,7 @@ function onProActivated(lic) {
   renderLicense();
   renderEndpoints();
   renderBridgeAgents();
+  renderMcpServers();
   renderSkills();
   renderPrefs(); // re-enable the Pro-gated Autocomplete toggle
   setStatus($('license-msg'), '✓ Pro is now active. Thank you!', 'ok');
@@ -845,6 +956,7 @@ function applyFreeSlot(node, item, kind) {
 function wire() {
   $('add-endpoint').onclick = addEndpoint;
   $('add-agent').onclick = addBridgeAgent;
+  $('add-mcp').onclick = addMcpServer;
   $('add-skill').onclick = addSkill;
 
   $('bridge-test').onclick = testBridge;
@@ -890,6 +1002,7 @@ function wire() {
     renderLicense();
     renderEndpoints();
     renderBridgeAgents();
+    renderMcpServers();
     renderSkills();
   };
 

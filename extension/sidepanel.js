@@ -45,6 +45,8 @@ import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpoi
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
 import { assistPrompt } from './js/assist.js';
 import { PAGE_TOOL_SPECS, makePageToolExecutor, PAGE_AUTOMATION_SYSTEM } from './js/page-tools.js';
+import { buildToolset } from './js/toolset.js';
+import { getMcpProviders } from './js/mcp-manager.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -59,20 +61,51 @@ const $ = (id) => document.getElementById(id);
 // their own loop), the 🕹️ Act-on-page opt-in, and a readable tab. The user's
 // "High-reliability page control" setting selects the backend per turn: CDP
 // trusted events (js/page-actions-cdp.js) when on, synthetic events otherwise.
-function pageToolsFor(resolvedAgent) {
-  if (!state.settings.ui?.pageActions) return undefined; // feature off — stay silent
-  let reason = '';
-  if (!resolvedAgent || resolvedAgent.kind === 'bridge')
-    reason = 'pick an API agent (OpenAI/Anthropic) — CLI agents run their own tools';
-  else if (!state.activeTab?.id) reason = 'no readable web tab is active';
-  if (reason) {
-    console.warn('[chatpanel] page actions NOT attached —', reason);
-    toast(`🕹️ Act on page can’t run: ${reason}`);
-    return undefined;
+function pageToolProvider(resolvedAgent) {
+  if (!state.settings.ui?.pageActions) return null; // feature off — stay silent
+  // API agents run the in-extension tool loop; bridge/CLI agents (Claude Code,
+  // Codex) get the SAME tools relayed through the bridge's MCP server. Both need
+  // a readable web tab to act on.
+  if (!resolvedAgent) return null;
+  if (!state.activeTab?.id) {
+    console.warn('[chatpanel] page actions NOT attached — no readable web tab is active');
+    toast('🕹️ Act on page can’t run: no readable web tab is active');
+    return null;
   }
   const cdp = !!state.settings.ui?.pageActionsCdp;
   console.info('[chatpanel] page actions attached for', resolvedAgent.kind, 'on tab', state.activeTab.id, cdp ? '(trusted/CDP)' : '(synthetic)');
   return { specs: PAGE_TOOL_SPECS, execute: makePageToolExecutor(state.activeTab.id, { cdp }), system: PAGE_AUTOMATION_SYSTEM };
+}
+
+// Build the full toolset for a turn: page-action tools + any configured MCP
+// servers, merged into one { specs, execute, system }. MCP tools run in THIS
+// (in-extension) tool loop, so they apply to API agents only — bridge/CLI agents
+// reach MCP through the bridge itself. Returns undefined when nothing is armed.
+async function toolsetFor(resolvedAgent) {
+  const providers = [];
+  const page = pageToolProvider(resolvedAgent);
+  if (page) providers.push(page);
+
+  // MCP servers — Free uses the first FREE_LIMITS.mcpServers by list position
+  // (matching the Settings lock); Pro is unlimited. Soft client gate, consistent
+  // with our other Free ceilings (the value is the in-extension tool loop).
+  const all = state.settings.mcpServers || [];
+  const limit = isPro(state.license) ? Infinity : FREE_LIMITS.mcpServers;
+  const usable = all.slice(0, limit).filter((s) => s?.enabled !== false && s?.url);
+  if (resolvedAgent && resolvedAgent.kind !== 'bridge' && usable.length) {
+    const enabledCount = all.filter((s) => s?.enabled !== false && s?.url).length;
+    if (enabledCount > usable.length) {
+      console.info(`[chatpanel] Free plan: using ${usable.length}/${enabledCount} MCP servers (Pro = unlimited)`);
+    }
+    const mcps = await getMcpProviders(usable, {
+      onError: (s, e) => {
+        console.warn('[chatpanel] MCP server failed:', s.name || s.url, e.message);
+        toast(`🔌 MCP “${s.name || s.url}” unavailable: ${e.message}`, 2600);
+      },
+    });
+    providers.push(...mcps);
+  }
+  return buildToolset(providers);
 }
 
 const state = {
@@ -421,7 +454,12 @@ function stepLabel(s) {
     case 'press_key': return `⌨️ Pressed ${i.key}`;
     case 'scroll': return `🖱️ Scrolled ${i.dy > 0 ? 'down' : 'up'}`;
     case 'draw_path': return `✏️ Drew a stroke (${i.points?.length || 0} pts)`;
-    default: return `🔧 ${s.tool}`;
+    default: {
+      // MCP tools are namespaced mcp_<server>__<tool>; show them cleanly.
+      const mcp = /^mcp_(.+?)__(.+)$/.exec(s.tool || '');
+      if (mcp) return `🔌 ${mcp[2]} · ${mcp[1]}`;
+      return `🔧 ${s.tool}`;
+    }
   }
 }
 
@@ -796,7 +834,7 @@ async function runStream(agent, assistant, conv) {
   // (possibly just-compacted) history + system prompt.
   const runOnce = async () => {
     const resolved = resolveTarget(agent, state.settings);
-    const tools = pageToolsFor(resolved);
+    const tools = await toolsetFor(resolved);
     // System prompt = the agent's own + (when compacted) the running summary +
     // (when page tools are armed) the automation harness guidance.
     const systemPrompt = [systemWithSummary(resolved.systemPrompt, conv), tools?.system]

@@ -17,6 +17,7 @@
         <aside class="sidenav" id="tabs">
           <button class="tab active" data-tab="api"><span class="tab-ico">🔌</span> API</button>
           <button class="tab" data-tab="agents"><span class="tab-ico">🤖</span> Agents</button>
+          <button class="tab" data-tab="mcp"><span class="tab-ico">🛠</span> MCP</button>
           <button class="tab" data-tab="skills"><span class="tab-ico">⚡</span> Skills</button>
           <button class="tab" data-tab="license"><span class="tab-ico">✦</span> License</button>
         </aside>
@@ -73,6 +74,34 @@
           <div id="bridge-status" class="status"></div>
           <div id="bridge-update" class="status hidden"></div>
           <div id="bridge-agents"></div>
+        </div>
+      </section>
+
+      <!-- MCP (tool servers) -->
+      <section class="panel hidden" data-panel="mcp">
+        <div class="card">
+          <div class="card-head">
+            <h2>MCP tool servers <span class="sub">— external tools for your agents</span></h2>
+            <button id="add-mcp" class="btn primary">+ Add server</button>
+          </div>
+          <p class="muted">
+            Connect <strong>Streamable HTTP</strong> MCP servers; their tools become callable by your
+            API agents (alongside “Act on page”). The extension can’t run stdio servers
+            directly — front those with an HTTP endpoint (e.g. <code>mcp-proxy</code>).
+            <strong>Free includes one MCP server</strong>; Pro is unlimited.
+          </p>
+          <div id="mcp-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Discover <span class="sub">— popular public MCP servers</span></h2>
+          </div>
+          <p class="muted">
+            One-click add a known remote server. Endpoints &amp; availability are set by their
+            providers and can change. Ones marked <em>auth</em> need a token/login you add after.
+          </p>
+          <div id="mcp-catalog" class="mcp-catalog"></div>
         </div>
       </section>
 
@@ -247,6 +276,21 @@
         </div>
         <div class="row"><label>System prompt</label><textarea class="ep-system" rows="2" placeholder="Optional system / role instructions"></textarea></div>
         <div class="entity-foot"><span class="ep-status status"></span><button class="btn primary ep-save">Save</button></div>
+      </div>
+    </template>
+
+    <!-- MCP server row template -->
+    <template id="mcp-server-tpl">
+      <div class="entity mcp-entity">
+        <div class="entity-head">
+          <input class="mcp-name" placeholder="Name (e.g. Filesystem)" />
+          <label class="mcp-enabled-lbl"><input type="checkbox" class="mcp-enabled" checked /> Enabled</label>
+          <span class="mcp-status status"></span>
+          <button class="btn mcp-test" type="button">Test</button>
+          <button class="btn danger mcp-del" type="button">Delete</button>
+        </div>
+        <div class="row"><label>URL</label><input class="mcp-url" placeholder="https://example.com/mcp  (Streamable HTTP endpoint)" /></div>
+        <div class="row"><label>Auth header</label><input class="mcp-auth" placeholder="optional — e.g. Bearer sk-…  (sent as Authorization)" /></div>
       </div>
     </template>
 

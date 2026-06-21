@@ -30,6 +30,10 @@ export function defaultSettings() {
     version: 5,
     bridgeUrl: 'http://127.0.0.1:4319',
     activeAgentId: 'claude-code',
+    // MCP servers (Streamable HTTP) the in-extension agent loop can call as tools.
+    // Each: { id, name, url, enabled, headers? }. stdio servers aren't reachable
+    // from MV3 — front them with an HTTP bridge.
+    mcpServers: [],
     // Free tier: one usable API endpoint + one usable local agent (the user's
     // pick). Everything else stays visible in the picker but locked behind Pro.
     freeEndpointId: 'local-ollama',

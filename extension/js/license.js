@@ -111,6 +111,7 @@ export const FREE_LIMITS = {
   bridgeAgents: 1, // usable local CLI agents (Claude Code / Codex / Gemini) on Free
   customAgents: 1, // saved custom agent configs before Pro is required
   attachmentsPerMessage: 1,
+  mcpServers: 1, // usable MCP tool servers on Free — Pro is unlimited
 };
 
 export async function getLicense() {

@@ -356,7 +356,27 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
 // --------------------------------------------------------------------------
 // ChatPanel Bridge (Claude Code / Codex / Gemini CLI on the user's machine)
 // --------------------------------------------------------------------------
-async function streamBridge(agent, messages, { settings, signal, onDelta, onEvent }) {
+// Relay one CLI-agent tool call back to the extension's executor and POST the
+// result to the bridge. Fire-and-forget so the SSE loop keeps reading; the
+// bridge is blocked awaiting /tool-result, so there's nothing to read until then.
+async function relayBridgeTool(base, ev, tools, onEvent) {
+  onEvent?.({ type: 'tool', name: ev.name, phase: 'start', input: ev.input });
+  let result;
+  try {
+    result = tools ? await tools.execute(ev.name, ev.input) : JSON.stringify({ error: 'no tools armed' });
+  } catch (e) {
+    result = JSON.stringify({ error: String(e?.message || e) });
+  }
+  const image = result && typeof result === 'object' ? result.image : undefined;
+  onEvent?.({ type: 'tool', name: ev.name, phase: 'done', image, status: toolStatus(result) });
+  await fetch(`${base}/tool-result`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session: ev.session, id: ev.id, result }),
+  }).catch(() => {});
+}
+
+async function streamBridge(agent, messages, { settings, signal, onDelta, onEvent, tools }) {
   const base = (settings.bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
   const bridgeAgent = agent.bridgeAgent || 'claude';
   const options = {
@@ -401,6 +421,9 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
     options,
     messages: toChatMessages(messages),
     ...(images.length ? { images } : {}),
+    // Hand the CLI agent our browser tools: the bridge hosts an MCP server with
+    // these specs and relays each call back to us (tools.execute) over the SSE.
+    ...(tools?.specs?.length ? { pageTools: { specs: tools.specs } } : {}),
   };
   let res;
   try {
@@ -436,6 +459,11 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
         onDelta?.(ev.text);
       }
       break;
+    } else if (ev.type === 'tool_request') {
+      // The CLI agent called one of our browser tools (via the bridge's MCP
+      // server) — run it here and POST the result back. Don't await: the bridge
+      // is blocked on /tool-result, so no further SSE arrives until we answer.
+      relayBridgeTool(base, ev, tools, onEvent);
     } else {
       // tool use / status / reasoning — surface for the activity strip.
       onEvent?.(ev);
@@ -478,8 +506,9 @@ export async function listBridgeModels(agent, settings) {
 // with kind 'bridge' | 'anthropic' | 'openai' and its connection fields inline.
 export async function streamChat({ agent, messages, settings, signal, onDelta, onEvent, tools }) {
   const opts = { settings, signal, onDelta, onEvent, tools };
-  // Bridge CLIs (Claude Code / Codex / Gemini) run their OWN agentic loop and
-  // can't take our browser tools — only API agents get the tool-use loop.
+  // Bridge CLIs (Claude Code / Codex …) run their OWN agentic loop. They can now
+  // ALSO use our browser tools: the bridge hosts an MCP server with the specs we
+  // send and relays each call back here (see streamBridge / relayBridgeTool).
   if (agent.kind === 'bridge') return streamBridge(agent, messages, opts);
   // Model targets need a model — don't silently fall back to a default the
   // endpoint may not have (the old gpt-4o-mini default hid Ollama mistakes).

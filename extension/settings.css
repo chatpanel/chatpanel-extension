@@ -122,6 +122,19 @@ a { color: var(--accent); }
 /* Pro-gated cards (e.g. the whole Skills tab on Free) + the upsell banner */
 button.locked, .btn.locked { opacity: .55; cursor: not-allowed; }
 .locked-card { opacity: .92; }
+.entity.mcp-entity.locked { opacity: .6; }
+.mcp-entity .entity-head { gap: 8px; flex-wrap: wrap; }
+.mcp-entity .mcp-enabled-lbl { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.mcp-catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.mcp-cat-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: rgba(127,127,127,.04); }
+.mcp-cat-main { min-width: 0; }
+.mcp-cat-name { font-weight: 700; font-size: 13.5px; display: flex; align-items: center; gap: 6px; }
+.mcp-cat-auth, .mcp-cat-free { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; padding: 1px 6px; border-radius: 999px; }
+.mcp-cat-auth { background: rgba(234,179,8,.18); color: #a16207; }
+.mcp-cat-free { background: rgba(34,197,94,.16); color: #15803d; }
+.mcp-cat-desc { font-size: 12.5px; color: var(--muted); margin: 3px 0; }
+.mcp-cat-url { font-size: 11px; color: var(--muted); font-family: var(--mono, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-cat-add { flex: none; }
 .gate-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; border: 1px dashed var(--accent); border-radius: 10px; padding: 12px 14px; margin: 6px 0 14px; background: rgba(127,127,127,.05); font-size: 13.5px; }
 .gate-banner .btn { white-space: nowrap; }
 
