@@ -13,8 +13,10 @@
 import { getEntitlementToken } from './license.js';
 
 // Safety cap on the agent tool-use loop: a turn may call tools at most this many
-// times before we stop, so a confused model can't fill→inspect→fill forever.
-const MAX_TOOL_STEPS = 8;
+// times before we stop, so a confused model can't loop forever. Generous enough
+// for real multi-step tasks (filling a table, a multi-field booking, drawing a
+// shape) — each click/type/Enter is a step, so these add up fast.
+const MAX_TOOL_STEPS = Number(globalThis.CHATPANEL_MAX_TOOL_STEPS) || 60;
 
 // Parse a tool-call argument string, tolerating the empty/partial case (a tool
 // with no inputs streams "" or "{}").
@@ -24,6 +26,22 @@ function safeJson(s) {
     return JSON.parse(s);
   } catch {
     return {};
+  }
+}
+
+// A short status for a tool result, surfaced in the UI's "Actions" log so the
+// user can SEE whether each step ran trusted/synthetic or failed (e.g. why CDP
+// fell back). Best-effort parse — returns '' if the shape is unexpected.
+function toolStatus(result) {
+  try {
+    const o = typeof result === 'string' ? JSON.parse(result) : JSON.parse(result?.text || '{}');
+    if (o.error) return o.blocked ? 'blocked' : `error: ${String(o.error).slice(0, 80)}`;
+    if (typeof o.mode === 'string') return o.mode; // 'trusted' | 'synthetic' | 'synthetic (CDP failed: …)'
+    if (o.ok === false) return `fail${o.error ? ': ' + String(o.error).slice(0, 70) : ''}`;
+    if (o.note) return String(o.note).slice(0, 80);
+    return 'ok';
+  } catch {
+    return '';
   }
 }
 
@@ -195,12 +213,25 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
       const input = safeJson(c.args);
       onEvent?.({ type: 'tool', name: c.name, phase: 'start', input });
       const result = await tools.execute(c.name, input);
-      onEvent?.({ type: 'tool', name: c.name, phase: 'done' });
-      msgs.push({ role: 'tool', tool_call_id: c.id, content: result });
+      const _image = result && typeof result === 'object' ? result.image : undefined;
+      onEvent?.({ type: 'tool', name: c.name, phase: 'done', image: _image, status: toolStatus(result) });
+      const text = typeof result === 'string' ? result : (result?.text ?? '');
+      msgs.push({ role: 'tool', tool_call_id: c.id, content: text });
+      // OpenAI tool messages can't carry images — feed any screenshot back as a
+      // follow-up user message so the (vision) model can see the page.
+      if (result && typeof result === 'object' && result.image) {
+        msgs.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: `(Screenshot from ${c.name})` },
+            { type: 'image_url', image_url: { url: result.image } },
+          ],
+        });
+      }
     }
   }
   onEvent?.({ type: 'finish', reason: 'tool-step-limit' });
-  return full;
+  return full + (full ? '\n\n' : '') + '_(Reached the action limit for one turn — say "continue" to keep going.)_';
 }
 
 // --------------------------------------------------------------------------
@@ -302,13 +333,24 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
       const input = safeJson(b.json);
       onEvent?.({ type: 'tool', name: b.name, phase: 'start', input });
       const result = await tools.execute(b.name, input);
-      onEvent?.({ type: 'tool', name: b.name, phase: 'done' });
-      results.push({ type: 'tool_result', tool_use_id: b.id, content: result });
+      const _image = result && typeof result === 'object' ? result.image : undefined;
+      onEvent?.({ type: 'tool', name: b.name, phase: 'done', image: _image, status: toolStatus(result) });
+      const text = typeof result === 'string' ? result : (result?.text ?? '');
+      // Anthropic tool_result content may be a string OR blocks — attach the
+      // screenshot as an image block so the model can see the page directly.
+      let content = text;
+      if (result && typeof result === 'object' && result.image) {
+        const im = /^data:([^;]+);base64,(.+)$/s.exec(result.image);
+        content = [];
+        if (im) content.push({ type: 'image', source: { type: 'base64', media_type: im[1], data: im[2] } });
+        content.push({ type: 'text', text });
+      }
+      results.push({ type: 'tool_result', tool_use_id: b.id, content });
     }
     msgs.push({ role: 'user', content: results });
   }
   onEvent?.({ type: 'finish', reason: 'tool-step-limit' });
-  return full;
+  return full + (full ? '\n\n' : '') + '_(Reached the action limit for one turn — say "continue" to keep going.)_';
 }
 
 // --------------------------------------------------------------------------

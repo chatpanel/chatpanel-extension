@@ -219,6 +219,12 @@ body.rail-collapsed { --rail-w: 0px; }
 .msg:hover .msg-actions { opacity: 1; }
 .mini-btn { background: none; border: none; color: var(--text-dim); font-size: 11px; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
 .mini-btn:hover { background: var(--bg-soft); }
+.msg-edit { display: flex; flex-direction: column; gap: 6px; max-width: 85%; }
+.msg.user .msg-edit { align-self: flex-end; width: 85%; }
+.msg-edit-input { width: 100%; box-sizing: border-box; resize: none; font: inherit; font-size: 14px; line-height: 1.4; color: var(--text); background: var(--bg-soft); border: 1px solid var(--accent); border-radius: 12px; padding: 10px 12px; outline: none; }
+.msg-edit-actions { display: flex; gap: 4px; justify-content: flex-end; }
+.msg-edit-actions .mini-btn { background: var(--bg-soft); }
+.msg-edit-actions .mini-btn:first-child { color: var(--accent); font-weight: 600; }
 .cursor-blink::after { content: '▋'; animation: blink 1s steps(2) infinite; color: var(--text-dim); }
 @keyframes blink { 0%,50%{opacity:1} 50.01%,100%{opacity:0} }
 
@@ -228,6 +234,17 @@ body.rail-collapsed { --rail-w: 0px; }
 .bubble .thinking > summary::-webkit-details-marker { display: none; }
 .bubble .thinking[open] > summary { border-bottom: 1px solid var(--border); }
 .bubble .thinking-body { padding: 8px 10px; color: var(--text-dim); white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow: auto; font-family: var(--mono); font-size: 12px; line-height: 1.5; }
+
+/* Agent "Actions" log — the tool calls + screenshots the agent ran. */
+.bubble .agent-steps { margin: 0 0 8px; border: 1px solid var(--border); border-radius: 8px; background: rgba(124,140,248,.07); font-size: 12.5px; }
+.bubble .agent-steps > summary { cursor: pointer; padding: 6px 10px; color: var(--accent); font-weight: 600; list-style: none; }
+.bubble .agent-steps > summary::-webkit-details-marker { display: none; }
+.bubble .agent-steps[open] > summary { border-bottom: 1px solid var(--border); }
+.bubble .steps-body { padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; }
+.bubble .step { color: var(--text-dim); font-size: 12.5px; }
+.bubble .step-status { color: var(--text-dim); opacity: .8; font-size: 11px; }
+.bubble .step-status.bad { color: #e0607a; opacity: 1; }
+.bubble .step-shot { max-width: 260px; max-height: 170px; border-radius: 6px; border: 1px solid var(--border); margin: 2px 0 4px; }
 
 /* Skill auto-suggestion chip above the composer */
 .skill-suggest { display: flex; align-items: center; gap: 6px; padding: 4px 12px 0; }

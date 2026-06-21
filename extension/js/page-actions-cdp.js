@@ -1,4 +1,4 @@
-// High-reliability page control via chrome.debugger + the Chrome DevTools
+// High-reliability page control via api.debugger + the Chrome DevTools
 // Protocol (CDP) Input domain — the same mechanism Puppeteer/Playwright use.
 //
 // Why this exists: the default path in page-actions.js sets values and dispatches
@@ -10,11 +10,12 @@
 // "ChatPanel is debugging this browser" banner, so this is opt-in only.
 //
 // Division of labour: READING the page (locate elements, read back state) stays
-// on chrome.scripting — it's reliable and cheap. CDP is used only for the ACT
+// on api.scripting — it's reliable and cheap. CDP is used only for the ACT
 // (trusted clicks + typed text). We locate an element's viewport centre via
 // scripting, then dispatch trusted mouse/keyboard at those coordinates.
 
 import { flashHighlight } from './page-actions.js';
+import { api } from './browser-api.js';
 
 const CDP_VERSION = '1.3';
 const IDLE_DETACH_MS = 8000; // drop the debugger (and its banner) after a lull
@@ -37,7 +38,7 @@ function bump(tabId) {
 async function ensureAttached(tabId) {
   // `debugger` is a required permission, so the namespace is always present —
   // but guard anyway so a stripped build degrades to the scripting fallback.
-  if (!chrome.debugger) {
+  if (!api.debugger) {
     const err = new Error('Debugger API unavailable in this build.');
     err.code = 'no-debugger-perm';
     throw err;
@@ -45,7 +46,7 @@ async function ensureAttached(tabId) {
   ensureDetachHook();
   if (!sessions.has(tabId)) {
     try {
-      await chrome.debugger.attach({ tabId }, CDP_VERSION);
+      await api.debugger.attach({ tabId }, CDP_VERSION);
     } catch (e) {
       // Already attached by another client (DevTools open on this tab) → unusable.
       if (/already attached/i.test(e.message)) {
@@ -58,13 +59,26 @@ async function ensureAttached(tabId) {
   bump(tabId);
 }
 
+// Screenshot the attached tab's viewport via CDP — works even when the tab isn't
+// focused (unlike tabs.captureVisibleTab). Returns a JPEG data URL.
+export async function cdpScreenshot(tabId) {
+  await ensureAttached(tabId);
+  try {
+    const r = await send(tabId, 'Page.captureScreenshot', { format: 'jpeg', quality: 60 });
+    bump(tabId);
+    return r?.data ? `data:image/jpeg;base64,${r.data}` : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function detach(tabId) {
   const s = sessions.get(tabId);
   if (!s) return;
   clearTimeout(s.timer);
   sessions.delete(tabId);
   try {
-    await chrome.debugger.detach({ tabId });
+    await api.debugger.detach({ tabId });
   } catch {
     /* tab closed / already gone */
   }
@@ -72,13 +86,13 @@ export async function detach(tabId) {
 
 // Chrome detaches us on its own (navigation, tab close, user clicks "cancel" on
 // the banner). Keep our map in sync so we re-attach cleanly next time. Registered
-// lazily because the `chrome.debugger` namespace can be absent until the optional
+// lazily because the `api.debugger` namespace can be absent until the optional
 // permission is granted, and this module loads at startup.
 let detachHooked = false;
 function ensureDetachHook() {
-  if (detachHooked || !chrome.debugger?.onDetach) return;
+  if (detachHooked || !api.debugger?.onDetach) return;
   detachHooked = true;
-  chrome.debugger.onDetach.addListener((src) => {
+  api.debugger.onDetach.addListener((src) => {
     if (src.tabId == null) return;
     const s = sessions.get(src.tabId);
     if (s) {
@@ -89,12 +103,14 @@ function ensureDetachHook() {
 }
 
 const send = (tabId, method, params) =>
-  chrome.debugger.sendCommand({ tabId }, method, params || {});
+  api.debugger.sendCommand({ tabId }, method, params || {});
 
 async function script(tabId, func, args = []) {
-  const [inj] = await chrome.scripting.executeScript({ target: { tabId }, func, args });
+  const [inj] = await api.scripting.executeScript({ target: { tabId }, func, args });
   return inj?.result;
 }
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function trustedClick(tabId, x, y) {
   await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
@@ -107,7 +123,128 @@ async function trustedClick(tabId, x, y) {
 }
 
 // --------------------------------------------------------------------------
-// Injected readers (self-contained — run via chrome.scripting)
+// Reusable trusted KEYBOARD primitives. Real per-character key events (not
+// Input.insertText) — this is what makes typeahead/autocomplete dropdowns fire,
+// because sites listen on keydown/keyup/input, not a bulk text insert.
+// --------------------------------------------------------------------------
+
+// Type `text` as individual keystrokes. `perCharMs` paces it like a human so
+// debounced autocompletes keep up.
+async function trustedType(tabId, text, perCharMs = 30) {
+  for (const ch of String(text)) {
+    await send(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', text: ch, unmodifiedText: ch });
+    await send(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp' });
+    if (perCharMs) await delay(perCharMs);
+  }
+}
+
+// Named non-printable keys (Enter, ArrowDown, Backspace…) for nav/selection.
+const KEY_DEFS = {
+  Enter: { windowsVirtualKeyCode: 13, key: 'Enter', code: 'Enter' },
+  Tab: { windowsVirtualKeyCode: 9, key: 'Tab', code: 'Tab' },
+  ArrowDown: { windowsVirtualKeyCode: 40, key: 'ArrowDown', code: 'ArrowDown' },
+  ArrowUp: { windowsVirtualKeyCode: 38, key: 'ArrowUp', code: 'ArrowUp' },
+  ArrowLeft: { windowsVirtualKeyCode: 37, key: 'ArrowLeft', code: 'ArrowLeft' },
+  ArrowRight: { windowsVirtualKeyCode: 39, key: 'ArrowRight', code: 'ArrowRight' },
+  Backspace: { windowsVirtualKeyCode: 8, key: 'Backspace', code: 'Backspace' },
+  Delete: { windowsVirtualKeyCode: 46, key: 'Delete', code: 'Delete' },
+  Escape: { windowsVirtualKeyCode: 27, key: 'Escape', code: 'Escape' },
+  Home: { windowsVirtualKeyCode: 36, key: 'Home', code: 'Home' },
+  End: { windowsVirtualKeyCode: 35, key: 'End', code: 'End' },
+  Space: { windowsVirtualKeyCode: 32, key: ' ', code: 'Space', text: ' ' },
+};
+async function trustedKey(tabId, name) {
+  const k = KEY_DEFS[name];
+  if (!k) return;
+  await send(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', ...k });
+  await send(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...k });
+}
+
+// --------------------------------------------------------------------------
+// Coordinate-based "computer use" — the model reads a screenshot and drives the
+// page by COORDINATES, so it works on canvas apps (Google Sheets/Docs, Figma)
+// and anything not exposed as DOM. Coordinates are in CSS-viewport space
+// (0..innerWidth × 0..innerHeight) — the same space the screenshot tool reports.
+// CDP-only (needs trusted events).
+// --------------------------------------------------------------------------
+export async function cdpClickAt(tabId, x, y) {
+  await ensureAttached(tabId);
+  try {
+    await trustedClick(tabId, Math.round(x), Math.round(y));
+    return { ok: true, clickedAt: { x: Math.round(x), y: Math.round(y) } };
+  } finally {
+    bump(tabId);
+  }
+}
+// Type at the CURRENT focus (after a click_at). Real keystrokes.
+export async function cdpTypeText(tabId, text) {
+  await ensureAttached(tabId);
+  try {
+    await trustedType(tabId, String(text));
+    return { ok: true, typed: String(text).slice(0, 80) };
+  } finally {
+    bump(tabId);
+  }
+}
+export async function cdpPressKey(tabId, key) {
+  await ensureAttached(tabId);
+  try {
+    if (!KEY_DEFS[key]) return { ok: false, error: `unknown key "${key}"` };
+    await trustedKey(tabId, key);
+    return { ok: true, key };
+  } finally {
+    bump(tabId);
+  }
+}
+export async function cdpScroll(tabId, x, y, dy) {
+  await ensureAttached(tabId);
+  try {
+    await send(tabId, 'Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x: Math.round(x ?? 100),
+      y: Math.round(y ?? 100),
+      deltaX: 0,
+      deltaY: Math.round(dy ?? 400),
+    });
+    return { ok: true, scrolledBy: Math.round(dy ?? 400) };
+  } finally {
+    bump(tabId);
+  }
+}
+
+// Drag the mouse through a path with the button held — i.e. a freehand stroke.
+// This is how you DRAW (Excalidraw pencil) or drag-and-drop. `points` is an
+// ordered [{x,y}, …] in CSS-viewport space; we press at the first, move through
+// each, and release at the last.
+export async function cdpDrag(tabId, points) {
+  await ensureAttached(tabId);
+  try {
+    const pts = (points || [])
+      .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+      .map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }));
+    if (pts.length < 2) return { ok: false, error: 'drag needs at least 2 points' };
+    await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: pts[0].x, y: pts[0].y });
+    await send(tabId, 'Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: pts[0].x, y: pts[0].y, button: 'left', buttons: 1, clickCount: 1,
+    });
+    for (let i = 1; i < pts.length; i++) {
+      await send(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x: pts[i].x, y: pts[i].y, button: 'left', buttons: 1,
+      });
+      await delay(8); // small pace so the app samples the path like a real stroke
+    }
+    const last = pts[pts.length - 1];
+    await send(tabId, 'Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: last.x, y: last.y, button: 'left', buttons: 1, clickCount: 1,
+    });
+    return { ok: true, strokePoints: pts.length };
+  } finally {
+    bump(tabId);
+  }
+}
+
+// --------------------------------------------------------------------------
+// Injected readers (self-contained — run via api.scripting)
 // --------------------------------------------------------------------------
 function locateInPage(selector) {
   let el;
@@ -169,6 +306,39 @@ function readStateInPage(selector) {
   if (t === 'checkbox' || t === 'radio') return !!el.checked;
   if (el.isContentEditable) return (el.innerText || '').trim();
   return String(el.value ?? '').trim();
+}
+
+// Injected: find the best visible autocomplete-dropdown option to click. Covers
+// the common typeahead patterns (ARIA listbox/option, and a few data-attr ones).
+// Returns the option's centre coords + text, preferring one matching `want`.
+function findComboOptionInPage(want) {
+  const sel = [
+    '[role="listbox"] [role="option"]',
+    '[role="option"]',
+    '[role="listbox"] li',
+    'ul[role="listbox"] li',
+    '[data-stid*="result"]',
+    '.results-list li',
+    '[class*="typeahead"] li',
+    '[class*="autocomplete"] li',
+  ].join(',');
+  const needle = String(want || '').trim().toLowerCase();
+  const opts = [...document.querySelectorAll(sel)].filter((el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return false;
+    const s = getComputedStyle(el);
+    return s.display !== 'none' && s.visibility !== 'hidden' && (el.innerText || '').trim();
+  });
+  if (!opts.length) return null;
+  const best =
+    (needle && opts.find((el) => (el.innerText || '').toLowerCase().includes(needle))) || opts[0];
+  best.scrollIntoView({ block: 'center', inline: 'center' });
+  const r = best.getBoundingClientRect();
+  return {
+    x: Math.round(r.left + r.width / 2),
+    y: Math.round(r.top + r.height / 2),
+    text: (best.innerText || '').trim().slice(0, 100),
+  };
 }
 
 // --------------------------------------------------------------------------
@@ -234,6 +404,41 @@ export async function cdpClickElement(tabId, selector) {
     await trustedClick(tabId, loc.x, loc.y);
     await flashHighlight(tabId, [selector]); // show what was clicked
     return { ok: true };
+  } finally {
+    bump(tabId);
+  }
+}
+
+// Typeahead / autocomplete combobox (e.g. Expedia "Where to?"). The hard case:
+// typing text isn't enough — you must SELECT a suggestion from the dropdown the
+// site renders. We focus, clear, type with REAL keystrokes (so the dropdown
+// actually appears), wait for it, then click the matching option (falling back
+// to ↓+Enter). Requires trusted events, so this is CDP-only.
+export async function cdpFillCombobox(tabId, selector, value) {
+  await ensureAttached(tabId);
+  try {
+    const loc = await script(tabId, locateInPage, [selector]);
+    if (!loc) throw new Error('not found');
+    if (loc.hidden) throw new Error('not visible');
+    await trustedClick(tabId, loc.x, loc.y); // focus
+    await script(tabId, selectAllFocused, []); // clear any existing text
+    await trustedKey(tabId, 'Backspace');
+    await trustedType(tabId, String(value)); // real keystrokes → dropdown appears
+    // Poll for the dropdown to populate (network-backed suggestions take a moment).
+    let opt = null;
+    for (let i = 0; i < 12 && !opt; i++) {
+      await delay(200);
+      opt = await script(tabId, findComboOptionInPage, [String(value)]);
+    }
+    await flashHighlight(tabId, [selector]);
+    if (opt) {
+      await trustedClick(tabId, opt.x, opt.y);
+      return { ok: true, selected: opt.text };
+    }
+    // No visible option found — try keyboard selection as a fallback.
+    await trustedKey(tabId, 'ArrowDown');
+    await trustedKey(tabId, 'Enter');
+    return { ok: true, selected: '(keyboard ↓+Enter)', note: 'no dropdown option detected; used keyboard' };
   } finally {
     bump(tabId);
   }

@@ -44,7 +44,7 @@ import { renderMarkdown } from './js/markdown.js';
 import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
 import { assistPrompt } from './js/assist.js';
-import { PAGE_TOOL_SPECS, makePageToolExecutor } from './js/page-tools.js';
+import { PAGE_TOOL_SPECS, makePageToolExecutor, PAGE_AUTOMATION_SYSTEM } from './js/page-tools.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -56,7 +56,7 @@ const $ = (id) => document.getElementById(id);
 // browser automation," which is impossible to debug from the chat alone.
 //
 // Page-action tools for the chat loop. Requires an API agent (bridge CLIs run
-// their own loop), the 🖋 Act-on-page opt-in, and a readable tab. The user's
+// their own loop), the 🕹️ Act-on-page opt-in, and a readable tab. The user's
 // "High-reliability page control" setting selects the backend per turn: CDP
 // trusted events (js/page-actions-cdp.js) when on, synthetic events otherwise.
 function pageToolsFor(resolvedAgent) {
@@ -67,12 +67,12 @@ function pageToolsFor(resolvedAgent) {
   else if (!state.activeTab?.id) reason = 'no readable web tab is active';
   if (reason) {
     console.warn('[chatpanel] page actions NOT attached —', reason);
-    toast(`🖋 Act on page can’t run: ${reason}`);
+    toast(`🕹️ Act on page can’t run: ${reason}`);
     return undefined;
   }
   const cdp = !!state.settings.ui?.pageActionsCdp;
   console.info('[chatpanel] page actions attached for', resolvedAgent.kind, 'on tab', state.activeTab.id, cdp ? '(trusted/CDP)' : '(synthetic)');
-  return { specs: PAGE_TOOL_SPECS, execute: makePageToolExecutor(state.activeTab.id, { cdp }) };
+  return { specs: PAGE_TOOL_SPECS, execute: makePageToolExecutor(state.activeTab.id, { cdp }), system: PAGE_AUTOMATION_SYSTEM };
 }
 
 const state = {
@@ -340,7 +340,7 @@ function renderMessage(m) {
   bubble.className = 'bubble';
   if (m.role === 'assistant') {
     bubble.innerHTML = assistantBody(m);
-    if (m.pending && !m.content && !m.thinking) bubble.classList.add('cursor-blink');
+    if (m.pending && !m.content && !m.thinking && !m.steps?.length) bubble.classList.add('cursor-blink');
     enhanceCode(bubble);
   } else {
     // user bubble: plain text + attachment note (+ image thumbnails)
@@ -387,6 +387,9 @@ function renderMessage(m) {
   if (m.role === 'assistant' && !m.pending) {
     actions.appendChild(miniBtn('Retry', () => retryFrom(m)));
   }
+  if (m.role === 'user' && !m.queued) {
+    actions.appendChild(miniBtn('Edit', () => editMessage(m)));
+  }
   wrap.appendChild(actions);
   return wrap;
 }
@@ -394,14 +397,53 @@ function renderMessage(m) {
 function updateBubble(m) {
   const bubble = state.bubbles.get(m.id);
   if (!bubble) return;
-  bubble.classList.toggle('cursor-blink', !!m.pending && !m.content && !m.thinking);
+  bubble.classList.toggle('cursor-blink', !!m.pending && !m.content && !m.thinking && !m.steps?.length);
   bubble.innerHTML = assistantBody(m);
   enhanceCode(bubble);
 }
 
-// Assistant bubble = an optional streamed "thinking" disclosure + the answer.
+// A human label for one agent action (tool call), so the user can SEE what the
+// agent is doing — especially with no-reasoning models, where the bubble would
+// otherwise be blank while it loops through tools.
+function stepLabel(s) {
+  const i = s.input || {};
+  switch (s.tool) {
+    case 'inspect_page': return '🔍 Read the page';
+    case 'fill_form': return `⌨️ Filled ${i.fields?.length || 0} field(s)`;
+    case 'fill_combobox': return `⌨️ Typed “${String(i.value || '').slice(0, 40)}” → select`;
+    case 'click_element': return `🖱️ Clicked ${String(i.selector || '').slice(0, 48)}`;
+    case 'click_by_text': return `🖱️ Clicked “${String(i.text || '').slice(0, 40)}”`;
+    case 'screenshot': return '📸 Took a screenshot';
+    case 'marked_screenshot': return '🔢 Tagged clickable elements';
+    case 'click_mark': return `🖱️ Clicked element #${i.n}`;
+    case 'click_at': return `🖱️ Clicked at (${Math.round(i.x)}, ${Math.round(i.y)})`;
+    case 'type_text': return `⌨️ Typed “${String(i.text || '').slice(0, 40)}”`;
+    case 'press_key': return `⌨️ Pressed ${i.key}`;
+    case 'scroll': return `🖱️ Scrolled ${i.dy > 0 ? 'down' : 'up'}`;
+    case 'draw_path': return `✏️ Drew a stroke (${i.points?.length || 0} pts)`;
+    default: return `🔧 ${s.tool}`;
+  }
+}
+
+// Collapsible "Actions" log of the agent's tool calls (+ any screenshots it took).
+function renderSteps(m) {
+  const open = m.pending ? ' open' : '';
+  const items = m.steps
+    .map((s) => {
+      const shot = s.image
+        ? `<img class="step-shot" src="${escapeAttr(s.image)}" alt="screenshot" />`
+        : '';
+      const badge = s.status ? ` <span class="step-status ${/error|fail|blocked|CDP failed/i.test(s.status) ? 'bad' : ''}">${escapeAttr(s.status)}</span>` : '';
+      return `<div class="step">${escapeAttr(stepLabel(s))}${badge}</div>${shot}`;
+    })
+    .join('');
+  return `<details class="agent-steps"${open}><summary>🔧 Actions (${m.steps.length})</summary><div class="steps-body">${items}</div></details>`;
+}
+
+// Assistant bubble = an optional "Actions" log + streamed "thinking" + the answer.
 function assistantBody(m) {
   let html = '';
+  if (m.steps?.length) html += renderSteps(m);
   if (m.thinking) {
     const open = m.pending ? ' open' : '';
     html += `<details class="thinking"${open}><summary>💭 Thinking</summary><div class="thinking-body">${escapeAttr(
@@ -463,12 +505,11 @@ async function send() {
   const raw = input.value.trim();
   const conv = state.conv; // capture: the user may switch chats while this streams
   // Guard BEFORE any await: a second fast Enter would otherwise slip through the
-  // gap while we read the page, producing duplicate requests.
-  if (
-    (!raw && !state.attachments.length) ||
-    state.streams.has(conv.id) ||
-    sendingLock.has(conv.id)
-  ) {
+  // gap while we read the page, producing duplicate requests. `sendingLock` covers
+  // that race. We deliberately DON'T block when a reply is already streaming —
+  // that's how a message gets QUEUED (and, with Stop, how you STEER); see the
+  // `queued` branch below.
+  if ((!raw && !state.attachments.length) || sendingLock.has(conv.id)) {
     return;
   }
   sendingLock.add(conv.id);
@@ -627,6 +668,111 @@ function maybeDrainQueue(conv) {
   runStream(agent, assistant, conv);
 }
 
+// --------------------------------------------------------------------------
+// Context compaction — keep long conversations under ANY model's context window
+// (local or API). When the model-visible history grows past a budget, summarize
+// the older messages with the SAME model and send only that summary (folded into
+// the system prompt) + the most recent messages. The on-screen transcript keeps
+// every message; only what we SEND the model is bounded.
+// --------------------------------------------------------------------------
+const COMPACT_AT_TOKENS = 16000; // ~history budget before we summarize (chars/4)
+const KEEP_RECENT = 4; // always send the last N messages verbatim
+const estTokens = (s) => Math.ceil(String(s || '').length / 4);
+
+function msgTokens(m) {
+  let n = estTokens(m.content);
+  if (m.attachments) for (const a of m.attachments) n += estTokens(a.text);
+  return n;
+}
+
+// Real chat messages, dropping the pending assistant placeholder + empties.
+function chatMessages(conv, exclude) {
+  return conv.messages.filter(
+    (m) =>
+      m !== exclude &&
+      !m.pending &&
+      (m.role === 'user' || m.role === 'assistant') &&
+      (m.content || m.attachments?.length),
+  );
+}
+
+// The bounded message list to send the model: everything AFTER the last
+// summarized message (or all of them, if no compaction yet).
+function messagesForModel(conv, exclude) {
+  const all = chatMessages(conv, exclude);
+  const c = conv.compaction;
+  if (!c) return all;
+  const idx = all.findIndex((m) => m.id === c.uptoId);
+  return idx >= 0 ? all.slice(idx + 1) : all;
+}
+
+// Fold the running summary into the system prompt so the model continues
+// seamlessly without us reshuffling message roles (which providers are picky about).
+function systemWithSummary(base, conv) {
+  if (!conv.compaction?.summary) return base || '';
+  const head = base ? `${base}\n\n` : '';
+  return `${head}[Summary of the earlier part of this conversation — continue seamlessly; do not mention this summary]\n${conv.compaction.summary}`;
+}
+
+// Summarize all but the last `keepRecent` messages (folding in any prior summary)
+// and remember it on conv.compaction. Returns true if it compacted.
+async function compactNow(conv, resolved, keepRecent) {
+  const all = chatMessages(conv);
+  if (all.length <= keepRecent + 1) return false; // nothing meaningful to fold
+  const fold = all.slice(0, all.length - keepRecent);
+  const uptoId = fold[fold.length - 1].id;
+  const transcript = fold
+    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${(m.content || '').slice(0, 4000)}`)
+    .join('\n\n');
+  const prior = conv.compaction?.summary ? `Earlier summary to fold in:\n${conv.compaction.summary}\n\n` : '';
+  const sys =
+    'You compress a conversation into a compact but COMPLETE summary for continuation. ' +
+    'Preserve: the user’s goals, key facts, decisions made, current task/automation state, ' +
+    'open questions, and specifics needed to keep going. Terse bullet points. No preamble.';
+  if (conv.id === state.conv.id) toast('Compacting earlier conversation…', 1800);
+  let summary = '';
+  try {
+    await streamChat({
+      agent: { ...resolved, systemPrompt: sys, maxTokens: 1200, temperature: 0.3 },
+      messages: [{ role: 'user', content: `${prior}Summarize the conversation so far:\n\n${transcript}` }],
+      settings: state.settings,
+      onDelta: (d) => {
+        summary += d;
+      },
+      onEvent: () => {},
+    });
+  } catch {
+    return false; // summarize failed — proceed uncompacted
+  }
+  if (!summary.trim()) return false;
+  conv.compaction = { summary: summary.trim(), uptoId, ts: Date.now() };
+  await saveConversation(conv);
+  return true;
+}
+
+// Soft, pre-emptive: compact when our (rough) estimate exceeds the budget — cheap
+// insurance so we usually don't even hit the wall. The hard limit is enforced
+// reactively by forceCompact below, which is the authoritative net.
+async function maybeCompact(conv, resolved) {
+  const visible = messagesForModel(conv);
+  const budget = visible.reduce((n, m) => n + msgTokens(m), 0) + estTokens(conv.compaction?.summary);
+  if (budget >= COMPACT_AT_TOKENS) await compactNow(conv, resolved, KEEP_RECENT);
+}
+
+// Reactive net: the model itself reported the prompt is too long. Compact harder
+// (keep fewer recent messages) so the retry fits — works for ANY model/window.
+async function forceCompact(conv, resolved) {
+  return compactNow(conv, resolved, 2);
+}
+
+// Does this error mean "you exceeded the context window"? Patterns span OpenAI,
+// Anthropic, and local servers (llama.cpp / Ollama), which all word it differently.
+function isContextLimitError(e) {
+  return /context.{0,8}(length|window|size)|context_length_exceeded|prompt is too long|too many tokens|maximum context|exceed.{0,20}context|reduce the (length|number|size)|input is too long|token limit|n_ctx|kv cache/i.test(
+    e?.message || '',
+  );
+}
+
 // Streams a response into `conv` (which may not be the one on screen). UI is only
 // touched when conv is the active conversation, so concurrent chats don't fight.
 async function runStream(agent, assistant, conv) {
@@ -646,14 +792,22 @@ async function runStream(agent, assistant, conv) {
     }
   };
 
-  try {
+  // One streaming attempt — rebuilt each call so a retry uses the latest
+  // (possibly just-compacted) history + system prompt.
+  const runOnce = async () => {
     const resolved = resolveTarget(agent, state.settings);
+    const tools = pageToolsFor(resolved);
+    // System prompt = the agent's own + (when compacted) the running summary +
+    // (when page tools are armed) the automation harness guidance.
+    const systemPrompt = [systemWithSummary(resolved.systemPrompt, conv), tools?.system]
+      .filter(Boolean)
+      .join('\n\n');
     await streamChat({
-      agent: resolved,
-      messages: conv.messages.filter((m) => m !== assistant),
+      agent: { ...resolved, systemPrompt },
+      messages: messagesForModel(conv, assistant),
       settings: state.settings,
       signal: controller.signal,
-      tools: pageToolsFor(resolved),
+      tools,
       onDelta: (d) => {
         pending += d;
         assistant.content = pending; // keep the object current for switch-back
@@ -664,13 +818,47 @@ async function runStream(agent, assistant, conv) {
         if (ev.type === 'reasoning' && ev.text) {
           assistant.thinking = (assistant.thinking || '') + ev.text;
           if (!raf) raf = requestAnimationFrame(flush);
+        } else if (ev.type === 'tool' && ev.phase === 'start') {
+          // Surface each tool call as a visible "Actions" step — crucial for
+          // no-reasoning models, where the bubble is otherwise blank while it works.
+          (assistant.steps ||= []).push({ tool: ev.name, input: ev.input });
+          if (!raf) raf = requestAnimationFrame(flush);
+        } else if (ev.type === 'tool' && ev.phase === 'done' && assistant.steps?.length) {
+          const step = assistant.steps[assistant.steps.length - 1];
+          if (ev.image) step.image = ev.image;
+          if (ev.status) step.status = ev.status;
+          if (ev.image || ev.status) {
+            if (!raf) raf = requestAnimationFrame(flush);
+          }
         }
         recordActivity(conv.id, ev);
       },
     });
+  };
+
+  try {
+    await maybeCompact(conv, resolveTarget(agent, state.settings)); // soft pre-emptive
+    await runOnce();
     assistant.content = pending;
   } catch (e) {
-    if (e.name === 'AbortError') {
+    // Authoritative net: the model itself said the prompt is too long → compact
+    // hard and retry once. Model-agnostic (works whatever the context window is).
+    if (isContextLimitError(e) && !controller.signal.aborted) {
+      try {
+        if (conv.id === state.conv.id) toast('Context full — compacting and retrying…', 2400);
+        pending = '';
+        assistant.thinking = '';
+        await forceCompact(conv, resolveTarget(agent, state.settings));
+        await runOnce();
+        assistant.content = pending;
+      } catch (e2) {
+        if (e2.name === 'AbortError') assistant.content = pending + (pending ? '\n\n_(stopped)_' : '_(stopped)_');
+        else {
+          assistant.content = `⚠ ${e2.message}`;
+          assistant.error = true;
+        }
+      }
+    } else if (e.name === 'AbortError') {
       assistant.content = pending + (pending ? '\n\n_(stopped)_' : '_(stopped)_');
     } else {
       assistant.content = `⚠ ${e.message}`;
@@ -781,6 +969,74 @@ async function retryFrom(assistantMsg) {
   };
   conv.messages.push(assistant);
   renderMessages();
+  runStream(agent, assistant, conv);
+}
+
+// Edit a previously-sent user message in place: turn the bubble into a textarea
+// with Save/Cancel. Saving truncates the conversation after that message and
+// re-runs from it (its original attachments are kept).
+function editMessage(m) {
+  if (isActiveStreaming()) {
+    toast('Wait for the current reply to finish, then edit');
+    return;
+  }
+  const bubble = state.bubbles.get(m.id);
+  const wrap = bubble?.closest('.msg');
+  if (!wrap || wrap.querySelector('.msg-edit')) return;
+
+  const editor = document.createElement('div');
+  editor.className = 'msg-edit';
+  const ta = document.createElement('textarea');
+  ta.className = 'msg-edit-input';
+  ta.value = m.content || '';
+  const grow = () => {
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 240) + 'px';
+  };
+  const row = document.createElement('div');
+  row.className = 'msg-edit-actions';
+  row.append(
+    miniBtn('Save & resend', () => resendEdited(m, ta.value.trim())),
+    miniBtn('Cancel', () => renderMessages()),
+  );
+  editor.append(ta, row);
+  bubble.replaceWith(editor);
+  ta.addEventListener('input', grow);
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      resendEdited(m, ta.value.trim());
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      renderMessages();
+    }
+  });
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+  grow();
+}
+
+async function resendEdited(m, text) {
+  if (isActiveStreaming()) return;
+  if (!text && !m.attachments?.length) {
+    renderMessages();
+    return;
+  }
+  const conv = state.conv;
+  const idx = conv.messages.indexOf(m);
+  if (idx < 0) return;
+  m.content = text;
+  m.ts = Date.now();
+  m.queued = false;
+  // Drop everything AFTER this message — the old reply and any later turns.
+  conv.messages.splice(idx + 1);
+  const agent = agentForConv(conv);
+  const assistant = makeAssistant(agent);
+  conv.messages.push(assistant);
+  renderMessages();
+  scrollToBottom();
+  await saveConversation(conv);
+  refreshHistory();
   runStream(agent, assistant, conv);
 }
 
@@ -3111,7 +3367,7 @@ function wireEvents() {
       // Disclaimer up front: this is best-effort automation by an LLM.
       toast(
         state.activeTab
-          ? '🖋 Act on page on. I’ll fill & click when asked — I can get it wrong, so review before you submit.'
+          ? '🕹️ Act on page on. I’ll fill & click when asked — I can get it wrong, so review before you submit.'
           : 'Open a web tab to act on.',
       );
     }

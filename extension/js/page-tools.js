@@ -11,8 +11,135 @@
 // Pro gate lives in page-actions.js (requirePro on every entry), so neither route
 // can drive page writes on Free even if a caller forgets to pre-check.
 
-import { inspectForms, fillForm, clickElement, clickByText } from './page-actions.js';
-import { cdpFillForm, cdpClickElement, cdpClickByText } from './page-actions-cdp.js';
+import {
+  inspectForms, fillForm, clickElement, clickByText, fillCombobox, captureViewport, viewportInfo,
+  collectMarks, clickAtSynthetic,
+} from './page-actions.js';
+import {
+  cdpFillForm, cdpClickElement, cdpClickByText, cdpFillCombobox, cdpScreenshot,
+  cdpClickAt, cdpTypeText, cdpPressKey, cdpScroll, cdpDrag,
+} from './page-actions-cdp.js';
+
+// Harness guidance folded into the system prompt when page tools are armed.
+// Structured numbered loop (it gave the best drawing results) — keep it explicit,
+// but the hard rule overriding everything is step 4/6: judge "done" from the
+// SCREENSHOT, never from your plan, and never fabricate a result.
+export const PAGE_AUTOMATION_SYSTEM =
+  'You drive the current browser tab to complete the user’s request. Follow these steps IN ORDER — skipping verification is the #1 cause of wrong results:\n' +
+  '1) PLAN. Restate the request as an explicit checklist: each target → the EXACT value/option (for a drawing: list the parts — body, wheels, windows, steering wheel, driver). Resolve any ambiguity yourself first, e.g. "working week" = Mon–Fri, so the last working day is FRIDAY (not Tuesday/Sunday).\n' +
+  '2) READ / LOCATE. inspect_page gives form fields + selectors. To CLICK something reliably — buttons, menus, toolbar tools (e.g. Excalidraw’s pencil) — call marked_screenshot (it boxes every clickable element with a NUMBER) then click_mark {n}; this beats guessing coordinates and works on canvas-app toolbars. Use the raw coordinate tools (click_at/type_text/press_key/scroll/draw_path) for the canvas SURFACE itself — those screenshots carry a red coordinate grid; read it, never guess.\n' +
+  '3) ACT one checklist item at a time. fill_form for inputs/checkboxes/radios; fill_combobox for typeahead pickers where you must pick a suggestion (city/airport); click_element/click_by_text for buttons.\n' +
+  '   DRAW a picture with the pencil + draw_path: select the pencil (marked_screenshot → click_mark), then draw EACH part as its own draw_path stroke — do NOT reduce a drawing to a single rectangle; use several strokes for the real shape.\n' +
+  '   SPREADSHEET (Sheets/Excel): click the FIRST cell once (below the toolbar — use the grid), then type_text + press_key Enter per value (the selection moves DOWN automatically — don’t click every cell); formulas start with "=".\n' +
+  '4) VERIFY after acting — ALWAYS. After every action you receive a screenshot of the RESULT; LOOK at it and check each checklist item against what is actually on screen. A tool replying "ok"/"trusted"/"filled" only means the input LANDED — NOT that the goal is met. If anything is wrong or incomplete, FIX it and re-verify before moving on. Your judgement of "done" must come from the screenshot, not from your plan.\n' +
+  '5) SUBMIT LAST. Never click Submit/Save/Send/Pay/Confirm until a screenshot confirms EVERY checklist item is correct. Submitting wrong data is worse than pausing — if unsure, ask the user instead.\n' +
+  '6) DONE only after you have SEEN the correct final state in a screenshot. Keep going until the goal is actually visible; if you genuinely cannot after a couple of tries, say so plainly — do not loop and do not pretend it worked. You have NO image-generation tool and cannot fetch/export images: NEVER output an image URL or markdown image, and never claim you generated or exported an image — only the canvas reflects your work. Never invent selectors — use only ones from inspect_page.';
+
+// Capture a screenshot, preferring CDP (works on background tabs) then the
+// visible-tab fallback. Returns a JPEG data URL or null.
+async function screenshot(tabId, cdp) {
+  let img = cdp ? await cdpScreenshot(tabId).catch(() => null) : null;
+  if (!img) img = await captureViewport(tabId);
+  return img;
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = reject;
+    i.src = src;
+  });
+}
+
+// Overlay a labelled coordinate grid (in VIEWPORT CSS pixels) on a screenshot so
+// the model can READ coordinates off it instead of guessing — a big accuracy
+// boost for click_at/draw_path, especially for weaker models. Returns a new JPEG
+// data URL (or the original if anything fails / no DOM canvas available).
+async function annotateGrid(dataUrl, vp) {
+  if (!dataUrl || !vp || typeof document === 'undefined') return dataUrl;
+  try {
+    const img = await loadImage(dataUrl);
+    const W = img.naturalWidth || img.width;
+    const H = img.naturalHeight || img.height;
+    if (!W || !H) return dataUrl;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const sx = W / vp.w; // image px per CSS px (≈ devicePixelRatio)
+    const sy = H / vp.h;
+    const step = vp.w > 1400 ? 200 : 100; // CSS px between gridlines
+    const fs = Math.round(11 * sx);
+    ctx.font = `${fs}px sans-serif`;
+    ctx.textBaseline = 'top';
+    for (let x = step; x < vp.w; x += step) {
+      const px = Math.round(x * sx);
+      ctx.strokeStyle = 'rgba(255,0,0,.22)';
+      ctx.lineWidth = Math.max(1, Math.round(sx));
+      ctx.beginPath();
+      ctx.moveTo(px, 0);
+      ctx.lineTo(px, H);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(220,0,0,.95)';
+      ctx.fillText(String(x), px + 2, 2);
+    }
+    for (let y = step; y < vp.h; y += step) {
+      const py = Math.round(y * sy);
+      ctx.strokeStyle = 'rgba(255,0,0,.22)';
+      ctx.beginPath();
+      ctx.moveTo(0, py);
+      ctx.lineTo(W, py);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(220,0,0,.95)';
+      ctx.fillText(String(y), 2, py + 2);
+    }
+    return canvas.toDataURL('image/jpeg', 0.6);
+  } catch {
+    return dataUrl;
+  }
+}
+
+// Set-of-Mark overlay: draw a numbered, boxed tag on each interactive element so
+// the model can pick a NUMBER (click_mark) instead of estimating coordinates.
+async function annotateMarks(dataUrl, marks, vp) {
+  if (!dataUrl || !marks?.length || !vp || typeof document === 'undefined') return dataUrl;
+  try {
+    const img = await loadImage(dataUrl);
+    const W = img.naturalWidth || img.width;
+    const H = img.naturalHeight || img.height;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const sx = W / vp.w;
+    const sy = H / vp.h;
+    const fs = Math.round(11 * sx);
+    ctx.font = `bold ${fs}px sans-serif`;
+    ctx.textBaseline = 'top';
+    marks.forEach((m, i) => {
+      const bx = m.left * sx;
+      const by = m.top * sy;
+      ctx.strokeStyle = 'rgba(0,120,255,.9)';
+      ctx.lineWidth = Math.max(1, Math.round(sx));
+      ctx.strokeRect(bx, by, m.w * sx, m.h * sy);
+      const tag = String(i + 1);
+      const pad = Math.round(2 * sx);
+      const tw = ctx.measureText(tag).width + pad * 2;
+      const th = fs + pad * 2;
+      const ty = Math.max(0, by - th);
+      ctx.fillStyle = 'rgba(0,120,255,.95)';
+      ctx.fillRect(bx, ty, tw, th);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(tag, bx + pad, ty + pad);
+    });
+    return canvas.toDataURL('image/jpeg', 0.7);
+  } catch {
+    return dataUrl;
+  }
+}
 
 // Provider-agnostic tool specs. providers.js maps these into OpenAI's
 // `{type:'function', function:{…}}` and Anthropic's `{name, input_schema}` shapes.
@@ -57,6 +184,35 @@ export const PAGE_TOOL_SPECS = [
     },
   },
   {
+    name: 'screenshot',
+    description:
+      'Capture a screenshot of the current page so you can SEE its visual state — ' +
+      'use it when an action didn’t work, when you’re unsure what’s on screen, or to ' +
+      'decide your next step. It shows the page visually but NOT click coordinates, so ' +
+      'pair it with inspect_page to get the selectors you can act on.',
+    parameters: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'marked_screenshot',
+    description:
+      'Screenshot with EVERY clickable element boxed and tagged with a number (Set-of-Mark). ' +
+      'This is the most reliable way to find what to click — especially on visually complex pages ' +
+      'or canvas-app toolbars (e.g. Excalidraw’s pencil). Read the numbers, then call click_mark {n}. ' +
+      'Prefer this over guessing click_at coordinates.',
+    parameters: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'click_mark',
+    description:
+      'Click the numbered element from the most recent marked_screenshot — exactly at its box, ' +
+      'no coordinates needed. Call marked_screenshot first to get the numbers.',
+    parameters: {
+      type: 'object',
+      properties: { n: { type: 'number', description: 'The mark number to click.' } },
+      required: ['n'],
+    },
+  },
+  {
     name: 'click_element',
     description:
       'Click a button or link in the active tab (e.g. submit, next, add). Use a ' +
@@ -67,6 +223,24 @@ export const PAGE_TOOL_SPECS = [
         selector: { type: 'string', description: 'CSS selector of the element to click.' },
       },
       required: ['selector'],
+    },
+  },
+  {
+    name: 'fill_combobox',
+    description:
+      'Fill a typeahead / autocomplete field where you must SELECT a suggestion from ' +
+      'a dropdown — city / airport / destination pickers (e.g. Expedia “Where to?”), ' +
+      '@-mentions, country selectors. Types the value, waits for the dropdown, and ' +
+      'clicks the matching suggestion. Use THIS instead of fill_form whenever a field ' +
+      'shows live suggestions or rejects typed text with “please select…”. Most ' +
+      'reliable with High-reliability page control on.',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector of the input (from inspect_page).' },
+        value: { type: 'string', description: 'Text to type, e.g. a city name.' },
+      },
+      required: ['selector', 'value'],
     },
   },
   {
@@ -87,6 +261,57 @@ export const PAGE_TOOL_SPECS = [
         },
       },
       required: ['text'],
+    },
+  },
+  // ---- Vision / coordinate "computer use" tools (CDP / High-reliability only) ----
+  {
+    name: 'click_at',
+    description:
+      'Click at viewport pixel coordinates — for CANVAS apps (Sheets, Excalidraw, Figma) or anything with no DOM selector. ' +
+      'Take a screenshot first; aim within the viewport size it reports. Needs High-reliability mode.',
+    parameters: {
+      type: 'object',
+      properties: { x: { type: 'number' }, y: { type: 'number' } },
+      required: ['x', 'y'],
+    },
+  },
+  {
+    name: 'type_text',
+    description: 'Type text at the CURRENT focus (after a click_at) using real keystrokes. Needs High-reliability mode.',
+    parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+  },
+  {
+    name: 'press_key',
+    description:
+      'Press one key: Enter, Tab, Escape, Backspace, Delete, Home, End, Space, or Arrow{Up,Down,Left,Right}. ' +
+      'E.g. Enter to commit a spreadsheet cell. Needs High-reliability mode.',
+    parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] },
+  },
+  {
+    name: 'scroll',
+    description: 'Scroll the page vertically by `dy` pixels (positive = down). Needs High-reliability mode.',
+    parameters: { type: 'object', properties: { dy: { type: 'number' } }, required: ['dy'] },
+  },
+  {
+    name: 'draw_path',
+    description:
+      'Draw a freehand stroke by dragging the mouse through a path of viewport points (button held) — e.g. the ' +
+      'Excalidraw pencil. Select the pencil/tool first with click_at, then call this with ordered points. ' +
+      'Needs High-reliability mode.',
+    parameters: {
+      type: 'object',
+      properties: {
+        points: {
+          type: 'array',
+          description: 'Ordered path points in viewport pixels.',
+          items: {
+            type: 'object',
+            properties: { x: { type: 'number' }, y: { type: 'number' } },
+            required: ['x', 'y'],
+          },
+        },
+      },
+      required: ['points'],
     },
   },
 ];
@@ -123,14 +348,115 @@ function compactInspect(r) {
 // chrome.scripting. Reading (inspect) always uses scripting. If a CDP action
 // fails for a reason that the scripting path could still handle (e.g. the
 // debugger couldn't attach), we fall back rather than fail the turn.
+// Chrome forbids ALL automation (debugger AND scripting) on pages it won't let
+// extensions touch: chrome:// pages, the Web Store, PDFs, and pages owned by
+// OTHER extensions (e.g. a New-Tab override). Both CDP and synthetic fail the
+// same way, so detect it and return a clear message instead of a cryptic error
+// plus a pointless synthetic retry.
+// Match ONLY genuine "this page is off-limits" errors — NOT the injectError
+// boilerplate ("…Chrome blocks scripting some pages (chrome://, the Web Store…)"),
+// which would otherwise mislabel every ordinary failure as "blocked".
+const BLOCKED_PAGE_RE = /cannot access (a chrome|contents)|cannot be scripted|extensions gallery/i;
+const blockedPageResult = () =>
+  JSON.stringify({
+    error:
+      "This page can’t be automated — it’s a browser page, the Web Store, a PDF, or another extension’s page (e.g. a New-Tab override). Switch to a normal website tab and try again.",
+    blocked: true,
+  });
+
 export function makePageToolExecutor(tabId, { cdp = false } = {}) {
   const doFill = cdp ? cdpFillForm : fillForm;
   const doClick = cdp ? cdpClickElement : clickElement;
   const doClickText = cdp ? cdpClickByText : clickByText;
+  const doCombobox = cdp ? cdpFillCombobox : fillCombobox;
+  let lastMarks = []; // Set-of-Mark from the latest marked_screenshot (for click_mark)
+  // Attach a fresh screenshot of the RESULT to a visual action, so the model is
+  // forced to see what happened and can self-correct (computer-use pattern).
+  const withResultShot = async (resultObj) => {
+    const image = await screenshot(tabId, cdp).catch(() => null);
+    if (!image) return JSON.stringify(resultObj);
+    const vp = await viewportInfo(tabId);
+    return {
+      text: JSON.stringify({
+        ...resultObj,
+        note: 'Screenshot of the RESULT is attached — LOOK at it: does it match the goal? If a stroke/click landed wrong or is misplaced, FIX it (e.g. press_key Escape / undo, then redo) before continuing. Do not declare done until it looks right.',
+      }),
+      image: await annotateGrid(image, vp),
+    };
+  };
   return async function execute(name, input) {
     try {
       if (name === 'inspect_page') {
         return JSON.stringify(compactInspect(await inspectForms(tabId)));
+      }
+      if (name === 'marked_screenshot') {
+        const image = await screenshot(tabId, cdp);
+        if (!image) return JSON.stringify({ error: 'Could not capture a screenshot — bring the tab to the front, or enable High-reliability mode.' });
+        const vp = await viewportInfo(tabId);
+        lastMarks = await collectMarks(tabId);
+        const marked = await annotateMarks(image, lastMarks, vp);
+        const legend = lastMarks.map((m, i) => `${i + 1}:${m.label || m.role}`).join(' · ');
+        return {
+          text: JSON.stringify({
+            ok: true,
+            count: lastMarks.length,
+            legend,
+            note: 'Each clickable element is boxed with a number. Call click_mark {n} to click one EXACTLY — no coordinates needed.',
+          }),
+          image: marked,
+        };
+      }
+      if (name === 'click_mark') {
+        const n = Number(input?.n);
+        const m = lastMarks[n - 1];
+        if (!m) return JSON.stringify({ error: `No mark ${n}. Call marked_screenshot first, then use a number from it.` });
+        try {
+          if (cdp) return withResultShot({ ...(await cdpClickAt(tabId, m.x, m.y)), label: m.label });
+          return JSON.stringify({ ...(await clickAtSynthetic(tabId, m.x, m.y)), label: m.label });
+        } catch (e) {
+          if (BLOCKED_PAGE_RE.test(e.message)) return blockedPageResult();
+          throw e;
+        }
+      }
+      if (name === 'screenshot') {
+        const image = await screenshot(tabId, cdp);
+        if (!image) {
+          return JSON.stringify({
+            error:
+              'Could not capture a screenshot — the tab may be in the background. Bring it to the front, or enable High-reliability mode (CDP can shoot background tabs).',
+          });
+        }
+        // Return BOTH text and the image; the provider loop feeds the image to the model.
+        const vp = await viewportInfo(tabId);
+        const gridded = await annotateGrid(image, vp); // labelled coordinate grid → accurate clicks
+        return {
+          text: JSON.stringify({
+            ok: true,
+            viewport: vp ? { w: vp.w, h: vp.h } : undefined,
+            note: `Screenshot attached WITH a red coordinate grid (labels are viewport pixels). READ the grid to pick click_at/draw_path coordinates — do not guess. Aim within 0..${
+              vp?.w ?? '?'
+            } × 0..${vp?.h ?? '?'}. For ordinary forms, inspect_page gives selectors.`,
+          }),
+          image: gridded,
+        };
+      }
+      // Coordinate / "computer use" tools — CDP-only (need trusted events). Their
+      // result is purely VISUAL, and weak models won't screenshot on their own, so
+      // we ATTACH a fresh screenshot of the result — this is what lets the model
+      // SEE its mistake (a misplaced stroke) and self-correct.
+      if (['click_at', 'type_text', 'press_key', 'scroll', 'draw_path'].includes(name)) {
+        if (!cdp) {
+          return JSON.stringify({
+            error: 'This needs High-reliability page control (trusted events) — turn it on in Settings → page control.',
+          });
+        }
+        let r;
+        if (name === 'click_at') r = await cdpClickAt(tabId, input?.x, input?.y);
+        else if (name === 'type_text') r = await cdpTypeText(tabId, input?.text);
+        else if (name === 'press_key') r = await cdpPressKey(tabId, input?.key);
+        else if (name === 'scroll') r = await cdpScroll(tabId, undefined, undefined, input?.dy);
+        else r = await cdpDrag(tabId, input?.points);
+        return withResultShot(r);
       }
       if (name === 'fill_form') {
         const fields = input?.fields || [];
@@ -140,6 +466,7 @@ export function makePageToolExecutor(tabId, { cdp = false } = {}) {
           results = await doFill(tabId, fields);
         } catch (e) {
           if (cdp && e.code === 'no-debugger-perm') throw e; // surface, don't silently downgrade
+          if (BLOCKED_PAGE_RE.test(e.message)) return blockedPageResult(); // synthetic fails too
           if (cdp) {
             // CDP couldn't attach/run — fall back, but make it LOUD so we can see it.
             console.warn('[chatpanel] CDP fill failed, falling back to synthetic:', e.message);
@@ -154,9 +481,22 @@ export function makePageToolExecutor(tabId, { cdp = false } = {}) {
         try {
           return JSON.stringify(await doClick(tabId, input?.selector));
         } catch (e) {
+          if (BLOCKED_PAGE_RE.test(e.message)) return blockedPageResult();
           if (cdp && e.code !== 'no-debugger-perm') {
             console.warn('[chatpanel] CDP click failed, falling back to synthetic:', e.message);
             return JSON.stringify({ ...(await clickElement(tabId, input?.selector)), mode: 'synthetic (CDP failed: ' + e.message + ')' });
+          }
+          throw e;
+        }
+      }
+      if (name === 'fill_combobox') {
+        try {
+          return JSON.stringify(await doCombobox(tabId, input?.selector, input?.value));
+        } catch (e) {
+          if (BLOCKED_PAGE_RE.test(e.message)) return blockedPageResult();
+          if (cdp && e.code !== 'no-debugger-perm') {
+            console.warn('[chatpanel] CDP fill_combobox failed, falling back to synthetic:', e.message);
+            return JSON.stringify({ ...(await fillCombobox(tabId, input?.selector, input?.value)), mode: 'synthetic (CDP failed: ' + e.message + ')' });
           }
           throw e;
         }
@@ -165,6 +505,7 @@ export function makePageToolExecutor(tabId, { cdp = false } = {}) {
         try {
           return JSON.stringify(await doClickText(tabId, input?.text, input?.role || 'any'));
         } catch (e) {
+          if (BLOCKED_PAGE_RE.test(e.message)) return blockedPageResult();
           if (cdp && e.code !== 'no-debugger-perm') {
             console.warn('[chatpanel] CDP click_by_text failed, falling back to synthetic:', e.message);
             return JSON.stringify({ ...(await clickByText(tabId, input?.text, input?.role || 'any')), mode: 'synthetic (CDP failed: ' + e.message + ')' });

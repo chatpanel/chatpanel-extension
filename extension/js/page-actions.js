@@ -2,7 +2,7 @@
 //
 // context.js reads a tab (extract readable text). This module operates on it:
 // inspect the page's form fields, fill them, and click elements. Everything runs
-// through chrome.scripting.executeScript (the `scripting` + `<all_urls>` host
+// through api.scripting.executeScript (the `scripting` + `<all_urls>` host
 // permissions we already hold — no new permission is needed), and each injected
 // function is fully self-contained, exactly as captureTab's extractReadable is.
 //
@@ -15,6 +15,8 @@
 // This feature is ungated (free). The 🖋 "Act on page" toggle is the user's
 // explicit opt-in/consent; there's no Pro check here. (Page writes are local —
 // chat traffic never touches the server.)
+
+import { api } from './browser-api.js';
 
 // Wrap the common "Chrome won't let us touch this page" failure the same way
 // captureTab does, so the panel can surface one consistent message.
@@ -56,13 +58,121 @@ function flashInPage(selectors) {
   }
 }
 
+// Viewport size in CSS pixels — the coordinate space the model should use for
+// click_at / draw_path (it reasons over the screenshot, which maps to this).
+function viewportInfoInPage() {
+  return { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 };
+}
+export async function viewportInfo(tabId) {
+  try {
+    const [inj] = await api.scripting.executeScript({ target: { tabId }, func: viewportInfoInPage });
+    return inj?.result || null;
+  } catch {
+    return null;
+  }
+}
+
+// Screenshot the tab's visible viewport (no debugger needed). Only captures the
+// ACTIVE tab of its window — for background tabs use cdpScreenshot. JPEG data URL.
+export async function captureViewport(tabId) {
+  try {
+    const tab = await api.tabs.get(tabId);
+    return await api.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 60 });
+  } catch {
+    return null;
+  }
+}
+
+// --------------------------------------------------------------------------
+// Set-of-Mark — enumerate every visible interactive element with its EXACT box
+// (from Chrome's getBoundingClientRect) so we can tag each with a number on the
+// screenshot. The model then picks a NUMBER, not coordinates → exact clicks even
+// for weak models. Works for any DOM (incl. canvas-app toolbars like Excalidraw).
+// --------------------------------------------------------------------------
+function collectMarksInPage() {
+  const sel = [
+    'a[href]', 'button', 'input:not([type=hidden])', 'select', 'textarea', 'summary', 'label',
+    '[role=button]', '[role=link]', '[role=checkbox]', '[role=radio]', '[role=tab]',
+    '[role=menuitem]', '[role=menuitemradio]', '[role=menuitemcheckbox]', '[role=option]',
+    '[role=combobox]', '[role=switch]', '[role=slider]', '[contenteditable=""]',
+    '[contenteditable=true]', '[onclick]', '[tabindex]:not([tabindex="-1"])',
+  ].join(',');
+  const inVp = (r) => r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+  const visible = (el, r) => {
+    if (r.width < 6 || r.height < 6 || !inVp(r)) return false;
+    const s = getComputedStyle(el);
+    return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0' && s.pointerEvents !== 'none';
+  };
+  const labelOf = (el) =>
+    (el.getAttribute('aria-label') || el.value || el.innerText || el.getAttribute('title') ||
+      el.getAttribute('placeholder') || el.getAttribute('alt') || el.name || '')
+      .trim().replace(/\s+/g, ' ').slice(0, 60);
+  const seen = new Set();
+  const marks = [];
+  for (const el of document.querySelectorAll(sel)) {
+    const r = el.getBoundingClientRect();
+    if (!visible(el, r)) continue;
+    const key = `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    marks.push({
+      x: Math.round(r.left + r.width / 2),
+      y: Math.round(r.top + r.height / 2),
+      left: Math.round(r.left), top: Math.round(r.top),
+      w: Math.round(r.width), h: Math.round(r.height),
+      label: labelOf(el),
+      role: (el.getAttribute('role') || el.tagName).toLowerCase(),
+    });
+    if (marks.length >= 80) break;
+  }
+  return marks;
+}
+export async function collectMarks(tabId) {
+  try {
+    const [inj] = await api.scripting.executeScript({ target: { tabId }, func: collectMarksInPage });
+    return inj?.result || [];
+  } catch {
+    return [];
+  }
+}
+
+// Synthetic click at a point (for click_mark when CDP is off): click whatever
+// element is under the coordinates, with the robust pointer sequence.
+function clickAtPointInPage(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el) return { ok: false, error: 'nothing at that point' };
+  el.scrollIntoView({ block: 'center' });
+  const text = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 60);
+  const o = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+  for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+    try {
+      el.dispatchEvent(t.startsWith('pointer') && window.PointerEvent ? new PointerEvent(t, o) : new MouseEvent(t, o));
+    } catch {
+      /* detached */
+    }
+  }
+  return { ok: true, text };
+}
+export async function clickAtSynthetic(tabId, x, y) {
+  try {
+    const [inj] = await api.scripting.executeScript({
+      target: { tabId },
+      func: clickAtPointInPage,
+      args: [Math.round(x), Math.round(y)],
+    });
+    return inj?.result || { ok: false, error: 'no result' };
+  } catch (e) {
+    throw injectError(e);
+  }
+}
+
 // Flash a highlight over the given selectors. Best-effort, never throws — a
 // missing/blocked page just means no highlight.
 export async function flashHighlight(tabId, selectors) {
   const list = (selectors || []).filter(Boolean);
   if (!list.length) return;
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, func: flashInPage, args: [list] });
+    await api.scripting.executeScript({ target: { tabId }, func: flashInPage, args: [list] });
   } catch {
     /* page not scriptable — skip the highlight */
   }
@@ -239,7 +349,7 @@ function inspectFormsInPage() {
 
 export async function inspectForms(tabId) {
   try {
-    const [inj] = await chrome.scripting.executeScript({
+    const [inj] = await api.scripting.executeScript({
       target: { tabId },
       func: inspectFormsInPage,
     });
@@ -373,7 +483,7 @@ export async function fillForm(tabId, fields) {
     throw new Error('Nothing to fill — pass [{ selector, value }, …].');
   }
   try {
-    const [inj] = await chrome.scripting.executeScript({
+    const [inj] = await api.scripting.executeScript({
       target: { tabId },
       func: fillFormInPage,
       args: [fields],
@@ -417,7 +527,7 @@ function clickInPage(selector) {
 export async function clickElement(tabId, selector) {
   if (!selector) throw new Error('clickElement needs a selector.');
   try {
-    const [inj] = await chrome.scripting.executeScript({
+    const [inj] = await api.scripting.executeScript({
       target: { tabId },
       func: clickInPage,
       args: [selector],
@@ -485,7 +595,7 @@ function clickByTextInPage(text, role) {
 export async function clickByText(tabId, text, role = 'any') {
   if (!text) throw new Error('clickByText needs text.');
   try {
-    const [inj] = await chrome.scripting.executeScript({
+    const [inj] = await api.scripting.executeScript({
       target: { tabId },
       func: clickByTextInPage,
       args: [text, role],
@@ -493,6 +603,77 @@ export async function clickByText(tabId, text, role = 'any') {
     const r = inj?.result;
     if (!r?.ok) throw new Error(r?.error || 'no match');
     return r;
+  } catch (e) {
+    if (e.upsell) throw e;
+    throw injectError(e);
+  }
+}
+
+// --------------------------------------------------------------------------
+// Combobox / typeahead — synthetic best-effort. Real typeaheads usually need
+// TRUSTED keystrokes (CDP) to even show their dropdown; this sets the value,
+// nudges with events, and clicks a suggestion IF one appears — otherwise it says
+// so and points to high-reliability mode. (CDP path: cdpFillCombobox.)
+// --------------------------------------------------------------------------
+async function fillComboboxInPage(selector, value) {
+  const el = document.querySelector(selector);
+  if (!el) return { ok: false, error: 'not found' };
+  el.scrollIntoView({ block: 'center' });
+  el.focus();
+  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement : HTMLInputElement;
+  const setter = Object.getOwnPropertyDescriptor(proto.prototype, 'value')?.set;
+  const setVal = (v) => (setter ? setter.call(el, v) : (el.value = v));
+  setVal('');
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  setVal(String(value));
+  el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+
+  const sel =
+    '[role="listbox"] [role="option"],[role="option"],[role="listbox"] li,[data-stid*="result"],[class*="typeahead"] li,[class*="autocomplete"] li';
+  const want = String(value).toLowerCase();
+  const visibleOpts = () =>
+    [...document.querySelectorAll(sel)].filter((o) => {
+      const r = o.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && (o.innerText || '').trim();
+    });
+  let opts = [];
+  for (let i = 0; i < 10 && !opts.length; i++) {
+    await new Promise((r) => setTimeout(r, 150));
+    opts = visibleOpts();
+  }
+  if (!opts.length) {
+    return {
+      ok: true,
+      value: el.value,
+      note: 'typed the text, but no dropdown appeared — typeaheads usually need High-reliability mode (trusted events) to select a suggestion.',
+    };
+  }
+  const best = opts.find((o) => (o.innerText || '').toLowerCase().includes(want)) || opts[0];
+  best.scrollIntoView({ block: 'center' });
+  const o = { bubbles: true, cancelable: true, view: window };
+  for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+    try {
+      best.dispatchEvent(t.startsWith('pointer') && window.PointerEvent ? new PointerEvent(t, o) : new MouseEvent(t, o));
+    } catch {
+      /* detached */
+    }
+  }
+  return { ok: true, selected: (best.innerText || '').trim().slice(0, 100) };
+}
+
+export async function fillCombobox(tabId, selector, value) {
+  if (!selector) throw new Error('fillCombobox needs a selector.');
+  try {
+    const [inj] = await api.scripting.executeScript({
+      target: { tabId },
+      func: fillComboboxInPage,
+      args: [selector, String(value ?? '')],
+    });
+    await flashHighlight(tabId, [selector]);
+    return inj?.result || { ok: false, error: 'no result' };
   } catch (e) {
     if (e.upsell) throw e;
     throw injectError(e);
