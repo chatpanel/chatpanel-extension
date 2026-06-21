@@ -85,11 +85,22 @@ jobs:
             || { echo "Upload failed"; exit 1; }
 
           echo "Publishing…"
-          curl -sf -X POST \
+          # Capture the body + status so a publish rejection is visible (e.g. a new
+          # permission like `debugger` that the Web Store requires you to review and
+          # submit from the dashboard) instead of a bare curl exit code.
+          PUB=$(curl -s -w '\n%{http_code}' -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "x-goog-api-version: 2" \
             -H "Content-Length: 0" \
-            "https://www.googleapis.com/chromewebstore/v1.1/items/$EXTENSION_ID/publish"
+            "https://www.googleapis.com/chromewebstore/v1.1/items/$EXTENSION_ID/publish")
+          CODE=$(printf '%s' "$PUB" | tail -n1)
+          BODY=$(printf '%s' "$PUB" | sed '$d')
+          echo "HTTP $CODE"
+          echo "$BODY"
+          if [ "$CODE" -ge 400 ] || echo "$BODY" | jq -e '.error // (.status | index("ITEM_NOT_UPDATABLE") // .status | index("NOT_AUTHORIZED"))' >/dev/null 2>&1; then
+            echo "::error::Web Store publish was rejected (HTTP $CODE). The new build uploaded fine, but couldn't auto-publish — most likely the added 'debugger' permission needs review/submission from the Web Store dashboard. See body above."
+            exit 1
+          fi
           echo "Submitted for review."
 
       - name: Skip notice
