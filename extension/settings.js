@@ -159,9 +159,19 @@ function endpointCard(ep) {
   q('.ep-temp').value = ep.temperature ?? '';
   q('.ep-maxtok').value = ep.maxTokens ?? '';
   q('.ep-system').value = ep.systemPrompt || '';
+  q('.ep-acmodel').value = ep.autocompleteModel || '';
   gateField('advancedAgent', q('.ep-system')); // per-agent system prompt is Pro
   applyFreeSlot(node, ep, 'endpoint'); // Free uses one endpoint — the user's pick
   wireModelSelect(q('.ep-model'), q('.ep-model-custom'), ep.models, ep.model);
+  // Offer this endpoint's known models as autocomplete-model suggestions (free text
+  // still accepted — e.g. a small/fast model your local server also hosts).
+  if ((ep.models || []).length) {
+    const dl = document.createElement('datalist');
+    dl.id = `ep-acmodels-${uid()}`;
+    dl.replaceChildren(...ep.models.map((m) => { const o = document.createElement('option'); o.value = m; return o; }));
+    node.appendChild(dl);
+    q('.ep-acmodel').setAttribute('list', dl.id);
+  }
 
   const conn = () => ({
     name: q('.ep-name').value.trim() || 'Endpoint',
@@ -205,6 +215,7 @@ function endpointCard(ep) {
       baseUrl: q('.ep-baseurl').value.trim(),
       apiKey: q('.ep-apikey').value,
       model: readModel(q('.ep-model'), q('.ep-model-custom')),
+      autocompleteModel: q('.ep-acmodel').value.trim(),
       temperature: q('.ep-temp').value === '' ? undefined : Number(q('.ep-temp').value),
       maxTokens: q('.ep-maxtok').value === '' ? undefined : Number(q('.ep-maxtok').value),
       systemPrompt: q('.ep-system').value,
@@ -354,6 +365,7 @@ function bridgeAgentCard(agent) {
   q('.ba-format').value = agent.format || 'text';
   q('.ba-listargs').value = agent.listModelsArgs || '';
   q('.ba-modelarg').value = agent.modelArg || '';
+  q('.ba-imagearg').value = agent.imageArg || '';
   gateField('advancedAgent', q('.ba-system')); // per-agent system prompt is Pro
   applyFreeSlot(node, agent, 'bridge'); // Free uses one agent — the user's pick
 
@@ -364,14 +376,21 @@ function bridgeAgentCard(agent) {
   const MODEL_HINT = {
     claude: 'opus · sonnet · haiku  (blank = default)',
     codex: 'model id  (blank = CLI default)',
-    gemini: 'gemini-2.5-pro · gemini-2.5-flash  (blank = default)',
+    antigravity: 'model id  (blank = default · “Load models” for the list)',
+    pi: 'provider/model  (blank = default · “Load models” for the list)',
+    opencode: 'provider/model  (blank = default · “Load models” for the list)',
+    kiro: 'model id  (blank = default · “Load models” for the list)',
   };
   // Common model ids per engine, offered as a typeahead dropdown (datalist) while
-  // still accepting any custom string — CLIs have no queryable model list.
+  // still accepting any custom string — CLIs have no queryable model list. The
+  // newer CLIs expose a "Load models" command, so their lists fill on demand.
   const MODEL_LIST = {
     claude: ['opus', 'sonnet', 'haiku'],
-    gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+    antigravity: [],
     codex: [],
+    pi: [],
+    opencode: [],
+    kiro: [],
   };
   const dl = document.createElement('datalist');
   dl.id = `ba-models-${uid()}`;
@@ -453,6 +472,7 @@ function bridgeAgentCard(agent) {
       format: q('.ba-format').value,
       listModelsArgs: q('.ba-listargs').value.trim(),
       modelArg: q('.ba-modelarg').value.trim(),
+      imageArg: q('.ba-imagearg').value.trim(),
     });
     await saveSettings(settings);
     setStatus(q('.ba-status'), '✓ Saved', 'ok');

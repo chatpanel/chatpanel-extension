@@ -343,14 +343,30 @@ function renderMessage(m) {
     if (m.pending && !m.content && !m.thinking) bubble.classList.add('cursor-blink');
     enhanceCode(bubble);
   } else {
-    // user bubble: plain text + attachment note
+    // user bubble: plain text + attachment note (+ image thumbnails)
     bubble.textContent = m.content;
     if (m.attachments?.length) {
-      const note = document.createElement('div');
-      note.className = 'who';
-      note.style.marginTop = '6px';
-      note.textContent = '📎 ' + m.attachments.map((a) => a.title || a.url).join(', ');
-      bubble.appendChild(note);
+      const imgs = m.attachments.filter((a) => a.kind === 'image' && a.dataUrl);
+      const rest = m.attachments.filter((a) => a.kind !== 'image');
+      if (rest.length) {
+        const note = document.createElement('div');
+        note.className = 'who';
+        note.style.marginTop = '6px';
+        note.textContent = '📎 ' + rest.map((a) => a.title || a.url).join(', ');
+        bubble.appendChild(note);
+      }
+      if (imgs.length) {
+        const strip = document.createElement('div');
+        strip.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:6px';
+        for (const a of imgs) {
+          const img = document.createElement('img');
+          img.src = a.dataUrl;
+          img.title = a.title || 'image';
+          img.style.cssText = 'max-width:120px;max-height:120px;border-radius:8px;border:1px solid var(--border)';
+          strip.appendChild(img);
+        }
+        bubble.appendChild(strip);
+      }
     }
     if (m.queued) {
       const q = document.createElement('div');
@@ -1883,6 +1899,70 @@ async function addAttachment(producer) {
   }
 }
 
+// --------------------------------------------------------------------------
+// Image attachments — paste / file-pick / drag-drop. Sent to vision API models
+// as image blocks (see providers.toMultimodalMessages). Free for everyone.
+// --------------------------------------------------------------------------
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB raw — keeps base64 under model limits
+
+function readImageFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type?.startsWith('image/')) return reject(new Error('Not an image'));
+    if (file.size > MAX_IMAGE_BYTES) return reject(new Error('Image too large (max 5 MB)'));
+    const r = new FileReader();
+    r.onload = () =>
+      resolve({
+        id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        kind: 'image',
+        title: file.name || 'image',
+        mediaType: file.type,
+        dataUrl: String(r.result),
+        chars: 0,
+      });
+    r.onerror = () => reject(new Error('Could not read image'));
+    r.readAsDataURL(file);
+  });
+}
+
+// Bridge agents that can receive images (the bridge writes them to temp files and
+// attaches them, e.g. `codex exec -i`). Others have no image channel yet.
+const IMAGE_CAPABLE_BRIDGE = new Set(['codex', 'claude', 'antigravity', 'pi', 'opencode']);
+function warnIfNoVision() {
+  const agent = resolveTarget(agentForConv(state.conv), state.settings);
+  if (agent?.kind !== 'bridge') return;
+  // Custom agents take images only if the user configured how (imageArg template).
+  const capable =
+    agent.bridgeAgent === 'custom' ? !!agent.imageArg : IMAGE_CAPABLE_BRIDGE.has(agent.bridgeAgent);
+  if (!capable) {
+    toast('Heads up: this CLI agent can’t see images — set its image parameter in Settings, or use a vision model.', 3600);
+  }
+}
+
+async function addImageFiles(files) {
+  const imgs = [...files].filter((f) => f && f.type?.startsWith('image/'));
+  if (!imgs.length) return;
+  for (const file of imgs) await addAttachment(() => readImageFile(file));
+  warnIfNoVision();
+}
+
+let _imgPicker = null;
+function pickImages() {
+  if (!_imgPicker) {
+    _imgPicker = document.createElement('input');
+    _imgPicker.type = 'file';
+    _imgPicker.accept = 'image/*';
+    _imgPicker.multiple = true;
+    _imgPicker.style.display = 'none';
+    _imgPicker.addEventListener('change', () => {
+      const files = [..._imgPicker.files];
+      _imgPicker.value = '';
+      addImageFiles(files);
+    });
+    document.body.appendChild(_imgPicker);
+  }
+  _imgPicker.click();
+}
+
 async function autoAttachUrls(text) {
   const urls = [...new Set((text.match(/https?:\/\/[^\s)]+/gi) || []))].slice(0, 3);
   for (const url of urls) {
@@ -1981,7 +2061,7 @@ function renderContextBar() {
   state.attachments.forEach((att, i) => {
     const chip = document.createElement('div');
     chip.className = 'ctx-chip';
-    const kind = { page: '🗎', url: '🔗', selection: '✂️' }[att.kind] || '📎';
+    const kind = { page: '🌐', url: '🔗', selection: '✂️', image: '🖼' }[att.kind] || '📎';
     chip.innerHTML = `<span class="ctx-kind">${kind}</span><span class="ctx-title">${escapeAttr(
       att.title || att.url,
     )}</span>`;
@@ -2007,8 +2087,9 @@ async function renderAttachMenu() {
     toast(state.usePage ? 'This page will be included' : 'Page context off');
   });
   menu.appendChild(toggle);
-  menu.appendChild(actionItem('🗎', 'Current tab (once)', () => addAttachment(() => captureActiveTab())));
+  menu.appendChild(actionItem('🌐', 'Current tab (once)', () => addAttachment(() => captureActiveTab())));
   menu.appendChild(actionItem('✂️', 'Current selection', () => addAttachment(() => captureSelection())));
+  menu.appendChild(actionItem('🖼', 'Attach an image', () => { closeMenus(); pickImages(); }));
   // Whole-window context (Pro): attach every readable tab in this window at once.
   const proWindow = can(state.license, 'multiTab');
   menu.appendChild(
@@ -2026,41 +2107,75 @@ async function renderAttachMenu() {
     );
   }
 
-  // URL input
-  const urlWrap = document.createElement('div');
-  urlWrap.style.padding = '6px 8px';
-  const urlInput = document.createElement('input');
-  urlInput.type = 'url';
-  urlInput.placeholder = 'Paste a URL to analyze…';
-  urlInput.style.cssText =
+  // Combined search / URL box: filters the open-tab list as you type. Pasting a
+  // URL + Enter analyzes it too (pasting a URL straight into the composer also
+  // works — autoAttachUrls — so this is just a convenience, not the only way).
+  const searchWrap = document.createElement('div');
+  searchWrap.style.padding = '6px 8px';
+  const search = document.createElement('input');
+  search.type = 'text';
+  search.placeholder = 'Search open tabs… or paste a URL';
+  search.style.cssText =
     'width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:8px;background:var(--bg-soft);color:var(--text);';
-  urlInput.onkeydown = (e) => {
-    if (e.key === 'Enter' && urlInput.value.trim()) {
-      const v = urlInput.value.trim();
-      closeMenus();
-      addAttachment(() => captureUrl(v));
-    }
-  };
-  urlWrap.appendChild(urlInput);
-  menu.appendChild(urlWrap);
+  searchWrap.appendChild(search);
+  menu.appendChild(searchWrap);
 
   menu.appendChild(sectionLabel('Open tabs'));
+  const tabsBox = document.createElement('div');
+  menu.appendChild(tabsBox);
+
   const tabs = await listTabs();
-  for (const t of tabs.slice(0, 25)) {
-    const item = document.createElement('button');
-    item.className = 'menu-item';
-    const fav = t.favIconUrl
-      ? `<img src="${escapeAttr(t.favIconUrl)}" width="14" height="14" style="border-radius:3px"/>`
-      : '🗎';
-    item.innerHTML = `${fav}<span class="ctx-title" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeAttr(
-      t.title,
-    )}</span>`;
-    item.onclick = () => {
+  const looksLikeUrl = (v) => /^https?:\/\//i.test(v) || /^[\w-]+(\.[\w-]+)+(\/|$)/.test(v);
+  const matchTabs = (q) => {
+    const n = q.trim().toLowerCase();
+    return n ? tabs.filter((t) => `${t.title} ${t.url}`.toLowerCase().includes(n)) : tabs;
+  };
+
+  const renderTabList = () => {
+    tabsBox.innerHTML = '';
+    const matched = matchTabs(search.value).slice(0, 25);
+    for (const t of matched) {
+      const item = document.createElement('button');
+      item.className = 'menu-item';
+      const fav = t.favIconUrl
+        ? `<img src="${escapeAttr(t.favIconUrl)}" width="14" height="14" style="border-radius:3px"/>`
+        : '🗎';
+      item.innerHTML = `${fav}<span class="ctx-title" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeAttr(
+        t.title,
+      )}</span>`;
+      item.onclick = () => {
+        closeMenus();
+        addAttachment(() => captureTab(t.id));
+      };
+      tabsBox.appendChild(item);
+    }
+    if (!matched.length) {
+      const none = document.createElement('div');
+      none.className = 'menu-section';
+      none.textContent = looksLikeUrl(search.value.trim()) ? 'Press Enter to analyze this URL' : 'No matching tabs';
+      tabsBox.appendChild(none);
+    }
+  };
+  renderTabList();
+
+  search.oninput = renderTabList;
+  search.onkeydown = (e) => {
+    if (e.key !== 'Enter') return;
+    const v = search.value.trim();
+    if (!v) return;
+    if (looksLikeUrl(v)) {
       closeMenus();
-      addAttachment(() => captureTab(t.id));
-    };
-    menu.appendChild(item);
-  }
+      addAttachment(() => captureUrl(/^https?:\/\//i.test(v) ? v : `https://${v}`));
+      return;
+    }
+    const matched = matchTabs(v); // Enter with a single match attaches it
+    if (matched.length === 1) {
+      closeMenus();
+      addAttachment(() => captureTab(matched[0].id));
+    }
+  };
+  setTimeout(() => search.focus(), 0);
+
   if (!can(state.license, 'multiTab')) {
     const hint = document.createElement('div');
     hint.className = 'menu-section';
@@ -2618,9 +2733,10 @@ async function smallModelFor(target) {
 }
 
 // Default fast model per bridge engine for autocomplete. Claude → Haiku (in-process,
-// snappy). Codex/Gemini spawn a CLI process per call, so they use their default
-// model unless the agent sets `autocompleteModel`.
-const FAST_MODEL = { claude: 'haiku', codex: '', gemini: '' };
+// snappy). The CLI agents (codex/antigravity/pi/opencode/kiro) spawn a process per
+// call, so they fall back to their default model unless the agent sets
+// `autocompleteModel` — in which case that explicit choice wins (see autocompleteSource).
+const FAST_MODEL = { claude: 'haiku' };
 
 // Where autocomplete should get its suggestion, FASTEST first. Autocomplete fires
 // on a 500ms pause and is superseded by the next keystroke, so the source must
@@ -2634,11 +2750,19 @@ const FAST_MODEL = { claude: 'haiku', codex: '', gemini: '' };
 //   3) the active bridge agent → bridge /complete (slow; best-effort).
 function autocompleteSource() {
   const active = resolveTarget(currentAgent(), state.settings);
+  // ALWAYS prefer a fast API endpoint: inline autocomplete needs a sub-500ms
+  // reply, and only a streaming API model delivers that. Bridge agents spawn a
+  // CLI per call (~seconds) so they're a slow last resort, never preferred —
+  // even if the user set an "Autocomplete model" on one.
+  // 1) Active agent if it's itself an API endpoint.
   if (active && active.kind !== 'bridge' && active.model) return { kind: 'api', target: active };
+  // 2) Any other configured API endpoint with a model.
   for (const ep of state.settings.endpoints || []) {
     const t = resolveTarget(ep, state.settings);
     if (t && t.kind !== 'bridge' && t.model) return { kind: 'api', target: t };
   }
+  // 3) Last resort — the active bridge agent via /complete (slow; only when no
+  //    API endpoint exists). Honors its configured autocomplete model.
   if (active && active.kind === 'bridge') {
     const engine = active.bridgeAgent || 'claude';
     return { kind: 'bridge', engine, model: active.autocompleteModel || FAST_MODEL[engine] || '' };
@@ -2745,7 +2869,9 @@ async function requestAutocomplete(text, source) {
       if (!res.ok) return;
       out = (await res.json()).text || '';
     } else {
-      const model = await smallModelFor(source.target); // smallest available
+      // Honor an explicitly-chosen autocomplete model on the endpoint; otherwise
+      // auto-pick the smallest available (e.g. a 0.5B model over the big chat one).
+      const model = source.target.autocompleteModel || (await smallModelFor(source.target));
       await streamChat({
         agent: { ...source.target, model, systemPrompt: sys, maxTokens: 16, temperature: 0.2 },
         messages: [{ role: 'user', content: prompt }],
@@ -2898,6 +3024,36 @@ function wireEvents() {
   input.addEventListener('scroll', () => {
     const g = $('input-ghost');
     if (g) g.scrollTop = input.scrollTop;
+  });
+
+  // Paste an image straight into the composer → attach it (text paste is untouched).
+  input.addEventListener('paste', (e) => {
+    const imgs = [...(e.clipboardData?.items || [])]
+      .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+      .map((it) => it.getAsFile())
+      .filter(Boolean);
+    if (!imgs.length) return; // no image on the clipboard — let the text paste happen
+    e.preventDefault();
+    addImageFiles(imgs);
+  });
+  // Drag an image file onto the composer → attach it.
+  const composerBox = input.closest('.composer-box') || input;
+  ['dragover', 'dragenter'].forEach((ev) =>
+    composerBox.addEventListener(ev, (e) => {
+      if ([...(e.dataTransfer?.types || [])].includes('Files')) {
+        e.preventDefault();
+        composerBox.classList.add('drag-over');
+      }
+    }),
+  );
+  ['dragleave', 'dragend', 'drop'].forEach((ev) =>
+    composerBox.addEventListener(ev, () => composerBox.classList.remove('drag-over')),
+  );
+  composerBox.addEventListener('drop', (e) => {
+    const files = [...(e.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
+    if (!files.length) return;
+    e.preventDefault();
+    addImageFiles(files);
   });
 
   // Agent menu

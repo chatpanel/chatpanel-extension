@@ -52,10 +52,13 @@ async function* sseLines(response) {
 }
 
 // Flatten a stored message (with attachments) into the text the model sees.
+// Image attachments are excluded here — they go to the model as image blocks
+// (see toMultimodalMessages), not as text.
 function renderContent(m) {
   let text = m.content || '';
-  if (m.attachments?.length) {
-    const blocks = m.attachments
+  const ctx = (m.attachments || []).filter((a) => a.kind !== 'image');
+  if (ctx.length) {
+    const blocks = ctx
       .map((a) => {
         const head = `[${a.kind || 'context'}] ${a.title || a.url || ''}`.trim();
         return `<context source="${(a.url || a.title || '').replace(/"/g, '')}">\n# ${head}\n${a.text || ''}\n</context>`;
@@ -72,6 +75,39 @@ function toChatMessages(messages) {
     .map((m) => ({ role: m.role, content: renderContent(m) }));
 }
 
+// Image attachments on a message: { dataUrl: 'data:<media>;base64,<...>' }.
+function imageAttachmentsOf(m) {
+  return (m.attachments || []).filter((a) => a.kind === 'image' && a.dataUrl);
+}
+
+// Like toChatMessages, but emits multimodal content (text + image blocks) for
+// user messages that carry images, in the given provider's wire format. Falls
+// back to plain string content when there are no images. `provider` is
+// 'openai' | 'anthropic'.
+function toMultimodalMessages(messages, provider) {
+  return messages
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => {
+      const text = renderContent(m);
+      const imgs = m.role === 'user' ? imageAttachmentsOf(m) : [];
+      if (imgs.length === 0) return { role: m.role, content: text };
+      if (provider === 'anthropic') {
+        const content = [];
+        for (const a of imgs) {
+          const match = /^data:([^;]+);base64,(.+)$/s.exec(a.dataUrl);
+          if (match) content.push({ type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } });
+        }
+        if (text) content.push({ type: 'text', text });
+        return { role: 'user', content: content.length ? content : text };
+      }
+      // openai (and OpenAI-compatible vision endpoints)
+      const content = [];
+      if (text) content.push({ type: 'text', text });
+      for (const a of imgs) content.push({ type: 'image_url', image_url: { url: a.dataUrl } });
+      return { role: 'user', content: content.length ? content : text };
+    });
+}
+
 // --------------------------------------------------------------------------
 // OpenAI-compatible
 // --------------------------------------------------------------------------
@@ -85,8 +121,9 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
     function: { name: s.name, description: s.description, parameters: s.parameters },
   }));
 
-  // Native OpenAI message list — appended to across tool-use steps.
-  const msgs = [...sys, ...toChatMessages(messages)];
+  // Native OpenAI message list — appended to across tool-use steps. Multimodal
+  // so pasted/attached images ride along to vision models.
+  const msgs = [...sys, ...toMultimodalMessages(messages, 'openai')];
   let full = '';
 
   // One model turn = one streamed completion. Loops only when the model asks to
@@ -183,8 +220,9 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
     input_schema: s.parameters,
   }));
 
-  // Native Anthropic message list — appended to across tool-use steps.
-  const msgs = toChatMessages(messages);
+  // Native Anthropic message list — appended to across tool-use steps. Multimodal
+  // so pasted/attached images ride along as image blocks.
+  const msgs = toMultimodalMessages(messages, 'anthropic');
   let full = '';
 
   for (let step = 0; step < (tools ? MAX_TOOL_STEPS : 1); step++) {
@@ -297,15 +335,30 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
       // How to inject the chosen model (options.model) into the CLI's argv, e.g.
       // "--model {model}" or opencode's "-m {model}". Empty = model not passed.
       modelArg: agent.modelArg || '',
+      // How this CLI takes an attached image, e.g. "-i {path}" or pi's "@{path}".
+      // Empty = the agent can't take images.
+      imageArg: agent.imageArg || '',
       label: agent.name || agent.command || 'Custom',
     };
     options.entitlement = await getEntitlementToken();
   }
+  // Images from the latest user turn — the bridge writes them to temp files and
+  // attaches them to the agent's prompt (e.g. `codex exec -i`). CLI agents attach
+  // images to the initial prompt, so only the current turn's images are sent.
+  const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+  const images = lastUser
+    ? imageAttachmentsOf(lastUser).map((a) => ({
+        name: a.title || 'image',
+        mediaType: a.mediaType || 'image/png',
+        dataUrl: a.dataUrl,
+      }))
+    : [];
   const body = {
     agent: bridgeAgent,
     system: agent.systemPrompt || '',
     options,
     messages: toChatMessages(messages),
+    ...(images.length ? { images } : {}),
   };
   let res;
   try {

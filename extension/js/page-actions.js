@@ -26,6 +26,49 @@ function injectError(e) {
 }
 
 // --------------------------------------------------------------------------
+// Visual feedback — briefly outline the element(s) the agent just acted on, so
+// the user can SEE which fields were filled / clicked (synthetic AND CDP modes).
+// --------------------------------------------------------------------------
+
+// Injected: draw a fading highlight box over each selector's element.
+function flashInPage(selectors) {
+  for (const sel of selectors || []) {
+    let el;
+    try {
+      el = document.querySelector(sel);
+    } catch {
+      continue;
+    }
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) continue;
+    const box = document.createElement('div');
+    box.style.cssText =
+      `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;` +
+      'border:2px solid #7c8cf8;border-radius:5px;background:rgba(124,140,248,.16);' +
+      'box-shadow:0 0 0 2px rgba(124,140,248,.25);z-index:2147483647;pointer-events:none;' +
+      'transition:opacity .5s ease';
+    document.documentElement.appendChild(box);
+    setTimeout(() => {
+      box.style.opacity = '0';
+    }, 600);
+    setTimeout(() => box.remove(), 1100);
+  }
+}
+
+// Flash a highlight over the given selectors. Best-effort, never throws — a
+// missing/blocked page just means no highlight.
+export async function flashHighlight(tabId, selectors) {
+  const list = (selectors || []).filter(Boolean);
+  if (!list.length) return;
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, func: flashInPage, args: [list] });
+  } catch {
+    /* page not scriptable — skip the highlight */
+  }
+}
+
+// --------------------------------------------------------------------------
 // Inspect — enumerate fillable fields so the model knows what's on the page
 // and gets a stable selector to target each one.
 // --------------------------------------------------------------------------
@@ -335,6 +378,8 @@ export async function fillForm(tabId, fields) {
       func: fillFormInPage,
       args: [fields],
     });
+    // Show the user which fields were just touched.
+    await flashHighlight(tabId, fields.map((f) => f.selector));
     return inj?.result || [];
   } catch (e) {
     throw injectError(e);
@@ -379,6 +424,7 @@ export async function clickElement(tabId, selector) {
     });
     const r = inj?.result;
     if (!r?.ok) throw new Error(r?.error || 'element not found');
+    await flashHighlight(tabId, [selector]); // show what was clicked
     return r;
   } catch (e) {
     if (e.upsell) throw e;

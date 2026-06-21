@@ -367,6 +367,7 @@ body.rail-collapsed { --rail-w: 0px; }
   background: var(--bg-soft); transition: border-color .15s, box-shadow .15s;
 }
 .composer-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.composer-box.drag-over { border-color: var(--accent); background: var(--accent-soft); }
 /* Anchor the composer menus near the left tool group they belong to. */
 #attach-menu { left: 8px; }
 #skills-menu { left: 8px; }

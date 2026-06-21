@@ -14,6 +14,8 @@
 // (trusted clicks + typed text). We locate an element's viewport centre via
 // scripting, then dispatch trusted mouse/keyboard at those coordinates.
 
+import { flashHighlight } from './page-actions.js';
+
 const CDP_VERSION = '1.3';
 const IDLE_DETACH_MS = 8000; // drop the debugger (and its banner) after a lull
 
@@ -210,6 +212,7 @@ export async function cdpFillForm(tabId, fields) {
           await send(tabId, 'Input.insertText', { text: String(value) });
         }
         const now = await script(tabId, readStateInPage, [selector]);
+        await flashHighlight(tabId, [selector]); // show which field was acted on
         results.push({ selector, ok: true, value: now });
       } catch (e) {
         results.push({ selector, ok: false, error: e.message });
@@ -229,6 +232,7 @@ export async function cdpClickElement(tabId, selector) {
     if (!loc) throw new Error('not found');
     if (loc.hidden) throw new Error('not visible');
     await trustedClick(tabId, loc.x, loc.y);
+    await flashHighlight(tabId, [selector]); // show what was clicked
     return { ok: true };
   } finally {
     bump(tabId);

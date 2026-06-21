@@ -150,9 +150,14 @@
             <span>Autocomplete my prompts as I type <span class="pro-badge">✨ Pro</span></span>
           </label>
           <p class="muted tiny">
-            As you pause typing, your API model suggests a short continuation — press
-            <strong>Tab</strong> to accept. Uses small, fast requests; works with your
-            bring-your-own-model endpoints (not local bridge agents).
+            As you pause typing, a model suggests a short continuation — press
+            <strong>Tab</strong> to accept. <strong>For this to feel instant it needs a
+            small, fast API model</strong> (e.g. a 1–3B model on your local
+            Ollama / llama.cpp) — set it as an endpoint's <em>“Autocomplete model”</em>
+            below. Local CLI agents (Claude Code, Codex, Antigravity…) spawn a process
+            per request (~seconds), so they’re too slow for inline autocomplete and are
+            only used as a last resort. Avoid reasoning models — they “think” instead of
+            completing.
           </p>
           <label class="check" id="pref-pageact-cdp-row">
             <input type="checkbox" id="pref-pageact-cdp" />
@@ -235,6 +240,7 @@
           <input class="ep-model-custom hidden" placeholder="custom model id" />
           <button class="btn accent ep-load" title="Fetch the models this endpoint offers">↻ Load models</button>
         </div>
+        <div class="row"><label>Autocomplete model</label><input class="ep-acmodel" placeholder="optional — a small/fast model just for inline autocomplete (avoid reasoning models)" /></div>
         <div class="row half">
           <div><label>Temp</label><input class="ep-temp" type="number" step="0.1" min="0" max="2" /></div>
           <div><label>Max tokens</label><input class="ep-maxtok" type="number" step="64" /></div>
@@ -252,7 +258,10 @@
           <select class="ba-kind">
             <option value="claude">claude (Claude Code)</option>
             <option value="codex">codex</option>
-            <option value="gemini">gemini (Gemini CLI)</option>
+            <option value="antigravity">antigravity (agy)</option>
+            <option value="pi">pi</option>
+            <option value="opencode">opencode</option>
+            <option value="kiro">kiro (kiro-cli)</option>
             <option value="custom">custom — bring your own Agent ✨ Pro</option>
           </select>
           <span class="ba-avail status"></span>
@@ -276,9 +285,10 @@
           </div>
           <div class="row"><label>List models with</label><input class="ba-listargs" placeholder="e.g. --list-models  (pi)  ·  models  (opencode) — enables “Load models”" /></div>
           <div class="row"><label>Pass model via</label><input class="ba-modelarg" placeholder="e.g. --model {model}  ·  -m {model}  ({model} = the chosen id)" /></div>
+          <div class="row"><label>Pass image via</label><input class="ba-imagearg" placeholder="e.g. -i {path}  ·  @{path}  (pi)  ·  --image {path}  — blank = no image support" /></div>
         </div>
         <div class="row ba-model-row"><label>Model</label><input class="ba-model" placeholder="blank = the CLI's default model" /><button class="btn ba-loadmodels" type="button" title="List this CLI's available models">Load models</button></div>
-        <div class="row ba-model-row"><label>Autocomplete model</label><input class="ba-acmodel" placeholder="optional — a smaller/faster model just for inline autocomplete" /><span class="ba-models-status status"></span></div>
+        <div class="row ba-model-row"><label>Autocomplete model</label><input class="ba-acmodel" placeholder="last-resort only — CLI autocomplete is slow (~seconds); prefer a fast API endpoint" /><span class="ba-models-status status"></span></div>
         <div class="row"><label>Working dir</label><input class="ba-workdir" placeholder="/path/to/project (optional)" /></div>
         <div class="row"><label>Permissions</label>
           <select class="ba-perm">
