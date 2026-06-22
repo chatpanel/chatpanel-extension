@@ -1258,6 +1258,9 @@ function wire() {
   $('open-meetings-dashboard')?.addEventListener('click', () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('meetings.html') });
   });
+  $('open-history-dashboard')?.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('history.html') });
+  });
 
   $('btn-restore').onclick = async () => {
     const email = $('restore-email').value.trim();

@@ -147,4 +147,17 @@ svg .gnode:hover text { fill: var(--accent); }
 svg .gnode.faded { opacity: .12; }
 svg .gedge.faded { opacity: .06; }
 
+/* Chat-history thread */
+.thread { display: flex; flex-direction: column; gap: 12px; }
+.msg { max-width: 86%; }
+.msg.user { align-self: flex-end; }
+.msg.assistant { align-self: flex-start; }
+.msg-role { font-size: 11px; font-weight: 700; color: var(--muted); margin: 0 4px 3px; }
+.msg.user .msg-role { text-align: right; color: var(--accent); }
+.msg-body { padding: 10px 13px; border-radius: 13px; border: 1px solid var(--border); background: var(--card); line-height: 1.5; overflow-wrap: anywhere; }
+.msg.user .msg-body { background: var(--accent-weak); border-color: var(--accent-weak); border-bottom-right-radius: 4px; }
+.msg.assistant .msg-body { border-bottom-left-radius: 4px; }
+.msg-body mark { background: rgba(251,191,36,.3); color: inherit; border-radius: 3px; }
+.msg-att { margin-top: 7px; font-size: 12px; color: var(--muted); }
+
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #111827; color: #fff; padding: 11px 17px; border-radius: 11px; font-size: 14px; box-shadow: 0 16px 48px rgba(0,0,0,.4); z-index: 50; }

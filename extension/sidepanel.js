@@ -180,6 +180,13 @@ async function init() {
         await openStoredMeeting(mid);
       }
     }
+    // Handoff from the Chat-history dashboard's "Open in panel" button.
+    const cg = await chrome.storage.local.get('chatpanel:openConversationId');
+    const cid = cg['chatpanel:openConversationId'];
+    if (cid) {
+      await chrome.storage.local.remove('chatpanel:openConversationId');
+      await openConversation(cid);
+    }
   } catch { /* no handoff pending */ }
   // Keep the "recording" indicator + live-meeting cache fresh even when Live notes
   // is off and the user isn't switching tabs (so it clears soon after a call ends).
@@ -3501,6 +3508,7 @@ function wireEvents() {
     $('history').classList.remove('hidden');
   };
   $('history-close').onclick = () => $('history').classList.add('hidden');
+  $('history-expand').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('history.html') });
   $('history-search').oninput = (e) => renderHistory(e.target.value);
   // Live-notes drawer controls (Summary / Transcript tabs, search, copy, download).
   $('live-notes-close').onclick = () => closeLiveNotes();

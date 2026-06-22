@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ChatPanel — Chat history</title>
+    <link rel="icon" href="assets/icon128.png" />
+    <link rel="stylesheet" href="meetings.css" />
+  </head>
+  <body>
+    <header class="hdr">
+      <h1><img src="assets/icon48.png" class="brand-ico" alt="" /> Chat history <span id="h-count" class="count"></span></h1>
+      <div class="hdr-actions">
+        <button id="h-graph-toggle" class="btn" type="button">🕸 Graph</button>
+        <button id="h-settings" class="btn ghost" type="button">⚙ ChatPanel settings</button>
+      </div>
+    </header>
+    <div class="layout">
+      <aside class="mlist">
+        <input id="h-search" class="search" type="search" placeholder="Search all chats — messages, titles…" />
+        <div class="seg" id="h-modes">
+          <button data-mode="smart" class="active" type="button" title="BM25 full-text relevance">Smart</button>
+          <button data-mode="keyword" type="button" title="Exact substring match">Keyword</button>
+          <button data-mode="agent" type="button" title="Filter by agent / model">Agent</button>
+        </div>
+        <div id="h-items"></div>
+      </aside>
+      <main class="detail">
+        <div class="empty" id="h-empty">Select a chat to view it.</div>
+        <div id="h-content" class="hidden"></div>
+        <div id="h-graph" class="hidden"></div>
+      </main>
+    </div>
+    <div id="h-toast" class="toast hidden"></div>
+    <script type="module" src="history.js"></script>
+  </body>
+</html>
