@@ -590,46 +590,67 @@ export async function importConversations(data, { mode = 'merge' } = {}) {
   return { imported, total: data.conversations.length };
 }
 
-// "Export data" — the full backup: conversations AND captured meetings in one
-// file. version 2 adds `meetings`; a v1 (chat-only) file still restores fine
-// (meetings just come back empty). All client-side — nothing is uploaded.
+// "Export data" — the FULL portable backup: everything needed to recreate this
+// install on another machine. version 3 adds `settings` (endpoints incl. API
+// keys, local/bridge agents, MCP servers incl. auth, skills, preferences);
+// version 2 added `meetings`. Older files still restore (missing parts come back
+// empty). The license is NOT exported — it re-activates by purchase email / Pro
+// sync. All client-side; nothing is uploaded. NOTE: this file contains secrets.
 export async function exportAllData() {
   const conv = await exportConversations();
   const meetings = await exportMeetings();
+  const settings = await getSettings();
   return {
     type: BACKUP_TYPE,
-    version: 2,
+    version: 3,
     exportedAt: Date.now(),
     count: conv.count,
     conversations: conv.conversations,
     meetingsCount: meetings.length,
     meetings,
+    settings,
   };
 }
 
-// Restore a full backup. Conversations and meetings each honor the same mode
-// ('merge' | 'replace'). Returns per-kind counts.
+// Restore a full backup. Conversations and meetings honor `mode` ('merge' |
+// 'replace'). Settings are configuration (not a list), so when present they are
+// always applied over the defaults — that's what makes a fresh install match the
+// source machine. Returns per-kind results (settings: true when restored).
 export async function importAllData(data, { mode = 'merge' } = {}) {
   const conversations = await importConversations(data, { mode }); // validates the file
   const meetings = await importMeetings(data.meetings, { mode });
-  return { conversations, meetings };
+  let settings = false;
+  if (data.settings && typeof data.settings === 'object') {
+    const merged = mergeSettings(defaultSettings(), data.settings); // folds in any newer fields
+    await chrome.storage.local.set({ [K_SETTINGS]: merged }); // onChanged clears the cache
+    _settingsCache = null;
+    settings = true;
+  }
+  return { conversations, meetings, settings };
 }
 
 // "Export all data" as a ZIP that is BOTH a restorable backup and a browsable
 // archive: chatpanel-data.json (what Restore reads) + human-readable Markdown for
 // every conversation and meeting. Returns { blob, count, meetingsCount }.
 const ARCHIVE_README =
-  'ChatPanel data export\n\n' +
-  '• chatpanel-data.json — the full backup. Use Settings → Restore from file to\n' +
-  '  import it (on this or another machine). Keep this file if you want to restore.\n' +
+  'ChatPanel data export — full portable backup\n\n' +
+  '• chatpanel-data.json — the complete backup. Use Settings → Restore from file\n' +
+  '  to import it on this or a fresh install on another machine. It restores your\n' +
+  '  settings (API endpoints & keys, agents, MCP servers, skills, preferences),\n' +
+  '  all chat history, and all captured meetings. Keep this file safe.\n' +
+  '• settings.json — a readable copy of your configuration (NOT used by Restore).\n' +
   '• conversations/*.md and meetings/*.md — human-readable copies for reading or\n' +
   '  sharing. These are NOT used by Restore.\n\n' +
+  'SECURITY: chatpanel-data.json and settings.json contain your API keys and any\n' +
+  'MCP auth tokens. Treat this file like a password. Your ChatPanel Pro license is\n' +
+  'NOT included — it re-activates from your purchase email / Pro sync.\n\n' +
   'Everything here stayed on your device — nothing was uploaded.\n';
 
 export async function exportDataArchive() {
   const data = await exportAllData();
   const files = [
     { name: 'chatpanel-data.json', data: JSON.stringify(data) },
+    { name: 'settings.json', data: JSON.stringify(data.settings, null, 2) },
     { name: 'README.txt', data: ARCHIVE_README },
   ];
   const used = new Set();

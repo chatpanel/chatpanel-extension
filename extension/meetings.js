@@ -8,6 +8,7 @@ import {
   deleteMeeting, meetingToMarkdown, meetingToText, persistMeeting, PLATFORMS,
 } from './js/store-meetings.js';
 import { getSettings, getTarget, meetingNotesSkill } from './js/store.js';
+import { getLicense, can, UPGRADE_URL } from './js/license.js';
 import { streamChat } from './js/providers.js';
 import { buildIndex, bm25Search, buildGraph, topTerms, tokenize } from './js/meeting-index.js';
 import { drawGraph } from './js/graph-view.js';
@@ -22,6 +23,7 @@ let graph = null;
 let current = null;        // selected store entry (+ .tab)
 let mode = 'smart';        // search mode: smart | keyword | people
 let inGraph = false;       // global graph view shown?
+let winId = null;          // this window — to open the side panel within a gesture
 
 // --- helpers ---------------------------------------------------------------
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -403,12 +405,11 @@ async function removeMeeting() {
 }
 async function askAboutMeeting() {
   if (!current) return;
-  try {
-    await chrome.storage.local.set({ 'chatpanel:openMeetingId': current.entry.id });
-    const win = await chrome.windows.getCurrent();
-    await chrome.sidePanel.open({ windowId: win.id });
-    toast('Opening this meeting in the side panel…');
-  } catch { toast('Open the ChatPanel side panel, then pick this meeting to ask.'); }
+  const id = current.entry.id;
+  await chrome.storage.local.set({ 'chatpanel:openMeetingId': id }).catch(() => {});
+  try { if (winId != null) await chrome.sidePanel.open({ windowId: winId }); } catch { /* may already be open */ }
+  chrome.runtime.sendMessage({ type: 'open-meeting', id }).catch(() => {});
+  toast('Opening this meeting in the side panel…');
 }
 
 // --- generate insights (uses the configured ChatPanel agent/model) ---------
@@ -504,7 +505,24 @@ function rebuildIndexes() {
   graph = buildGraph(ds.map((d) => ({ id: d.entry.id, title: d.rec.title, platform: d.rec.platform, startedAt: d.rec.startedAt, people: d.people, terms: d.terms })));
 }
 
+function showProGate() {
+  $('m-count').textContent = '';
+  ['m-import', 'm-graph-toggle'].forEach((id) => $(id)?.classList.add('hidden'));
+  document.querySelector('.layout').innerHTML = `
+    <div class="progate">
+      <div class="progate-card">
+        <div class="progate-ic">🗓✨</div>
+        <h2>Meetings is a Pro feature</h2>
+        <p>The live meeting scribe and this dashboard — transcripts, AI summaries, action items, search and the relationship graph — are part of ChatPanel Pro.</p>
+        <a class="btn primary" id="m-upgrade" href="${UPGRADE_URL}" target="_blank" rel="noopener">✨ Upgrade to Pro</a>
+      </div>
+    </div>`;
+}
+
 async function boot() {
+  const license = await getLicense();
+  if (!can(license, 'liveMeetings')) { showProGate(); return; }
+  try { winId = (await chrome.windows.getCurrent()).id; } catch { /* ok */ }
   index = await getMeetingIndex();
   await Promise.all(index.map(async (e) => {
     const rec = await getMeeting(e.id); if (!rec) return;

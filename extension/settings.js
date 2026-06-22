@@ -245,8 +245,7 @@ function endpointCard(ep) {
 }
 
 function addEndpoint() {
-  // Adding endpoints is free — only *using* more than one is Pro (enforced in
-  // the agent picker). Extra endpoints stay visible there, locked, as upsell.
+  if (!isPro(license)) return upsell('Adding endpoints is a Pro feature. Free includes one endpoint — set it up below.');
   settings.endpoints = settings.endpoints || [];
   settings.endpoints.push({
     id: uid(),
@@ -516,6 +515,7 @@ async function showCustomAvailability(agent, q, cmd) {
 }
 
 function addBridgeAgent() {
+  if (!isPro(license)) return upsell('Adding agents is a Pro feature. Free includes the built-in agents — pick your one with “Use on Free”.');
   settings.agents = settings.agents || [];
   settings.agents.push({
     id: uid(),
@@ -543,6 +543,7 @@ function renderMcpServers() {
   const list = settings.mcpServers || [];
   list.forEach((s, i) => root.appendChild(mcpServerCard(s, i)));
   renderMcpCatalog(); // keep "Added" state in sync
+  renderGateBadges(); // add/import lock depends on the current server count
 }
 
 // Parse "KEY=VALUE, KEY2=VALUE2" (comma or newline separated) into an env object.
@@ -673,6 +674,7 @@ function mcpServerCard(server, index = 0) {
 }
 
 function addMcpServer() {
+  if (mcpAddLocked()) return upsell(`Free includes ${FREE_LIMITS.mcpServers} MCP server. Upgrade to Pro for unlimited.`);
   settings.mcpServers = settings.mcpServers || [];
   settings.mcpServers.push({ id: uid(), name: 'New MCP server', url: '', enabled: true, headers: {} });
   saveSettings(settings);
@@ -786,7 +788,9 @@ function mcpCatalogCard(item) {
   const added = hasMcpServer(item);
   btn.disabled = added;
   btn.textContent = added ? '✓ Added' : '+ Add';
+  if (!added && mcpAddLocked()) { btn.classList.add('locked'); btn.appendChild(proBadge()); }
   btn.onclick = async () => {
+    if (mcpAddLocked()) return upsell(`Free includes ${FREE_LIMITS.mcpServers} MCP server. Upgrade to Pro for unlimited.`);
     settings.mcpServers = settings.mcpServers || [];
     settings.mcpServers.push(mcpServerFromCatalogItem(item));
     await saveSettings(settings);
@@ -1127,6 +1131,7 @@ function onProActivated(lic) {
   renderMcpServers();
   renderSkills();
   renderPrefs(); // re-enable the Pro-gated Autocomplete toggle
+  renderGateBadges(); // re-enable MCP add + Meetings controls
   setStatus($('license-msg'), '✓ Pro is now active. Thank you!', 'ok');
 }
 
@@ -1174,8 +1179,25 @@ function badgeButton(btn, locked) {
 
 // Refresh the badges on the section action buttons. Called on load, whenever
 // endpoints change, and after the plan changes.
+// Free includes FREE_LIMITS.mcpServers (1) addable server; adding more is Pro.
+// Search/Discover stays free.
+function mcpAddLocked() {
+  return !isPro(license) && (settings.mcpServers || []).length >= FREE_LIMITS.mcpServers;
+}
+
 function renderGateBadges() {
   badgeButton($('add-skill'), !can(license, 'customSkills'));
+  // Agents & endpoints: free uses the built-ins (one active each); adding more is Pro.
+  const proLocked = !isPro(license);
+  ['add-agent', 'add-endpoint'].forEach((id) => { const b = $(id); if (b) { badgeButton(b, proLocked); b.classList.toggle('locked', proLocked); } });
+  // MCP: free can search/discover + add one; adding beyond the free limit is Pro.
+  const mcpLocked = mcpAddLocked();
+  ['add-mcp', 'import-mcp'].forEach((id) => { const b = $(id); if (b) { badgeButton(b, mcpLocked); b.classList.toggle('locked', mcpLocked); } });
+  // Meetings: Pro-only.
+  const mLocked = !can(license, 'liveMeetings');
+  const md = $('open-meetings-dashboard');
+  if (md) { badgeButton(md, mLocked); md.classList.toggle('locked', mLocked); }
+  ['pref-live-notes', 'pref-meeting-window'].forEach((id) => { const el = $(id); if (el) { el.disabled = mLocked; el.classList.toggle('locked', mLocked); } });
 }
 
 // On Free, exactly one endpoint and one bridge agent are usable — the user's
@@ -1215,7 +1237,10 @@ function wire() {
   $('add-endpoint').onclick = addEndpoint;
   $('add-agent').onclick = addBridgeAgent;
   $('add-mcp').onclick = addMcpServer;
-  $('import-mcp').onclick = () => toggleMcpImport(true);
+  $('import-mcp').onclick = () => {
+    if (mcpAddLocked()) return upsell(`Free includes ${FREE_LIMITS.mcpServers} MCP server. Upgrade to Pro for unlimited.`);
+    toggleMcpImport(true);
+  };
   $('mcp-import-cancel').onclick = () => toggleMcpImport(false);
   $('mcp-import-apply').onclick = importMcpConfig;
   $('add-skill').onclick = addSkill;
@@ -1256,6 +1281,7 @@ function wire() {
   $('btn-subscribe-pro').onclick = () => subscribePro($('btn-subscribe-pro'));
 
   $('open-meetings-dashboard')?.addEventListener('click', () => {
+    if (!can(license, 'liveMeetings')) return upsell('The meeting scribe & dashboard are a Pro feature.');
     chrome.tabs.create({ url: chrome.runtime.getURL('meetings.html') });
   });
   $('open-history-dashboard')?.addEventListener('click', () => {
@@ -1307,6 +1333,7 @@ function wireBackup() {
       setTimeout(() => URL.revokeObjectURL(url), 5000);
       const parts = [`${count} conversation${count === 1 ? '' : 's'}`];
       if (meetingsCount) parts.push(`${meetingsCount} meeting${meetingsCount === 1 ? '' : 's'}`);
+      parts.push('settings'); // always included — endpoints/keys, agents, MCP, skills, prefs
       setStatus(msg, `✓ Exported ${parts.join(' + ')} (.zip — JSON backup + Markdown).`, 'ok');
     } catch (e) {
       setStatus(msg, '✕ ' + (e.message || e), 'err');
@@ -1339,11 +1366,23 @@ function wireBackup() {
       }
       const data = JSON.parse(text);
       const mode = $('backup-replace').checked ? 'replace' : 'merge';
-      const { conversations, meetings } = await importAllData(data, { mode });
+      const { conversations, meetings, settings: settingsRestored } = await importAllData(data, { mode });
       const parts = [`${conversations.imported} conversation${conversations.imported === 1 ? '' : 's'}`];
       if (meetings.imported) parts.push(`${meetings.imported} meeting${meetings.imported === 1 ? '' : 's'}`);
+      if (settingsRestored) {
+        // Settings (endpoints, agents, MCP, skills, prefs) changed — reload & repaint.
+        settings = await getSettings();
+        parts.push('settings');
+        renderEndpoints();
+        renderBridge();
+        renderBridgeAgents();
+        renderMcpServers();
+        renderSkills();
+        renderPrefs();
+        renderGateBadges();
+      }
       const skipped = (conversations.total - conversations.imported) + (meetings.total - meetings.imported);
-      setStatus(msg, `✓ Restored ${parts.join(' + ')}${skipped ? ` (${skipped} skipped)` : ''}. Reopen ChatPanel to see them.`, 'ok');
+      setStatus(msg, `✓ Restored ${parts.join(' + ')}${skipped ? ` (${skipped} skipped)` : ''}. Reopen ChatPanel to see everything.`, 'ok');
     } catch (err) {
       setStatus(msg, '✕ ' + (err.message || err), 'err');
     }

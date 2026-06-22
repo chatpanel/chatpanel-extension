@@ -192,9 +192,19 @@ async function init() {
   // is off and the user isn't switching tabs (so it clears soon after a call ends).
   setInterval(() => renderScribeIndicator(), 30_000);
 
-  // Right-click "Ask ChatPanel" seed.
+  // Right-click "Ask ChatPanel" seed, and handoffs from the full dashboards
+  // (Chat-history "Open in panel", Meetings "Ask") — these work even when the
+  // side panel is ALREADY open (the init() flag only covers a fresh open).
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg?.type === 'context-seed') applySeed(msg);
+    else if (msg?.type === 'open-conversation' && msg.id) {
+      chrome.storage.local.remove('chatpanel:openConversationId').catch(() => {});
+      openConversation(msg.id);
+    } else if (msg?.type === 'open-meeting' && msg.id && can(state.license, 'liveMeetings')) {
+      chrome.storage.local.remove('chatpanel:openMeetingId').catch(() => {});
+      $('meetings-drawer').classList.remove('hidden');
+      openStoredMeeting(msg.id);
+    }
   });
   const { pendingSeed } = await chrome.storage.session.get('pendingSeed').catch(() => ({}));
   if (pendingSeed) {

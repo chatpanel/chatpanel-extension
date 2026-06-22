@@ -8,6 +8,7 @@ import {
 } from './js/store.js';
 import { buildIndex, bm25Search, buildGraph, topTerms, tokenize } from './js/meeting-index.js';
 import { drawGraph } from './js/graph-view.js';
+import { renderMarkdown } from './js/markdown.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -19,6 +20,7 @@ let graph = null;          // chats ⇄ agents (agents modeled as "people")
 let current = null;        // selected store entry (+ .tab)
 let mode = 'smart';        // smart | keyword | agent
 let inGraph = false;
+let winId = null;          // this window — to open the side panel within a gesture
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -45,6 +47,66 @@ function agentLabel(conv) {
   return t?.name || 'Assistant';
 }
 const docText = (conv) => [conv.title || '', ...(conv.messages || []).map((m) => `${m.role === 'user' ? 'You' : (m.agentName || 'Assistant')}: ${m.content || ''}`)].join('\n');
+
+// --- assistant tool actions (mirror the side panel's "Actions" log) --------
+const LABELED_TOOLS = new Set(['inspect_page', 'fill_form', 'fill_combobox', 'click_element', 'click_by_text', 'screenshot', 'marked_screenshot', 'click_mark', 'click_at', 'type_text', 'press_key', 'scroll', 'draw_path']);
+function displayMcpServer(slug) {
+  const s = String(slug || 'mcp').replace(/_/g, ' ');
+  if (/^deepwiki$/i.test(s)) return 'DeepWiki';
+  if (/^context7$/i.test(s)) return 'Context7';
+  return s.replace(/\b[a-z]/g, (c) => c.toUpperCase());
+}
+function stepLabel(s) {
+  const i = s.input || {};
+  switch (s.tool) {
+    case 'inspect_page': return '🔍 Read the page';
+    case 'fill_form': return `⌨️ Filled ${i.fields?.length || 0} field(s)`;
+    case 'fill_combobox': return `⌨️ Typed “${String(i.value || '').slice(0, 40)}” → select`;
+    case 'click_element': return `🖱️ Clicked ${String(i.selector || '').slice(0, 48)}`;
+    case 'click_by_text': return `🖱️ Clicked “${String(i.text || '').slice(0, 40)}”`;
+    case 'screenshot': return '📸 Took a screenshot';
+    case 'marked_screenshot': return '🔢 Tagged clickable elements';
+    case 'click_mark': return `🖱️ Clicked element #${i.n}`;
+    case 'click_at': return `🖱️ Clicked at (${Math.round(i.x)}, ${Math.round(i.y)})`;
+    case 'type_text': return `⌨️ Typed “${String(i.text || '').slice(0, 40)}”`;
+    case 'press_key': return `⌨️ Pressed ${i.key}`;
+    case 'scroll': return `🖱️ Scrolled ${i.dy > 0 ? 'down' : 'up'}`;
+    default: { const m = /^mcp_(.+?)__(.+)$/.exec(s.tool || ''); return m ? `${displayMcpServer(m[1])} / ${m[2]}` : `🔧 ${s.tool}`; }
+  }
+}
+function stepArgs(s) {
+  if (LABELED_TOOLS.has(s.tool) || s.input == null) return '';
+  const i = s.input;
+  if (typeof i === 'object' && !Array.isArray(i)) {
+    const rows = Object.entries(i).filter(([, v]) => v != null && v !== '').map(([k, v]) => {
+      const val = typeof v === 'string' ? v : JSON.stringify(v);
+      return `<div class="step-arg"><span class="step-arg-key">${esc(k)}</span><span class="step-arg-val">${esc(val.length > 260 ? val.slice(0, 260) + '…' : val)}</span></div>`;
+    }).join('');
+    return rows ? `<div class="step-args-list">${rows}</div>` : '';
+  }
+  let str = typeof i === 'string' ? i : JSON.stringify(i);
+  if (!str || str === '{}' || str === '""') return '';
+  return `<div class="step-args">${esc(str.length > 220 ? str.slice(0, 220) + '…' : str)}</div>`;
+}
+function renderSteps(steps) {
+  const items = steps.map((s) => {
+    const m = /^mcp_(.+?)__(.+)$/.exec(s.tool || '');
+    const head = m
+      ? `<div class="step step-mcp"><span class="step-server">${esc(displayMcpServer(m[1]))}</span><span class="step-tool">${esc(m[2])}</span></div>`
+      : `<div class="step">${esc(stepLabel(s))}</div>`;
+    const status = s.status ? `<span class="step-status ${/error|fail|blocked/i.test(s.status) ? 'bad' : ''}">${esc(s.status)}</span>` : '';
+    const shot = s.image ? `<img class="step-shot" src="${esc(s.image)}" alt="screenshot" loading="lazy" />` : '';
+    return `${head}${status}${stepArgs(s)}${shot}`;
+  }).join('');
+  return `<details class="agent-steps"><summary>🔧 Actions (${steps.length})</summary><div class="steps-body">${items}</div></details>`;
+}
+function msgBody(m) {
+  let html = '';
+  if (m.steps?.length) html += renderSteps(m.steps);
+  if (m.thinking) html += `<details class="thinking"><summary>💭 Thinking</summary><div class="thinking-body">${esc(m.thinking)}</div></details>`;
+  html += m.content ? renderMarkdown(String(m.content)) : '';
+  return html || '<span class="owner">(no text)</span>';
+}
 
 // --- search ----------------------------------------------------------------
 function makeSnippet(d, terms) {
@@ -160,11 +222,8 @@ function renderThread() {
     const rows = msgs.filter((m) => !ql || String(m.content || '').toLowerCase().includes(ql));
     $('h-thread').innerHTML = rows.length ? rows.map((m) => {
       const who = m.role === 'user' ? 'You' : (m.agentName || current.agent || 'Assistant');
-      let txt = esc(String(m.content || ''));
-      if (ql) txt = txt.replace(new RegExp(`(${reEsc(ql)})`, 'ig'), '<mark>$1</mark>');
-      txt = txt.replace(/\n/g, '<br>');
       const att = (m.attachments || []).length ? `<div class="msg-att">${m.attachments.map((a) => `📎 ${esc(a.title || a.url || 'attachment')}`).join(' · ')}</div>` : '';
-      return `<div class="msg ${m.role === 'user' ? 'user' : 'assistant'}"><div class="msg-role">${esc(who)}</div><div class="msg-body">${txt}${att}</div></div>`;
+      return `<div class="msg ${m.role === 'user' ? 'user' : 'assistant'}"><div class="msg-role">${esc(who)}</div><div class="msg-body md">${msgBody(m)}${att}</div></div>`;
     }).join('') : '<div class="tile-empty">No matching messages.</div>';
   };
   $('h-tsearch').oninput = (e) => paint(e.target.value);
@@ -267,12 +326,14 @@ async function removeChat() {
 }
 async function openInPanel() {
   if (!current) return;
-  try {
-    await chrome.storage.local.set({ 'chatpanel:openConversationId': current.entry.id });
-    const win = await chrome.windows.getCurrent();
-    await chrome.sidePanel.open({ windowId: win.id });
-    toast('Opening this chat in the side panel…');
-  } catch { toast('Open the ChatPanel side panel to continue this chat.'); }
+  const id = current.entry.id;
+  // Fresh-open path: the side panel's init() reads this flag when it boots.
+  await chrome.storage.local.set({ 'chatpanel:openConversationId': id }).catch(() => {});
+  // Open the panel (no-op if already open) within the click gesture.
+  try { if (winId != null) await chrome.sidePanel.open({ windowId: winId }); } catch { /* may already be open */ }
+  // Already-open path: nudge the live panel to switch to this chat.
+  chrome.runtime.sendMessage({ type: 'open-conversation', id }).catch(() => {});
+  toast('Opening this chat in the side panel…');
 }
 
 // --- boot ------------------------------------------------------------------
@@ -283,6 +344,7 @@ function rebuildIndexes() {
 }
 
 async function boot() {
+  try { winId = (await chrome.windows.getCurrent()).id; } catch { /* ok */ }
   settings = await getSettings();
   index = await getIndex();
   await Promise.all(index.map(async (e) => {

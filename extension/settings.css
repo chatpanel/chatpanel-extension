@@ -164,8 +164,9 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 
 /* Toast ------------------------------------------------------------------- */
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #111827; color: #fff; padding: 11px 17px; border-radius: 11px; font-size: 14px; box-shadow: var(--shadow-lg); z-index: 50; max-width: 92vw; }
-.toast-action { color: #c7d2fe; font-weight: 700; text-decoration: none; margin-left: 4px; }
-.toast-action:hover { text-decoration: underline; }
+.toast-action { appearance: none; border: 0; cursor: pointer; background: var(--accent); color: #fff; font: inherit; font-weight: 700; padding: 5px 13px; border-radius: 8px; margin-left: 6px; }
+.toast-action:hover { filter: brightness(1.1); }
+.toast-action:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
 
 /* Gate banner ------------------------------------------------------------- */
 .gate-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; border: 1px solid var(--accent-line); border-radius: 11px; padding: 12px 15px; margin: 6px 0 16px; background: var(--accent-weak); font-size: 13.5px; }
