@@ -11,6 +11,7 @@
 // use, status) so the UI can show what a coding agent is doing.
 
 import { getEntitlementToken } from './license.js';
+import { combineSystemPrompt, toolStatus } from './tool-hints.js';
 
 // Safety cap on the agent tool-use loop: a turn may call tools at most this many
 // times before we stop, so a confused model can't loop forever. Generous enough
@@ -26,22 +27,6 @@ function safeJson(s) {
     return JSON.parse(s);
   } catch {
     return {};
-  }
-}
-
-// A short status for a tool result, surfaced in the UI's "Actions" log so the
-// user can SEE whether each step ran trusted/synthetic or failed (e.g. why CDP
-// fell back). Best-effort parse — returns '' if the shape is unexpected.
-function toolStatus(result) {
-  try {
-    const o = typeof result === 'string' ? JSON.parse(result) : JSON.parse(result?.text || '{}');
-    if (o.error) return o.blocked ? 'blocked' : `error: ${String(o.error).slice(0, 80)}`;
-    if (typeof o.mode === 'string') return o.mode; // 'trusted' | 'synthetic' | 'synthetic (CDP failed: …)'
-    if (o.ok === false) return `fail${o.error ? ': ' + String(o.error).slice(0, 70) : ''}`;
-    if (o.note) return String(o.note).slice(0, 80);
-    return 'ok';
-  } catch {
-    return '';
   }
 }
 
@@ -131,7 +116,8 @@ function toMultimodalMessages(messages, provider) {
 // --------------------------------------------------------------------------
 async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }) {
   const base = (agent.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
-  const sys = agent.systemPrompt ? [{ role: 'system', content: agent.systemPrompt }] : [];
+  const system = combineSystemPrompt(agent.systemPrompt, tools?.system);
+  const sys = system ? [{ role: 'system', content: system }] : [];
   const headers = { 'Content-Type': 'application/json', ...(agent.headers || {}) };
   if (agent.apiKey) headers['Authorization'] = `Bearer ${agent.apiKey}`;
   const toolSpecs = tools?.specs?.map((s) => ({
@@ -211,10 +197,10 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
     });
     for (const c of wanted) {
       const input = safeJson(c.args);
-      onEvent?.({ type: 'tool', name: c.name, phase: 'start', input });
+      onEvent?.({ type: 'tool', name: c.name, phase: 'start', callId: c.id, input });
       const result = await tools.execute(c.name, input);
       const _image = result && typeof result === 'object' ? result.image : undefined;
-      onEvent?.({ type: 'tool', name: c.name, phase: 'done', image: _image, status: toolStatus(result) });
+      onEvent?.({ type: 'tool', name: c.name, phase: 'done', callId: c.id, image: _image, status: toolStatus(result) });
       const text = typeof result === 'string' ? result : (result?.text ?? '');
       msgs.push({ role: 'tool', tool_call_id: c.id, content: text });
       // OpenAI tool messages can't carry images — feed any screenshot back as a
@@ -239,6 +225,7 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
 // --------------------------------------------------------------------------
 async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tools }) {
   const base = (agent.baseUrl || 'https://api.anthropic.com').replace(/\/$/, '');
+  const system = combineSystemPrompt(agent.systemPrompt, tools?.system);
   const headers = {
     'Content-Type': 'application/json',
     'x-api-key': agent.apiKey || '',
@@ -261,7 +248,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
       model: agent.model || 'claude-opus-4-8',
       max_tokens: agent.maxTokens || 4096,
       stream: true,
-      ...(agent.systemPrompt ? { system: agent.systemPrompt } : {}),
+      ...(system ? { system } : {}),
       ...(agent.temperature != null ? { temperature: agent.temperature } : {}),
       ...(toolSpecs?.length ? { tools: toolSpecs } : {}),
       messages: msgs,
@@ -331,10 +318,10 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
     const results = [];
     for (const b of toolUses) {
       const input = safeJson(b.json);
-      onEvent?.({ type: 'tool', name: b.name, phase: 'start', input });
+      onEvent?.({ type: 'tool', name: b.name, phase: 'start', callId: b.id, input });
       const result = await tools.execute(b.name, input);
       const _image = result && typeof result === 'object' ? result.image : undefined;
-      onEvent?.({ type: 'tool', name: b.name, phase: 'done', image: _image, status: toolStatus(result) });
+      onEvent?.({ type: 'tool', name: b.name, phase: 'done', callId: b.id, image: _image, status: toolStatus(result) });
       const text = typeof result === 'string' ? result : (result?.text ?? '');
       // Anthropic tool_result content may be a string OR blocks — attach the
       // screenshot as an image block so the model can see the page directly.
@@ -360,7 +347,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
 // result to the bridge. Fire-and-forget so the SSE loop keeps reading; the
 // bridge is blocked awaiting /tool-result, so there's nothing to read until then.
 async function relayBridgeTool(base, ev, tools, onEvent) {
-  onEvent?.({ type: 'tool', name: ev.name, phase: 'start', input: ev.input });
+  onEvent?.({ type: 'tool', name: ev.name, phase: 'start', callId: ev.id, input: ev.input });
   let result;
   try {
     result = tools ? await tools.execute(ev.name, ev.input) : JSON.stringify({ error: 'no tools armed' });
@@ -368,7 +355,7 @@ async function relayBridgeTool(base, ev, tools, onEvent) {
     result = JSON.stringify({ error: String(e?.message || e) });
   }
   const image = result && typeof result === 'object' ? result.image : undefined;
-  onEvent?.({ type: 'tool', name: ev.name, phase: 'done', image, status: toolStatus(result) });
+  onEvent?.({ type: 'tool', name: ev.name, phase: 'done', callId: ev.id, image, status: toolStatus(result) });
   await fetch(`${base}/tool-result`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -385,6 +372,9 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
     model: agent.model || '',
     // Default ON: use the user's local skills / MCP / config.
     useLocalConfig: agent.useLocalConfig !== false,
+    // Extra CLI flags the user added (e.g. opencode `--format json
+    // --dangerously-skip-permissions`). Applies to any built-in or custom agent.
+    extraArgs: agent.extraArgs || '',
   };
   // "Bring your own" custom CLI (Pro) — carry the command spec plus the signed
   // entitlement token, which the bridge verifies OFFLINE before running anything.
@@ -400,6 +390,10 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
       // How this CLI takes an attached image, e.g. "-i {path}" or pi's "@{path}".
       // Empty = the agent can't take images.
       imageArg: agent.imageArg || '',
+      // How this CLI takes an MCP config FILE, e.g. "--mcp-config {file}". Set →
+      // the bridge writes a standard mcpServers JSON (pointing at its stdio proxy)
+      // so "Act on page" tools reach this CLI. Empty = no browser tools.
+      mcpArg: agent.mcpArg || '',
       label: agent.name || agent.command || 'Custom',
     };
     options.entitlement = await getEntitlementToken();
@@ -417,7 +411,7 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
     : [];
   const body = {
     agent: bridgeAgent,
-    system: agent.systemPrompt || '',
+    system: combineSystemPrompt(agent.systemPrompt, tools?.system),
     options,
     messages: toChatMessages(messages),
     ...(images.length ? { images } : {}),

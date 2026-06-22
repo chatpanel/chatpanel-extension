@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ChatPanel — Meetings</title>
+    <link rel="icon" href="assets/icon128.png" />
+    <link rel="stylesheet" href="meetings.css" />
+  </head>
+  <body>
+    <header class="hdr">
+      <h1><img src="assets/icon48.png" class="brand-ico" alt="" /> Meetings <span id="m-count" class="count"></span></h1>
+      <button id="m-settings" class="btn ghost" type="button">⚙ Scribe settings</button>
+    </header>
+    <div class="layout">
+      <aside class="mlist">
+        <input id="m-search" class="search" type="search" placeholder="Search meetings…" />
+        <div id="m-items"></div>
+      </aside>
+      <main class="detail">
+        <div class="empty" id="m-empty">Select a meeting to see its insights.</div>
+        <div id="m-content" class="hidden"></div>
+      </main>
+    </div>
+    <div id="m-toast" class="toast hidden"></div>
+    <script type="module" src="meetings.js"></script>
+  </body>
+</html>

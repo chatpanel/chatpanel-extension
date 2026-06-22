@@ -240,8 +240,16 @@ body.rail-collapsed { --rail-w: 0px; }
 .bubble .agent-steps > summary { cursor: pointer; padding: 6px 10px; color: var(--accent); font-weight: 600; list-style: none; }
 .bubble .agent-steps > summary::-webkit-details-marker { display: none; }
 .bubble .agent-steps[open] > summary { border-bottom: 1px solid var(--border); }
-.bubble .steps-body { padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; }
+.bubble .steps-body { padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; }
 .bubble .step { color: var(--text-dim); font-size: 12.5px; }
+.bubble .step-mcp { display: grid; grid-template-columns: max-content minmax(0, 1fr) auto; column-gap: 8px; row-gap: 2px; align-items: center; }
+.bubble .step-server { color: var(--accent); font-weight: 700; border: 1px solid rgba(124,140,248,.35); border-radius: 999px; padding: 1px 7px; background: rgba(124,140,248,.09); }
+.bubble .step-tool { min-width: 0; color: var(--text); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.bubble .step-args, .bubble .step-args-list { margin: 0 0 5px; padding: 6px 8px; color: var(--text-dim); font-family: var(--mono); font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; border-left: 2px solid rgba(124,140,248,.35); border-radius: 6px; background: rgba(0,0,0,.12); }
+.bubble .step-args-list { display: grid; gap: 2px; }
+.bubble .step-arg { display: grid; grid-template-columns: minmax(72px, 128px) minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.bubble .step-arg-key { color: var(--accent); font-family: inherit; }
+.bubble .step-arg-val { color: var(--text-dim); }
 .bubble .step-status { color: var(--text-dim); opacity: .8; font-size: 11px; }
 .bubble .step-status.bad { color: #e0607a; opacity: 1; }
 .bubble .step-shot { max-width: 260px; max-height: 170px; border-radius: 6px; border: 1px solid var(--border); margin: 2px 0 4px; }

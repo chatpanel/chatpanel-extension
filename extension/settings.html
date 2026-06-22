@@ -19,7 +19,8 @@
           <button class="tab" data-tab="agents"><span class="tab-ico">🤖</span> Agents</button>
           <button class="tab" data-tab="mcp"><span class="tab-ico">🛠</span> MCP</button>
           <button class="tab" data-tab="skills"><span class="tab-ico">⚡</span> Skills</button>
-          <button class="tab" data-tab="license"><span class="tab-ico">✦</span> License</button>
+          <button class="tab" data-tab="meetings"><span class="tab-ico">🗓</span> Meetings</button>
+          <button class="tab" data-tab="license"><span class="tab-ico">✦</span> Account</button>
         </aside>
         <main class="content">
 
@@ -82,7 +83,10 @@
         <div class="card">
           <div class="card-head">
             <h2>MCP tool servers <span class="sub">— external tools for your agents</span></h2>
-            <button id="add-mcp" class="btn primary">+ Add server</button>
+            <div class="card-actions">
+              <button id="import-mcp" class="btn" type="button">Import config</button>
+              <button id="add-mcp" class="btn primary">+ Add server</button>
+            </div>
           </div>
           <p class="muted">
             Connect <strong>Streamable HTTP</strong> MCP servers; their tools become callable by your
@@ -90,17 +94,32 @@
             directly — front those with an HTTP endpoint (e.g. <code>mcp-proxy</code>).
             <strong>Free includes one MCP server</strong>; Pro is unlimited.
           </p>
+          <div id="mcp-import-box" class="mcp-import hidden">
+            <textarea id="mcp-import-text" rows="8" placeholder='Paste MCP config, e.g. [mcp_servers.name] command = "uvx" args = ["--python", "3.12", ...] or {"mcpServers":{...}}'></textarea>
+            <div class="mcp-import-actions">
+              <span id="mcp-import-status" class="status"></span>
+              <button id="mcp-import-cancel" class="btn" type="button">Cancel</button>
+              <button id="mcp-import-apply" class="btn primary" type="button">Import</button>
+            </div>
+          </div>
           <div id="mcp-list"></div>
         </div>
 
         <div class="card">
           <div class="card-head">
-            <h2>Discover <span class="sub">— popular public MCP servers</span></h2>
+            <h2>Discover <span class="sub">— official registry and curated public servers</span></h2>
           </div>
           <p class="muted">
-            One-click add a known remote server. Endpoints &amp; availability are set by their
-            providers and can change. Ones marked <em>auth</em> need a token/login you add after.
+            Search the official MCP registry, or one-click add a curated public server.
+            Endpoints &amp; availability are set by their providers and can change.
+            Ones marked <em>auth</em> need a token/login you add after.
           </p>
+          <div class="mcp-registry-bar">
+            <input id="mcp-registry-search" placeholder="Search official registry by server name — e.g. filesystem, github, sentry" />
+            <button id="mcp-registry-search-btn" class="btn" type="button">Search registry</button>
+            <button id="mcp-registry-more" class="btn hidden" type="button">Load more</button>
+          </div>
+          <div id="mcp-registry-status" class="status mcp-registry-status"></div>
           <div id="mcp-catalog" class="mcp-catalog"></div>
         </div>
       </section>
@@ -117,6 +136,61 @@
             built-ins is free; <strong>creating your own is Pro</strong>.
           </p>
           <div id="skills"></div>
+        </div>
+      </section>
+
+      <!-- MEETINGS (live scribe preferences) -->
+      <section class="panel hidden" data-panel="meetings">
+        <div class="card">
+          <div class="card-head">
+            <h2>Meetings <span class="sub">— live scribe for Zoom, Meet, Teams &amp; Webex</span></h2>
+            <span class="pro-pill">Pro</span>
+          </div>
+          <p class="muted">
+            On a supported call, ChatPanel turns the live captions into an
+            auto-refreshing summary and a searchable transcript you can ask about
+            mid-meeting. Captions only — never audio or video. These settings control
+            how the scribe behaves.
+          </p>
+          <div class="row half">
+            <div>
+              <label>Auto-refresh notes</label>
+              <select id="pref-live-notes">
+                <option value="0">Off — summarize only when I ask</option>
+                <option value="1">Every 1 minute</option>
+                <option value="2">Every 2 minutes</option>
+                <option value="5">Every 5 minutes</option>
+                <option value="10">Every 10 minutes</option>
+              </select>
+            </div>
+            <div>
+              <label>Transcript sent per question</label>
+              <select id="pref-meeting-window">
+                <option value="0">Full transcript so far</option>
+                <option value="5">Last 5 minutes</option>
+                <option value="10">Last 10 minutes</option>
+                <option value="20">Last 20 minutes</option>
+                <option value="30">Last 30 minutes</option>
+              </select>
+            </div>
+          </div>
+          <p class="muted tiny">
+            Auto-refresh merges new captions into the running summary on that interval
+            and saves it to Past Meetings automatically. A shorter transcript window
+            keeps long meetings from growing the prompt (and cost) on every question —
+            use the full transcript for short calls, a window for long ones.
+          </p>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <h2>Past meetings <span class="sub">— transcripts, summaries &amp; action items</span></h2>
+            <button id="open-meetings-dashboard" class="btn primary" type="button">Open meetings dashboard ↗</button>
+          </div>
+          <p class="muted">
+            Browse every recorded meeting in a full-screen dashboard — summary, topics,
+            key moments and action items, plus the searchable transcript. Everything
+            stays on your device.
+          </p>
         </div>
       </section>
 
@@ -164,47 +238,56 @@
 
         <div class="card">
           <h2>Preferences</h2>
-          <div class="row">
-            <label>Theme</label>
-            <select id="pref-theme">
-              <option value="system">System</option>
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
-            </select>
+          <div class="pref-grid">
+            <div class="pref-col">
+              <div class="row">
+                <label>Theme</label>
+                <select id="pref-theme">
+                  <option value="system">System</option>
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                </select>
+              </div>
+              <label class="check"><input type="checkbox" id="pref-enter" /> Send message on Enter (Shift+Enter for newline)</label>
+              <label class="check"><input type="checkbox" id="pref-stream" /> Stream responses as they arrive</label>
+            </div>
+            <div class="pref-col">
+              <div class="pref-item">
+                <label class="check" id="pref-autocomplete-row">
+                  <input type="checkbox" id="pref-autocomplete" />
+                  <span>Autocomplete my prompts as I type <span class="pro-badge">✨ Pro</span></span>
+                </label>
+                <p class="muted tiny">
+                  As you pause typing, a model suggests a short continuation — press
+                  <strong>Tab</strong> to accept. <strong>For this to feel instant it needs a
+                  small, fast API model</strong> (e.g. a 1–3B model on your local
+                  Ollama / llama.cpp) — set it as an endpoint's <em>“Autocomplete model”</em>
+                  below. Local CLI agents spawn a process per request (~seconds), so they’re
+                  too slow for inline autocomplete. Avoid reasoning models — they “think”
+                  instead of completing.
+                </p>
+              </div>
+              <div class="pref-item">
+                <label class="check" id="pref-pageact-cdp-row">
+                  <input type="checkbox" id="pref-pageact-cdp" />
+                  <span>High-reliability page control</span>
+                </label>
+                <p class="muted tiny" id="pref-pageact-cdp-note">
+                  When the agent fills forms or clicks (🕹️ Act on page), use trusted
+                  browser events instead of synthetic ones — far more reliable on heavy
+                  web apps like Google Flights. Chrome shows a <strong>“ChatPanel is
+                  debugging this browser”</strong> banner while it’s active. Off by
+                  default. API agents only.
+                </p>
+                <p class="muted tiny">
+                  <strong>Heads up:</strong> acting on the page is best-effort automation
+                  driven by an AI model — it can pick the wrong field or misread a layout.
+                  <strong>Review before you submit anything that matters.</strong> ChatPanel
+                  only clicks and types when you ask it to.
+                </p>
+              </div>
+            </div>
           </div>
-          <label class="check"><input type="checkbox" id="pref-enter" /> Send message on Enter (Shift+Enter for newline)</label>
-          <label class="check"><input type="checkbox" id="pref-stream" /> Stream responses as they arrive</label>
-          <label class="check" id="pref-autocomplete-row">
-            <input type="checkbox" id="pref-autocomplete" />
-            <span>Autocomplete my prompts as I type <span class="pro-badge">✨ Pro</span></span>
-          </label>
-          <p class="muted tiny">
-            As you pause typing, a model suggests a short continuation — press
-            <strong>Tab</strong> to accept. <strong>For this to feel instant it needs a
-            small, fast API model</strong> (e.g. a 1–3B model on your local
-            Ollama / llama.cpp) — set it as an endpoint's <em>“Autocomplete model”</em>
-            below. Local CLI agents (Claude Code, Codex, Antigravity…) spawn a process
-            per request (~seconds), so they’re too slow for inline autocomplete and are
-            only used as a last resort. Avoid reasoning models — they “think” instead of
-            completing.
-          </p>
-          <label class="check" id="pref-pageact-cdp-row">
-            <input type="checkbox" id="pref-pageact-cdp" />
-            <span>High-reliability page control</span>
-          </label>
-          <p class="muted tiny" id="pref-pageact-cdp-note">
-            When the agent fills forms or clicks (🕹️ Act on page), use trusted
-            browser events instead of synthetic ones — far more reliable on heavy
-            web apps like Google Flights. Chrome shows a <strong>“ChatPanel is
-            debugging this browser”</strong> banner while it’s active. Off by
-            default. API agents only.
-          </p>
-          <p class="muted tiny">
-            <strong>Heads up:</strong> acting on the page is best-effort automation
-            driven by an AI model — it can pick the wrong field, choose the wrong
-            option, or misread a layout. <strong>Review before you submit anything
-            that matters.</strong> ChatPanel only clicks and types when you ask it to.
-          </p>
         </div>
 
         <div class="card" id="about-card">
@@ -283,14 +366,30 @@
     <template id="mcp-server-tpl">
       <div class="entity mcp-entity">
         <div class="entity-head">
-          <input class="mcp-name" placeholder="Name (e.g. Filesystem)" />
-          <label class="mcp-enabled-lbl"><input type="checkbox" class="mcp-enabled" checked /> Enabled</label>
-          <span class="mcp-status status"></span>
-          <button class="btn mcp-test" type="button">Test</button>
-          <button class="btn danger mcp-del" type="button">Delete</button>
+          <div class="mcp-head-fields">
+            <input class="mcp-name" placeholder="Name (e.g. Filesystem)" />
+            <select class="mcp-transport">
+              <option value="http">Remote (HTTP)</option>
+              <option value="stdio">Local (command)</option>
+            </select>
+            <label class="mcp-enabled-lbl"><input type="checkbox" class="mcp-enabled" checked /> Enabled</label>
+          </div>
+          <div class="mcp-actions">
+            <button class="btn mcp-test" type="button">Test</button>
+            <button class="btn danger mcp-del" type="button">Delete</button>
+          </div>
         </div>
-        <div class="row"><label>URL</label><input class="mcp-url" placeholder="https://example.com/mcp  (Streamable HTTP endpoint)" /></div>
-        <div class="row"><label>Auth header</label><input class="mcp-auth" placeholder="optional — e.g. Bearer sk-…  (sent as Authorization)" /></div>
+        <div class="mcp-status-line"><span class="mcp-status status"></span></div>
+        <div class="mcp-http">
+          <div class="row"><label>URL</label><input class="mcp-url" placeholder="https://example.com/mcp  (Streamable HTTP endpoint)" /></div>
+          <div class="row"><label>Auth header</label><input class="mcp-auth" placeholder="optional — e.g. Bearer sk-…  (sent as Authorization)" /></div>
+        </div>
+        <div class="mcp-stdio hidden">
+          <div class="row"><label>Command</label><input class="mcp-command" placeholder="e.g. docker  ·  npx  ·  uvx  ·  /full/path/to/server" /></div>
+          <div class="row row-top"><label>Arguments</label><textarea class="mcp-args" rows="5" placeholder="One argument per line, or shell-style with quotes. Examples:&#10;npx: -y --registry https://registry.npmjs.org @scope/server&#10;uvx: --python 3.12 --default-index https://host/api/pypi/repo/simple mcp-server"></textarea></div>
+          <div class="row"><label>Env vars</label><input class="mcp-env" placeholder="KEY=VALUE, comma/newline separated — tokens, proxy vars, or tool-specific env" /></div>
+          <p class="muted mcp-stdio-note">Runs on your machine via the bridge (it can spawn processes; the extension can’t) — same as configuring a stdio MCP server in Claude Code / Codex. Needs the bridge running. For <code>npx</code>, prefer <code>--registry &lt;npm-registry-url&gt;</code> in Arguments before the package name. For Python/<code>uvx</code>, use <code>--default-index &lt;pypi-simple-url&gt;</code>; Artifactory-style PyPI URLs usually end with <code>/api/pypi/&lt;repo&gt;/simple</code>. Use Env vars for tokens, proxy settings, or tools that explicitly read env configuration.</p>
+        </div>
       </div>
     </template>
 
@@ -330,10 +429,13 @@
           <div class="row"><label>List models with</label><input class="ba-listargs" placeholder="e.g. --list-models  (pi)  ·  models  (opencode) — enables “Load models”" /></div>
           <div class="row"><label>Pass model via</label><input class="ba-modelarg" placeholder="e.g. --model {model}  ·  -m {model}  ({model} = the chosen id)" /></div>
           <div class="row"><label>Pass image via</label><input class="ba-imagearg" placeholder="e.g. -i {path}  ·  @{path}  (pi)  ·  --image {path}  — blank = no image support" /></div>
+          <div class="row"><label>Pass MCP config via</label><input class="ba-mcparg" placeholder="e.g. --mcp-config {file}  — enables “Act on page” browser tools (blank = none)" /></div>
+          <p class="muted">OpenCode ignores per-run MCP config files. For OpenCode browser tools, run once: <code>opencode mcp add chatpanel --url http://127.0.0.1:4319/mcp</code>.</p>
         </div>
         <div class="row ba-model-row"><label>Model</label><input class="ba-model" placeholder="blank = the CLI's default model" /><button class="btn ba-loadmodels" type="button" title="List this CLI's available models">Load models</button></div>
         <div class="row ba-model-row"><label>Autocomplete model</label><input class="ba-acmodel" placeholder="last-resort only — CLI autocomplete is slow (~seconds); prefer a fast API endpoint" /><span class="ba-models-status status"></span></div>
         <div class="row"><label>Working dir</label><input class="ba-workdir" placeholder="/path/to/project (optional)" /></div>
+        <div class="row"><label>Extra arguments</label><input class="ba-extraargs" placeholder="appended to the command — e.g. --dangerously-skip-permissions  ·  --format json" /></div>
         <div class="row"><label>Permissions</label>
           <select class="ba-perm">
             <option value="default">read-only — asks before writing</option>
@@ -341,7 +443,7 @@
             <option value="bypassPermissions">bypassPermissions — full access &amp; shell (trusted)</option>
           </select>
         </div>
-        <label class="check" style="margin-left:142px"><input type="checkbox" class="ba-local" /> Use my local skills, MCP &amp; config (uncheck = isolated &amp; faster)</label>
+        <label class="check"><input type="checkbox" class="ba-local" /> Use my local skills, MCP &amp; config (uncheck = isolated &amp; faster)</label>
         <div class="row"><label>System prompt</label><textarea class="ba-system" rows="2" placeholder="Optional system / role instructions"></textarea></div>
         <div class="entity-foot"><span class="ba-status status"></span><button class="btn primary ba-save">Save</button></div>
       </div>
@@ -351,9 +453,9 @@
     <template id="skill-tpl">
       <div class="entity">
         <div class="entity-head">
-          <input class="s-icon" style="width:48px" placeholder="⚡" />
+          <input class="s-icon" placeholder="⚡" />
           <input class="s-name" placeholder="Skill name" />
-          <input class="s-cmd" style="width:120px" placeholder="command" />
+          <input class="s-cmd" placeholder="command" />
           <button class="btn danger s-del">Delete</button>
         </div>
         <div class="row"><label>When to use</label><input class="s-desc" placeholder="Short description — lets ChatPanel suggest this skill" /></div>

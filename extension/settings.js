@@ -9,6 +9,8 @@ import { readZipEntry } from './js/zip.js';
 import { checkBridge, updateBridge, testAgent, listModels, listBridgeModels, checkAgentCommand } from './js/providers.js';
 import { testMcpServer } from './js/mcp-manager.js';
 import { MCP_CATALOG } from './js/mcp-catalog.js';
+import { argsToText, parseArgsInput, parseMcpConfig } from './js/mcp-config-import.js';
+import { fetchMcpRegistryPage } from './js/mcp-registry.js';
 import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
 import {
@@ -33,6 +35,7 @@ const $ = (id) => document.getElementById(id);
 let settings;
 let license;
 let bridgeState = { ok: false, agents: [] };
+let mcpRegistryState = { query: '', items: [], nextCursor: '', loaded: false, loading: false, error: '' };
 
 async function init() {
   settings = await getSettings();
@@ -65,6 +68,7 @@ async function init() {
   renderLicense();
   wire();
   refreshBridgeState();
+  loadMcpRegistry({ reset: true });
 }
 
 // --------------------------------------------------------------------------
@@ -357,6 +361,7 @@ function bridgeAgentCard(agent) {
   q('.ba-name').value = agent.name || '';
   q('.ba-kind').value = agent.bridgeAgent || 'claude';
   q('.ba-workdir').value = agent.workingDir || '';
+  q('.ba-extraargs').value = agent.extraArgs || '';
   q('.ba-model').value = agent.model || '';
   q('.ba-acmodel').value = agent.autocompleteModel || '';
   q('.ba-perm').value = agent.permissionMode || 'acceptEdits';
@@ -370,6 +375,7 @@ function bridgeAgentCard(agent) {
   q('.ba-listargs').value = agent.listModelsArgs || '';
   q('.ba-modelarg').value = agent.modelArg || '';
   q('.ba-imagearg').value = agent.imageArg || '';
+  q('.ba-mcparg').value = agent.mcpArg || '';
   gateField('advancedAgent', q('.ba-system')); // per-agent system prompt is Pro
   applyFreeSlot(node, agent, 'bridge'); // Free uses one agent — the user's pick
 
@@ -465,6 +471,7 @@ function bridgeAgentCard(agent) {
       kind: 'bridge',
       bridgeAgent,
       workingDir: q('.ba-workdir').value.trim(),
+      extraArgs: q('.ba-extraargs').value.trim(),
       model: q('.ba-model').value.trim(),
       autocompleteModel: q('.ba-acmodel').value.trim(),
       permissionMode: q('.ba-perm').value,
@@ -477,6 +484,7 @@ function bridgeAgentCard(agent) {
       listModelsArgs: q('.ba-listargs').value.trim(),
       modelArg: q('.ba-modelarg').value.trim(),
       imageArg: q('.ba-imagearg').value.trim(),
+      mcpArg: q('.ba-mcparg').value.trim(),
     });
     await saveSettings(settings);
     setStatus(q('.ba-status'), '✓ Saved', 'ok');
@@ -537,14 +545,68 @@ function renderMcpServers() {
   renderMcpCatalog(); // keep "Added" state in sync
 }
 
+// Parse "KEY=VALUE, KEY2=VALUE2" (comma or newline separated) into an env object.
+function parseEnvPairs(str) {
+  const env = {};
+  for (const pair of String(str || '').split(/[\n,]+/)) {
+    const i = pair.indexOf('=');
+    if (i <= 0) continue;
+    const k = pair.slice(0, i).trim();
+    const v = pair.slice(i + 1).trim();
+    if (k) env[k] = v;
+  }
+  return env;
+}
+
+function withIds(servers) {
+  return servers.map((s) => ({ id: s.id || uid(), ...s }));
+}
+
+function renderMcpToolStatus(status, tools) {
+  status.classList.remove('err');
+  status.classList.add('ok');
+  status.replaceChildren();
+  const count = document.createElement('span');
+  count.className = 'mcp-tool-count';
+  count.textContent = tools.length ? `✓ ${tools.length} tool${tools.length === 1 ? '' : 's'}` : '✓ connected (0 tools)';
+  status.appendChild(count);
+  if (tools.length) {
+    const list = document.createElement('span');
+    list.className = 'mcp-tool-list';
+    list.setAttribute('role', 'list');
+    list.setAttribute('aria-label', `${tools.length} MCP tools`);
+    for (const tool of tools) {
+      const chip = document.createElement('span');
+      chip.className = 'mcp-tool';
+      chip.setAttribute('role', 'listitem');
+      chip.textContent = tool.name || 'unnamed_tool';
+      chip.title = tool.description ? `${tool.name}\n${tool.description}` : chip.textContent;
+      list.appendChild(chip);
+    }
+    status.appendChild(list);
+  }
+}
+
 function mcpServerCard(server, index = 0) {
   const node = $('mcp-server-tpl').content.firstElementChild.cloneNode(true);
   const q = (sel) => node.querySelector(sel);
+  const transport = server.command ? 'stdio' : server.transport || 'http';
   q('.mcp-name').value = server.name || '';
+  q('.mcp-transport').value = transport;
   q('.mcp-url').value = server.url || '';
   q('.mcp-auth').value = server.headers?.Authorization || '';
+  q('.mcp-command').value = server.command || '';
+  q('.mcp-args').value = argsToText(server.args);
+  q('.mcp-env').value = Object.entries(server.env || {}).map(([k, v]) => `${k}=${v}`).join(', ');
   q('.mcp-enabled').checked = server.enabled !== false;
   const status = q('.mcp-status');
+
+  const syncTransport = () => {
+    const t = q('.mcp-transport').value;
+    q('.mcp-http').classList.toggle('hidden', t !== 'http');
+    q('.mcp-stdio').classList.toggle('hidden', t !== 'stdio');
+  };
+  syncTransport();
 
   // Free uses up to FREE_LIMITS.mcpServers; servers past that are visible but
   // locked behind a Pro upsell (the runtime cap in toolsetFor matches this).
@@ -560,27 +622,43 @@ function mcpServerCard(server, index = 0) {
 
   const commit = async () => {
     server.name = q('.mcp-name').value.trim();
-    server.url = q('.mcp-url').value.trim();
+    server.transport = q('.mcp-transport').value;
     server.enabled = q('.mcp-enabled').checked;
-    const auth = q('.mcp-auth').value.trim();
-    server.headers = auth ? { Authorization: auth } : {};
+    if (server.transport === 'stdio') {
+      server.command = q('.mcp-command').value.trim();
+      server.args = parseArgsInput(q('.mcp-args').value);
+      server.env = parseEnvPairs(q('.mcp-env').value);
+      delete server.url;
+      delete server.headers;
+    } else {
+      server.url = q('.mcp-url').value.trim();
+      const auth = q('.mcp-auth').value.trim();
+      server.headers = auth ? { Authorization: auth } : {};
+      delete server.command;
+      delete server.args;
+    }
     await saveSettings(settings);
   };
   q('.mcp-name').onchange = commit;
   q('.mcp-url').onchange = commit;
   q('.mcp-auth').onchange = commit;
+  q('.mcp-command').onchange = commit;
+  q('.mcp-args').onchange = commit;
+  q('.mcp-env').onchange = commit;
   q('.mcp-enabled').onchange = commit;
+  q('.mcp-transport').onchange = () => { syncTransport(); commit(); };
 
   q('.mcp-test').onclick = async () => {
     await commit();
-    if (!server.url) { status.textContent = 'Enter a URL first'; return; }
+    if (!server.url && !server.command) { status.textContent = 'Enter a URL or command first'; return; }
+    status.classList.remove('ok', 'err');
     status.textContent = 'Connecting…';
     try {
-      const tools = await testMcpServer(server);
-      status.textContent = tools.length
-        ? `✓ ${tools.length} tool${tools.length === 1 ? '' : 's'}: ${tools.map((t) => t.name).slice(0, 6).join(', ')}${tools.length > 6 ? '…' : ''}`
-        : '✓ connected (0 tools)';
+      const tools = await testMcpServer(server, { bridgeUrl: settings.bridgeUrl });
+      renderMcpToolStatus(status, tools);
     } catch (e) {
+      status.classList.remove('ok');
+      status.classList.add('err');
       status.textContent = `✗ ${e.message}`;
     }
   };
@@ -602,32 +680,207 @@ function addMcpServer() {
   $('mcp-list').lastElementChild?.scrollIntoView({ behavior: 'smooth' });
 }
 
-// Discover: one-click add of known public remote MCP servers.
+function toggleMcpImport(show) {
+  $('mcp-import-box')?.classList.toggle('hidden', !show);
+  if (show) {
+    setStatus($('mcp-import-status'), '', '');
+    $('mcp-import-text')?.focus();
+  }
+}
+
+async function importMcpConfig() {
+  const status = $('mcp-import-status');
+  let servers;
+  try {
+    servers = withIds(parseMcpConfig($('mcp-import-text').value));
+  } catch (e) {
+    setStatus(status, `✗ ${e.message}`, 'err');
+    return;
+  }
+  if (!servers.length) {
+    setStatus(status, '✗ No MCP servers found in that config', 'err');
+    return;
+  }
+  settings.mcpServers = settings.mcpServers || [];
+  settings.mcpServers.push(...servers);
+  await saveSettings(settings);
+  $('mcp-import-text').value = '';
+  toggleMcpImport(false);
+  renderMcpServers();
+  setStatus(status, `✓ Imported ${servers.length} server${servers.length === 1 ? '' : 's'}`, 'ok');
+}
+
+// Discover: official MCP registry plus one-click add of known public servers.
 function renderMcpCatalog() {
   const root = $('mcp-catalog');
   if (!root) return;
   root.innerHTML = '';
-  const have = (url) => (settings.mcpServers || []).some((s) => s.url === url);
-  for (const item of MCP_CATALOG) {
-    const el = document.createElement('div');
-    el.className = 'mcp-cat-item';
-    const added = have(item.url);
-    el.innerHTML =
-      `<div class="mcp-cat-main">` +
-      `<div class="mcp-cat-name">${item.name}${item.auth ? ' <span class="mcp-cat-auth">auth</span>' : ' <span class="mcp-cat-free">no auth</span>'}</div>` +
-      `<div class="mcp-cat-desc">${item.desc}</div>` +
-      `<div class="mcp-cat-url">${item.url}</div>` +
-      `</div>` +
-      `<button class="btn mcp-cat-add"${added ? ' disabled' : ''}>${added ? '✓ Added' : '+ Add'}</button>`;
-    el.querySelector('.mcp-cat-add').onclick = async () => {
-      settings.mcpServers = settings.mcpServers || [];
-      settings.mcpServers.push({ id: uid(), name: item.name, url: item.url, enabled: true, headers: {} });
-      await saveSettings(settings);
-      renderMcpServers();
-      renderMcpCatalog();
-    };
-    root.appendChild(el);
+  renderMcpRegistryStatus();
+
+  if (mcpRegistryState.items.length) {
+    root.appendChild(mcpCatalogHeading('Official registry'));
+    for (const item of mcpRegistryState.items) root.appendChild(mcpCatalogCard(item));
+  } else if (mcpRegistryState.loaded && !mcpRegistryState.loading && !mcpRegistryState.error) {
+    root.appendChild(mcpCatalogEmpty('No registry servers matched this search.'));
   }
+
+  root.appendChild(mcpCatalogHeading('Curated'));
+  for (const item of MCP_CATALOG) root.appendChild(mcpCatalogCard({ ...item, kind: 'remote', source: 'curated' }));
+}
+
+function renderMcpRegistryStatus() {
+  const status = $('mcp-registry-status');
+  const more = $('mcp-registry-more');
+  if (!status || !more) return;
+  status.className = `status mcp-registry-status${mcpRegistryState.error ? ' err' : ''}`;
+  if (mcpRegistryState.loading) status.textContent = 'Loading official registry…';
+  else if (mcpRegistryState.error) status.textContent = mcpRegistryState.error;
+  else if (mcpRegistryState.loaded) {
+    const q = mcpRegistryState.query ? ` for “${mcpRegistryState.query}”` : '';
+    status.textContent = `${mcpRegistryState.items.length} registry result${mcpRegistryState.items.length === 1 ? '' : 's'}${q}`;
+  } else {
+    status.textContent = '';
+  }
+  more.classList.toggle('hidden', !mcpRegistryState.nextCursor || mcpRegistryState.loading);
+}
+
+function mcpCatalogHeading(text) {
+  const h = document.createElement('div');
+  h.className = 'mcp-catalog-heading';
+  h.textContent = text;
+  return h;
+}
+
+function mcpCatalogEmpty(text) {
+  const div = document.createElement('div');
+  div.className = 'mcp-catalog-empty';
+  div.textContent = text;
+  return div;
+}
+
+function mcpCatalogCard(item) {
+  const el = document.createElement('div');
+  el.className = 'mcp-cat-item';
+  const main = document.createElement('div');
+  main.className = 'mcp-cat-main';
+
+  const title = document.createElement('div');
+  title.className = 'mcp-cat-name';
+  title.append(document.createTextNode(item.name || item.registryName || 'MCP server'));
+  title.appendChild(mcpPill(item.auth ? 'auth' : 'no auth', item.auth ? 'mcp-cat-auth' : 'mcp-cat-free'));
+  title.appendChild(mcpPill(item.kind === 'local' ? 'local' : 'remote', 'mcp-cat-kind'));
+
+  const desc = document.createElement('div');
+  desc.className = 'mcp-cat-desc';
+  desc.textContent = item.desc || item.registryName || '';
+
+  const url = document.createElement('div');
+  url.className = 'mcp-cat-url';
+  url.textContent = item.url || [item.command, item.args].filter(Boolean).join(' ');
+
+  main.append(title, desc, url);
+
+  const btn = document.createElement('button');
+  btn.className = 'btn mcp-cat-add';
+  btn.type = 'button';
+  const added = hasMcpServer(item);
+  btn.disabled = added;
+  btn.textContent = added ? '✓ Added' : '+ Add';
+  btn.onclick = async () => {
+    settings.mcpServers = settings.mcpServers || [];
+    settings.mcpServers.push(mcpServerFromCatalogItem(item));
+    await saveSettings(settings);
+    renderMcpServers();
+    renderMcpCatalog();
+  };
+
+  el.append(main, btn);
+  return el;
+}
+
+function mcpPill(text, cls) {
+  const span = document.createElement('span');
+  span.className = cls;
+  span.textContent = text;
+  return span;
+}
+
+function hasMcpServer(item) {
+  return (settings.mcpServers || []).some((s) => {
+    if (item.url && s.url === item.url) return true;
+    if (item.command && s.command === item.command && String(s.args || '') === String(item.args || '')) return true;
+    return false;
+  });
+}
+
+function mcpServerFromCatalogItem(item) {
+  const base = {
+    id: uid(),
+    name: item.name || item.registryName || 'MCP server',
+    enabled: true,
+  };
+  if (item.command) {
+    return {
+      ...base,
+      transport: 'stdio',
+      command: item.command,
+      args: item.args || '',
+      env: item.env || {},
+      registryName: item.registryName || '',
+      registrySource: item.source || '',
+    };
+  }
+  return {
+    ...base,
+    transport: 'http',
+    url: item.url,
+    headers: {},
+    registryName: item.registryName || '',
+    registrySource: item.source || '',
+  };
+}
+
+async function loadMcpRegistry({ append = false, reset = false } = {}) {
+  const input = $('mcp-registry-search');
+  const query = reset || !input ? '' : input.value.trim();
+  const cursor = append ? mcpRegistryState.nextCursor : '';
+  mcpRegistryState = {
+    query,
+    items: append ? mcpRegistryState.items : [],
+    nextCursor: append ? mcpRegistryState.nextCursor : '',
+    loaded: mcpRegistryState.loaded,
+    loading: true,
+    error: '',
+  };
+  renderMcpCatalog();
+  try {
+    const page = await fetchMcpRegistryPage({ search: query, cursor, limit: 30 });
+    const seen = new Set(mcpRegistryState.items.map((i) => i.url || `${i.command} ${i.args}`));
+    const nextItems = append ? [...mcpRegistryState.items] : [];
+    for (const item of page.items) {
+      const key = item.url || `${item.command} ${item.args}`;
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        nextItems.push(item);
+      }
+    }
+    mcpRegistryState = {
+      query,
+      items: nextItems,
+      nextCursor: page.nextCursor,
+      loaded: true,
+      loading: false,
+      error: '',
+    };
+  } catch (e) {
+    mcpRegistryState = {
+      ...mcpRegistryState,
+      loaded: true,
+      loading: false,
+      error: `Could not load official registry: ${e.message}`,
+    };
+  }
+  renderMcpCatalog();
 }
 
 // --------------------------------------------------------------------------
@@ -773,12 +1026,17 @@ function renderPrefs() {
   ac.disabled = !pro;
   $('pref-autocomplete-row').classList.toggle('locked', !pro);
   $('pref-pageact-cdp').checked = !!settings.ui.pageActionsCdp;
+  // Meetings tab — live scribe behavior.
+  $('pref-live-notes').value = String(settings.ui.liveNotesIntervalMin ?? 2);
+  $('pref-meeting-window').value = String(settings.ui.meetingWindowMin ?? 0);
 }
 async function savePrefs() {
   settings.ui.theme = $('pref-theme').value;
   settings.ui.sendOnEnter = $('pref-enter').checked;
   settings.ui.streamResponses = $('pref-stream').checked;
   settings.ui.autocomplete = isPro(license) && $('pref-autocomplete').checked;
+  settings.ui.liveNotesIntervalMin = Number($('pref-live-notes').value);
+  settings.ui.meetingWindowMin = Number($('pref-meeting-window').value);
   await saveSettings(settings);
 }
 
@@ -957,7 +1215,15 @@ function wire() {
   $('add-endpoint').onclick = addEndpoint;
   $('add-agent').onclick = addBridgeAgent;
   $('add-mcp').onclick = addMcpServer;
+  $('import-mcp').onclick = () => toggleMcpImport(true);
+  $('mcp-import-cancel').onclick = () => toggleMcpImport(false);
+  $('mcp-import-apply').onclick = importMcpConfig;
   $('add-skill').onclick = addSkill;
+  $('mcp-registry-search-btn').onclick = () => loadMcpRegistry();
+  $('mcp-registry-more').onclick = () => loadMcpRegistry({ append: true });
+  $('mcp-registry-search').onkeydown = (e) => {
+    if (e.key === 'Enter') loadMcpRegistry();
+  };
 
   $('bridge-test').onclick = testBridge;
   $('bridge-url').onchange = async () => {
@@ -968,6 +1234,8 @@ function wire() {
   $('pref-theme').onchange = savePrefs;
   $('pref-enter').onchange = savePrefs;
   $('pref-stream').onchange = savePrefs;
+  $('pref-live-notes').onchange = savePrefs;
+  $('pref-meeting-window').onchange = savePrefs;
   $('pref-autocomplete').onchange = () => {
     if (!isPro(license)) { upsell('Autocomplete is a Pro feature'); $('pref-autocomplete').checked = false; return; }
     savePrefs();
@@ -986,6 +1254,10 @@ function wire() {
   };
 
   $('btn-subscribe-pro').onclick = () => subscribePro($('btn-subscribe-pro'));
+
+  $('open-meetings-dashboard')?.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('meetings.html') });
+  });
 
   $('btn-restore').onclick = async () => {
     const email = $('restore-email').value.trim();

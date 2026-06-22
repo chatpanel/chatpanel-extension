@@ -6,12 +6,25 @@
 //
 // Spec: https://modelcontextprotocol.io (Streamable HTTP, 2025-06-18).
 
+import { mcpInventorySystem } from './tool-hints.js';
+
 const PROTOCOL_VERSION = '2025-06-18';
 
 export class McpClient {
-  constructor({ url, headers = {} } = {}) {
+  // Two transports:
+  //   http  — { url, headers }: connect straight to a Streamable HTTP server.
+  //   stdio — { transport:'stdio', id, command, args, env, bridgeUrl }: the
+  //           extension can't spawn processes, so proxy JSON-RPC through the
+  //           bridge's POST /mcp-local, which spawns & keeps the process alive.
+  constructor({ url, headers = {}, transport, id, command, args, env, bridgeUrl } = {}) {
+    this.transport = transport === 'stdio' || command ? 'stdio' : 'http';
     this.url = url;
     this.headers = headers || {};
+    this.id = id;
+    this.command = command;
+    this.args = args;
+    this.env = env;
+    this.bridgeUrl = (bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
     this.sessionId = null;
     this.tools = [];
     this._id = 0;
@@ -30,6 +43,7 @@ export class McpClient {
   // POST one JSON-RPC message. For requests (with id) return the result; for
   // notifications (no id) return null. Handles both json and SSE responses.
   async _send(message, signal) {
+    if (this.transport === 'stdio') return this._sendLocal(message, signal);
     const res = await fetch(this.url, {
       method: 'POST',
       headers: this._hdrs(),
@@ -59,37 +73,72 @@ export class McpClient {
     return msg.result;
   }
 
+  // stdio transport: relay the message through the bridge, which owns the process.
+  async _sendLocal(message, signal) {
+    let res;
+    try {
+      res = await fetch(`${this.bridgeUrl}/mcp-local`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          server: { id: this.id, command: this.command, args: this.args, env: this.env },
+          message,
+        }),
+        signal,
+      });
+    } catch (e) {
+      throw new Error(`Can't reach the ChatPanel Bridge for local MCP (${e.message}). Start it with \`npx @chatpanel/bridge\`.`);
+    }
+    if (message.id == null) return null; // notification → 202, no body
+    if (!res.ok) throw new Error(`Bridge MCP HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+    const msg = await res.json();
+    if (msg.error) throw new Error(`MCP error ${msg.error.code}: ${msg.error.message}`);
+    return msg.result;
+  }
+
   // Read an SSE body until we see the JSON-RPC response matching `id`.
   async _readSse(res, id) {
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
+    let data = []; // accumulated `data:` lines of the current event
+    // A complete SSE event (terminated by a blank line) holds one JSON-RPC
+    // message; return it if its id matches. Tolerates \n and \r\n line endings.
+    const take = () => {
+      if (!data.length) return undefined;
+      const payload = data.join('\n');
+      data = [];
+      let json;
+      try { json = JSON.parse(payload); } catch { return undefined; }
+      for (const m of Array.isArray(json) ? json : [json]) {
+        if (m.id === id) {
+          if (m.error) throw new Error(`MCP error ${m.error.code}: ${m.error.message}`);
+          return { result: m.result };
+        }
+      }
+      return undefined;
+    };
     try {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
         buf += dec.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf('\n\n')) >= 0) {
-          const frame = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const data = frame
-            .split('\n')
-            .filter((l) => l.startsWith('data:'))
-            .map((l) => l.slice(5).trim())
-            .join('\n');
-          if (!data) continue;
-          let json;
-          try { json = JSON.parse(data); } catch { continue; }
-          const arr = Array.isArray(json) ? json : [json];
-          for (const m of arr) {
-            if (m.id === id) {
-              if (m.error) throw new Error(`MCP error ${m.error.code}: ${m.error.message}`);
-              return m.result;
-            }
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          let line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          if (line.endsWith('\r')) line = line.slice(0, -1);
+          if (line === '') {
+            const hit = take(); // blank line = end of event
+            if (hit) return hit.result;
+          } else if (line.startsWith('data:')) {
+            data.push(line.slice(5).replace(/^ /, ''));
           }
+          // ignore other SSE fields (event:, id:, retry:) and `:` comments
         }
       }
+      const hit = take(); // stream ended — flush a trailing event with no blank line
+      if (hit) return hit.result;
     } finally {
       try { await reader.cancel(); } catch { /* ignore */ }
     }
@@ -153,6 +202,7 @@ export function mcpProvider(client, serverName) {
   }));
   return {
     specs,
+    system: mcpInventorySystem(serverName, specs),
     async execute(name, input) {
       const tool = name.startsWith(prefix) ? name.slice(prefix.length) : name;
       try {

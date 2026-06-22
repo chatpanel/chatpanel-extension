@@ -12,6 +12,9 @@
   "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "icons": "node tools/make-icons.mjs",
-    "package": "node tools/package-extension.mjs"
+    "package": "node tools/package-extension.mjs",
+    "test:mcp-registry": "node tools/test-mcp-registry.mjs",
+    "test:mcp-discovery": "node tools/test-mcp-discovery.mjs",
+    "test:mcp-config-import": "node tools/test-mcp-config-import.mjs"
   }
 }

@@ -79,8 +79,9 @@ function pageToolProvider(resolvedAgent) {
 
 // Build the full toolset for a turn: page-action tools + any configured MCP
 // servers, merged into one { specs, execute, system }. MCP tools run in THIS
-// (in-extension) tool loop, so they apply to API agents only — bridge/CLI agents
-// reach MCP through the bridge itself. Returns undefined when nothing is armed.
+// (in-extension) tool loop for API agents, AND relayed to bridge/CLI agents
+// (Claude Code, Codex, custom) through the bridge — so MCP servers configured
+// once in ChatPanel work with EVERY agent. Returns undefined when nothing armed.
 async function toolsetFor(resolvedAgent) {
   const providers = [];
   const page = pageToolProvider(resolvedAgent);
@@ -88,19 +89,22 @@ async function toolsetFor(resolvedAgent) {
 
   // MCP servers — Free uses the first FREE_LIMITS.mcpServers by list position
   // (matching the Settings lock); Pro is unlimited. Soft client gate, consistent
-  // with our other Free ceilings (the value is the in-extension tool loop).
+  // with our other Free ceilings. A server is usable if it has an http url OR a
+  // local command (stdio, run via the bridge).
   const all = state.settings.mcpServers || [];
   const limit = isPro(state.license) ? Infinity : FREE_LIMITS.mcpServers;
-  const usable = all.slice(0, limit).filter((s) => s?.enabled !== false && s?.url);
-  if (resolvedAgent && resolvedAgent.kind !== 'bridge' && usable.length) {
-    const enabledCount = all.filter((s) => s?.enabled !== false && s?.url).length;
+  const isSet = (s) => s?.enabled !== false && (s?.url || s?.command);
+  const usable = all.slice(0, limit).filter(isSet);
+  if (resolvedAgent && usable.length) {
+    const enabledCount = all.filter(isSet).length;
     if (enabledCount > usable.length) {
       console.info(`[chatpanel] Free plan: using ${usable.length}/${enabledCount} MCP servers (Pro = unlimited)`);
     }
     const mcps = await getMcpProviders(usable, {
+      bridgeUrl: state.settings.bridgeUrl,
       onError: (s, e) => {
-        console.warn('[chatpanel] MCP server failed:', s.name || s.url, e.message);
-        toast(`🔌 MCP “${s.name || s.url}” unavailable: ${e.message}`, 2600);
+        console.warn('[chatpanel] MCP server failed:', s.name || s.url || s.command, e.message);
+        toast(`🔌 MCP “${s.name || s.url || s.command}” unavailable: ${e.message}`, 2600);
       },
     });
     providers.push(...mcps);
@@ -164,6 +168,19 @@ async function init() {
     if (t) { t.textContent = '›'; t.title = 'Show panel rail'; }
   }
   renderRail();
+  // Handoff from the full Meetings dashboard's "Ask" button: it stashes a meeting
+  // id and opens this side panel — pick it up and open that meeting's view.
+  try {
+    const g = await chrome.storage.local.get('chatpanel:openMeetingId');
+    const mid = g['chatpanel:openMeetingId'];
+    if (mid) {
+      await chrome.storage.local.remove('chatpanel:openMeetingId');
+      if (can(state.license, 'liveMeetings')) {
+        $('meetings-drawer').classList.remove('hidden');
+        await openStoredMeeting(mid);
+      }
+    }
+  } catch { /* no handoff pending */ }
   // Keep the "recording" indicator + live-meeting cache fresh even when Live notes
   // is off and the user isn't switching tabs (so it clears soon after a call ends).
   setInterval(() => renderScribeIndicator(), 30_000);
@@ -455,15 +472,68 @@ function stepLabel(s) {
     case 'scroll': return `🖱️ Scrolled ${i.dy > 0 ? 'down' : 'up'}`;
     case 'draw_path': return `✏️ Drew a stroke (${i.points?.length || 0} pts)`;
     default: {
-      // MCP tools are namespaced mcp_<server>__<tool>; show them cleanly.
       const mcp = /^mcp_(.+?)__(.+)$/.exec(s.tool || '');
-      if (mcp) return `🔌 ${mcp[2]} · ${mcp[1]}`;
+      if (mcp) return `${displayMcpServer(mcp[1])} / ${mcp[2]}`;
       return `🔧 ${s.tool}`;
     }
   }
 }
 
-// Collapsible "Actions" log of the agent's tool calls (+ any screenshots it took).
+function mcpInfo(tool) {
+  const m = /^mcp_(.+?)__(.+)$/.exec(tool || '');
+  return m ? { server: displayMcpServer(m[1]), tool: m[2] } : null;
+}
+
+function displayMcpServer(slug) {
+  const s = String(slug || 'mcp').replace(/_/g, ' ');
+  if (/^deepwiki$/i.test(s)) return 'DeepWiki';
+  if (/^context7$/i.test(s)) return 'Context7';
+  return s.replace(/\b[a-z]/g, (c) => c.toUpperCase());
+}
+
+// Page tools whose stepLabel already encodes their arguments — no need to repeat
+// the raw input for these. Everything else (MCP tools, a CLI's own tools) shows
+// its call arguments so the log reads like a real activity trace.
+const LABELED_TOOLS = new Set([
+  'inspect_page', 'fill_form', 'fill_combobox', 'click_element', 'click_by_text',
+  'screenshot', 'marked_screenshot', 'click_mark', 'click_at', 'type_text',
+  'press_key', 'scroll', 'draw_path',
+]);
+
+// A compact one-line view of a tool call's arguments (for MCP / generic tools).
+function stepArgs(s) {
+  if (LABELED_TOOLS.has(s.tool)) return '';
+  const i = s.input;
+  if (i == null) return '';
+  if (typeof i === 'object' && !Array.isArray(i)) {
+    const rows = Object.entries(i)
+      .filter(([, v]) => v != null && v !== '')
+      .map(([k, v]) => {
+        const value = typeof v === 'string' ? v : JSON.stringify(v);
+        const clipped = value.length > 260 ? value.slice(0, 260) + '...' : value;
+        return `<div class="step-arg"><span class="step-arg-key">${escapeAttr(k)}</span><span class="step-arg-val">${escapeAttr(clipped)}</span></div>`;
+      })
+      .join('');
+    return rows ? `<div class="step-args-list">${rows}</div>` : '';
+  }
+  let str = typeof i === 'string' ? i : JSON.stringify(i);
+  if (!str || str === '{}' || str === '""') return '';
+  if (str.length > 220) str = str.slice(0, 220) + '...';
+  return `<div class="step-args">${escapeAttr(str)}</div>`;
+}
+
+function stepHeader(s, badge) {
+  const info = mcpInfo(s.tool);
+  if (!info) return `<div class="step">${escapeAttr(stepLabel(s))}${badge}</div>`;
+  return (
+    `<div class="step step-mcp">` +
+    `<span class="step-server">${escapeAttr(info.server)}</span>` +
+    `<span class="step-tool">${escapeAttr(info.tool)}</span>` +
+    `${badge}</div>`
+  );
+}
+
+// Collapsible "Actions" log of the agent's tool calls (args, status, screenshots).
 function renderSteps(m) {
   const open = m.pending ? ' open' : '';
   const items = m.steps
@@ -472,7 +542,7 @@ function renderSteps(m) {
         ? `<img class="step-shot" src="${escapeAttr(s.image)}" alt="screenshot" />`
         : '';
       const badge = s.status ? ` <span class="step-status ${/error|fail|blocked|CDP failed/i.test(s.status) ? 'bad' : ''}">${escapeAttr(s.status)}</span>` : '';
-      return `<div class="step">${escapeAttr(stepLabel(s))}${badge}</div>${shot}`;
+      return `${stepHeader(s, badge)}${stepArgs(s)}${shot}`;
     })
     .join('');
   return `<details class="agent-steps"${open}><summary>🔧 Actions (${m.steps.length})</summary><div class="steps-body">${items}</div></details>`;
@@ -859,10 +929,12 @@ async function runStream(agent, assistant, conv) {
         } else if (ev.type === 'tool' && ev.phase === 'start') {
           // Surface each tool call as a visible "Actions" step — crucial for
           // no-reasoning models, where the bubble is otherwise blank while it works.
-          (assistant.steps ||= []).push({ tool: ev.name, input: ev.input });
+          (assistant.steps ||= []).push({ tool: ev.name, callId: ev.callId, input: ev.input });
           if (!raf) raf = requestAnimationFrame(flush);
         } else if (ev.type === 'tool' && ev.phase === 'done' && assistant.steps?.length) {
-          const step = assistant.steps[assistant.steps.length - 1];
+          const step = ev.callId
+            ? assistant.steps.find((s) => s.callId === ev.callId) || assistant.steps[assistant.steps.length - 1]
+            : assistant.steps[assistant.steps.length - 1];
           if (ev.image) step.image = ev.image;
           if (ev.status) step.status = ev.status;
           if (ev.image || ev.status) {
@@ -3389,9 +3461,8 @@ function wireEvents() {
       m.classList.remove('hidden');
     }
   };
-  // "Act on page" — user-triggered toggle that arms the page-action tools for the
-  // chat agent (fill forms / click). Only effective for API agents (bridge CLIs
-  // run their own loop) — we warn but still let them set it.
+  // "Act on page" arms page-action tools for API agents directly and for bridge
+  // agents through the local MCP relay.
   $('btn-pageact').onclick = async (e) => {
     e.stopPropagation();
     closeMenus();
@@ -3400,7 +3471,7 @@ function wireEvents() {
     renderPageActBtn();
     const agent = resolveTarget(agentForConv(state.conv), state.settings);
     if (on && agent?.kind === 'bridge') {
-      toast('Page actions need an API agent — your CLI agent runs its own tools.');
+      toast('🕹️ Act on page on. Bridge agents use browser tools through the local bridge.');
     } else if (on) {
       // Disclaimer up front: this is best-effort automation by an LLM.
       toast(
@@ -3441,6 +3512,7 @@ function wireEvents() {
 
   // Past Meetings drawer
   $('meetings-close').onclick = () => closeMeetings();
+  $('meetings-expand').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('meetings.html') });
   $('meeting-vclose').onclick = () => closeMeetings();
   $('meeting-back').onclick = () => meetingBackToList();
   $('meetings-search').oninput = (e) => renderMeetingsList(e.target.value);

@@ -1,0 +1,38 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mcpProvider } from '../extension/js/mcp-client.js';
+import { combineSystemPrompt, toolStatus } from '../extension/js/tool-hints.js';
+
+test('mcpProvider exposes an inventory prompt with exact callable tool names', () => {
+  const provider = mcpProvider({
+    tools: [{
+      name: 'search_movies',
+      description: 'Search for movies by title or keyword.',
+      inputSchema: {
+        type: 'object',
+        properties: { query: { type: 'string' }, limit: { type: 'number' } },
+        required: ['query'],
+      },
+    }],
+    async callTool() {},
+  }, 'Movies');
+
+  assert.match(provider.system, /MCP server "Movies" is connected/);
+  assert.match(provider.system, /mcp_movies__search_movies/);
+  assert.match(provider.system, /query\*/);
+  assert.match(provider.system, /Prefer relevant MCP tools over web search/);
+});
+
+test('toolStatus prefers the upstream MCP error message over generic tool_error', () => {
+  const status = toolStatus('{"error":"tool_error","message":"iTunes Search error: 403","retry_hint":"try again"}');
+  assert.equal(status, 'error: iTunes Search error: 403');
+});
+
+test('toolStatus reads JSON error messages from object text payloads', () => {
+  const status = toolStatus({ text: '{"error":"tool_error","message":"iTunes Search error: 429"}' });
+  assert.equal(status, 'error: iTunes Search error: 429');
+});
+
+test('combineSystemPrompt keeps agent and tool hints in order', () => {
+  assert.equal(combineSystemPrompt('agent rules', '', 'tool hints'), 'agent rules\n\ntool hints');
+});
