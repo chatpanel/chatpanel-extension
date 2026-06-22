@@ -10,16 +10,27 @@
   <body>
     <header class="hdr">
       <h1><img src="assets/icon48.png" class="brand-ico" alt="" /> Meetings <span id="m-count" class="count"></span></h1>
-      <button id="m-settings" class="btn ghost" type="button">⚙ Scribe settings</button>
+      <div class="hdr-actions">
+        <button id="m-import" class="btn" type="button">⬇ Import meeting</button>
+        <input id="m-import-file" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple class="hidden" />
+        <button id="m-graph-toggle" class="btn" type="button">🕸 Graph</button>
+        <button id="m-settings" class="btn ghost" type="button">⚙ ChatPanel settings</button>
+      </div>
     </header>
     <div class="layout">
       <aside class="mlist">
-        <input id="m-search" class="search" type="search" placeholder="Search meetings…" />
+        <input id="m-search" class="search" type="search" placeholder="Search transcripts, notes, people…" />
+        <div class="seg" id="m-modes">
+          <button data-mode="smart" class="active" type="button" title="BM25 full-text relevance">Smart</button>
+          <button data-mode="keyword" type="button" title="Exact substring match">Keyword</button>
+          <button data-mode="people" type="button" title="Find by participant">People</button>
+        </div>
         <div id="m-items"></div>
       </aside>
       <main class="detail">
         <div class="empty" id="m-empty">Select a meeting to see its insights.</div>
         <div id="m-content" class="hidden"></div>
+        <div id="m-graph" class="hidden"></div>
       </main>
     </div>
     <div id="m-toast" class="toast hidden"></div>
