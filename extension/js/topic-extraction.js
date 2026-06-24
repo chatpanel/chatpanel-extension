@@ -336,12 +336,57 @@ export function parseTopicExtractionResponse(raw) {
 }
 
 function topicCandidatesFromText(text) {
+  const rawLines = String(text || '').split(/\r?\n/);
+  const bullets = rawLines.filter((line) => /^\s*[-*+]\s+/.test(line));
+  if (bullets.length) {
+    return bullets
+      .map((line) => line.replace(/^\s*[-*+]\s*/, '').trim())
+      .filter(Boolean);
+  }
   const normalized = String(text || '').replace(/[;,]/g, '\n');
   const lines = normalized.split(/\r?\n/);
-  const bullets = lines.filter((line) => /^\s*[-*+]\s+/.test(line));
-  return (bullets.length ? bullets : lines)
+  return lines
     .map((line) => line.replace(/^\s*[-*+]\s*/, '').trim())
     .filter(Boolean);
+}
+
+function cleanInsightTopicText(value) {
+  return compactText(value)
+    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/, '')
+    .replace(/^\[[ xX]\]\s+/, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*/g, '')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/\[\^\d+\]/g, '')
+    .trim();
+}
+
+function insightTopicLabelCandidates(value) {
+  const text = cleanInsightTopicText(value);
+  if (!text) return [];
+  const out = [];
+  const labelMatch = text.match(/^(.{2,96}?)(?:\s*:\s+|\s+[–—]\s+|\s+-\s+)(.+)$/);
+  if (labelMatch) {
+    const label = compactText(labelMatch[1]);
+    const words = label.split(/\s+/).filter(Boolean);
+    if (words.length >= 1 && words.length <= 6 && !/[.!?]/.test(label)) out.push(label);
+  }
+  out.push(text);
+  return [...new Set(out)];
+}
+
+function insightTopicItemForGraph(value) {
+  const candidates = insightTopicLabelCandidates(value);
+  for (const candidate of candidates) {
+    const topic = normalizeTopic(candidate);
+    if (topic) return topic;
+  }
+  for (const candidate of candidates) {
+    const [topic] = fallbackTopicItems(candidate, 1);
+    if (topic) return topic;
+  }
+  return '';
 }
 
 export function insightTopicItemsFromNotes(notes, limit = 10) {
@@ -350,7 +395,7 @@ export function insightTopicItemsFromNotes(notes, limit = 10) {
   const seen = new Set();
   const out = [];
   for (const item of topicCandidatesFromText(body)) {
-    const topic = normalizeTopic(item);
+    const topic = insightTopicItemForGraph(item);
     if (!topic || seen.has(topic)) continue;
     seen.add(topic);
     out.push(topic);

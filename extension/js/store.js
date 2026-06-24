@@ -272,7 +272,7 @@ export function meetingNotesSkill() {
       '3–6 bullets: the bottom line — what was aligned on, the key decisions, current status, and the biggest open issue.',
       '',
       '## Topics',
-      'A short bullet list of the distinct topics discussed.',
+      '4–8 bullets. Start each bullet with a short topic label followed by a colon, then 1–2 sentences of concrete context about what was discussed and why it mattered.',
       '',
       '## Key Moments',
       'Bullets, each prefixed with exactly one tag in bold: **[decision]**, **[highlight]**, **[risk]**, or **[question]**. Example:',

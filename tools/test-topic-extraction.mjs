@@ -56,8 +56,8 @@ const insightNotes = [
   'The team chose Redis for API caching.',
   '',
   '## Topics',
-  '- Redis cache',
-  '- API gateway authentication',
+  '- Redis cache: The team chose Redis caching for API-layer invalidation and cache stampede protection.',
+  '- API gateway authentication: The group reviewed gateway auth changes needed before rollout.',
   '- Speaker',
   "- It's",
   '',
@@ -68,6 +68,15 @@ assert.deepEqual(insightTopicItemsFromNotes(insightNotes, 5), ['redis cache', 'a
 assert.deepEqual(
   insightTopicItemsFromNotes('## Topics\nObject storage; disaster recovery, cache warming\nlease mechanism', 5),
   ['object storage', 'disaster recovery', 'cache warming', 'lease mechanism'],
+);
+assert.deepEqual(
+  insightTopicItemsFromNotes([
+    '## Topics',
+    '- Object storage lifecycle: The team discussed lifecycle policy cleanup and retention risk.',
+    '- Disaster recovery: The group reviewed failover expectations for the storage service.',
+    '- cache warming dashboard: The team connected alert routing to the health dashboard work.',
+  ].join('\n'), 5),
+  ['object storage lifecycle', 'disaster recovery', 'cache warming dashboard'],
 );
 
 const insightMeetingText = topicSourceTextForMeeting(
