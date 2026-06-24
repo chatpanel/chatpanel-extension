@@ -19,6 +19,8 @@ const TITLE_STOP = new Set((
   'invite room personal imported import recording recorded call video audio minutes minute min mins'
 ).split(/\s+/));
 
+const WEAK_TITLE_TERMS = new Set(['one-on-one']);
+
 function normalizeToken(raw) {
   let word = String(raw || '')
     .toLowerCase()
@@ -42,6 +44,7 @@ export function tokenize(text) {
 function titleTerms(title) {
   const normalized = String(title || '')
     .toLowerCase()
+    .replace(/\b1\s+on\s+1\b/g, ' one-on-one ')
     .replace(/\b1\s*[:/-]\s*1\b/g, ' one-on-one ')
     .replace(/\bone\s+on\s+one\b/g, ' one-on-one ');
   return [...new Set(tokenize(normalized).filter((term) => !TITLE_STOP.has(term)))];
@@ -139,7 +142,7 @@ export function buildGraph(meetings) {
         seenTitles.add(t);
         sharedTitleTerms.push(t);
       }
-      if (sharedTitleTerms.length) {
+      if (sharedTitleTerms.length && sharedTitleTerms.some((term) => !WEAK_TITLE_TERMS.has(term))) {
         score.set(other.id, (score.get(other.id) || 0) + Math.min(sharedTitleTerms.length, 4));
         whyTitles.set(other.id, sharedTitleTerms);
       }
