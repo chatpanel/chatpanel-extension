@@ -71,6 +71,7 @@ import { rankMeetingEntries } from './js/meeting-search.js';
 import {
   contentHash,
   fallbackTopicItems,
+  insightTopicItemsFromNotes,
   makeTopicIndex,
   parseTopicExtractionResponse,
   shouldExtractTopics,
@@ -1341,9 +1342,14 @@ async function maybeExtractMeetingTopics(id) {
     const text = topicSourceTextForMeeting(rec, notes);
     if (!text) return;
     const hash = contentHash(text);
-    const targetId = topicTargetId(state.settings?.activeAgentId);
+    const insightTopics = insightTopicItemsFromNotes(notes, 10);
+    const targetId = insightTopics.length ? 'insights' : topicTargetId(state.settings?.activeAgentId);
     const existing = await getMeetingTopics(id).catch(() => null);
     if (!shouldExtractTopics(existing, { hash, targetId, enabled: cfg.enabled !== false })) return;
+    if (insightTopics.length) {
+      await saveMeetingTopics(id, makeTopicIndex({ hash, targetId, items: insightTopics, fallback: false }));
+      return;
+    }
     const { items, fallback, targetId: usedTargetId } = await extractTopicItems('meeting', rec.title || 'Meeting', text, state.settings?.activeAgentId);
     await saveMeetingTopics(id, makeTopicIndex({ hash, targetId: usedTargetId || targetId, items, fallback }));
   } finally {

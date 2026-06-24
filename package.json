@@ -22,6 +22,7 @@
     "test:history-rag-provider": "node tools/test-history-rag-provider.mjs",
     "test:graph-rendering": "node tools/test-graph-rendering.mjs",
     "test:graph-view-layout": "node tools/test-graph-view-layout.mjs",
+    "test:meeting-graph": "node tools/test-meeting-graph.mjs",
     "test:meeting-index": "node tools/test-meeting-index.mjs",
     "test:meeting-search": "node tools/test-meeting-search.mjs",
     "test:meeting-crypto": "node tools/test-meeting-crypto.mjs",

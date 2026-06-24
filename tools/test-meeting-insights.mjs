@@ -7,6 +7,10 @@ import {
 } from '../extension/js/meeting-insights.js';
 
 assert.deepEqual(MEETING_INSIGHT_SECTIONS.map((s) => s.id), ['summary', 'topics', 'moments', 'links', 'actions']);
+const topicsSection = MEETING_INSIGHT_SECTIONS.find((s) => s.id === 'topics');
+assert.match(topicsSection.instruction, /noun phrases/i);
+assert.match(topicsSection.instruction, /graph/i);
+assert.match(topicsSection.instruction, /filler/i);
 
 const transcript = 'Alice: We chose Redis caching.\nBob: I will update the API gateway config.';
 for (const section of MEETING_INSIGHT_SECTIONS) {

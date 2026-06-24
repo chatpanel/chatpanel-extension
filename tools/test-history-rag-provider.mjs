@@ -81,6 +81,34 @@ assert.equal(meeting.type, 'meeting');
 assert.match(meeting.text, /SUMMARY/);
 assert.match(meeting.text, /TRANSCRIPT/);
 
+const insightTopicMeeting = meetingSource(
+  { id: 'm-insights', title: 'Insight topics', startedAt: 1710000100000, platform: 'meet' },
+  { id: 'm-insights', title: 'Insight topics', segments: [] },
+  [
+    '## Summary',
+    'The team chose Redis for API caching.',
+    '',
+    '## Topics',
+    '- Redis cache',
+    '- API gateway authentication',
+  ].join('\n'),
+);
+assert.deepEqual(insightTopicMeeting.meta.terms, ['redis cache', 'api gateway authentication']);
+const insightTopicMeetingWithStoredTopics = meetingSource(
+  { id: 'm-insights-stored', title: 'Insight topics stored', startedAt: 1710000100000, platform: 'meet' },
+  { id: 'm-insights-stored', title: 'Insight topics stored', segments: [] },
+  [
+    '## Summary',
+    'The team chose Redis for API caching.',
+    '',
+    '## Topics',
+    '- Redis cache',
+    '- API gateway authentication',
+  ].join('\n'),
+  { items: ['stale transcript topic'] },
+);
+assert.deepEqual(insightTopicMeetingWithStoredTopics.meta.terms, ['redis cache', 'api gateway authentication']);
+
 const sources = [
   chat,
   meeting,

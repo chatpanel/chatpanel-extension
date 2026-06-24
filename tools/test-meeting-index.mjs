@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { tokenize, topTerms } from '../extension/js/meeting-index.js';
+import { buildGraph, tokenize, topTerms } from '../extension/js/meeting-index.js';
 
 const badWords = ["it's", 'its', 'if', 'because', 'need', "don't", 'dont', "i'm", 'im', 'am'];
 
@@ -26,5 +26,74 @@ assert.ok(terms.includes('apex'), 'topTerms should retain project/product terms'
 assert.ok(terms.includes('health'), 'topTerms should retain domain terms');
 assert.ok(terms.includes('access'), 'topTerms should retain workflow terms');
 assert.ok(terms.includes('api'), 'topTerms should retain architecture/API terms');
+
+const relatedGraph = buildGraph([
+  {
+    id: 'm1',
+    title: 'Jordan 1:1',
+    people: ['Alex Rivera', 'Jordan Blake'],
+    terms: ['object storage', 'cache warming'],
+  },
+  {
+    id: 'm2',
+    title: 'Storage Review',
+    people: ['Jordan Blake'],
+    terms: ['object storage', 'disaster recovery'],
+  },
+  {
+    id: 'm3',
+    title: 'Cache Warming',
+    people: ['Dana Example'],
+    terms: ['cache warming'],
+  },
+  {
+    id: 'm4',
+    title: 'Google Meet Jordan one-on-one',
+    people: [],
+    terms: [],
+  },
+]);
+
+const related = relatedGraph.relatedMeetings('m1');
+assert.deepEqual(
+  related.find((r) => r.id === 'm2')?.sharedPeople,
+  ['Jordan Blake'],
+  'related meetings should explain shared participants.',
+);
+assert.deepEqual(
+  related.find((r) => r.id === 'm2')?.sharedTopics,
+  ['object storage'],
+  'related meetings should explain shared topics.',
+);
+assert.deepEqual(
+  related.find((r) => r.id === 'm3')?.sharedTopics,
+  ['cache warming'],
+  'topic-only related meetings should still explain the topic reason.',
+);
+assert.deepEqual(
+  related.find((r) => r.id === 'm4')?.sharedTitleTerms,
+  ['jordan', 'one-on-one'],
+  'title-only related meetings should explain the meaningful title terms.',
+);
+
+const platformTitleGraph = buildGraph([
+  {
+    id: 'z1',
+    title: 'zoom transcript 8326433615 2026 06 01',
+    people: [],
+    terms: [],
+  },
+  {
+    id: 'z2',
+    title: 'zoom transcript 97010126052 2026 06 02',
+    people: [],
+    terms: [],
+  },
+]);
+assert.deepEqual(
+  platformTitleGraph.relatedMeetings('z1'),
+  [],
+  'platform/tool boilerplate title words should not create related meetings.',
+);
 
 console.log('meeting index tests passed');

@@ -1,6 +1,6 @@
 import { topTerms } from './meeting-index.js';
 
-export const TOPIC_INDEX_VERSION = 2;
+export const TOPIC_INDEX_VERSION = 5;
 
 const BAD_TOPICS = new Set([
   'am',
@@ -25,6 +25,183 @@ const BAD_TOPICS = new Set([
   'topic',
   'topics',
   'chat',
+  'add',
+  'covered',
+  'discussed',
+  'discussion',
+  'decision',
+  'decisions',
+  'detail',
+  'details',
+  'different',
+  'figure',
+  'highlight',
+  'highlights',
+  'key',
+  'mean',
+  'moment',
+  'moments',
+  'more',
+  'out',
+  'remains',
+  'risk',
+  'risks',
+  'should',
+  'scope',
+  'think',
+  'yeah',
+  'access',
+  'action',
+  'actions',
+  'answer',
+  'answers',
+  'ask',
+  'asked',
+  'call',
+  'calls',
+  'command',
+  'commands',
+  'data',
+  'day',
+  'days',
+  'docs',
+  'good',
+  'help',
+  'know',
+  'make',
+  'maybe',
+  'new',
+  'old',
+  'password',
+  'question',
+  'questions',
+  'see',
+  'team',
+  'thing',
+  'things',
+  'time',
+  'today',
+  'use',
+  'used',
+  'using',
+  'want',
+  'work',
+  'worked',
+]);
+
+const FALLBACK_STOP = new Set([
+  ...BAD_TOPICS,
+  'a',
+  'an',
+  'and',
+  'are',
+  'as',
+  'at',
+  'be',
+  'but',
+  'by',
+  'can',
+  'could',
+  'did',
+  'do',
+  'does',
+  'for',
+  'from',
+  'get',
+  'go',
+  'got',
+  'had',
+  'has',
+  'have',
+  'he',
+  'her',
+  'him',
+  'his',
+  'how',
+  'in',
+  'is',
+  'it',
+  'just',
+  'like',
+  'me',
+  'my',
+  'not',
+  'of',
+  'on',
+  'or',
+  'our',
+  'really',
+  'right',
+  'said',
+  'say',
+  'she',
+  'so',
+  'that',
+  'the',
+  'their',
+  'them',
+  'then',
+  'there',
+  'they',
+  'this',
+  'to',
+  'too',
+  'was',
+  'we',
+  'were',
+  'what',
+  'when',
+  'where',
+  'which',
+  'who',
+  'why',
+  'will',
+  'with',
+  'would',
+  'you',
+  'your',
+]);
+
+const SINGLE_TOPIC_ALLOW = new Set([
+  'apex',
+  'api',
+  'bm25',
+  'claude',
+  'codex',
+  'confluence',
+  'cuda',
+  'rollout',
+  'gemini',
+  'gpu',
+  'jira',
+  'mcp',
+  'nvidia',
+  'oauth',
+  
+  'oidc',
+  'openrouter',
+  'rag',
+  'redis',
+  'sftp',
+]);
+
+const BAD_TOPIC_PHRASES = new Set([
+  'covered object',
+  'delivery remains',
+  'discussion covered',
+  'docs gpu',
+  'docs should',
+  'mechanism more',
+  'more details',
+  'object storage disaster',
+  'recovery interview',
+  'should add',
+  'storage disaster',
+  'storage disaster recovery',
+  'think lease',
+  'training lease',
+  'yeah mean',
+  'yeah think',
 ]);
 
 function compactText(text) {
@@ -41,8 +218,94 @@ function normalizeTopic(value) {
   const words = s.split(/\s+/).filter(Boolean);
   if (words.length < 1 || words.length > 4) return '';
   if (BAD_TOPICS.has(s)) return '';
+  if (BAD_TOPIC_PHRASES.has(s)) return '';
   if (/^\d{1,2}:\d{2}$/.test(s)) return '';
   return s;
+}
+
+function topicToken(value) {
+  let s = String(value || '')
+    .toLowerCase()
+    .replace(/[’‘`]/g, "'")
+    .replace(/[‐‑‒–—_/]+/g, '-')
+    .replace(/^['+.-]+|['+.-]+$/g, '');
+  if (s.endsWith("'s")) s = s.slice(0, -2);
+  const compact = s.replace(/[-']/g, '');
+  if (compact.length < 2 || /^\d+$/.test(compact)) return '';
+  if (FALLBACK_STOP.has(s) || FALLBACK_STOP.has(compact)) return '';
+  return s.replace(/'/g, '');
+}
+
+function fallbackLines(text) {
+  return compactText(text)
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .split(/(?:[.!?;,]|\n|\r)+/)
+    .map((line) => line.replace(/^\s*#{1,6}\s+/, ''))
+    .map((line) => line.replace(/\[[^\]]+\]/g, ' '))
+    .map((line) => line.replace(/^\s*(?:title|summary|transcript|chat|meeting|date|platform|topics?|agenda|key moments?|moments?|shared links?|links?|action items?|actions?)\s*:\s*/i, ''))
+    .map((line) => line.replace(/^\s*[^:]{1,48}:\s+/, ''))
+    .map(compactText)
+    .filter(Boolean);
+}
+
+function addCandidate(scores, phrase, score) {
+  const topic = normalizeTopic(phrase);
+  if (!topic) return;
+  const words = topic.split(/\s+/).filter(Boolean);
+  if (words.length === 1 && !SINGLE_TOPIC_ALLOW.has(words[0])) return;
+  if (words.every((word) => FALLBACK_STOP.has(word))) return;
+  scores.set(topic, (scores.get(topic) || 0) + score);
+}
+
+function fallbackPhraseScores(text) {
+  const scores = new Map();
+  for (const [lineIndex, line] of fallbackLines(text).entries()) {
+    const lineBoost = lineIndex < 3 ? 2 : 1;
+    const rawTokens = line.match(/[a-z0-9][a-z0-9'+-]{1,}/gi) || [];
+    const runs = [];
+    let run = [];
+    for (const raw of rawTokens) {
+      const token = topicToken(raw);
+      if (!token) {
+        if (run.length) runs.push(run);
+        run = [];
+        continue;
+      }
+      run.push(token);
+    }
+    if (run.length) runs.push(run);
+
+    for (const tokens of runs) {
+      for (let i = 0; i < tokens.length; i += 1) {
+        addCandidate(scores, tokens[i], 0.25 * lineBoost);
+        for (let size = 2; size <= 4 && i + size <= tokens.length; size += 1) {
+          const phrase = tokens.slice(i, i + size);
+          if (new Set(phrase).size === 1) continue;
+          if (phrase.some((token, j) => j > 0 && token === phrase[j - 1])) continue;
+          const sizeScore = size === 2 ? 5 : size === 3 ? 4 : 3;
+          const positionBoost = Math.max(0, 1 - (i * 0.1));
+          const domainBoost = SINGLE_TOPIC_ALLOW.has(phrase[0]) ? 1 : 0;
+          addCandidate(scores, phrase.join(' '), (sizeScore * lineBoost) + positionBoost + domainBoost);
+        }
+      }
+    }
+  }
+  return scores;
+}
+
+function markdownSectionBody(md, predicate) {
+  const lines = String(md || '').split(/\r?\n/);
+  const out = [];
+  let inSection = false;
+  for (const raw of lines) {
+    const heading = raw.match(/^\s*#{1,6}\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      inSection = !!predicate(heading[1]);
+      continue;
+    }
+    if (inSection) out.push(raw);
+  }
+  return out.join('\n').trim();
 }
 
 export function parseTopicExtractionResponse(raw) {
@@ -72,6 +335,30 @@ export function parseTopicExtractionResponse(raw) {
   return out;
 }
 
+function topicCandidatesFromText(text) {
+  const normalized = String(text || '').replace(/[;,]/g, '\n');
+  const lines = normalized.split(/\r?\n/);
+  const bullets = lines.filter((line) => /^\s*[-*+]\s+/.test(line));
+  return (bullets.length ? bullets : lines)
+    .map((line) => line.replace(/^\s*[-*+]\s*/, '').trim())
+    .filter(Boolean);
+}
+
+export function insightTopicItemsFromNotes(notes, limit = 10) {
+  const body = markdownSectionBody(notes, (heading) => /topic|agenda/i.test(heading));
+  if (!body) return [];
+  const seen = new Set();
+  const out = [];
+  for (const item of topicCandidatesFromText(body)) {
+    const topic = normalizeTopic(item);
+    if (!topic || seen.has(topic)) continue;
+    seen.add(topic);
+    out.push(topic);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 export function contentHash(text) {
   const input = compactText(text);
   let h = 2166136261;
@@ -83,18 +370,43 @@ export function contentHash(text) {
 }
 
 export function fallbackTopicItems(text, limit = 10) {
-  return topTerms(text, limit * 2)
-    .map(normalizeTopic)
-    .filter(Boolean)
-    .filter((topic, i, arr) => arr.indexOf(topic) === i)
+  const scores = fallbackPhraseScores(text);
+  for (const term of topTerms(text, limit * 2)) {
+    const token = topicToken(term);
+    if (token && SINGLE_TOPIC_ALLOW.has(token)) addCandidate(scores, token, 0.5);
+  }
+  return [...scores.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([topic]) => topic)
     .slice(0, limit);
 }
 
-export function topicItemsForDisplay(existing, fallbackText, limit = 10) {
-  if (existing?.version === TOPIC_INDEX_VERSION && existing.items?.length) {
-    return existing.items;
+export function topicDisplayForSource(existing, fallbackText, limit = 10) {
+  if (existing?.version === TOPIC_INDEX_VERSION && existing.items?.length && !existing.fallback) {
+    return { items: existing.items.slice(0, limit), fallback: false };
   }
-  return fallbackTopicItems(fallbackText, limit);
+  if (existing?.version === TOPIC_INDEX_VERSION && existing.items?.length && existing.fallback) {
+    return { items: existing.items.slice(0, limit), fallback: true };
+  }
+  return { items: fallbackTopicItems(fallbackText, limit), fallback: true };
+}
+
+export function topicDisplayForMeetingSource(existing, notes = '', fallbackText = '', limit = 10) {
+  const insightTopics = insightTopicItemsFromNotes(notes, limit);
+  if (insightTopics.length) return { items: insightTopics, fallback: false, source: 'insights' };
+  if (existing?.version === TOPIC_INDEX_VERSION && existing.items?.length && !existing.fallback) {
+    return { items: existing.items.slice(0, limit), fallback: false, source: 'stored' };
+  }
+  const notesFallback = fallbackTopicItems(notes, limit);
+  if (notesFallback.length) return { items: notesFallback, fallback: true, source: 'notes' };
+  if (existing?.version === TOPIC_INDEX_VERSION && existing.items?.length && existing.fallback) {
+    return { items: existing.items.slice(0, limit), fallback: true, source: 'stored-fallback' };
+  }
+  return { items: fallbackTopicItems(fallbackText, limit), fallback: true, source: 'transcript' };
+}
+
+export function topicItemsForDisplay(existing, fallbackText, limit = 10) {
+  return topicDisplayForSource(existing, fallbackText, limit).items;
 }
 
 export function topicSourceTextForConversation(conv) {
@@ -114,6 +426,18 @@ export function topicSourceTextForConversation(conv) {
 }
 
 export function topicSourceTextForMeeting(rec, notes = '') {
+  const insightTopics = insightTopicItemsFromNotes(notes, 15);
+  if (insightTopics.length) {
+    return [
+      `TITLE: ${rec?.title || 'Meeting'}`,
+      '',
+      'INSIGHT TOPICS:',
+      ...insightTopics.map((topic) => `- ${topic}`),
+      '',
+      'INSIGHTS:',
+      compactText(notes).slice(0, 12000),
+    ].join('\n').trim();
+  }
   const lines = [`TITLE: ${rec?.title || 'Meeting'}`, ''];
   if (notes) lines.push('SUMMARY:', compactText(notes).slice(0, 12000), '');
   lines.push('TRANSCRIPT:');

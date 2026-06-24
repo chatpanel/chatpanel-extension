@@ -152,7 +152,16 @@ function parseParticipantLine(line) {
     if (token) roles.unshift(token);
   }
   const dashRole = value.match(/^(.+?)\s+[-–—]\s+(.+)$/);
-  if (dashRole) {
+  const dashParts = value.split(/\s+[-–—]\s+/).map((p) => p.trim()).filter(Boolean);
+  if (
+    dashParts.length >= 3
+    && value.replace(/[^A-Za-z]/g, '').length > 1
+    && value.split(/\s+[-–—]\s+/)[0].replace(/[^A-Za-z]/g, '').length <= 2
+    && /^[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){1,4}$/.test(dashParts.at(-1))
+  ) {
+    value = dashParts.at(-1);
+    roles.push(dashParts.slice(1, -1).join(' - '));
+  } else if (dashRole) {
     value = dashRole[1].trim();
     roles.push(dashRole[2].trim());
   }

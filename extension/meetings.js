@@ -5,16 +5,17 @@
 //  • a topic relationship graph + related-meeting discovery
 import {
   getMeetingIndex, getMeeting, getMeetingNotes, saveMeetingNotes,
-  deleteMeeting, meetingToMarkdown, meetingToText, persistMeeting, PLATFORMS, getMeetingTopics,
+  deleteMeeting, meetingToMarkdown, meetingToText, persistMeeting, PLATFORMS, getMeetingTopics, saveMeetingTopics,
 } from './js/store-meetings.js';
 import { getSettings, getTarget } from './js/store.js';
 import { getLicense, can, UPGRADE_URL } from './js/license.js';
 import { streamChat } from './js/providers.js';
 import { buildIndex, bm25Search, buildGraph, tokenize } from './js/meeting-index.js';
 import { drawGraph } from './js/graph-view.js';
+import { buildMeetingTopicGraph, graphParticipantNames, graphTopicTerms } from './js/meeting-graph.js';
 import { initialHistoryView } from './js/history-state.js';
-import { isMeetingImageValue, peopleOfMeeting, speakerCountOfMeeting } from './js/meeting-people.js';
-import { topicItemsForDisplay } from './js/topic-extraction.js';
+import { isMeetingImageValue, participantRowsOfMeeting, peopleOfMeeting, speakerCountOfMeeting } from './js/meeting-people.js';
+import { contentHash, insightTopicItemsFromNotes, makeTopicIndex, topicDisplayForMeetingSource, topicSourceTextForMeeting } from './js/topic-extraction.js';
 import { MEETING_INSIGHT_SECTIONS, composeMeetingInsightNotes, meetingInsightPrompt } from './js/meeting-insights.js';
 import { parseTranscriptText, repairImportedTranscriptDate, repairTranscriptParticipants } from './js/meeting-transcript-import.js';
 
@@ -335,10 +336,34 @@ function renderSharedLink(value) {
   return `<li><span class="dot">↗</span><a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a></li>`;
 }
 
+function relatedReasonList(items, limit = 3) {
+  const values = [...new Set((items || []).map((item) => String(item || '').trim()).filter(Boolean))];
+  if (values.length <= limit) return values.join(', ');
+  return `${values.slice(0, limit).join(', ')} +${values.length - limit}`;
+}
+
+function relatedMeetingReason(r) {
+  const parts = [];
+  const people = relatedReasonList(r.sharedPeople || []);
+  const topics = relatedReasonList(r.sharedTopics || []);
+  const titleTerms = relatedReasonList(r.sharedTitleTerms || []);
+  if (people) parts.push(`shared participants: ${people}`);
+  if (topics) parts.push(`shared topics: ${topics}`);
+  if (titleTerms) parts.push(`similar title: ${titleTerms}`);
+  return parts.join(' · ') || `relationship score ${r.weight || 0}`;
+}
+
 function renderRelated() {
   const id = current.entry.id;
   const related = graph.relatedMeetings(id);
   const topics = current.terms || [];
+  const topicTitle = current.topicFallback ? '# Suggested Topics' : '# Topics';
+  let topicHint = '';
+  if (current.topicFallback && topics.length) {
+    topicHint = current.topicSource === 'notes'
+      ? '<p class="muted tiny">Suggested from generated insights because the Topics section was empty or not parseable. Regenerate insights to replace these with explicit topics.</p>'
+      : '<p class="muted tiny">Local fallback from the transcript. Generate insights to replace these with concrete meeting topics.</p>';
+  }
   const topicChips = topics.length
     ? `<div class="chips">${topics.map((t) => `<button class="chip" data-topic="${esc(t)}" type="button"># ${esc(t)}</button>`).join('')}</div>`
     : '<div class="tile-empty">No strong topics detected yet.</div>';
@@ -346,13 +371,13 @@ function renderRelated() {
     ? `<ul>${related.map((r) => {
         const d = store.get(r.id); if (!d) return '';
         return `<li class="rel" data-id="${esc(r.id)}"><span class="dot">↗</span><span><strong>${esc(d.rec.title || 'Untitled')}</strong>
-          <span class="owner">— ${esc(fmtDateShort(d.rec.startedAt))} · shared topics</span></span></li>`;
+          <span class="owner">— ${esc(fmtDateShort(d.rec.startedAt))} · ${esc(relatedMeetingReason(r))}</span></span></li>`;
       }).join('')}</ul>`
     : '<div class="tile-empty">No related meetings found yet.</div>';
 
   $('m-tabbody').innerHTML = `
     <div class="tiles">
-      <div class="tile span"><h3># Topics</h3>${topicChips}</div>
+      <div class="tile span"><h3>${topicTitle}</h3>${topicChips}${topicHint}</div>
       <div class="tile span"><h3>🔗 Related meetings</h3>${relatedList}</div>
     </div>`;
 
@@ -362,33 +387,25 @@ function renderRelated() {
 
 function renderTopicGraph() {
   const id = current.entry.id;
+  const q = $('m-search').value.trim();
   const related = graph.relatedMeetings(id);
-  const meetings = [current, ...related.slice(0, 6).map((r) => store.get(r.id)).filter(Boolean)];
-  const topics = new Set(meetings.flatMap((d) => d.terms || []));
+  let meetings = [current, ...related.slice(0, 6).map((r) => store.get(r.id)).filter(Boolean)];
+  const matchIds = q ? new Set(searchResults(q).map((r) => r.d?.entry?.id).filter(Boolean)) : null;
+  if (matchIds) meetings = meetings.filter((d) => matchIds.has(d.entry.id));
+  const graphData = buildMeetingTopicGraph(meetings, { topicPrefix: 'm-topic:', participantPrefix: 'm-participant:', focusId: id, connectorQuery: q });
+  const topics = graphData.nodes.filter((n) => n.type === 'topic').length;
+  const participants = graphData.nodes.filter((n) => n.type === 'participant').length;
   $('m-tabbody').innerHTML = `
     <div class="graph-head">
-      <div><strong>Topic graph</strong> <span class="owner">— ${meetings.length} meeting${meetings.length === 1 ? '' : 's'} · ${topics.size} topic${topics.size === 1 ? '' : 's'}. Click a meeting to open it, a topic to filter.</span></div>
-      <div class="legend"><span class="lg"><i class="sw meeting"></i> Meeting</span><span class="lg"><i class="sw person"></i> Topic</span></div>
+      <div><strong>Meeting graph</strong> <span class="owner">— ${meetings.length} meeting${meetings.length === 1 ? '' : 's'} · ${topics} topic${topics === 1 ? '' : 's'} · ${participants} participant${participants === 1 ? '' : 's'}${q ? ` · matching “${esc(q)}”` : ''}. Click a meeting to open it, a topic or participant to filter.</span></div>
+      <div class="legend"><span class="lg"><i class="sw meeting"></i> Meeting</span><span class="lg"><i class="sw topic"></i> Topic</span><span class="lg"><i class="sw participant"></i> Participant</span></div>
     </div>
     <div class="graph-host big" id="m-meetinggraph"></div>`;
-  const { nodes, links } = topicGraph(meetings, 'm-topic:');
-  if (nodes.some((n) => n.id === id)) nodes.find((n) => n.id === id).focus = true;
-  drawGraph($('m-meetinggraph'), nodes, links, (n) => { if (n.type === 'meeting') select(n.id); else searchTopic(n.label); });
+  drawGraph($('m-meetinggraph'), graphData.nodes, graphData.links, (n) => { if (n.type === 'meeting') select(n.id); else searchTopic(n.label); });
 }
 
 function renderParticipants() {
-  const participants = (current.rec.participants || [])
-    .map((p) => ({
-      name: String(p?.name || '').trim(),
-      initials: String(p?.initials || '').trim(),
-      role: String(p?.role || '').trim(),
-    }))
-    .filter((p) => p.name && !isImg(p.name));
-  const seen = new Set(participants.map((p) => p.name.toLowerCase()));
-  const speakerOnly = (current.people || [])
-    .filter((name) => name && !seen.has(String(name).toLowerCase()))
-    .map((name) => ({ name, initials: '', role: 'Speaker' }));
-  const rows = [...participants, ...speakerOnly];
+  const rows = participantRowsOfMeeting(current.rec);
   const list = rows.length
     ? `<ul class="participant-list">${rows.map((p) => `<li>
         <span class="avatar">${esc((p.initials || p.name.slice(0, 2)).toUpperCase())}</span>
@@ -471,30 +488,6 @@ function renderTranscript() {
   paint();
 }
 
-// --- global relationship graph ---------------------------------------------
-function topicGraph(items, prefix) {
-  const nodes = [];
-  const links = [];
-  const topics = new Map();
-  items.forEach((d) => {
-    nodes.push({ id: d.entry.id, type: 'meeting', label: d.rec.title || 'Untitled' });
-    (d.terms || []).slice(0, 6).forEach((t) => {
-      if (!topics.has(t)) topics.set(t, []);
-      topics.get(t).push(d.entry.id);
-    });
-  });
-  for (const [topic, ids] of topics) {
-    if (ids.length < 2 && items.length > 1) continue;
-    const tid = `${prefix}${topic}`;
-    nodes.push({ id: tid, type: 'person', label: topic });
-    ids.forEach((id) => links.push({ s: id, t: tid }));
-  }
-  if (!links.length && items.length > 1) {
-    items.slice(1).forEach((d) => links.push({ s: items[0].entry.id, t: d.entry.id }));
-  }
-  return { nodes, links };
-}
-
 function showGraphView() {
   inGraph = true;
   $('m-empty').classList.add('hidden');
@@ -507,12 +500,14 @@ function showGraphView() {
   const allMeetings = searchResults(q).map((r) => r.d);
   const meetings = allMeetings.slice(0, GRAPH_RENDER_LIMIT);
   if (!allMeetings.length) { host.innerHTML = `<div class="empty">${q ? 'No meetings match your search.' : 'No meetings to graph yet.'}</div>`; return; }
-  const topics = new Set(meetings.flatMap((d) => d.terms || []));
+  const graphData = buildMeetingTopicGraph(meetings, { topicPrefix: 'm-topic:', participantPrefix: 'm-participant:', connectorQuery: q });
+  const topics = graphData.nodes.filter((n) => n.type === 'topic').length;
+  const participants = graphData.nodes.filter((n) => n.type === 'participant').length;
   const limited = allMeetings.length > meetings.length;
   host.innerHTML = `
     <div class="graph-head">
-      <div><strong>Topic graph</strong> <span class="owner">— ${meetings.length} meeting${meetings.length === 1 ? '' : 's'} graphed · ${topics.size} topic${topics.size === 1 ? '' : 's'}${limited ? ` · showing ${meetings.length} of ${allMeetings.length} matches` : ''}${q ? ` matching “${esc(q)}”` : ''}. Click a meeting to open it, a topic to filter.</span></div>
-      <div class="legend"><span class="lg"><i class="sw meeting"></i> Meeting</span><span class="lg"><i class="sw person"></i> Topic</span></div>
+      <div><strong>Meeting graph</strong> <span class="owner">— ${meetings.length} meeting${meetings.length === 1 ? '' : 's'} graphed · ${topics} topic${topics === 1 ? '' : 's'} · ${participants} participant${participants === 1 ? '' : 's'}${limited ? ` · showing ${meetings.length} of ${allMeetings.length} matches` : ''}${q ? ` matching “${esc(q)}”` : ''}. Click a meeting to open it, a topic or participant to filter.</span></div>
+      <div class="legend"><span class="lg"><i class="sw meeting"></i> Meeting</span><span class="lg"><i class="sw topic"></i> Topic</span><span class="lg"><i class="sw participant"></i> Participant</span></div>
     </div>
     <div class="graph-host big" id="m-biggraph"></div>`;
   const token = ++graphDrawToken;
@@ -520,8 +515,7 @@ function showGraphView() {
     if (token !== graphDrawToken) return;
     const graphHost = $('m-biggraph');
     if (!graphHost?.isConnected) return;
-    const { nodes, links } = topicGraph(meetings, 'm-topic:');
-    drawGraph(graphHost, nodes, links, (n) => { if (n.type === 'meeting') select(n.id); else searchTopic(n.label); });
+    drawGraph(graphHost, graphData.nodes, graphData.links, (n) => { if (n.type === 'meeting') select(n.id); else searchTopic(n.label); });
   });
 }
 
@@ -543,6 +537,7 @@ function searchTopic(topic) {
   $('m-search').value = topic;
   renderList();
   if (inGraph) showGraphView();
+  else if (current?.tab === 'topic-graph') renderTopicGraph();
 }
 
 async function toggleAction(lineIndex, i, checked) {
@@ -669,7 +664,10 @@ async function runMeetingInsightJob({ section, d, agent, settings, transcript })
 function refreshDoc(d) {
   d.people = peopleOf(d.rec);
   d.text = searchableMeetingText(d.rec, d.notes, d.people, d.entry);
-  d.terms = topicItemsForDisplay(null, d.text, 10);
+  const topicDisplay = topicDisplayForMeetingSource(null, d.notes, d.text, 10);
+  d.terms = topicDisplay.items;
+  d.topicFallback = topicDisplay.fallback;
+  d.topicSource = topicDisplay.source;
   d.parsed = parseNotes(d.notes);
 }
 
@@ -702,6 +700,16 @@ async function generateInsights(d) {
   }
   d.notes = notes;
   await saveMeetingNotes(d.entry.id, d.notes).catch(() => {});
+  const insightTopics = insightTopicItemsFromNotes(d.notes, 10);
+  if (insightTopics.length) {
+    const topicText = topicSourceTextForMeeting(d.rec, d.notes);
+    await saveMeetingTopics(d.entry.id, makeTopicIndex({
+      hash: contentHash(topicText),
+      targetId: 'insights',
+      items: insightTopics,
+      fallback: false,
+    })).catch(() => {});
+  }
   delete d.insightDraft;
   refreshDoc(d);
   rebuildIndexes();          // related insights / graph reflect the new notes
@@ -738,7 +746,7 @@ async function importFiles(files) {
 function rebuildIndexes() {
   const ds = [...store.values()];
   bm25 = buildIndex(ds.map((d) => ({ id: d.entry.id, text: d.text })));
-  graph = buildGraph(ds.map((d) => ({ id: d.entry.id, title: d.rec.title, platform: d.rec.platform, startedAt: d.rec.startedAt, people: [], terms: d.terms })));
+  graph = buildGraph(ds.map((d) => ({ id: d.entry.id, title: d.rec.title, platform: d.rec.platform, startedAt: d.rec.startedAt, people: graphParticipantNames(d), terms: graphTopicTerms(d) })));
 }
 
 function showProGate() {
@@ -769,19 +777,20 @@ async function boot() {
     const people = peopleOf(rec);
     const text = searchableMeetingText(rec, notes, people, e);
     const savedTopics = await getMeetingTopics(e.id).catch(() => null);
-    const terms = topicItemsForDisplay(savedTopics, text, 10);
-    store.set(e.id, { entry: e, rec, notes, parsed: parseNotes(notes), people, terms, text });
+    const topicDisplay = topicDisplayForMeetingSource(savedTopics, notes, text, 10);
+    const terms = topicDisplay.items;
+    store.set(e.id, { entry: e, rec, notes, parsed: parseNotes(notes), people, terms, topicFallback: topicDisplay.fallback, topicSource: topicDisplay.source, text });
   }));
   rebuildIndexes();
   renderList();
 
   $('m-items').addEventListener('click', (e) => { const it = e.target.closest('.mitem'); if (it?.dataset.id) select(it.dataset.id); });
-  $('m-search').oninput = () => { renderList(); if (inGraph) showGraphView(); };
+  $('m-search').oninput = () => { renderList(); if (inGraph) showGraphView(); else if (current?.tab === 'topic-graph') renderTopicGraph(); };
   $('m-modes').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-mode]'); if (!b) return;
     mode = b.dataset.mode;
     $('m-modes').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-    renderList(); if (inGraph) showGraphView();
+    renderList(); if (inGraph) showGraphView(); else if (current?.tab === 'topic-graph') renderTopicGraph();
   });
   $('m-graph-toggle').onclick = toggleGraph;
   $('m-import').onclick = () => $('m-import-file').click();

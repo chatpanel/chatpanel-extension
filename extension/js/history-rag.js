@@ -1,6 +1,7 @@
 import { getConversation, getIndex } from './store.js';
 import { getMeeting, getMeetingIndex, getMeetingNotes, getMeetingTopics, meetingToText } from './store-meetings.js';
 import { peopleOfMeeting } from './meeting-people.js';
+import { insightTopicItemsFromNotes } from './topic-extraction.js';
 import { sourceCitationSystem } from './tool-hints.js';
 import {
   buildHistoryRagAttachment,
@@ -158,6 +159,8 @@ export function meetingSource(entry, rec, notes = '', topics = null) {
   lines.push('', 'TRANSCRIPT:', transcript);
   contentLines.push('TRANSCRIPT:', transcript);
 
+  const insightTerms = insightTopicItemsFromNotes(notes, 15);
+  const terms = insightTerms.length ? insightTerms : (topics?.items || []);
   return {
     id: `meeting:${id}`,
     type: 'meeting',
@@ -166,7 +169,7 @@ export function meetingSource(entry, rec, notes = '', topics = null) {
     url: localDashboardUrl('meeting', id),
     text: lines.join('\n').trim(),
     contentText: contentLines.join('\n').trim(),
-    meta: { id, platform: normalized.platform || '', people, terms: topics?.items || [] },
+    meta: { id, platform: normalized.platform || '', people, terms },
   };
 }
 

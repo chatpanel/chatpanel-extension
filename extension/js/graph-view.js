@@ -2,13 +2,19 @@
 // zoom/pan), like the "famous" graph views (D3 / Obsidian). SVG, no deps.
 // Shared by the Meetings and Chat-history dashboards.
 //
-// nodes: [{ id, type: 'meeting'|'person', label, focus? }]   (type drives color)
+// nodes: [{ id, type: 'meeting'|'topic'|'participant'|'person', label, focus? }]
+// `person` is kept for the older chat-history graph, where topic-like nodes
+// were historically emitted with that type.
 // links: [{ s: id, t: id }]
 // onNode(node): called on a tap (not a drag).
 const SVGNS = 'http://www.w3.org/2000/svg';
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const GOLDEN_ANGLE = 2.399963229728653;
 const MAX_REPULSION_NEIGHBORS = 28;
+
+function isConnectorNode(node) {
+  return node?.type !== 'meeting';
+}
 
 function splitLargeCluster(cluster, neighbors) {
   if (cluster.nodes.length < 36) return [cluster];
@@ -18,7 +24,7 @@ function splitLargeCluster(cluster, neighbors) {
     (neighbors.get(node.id) || []).filter((next) => nodeSet.has(next.id)).length,
   ]));
   const seeds = cluster.nodes
-    .filter((node) => node.type === 'person' && (degree.get(node.id) || 0) >= 2)
+    .filter((node) => isConnectorNode(node) && (degree.get(node.id) || 0) >= 2)
     .sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0) || String(a.label || '').localeCompare(String(b.label || '')))
     .slice(0, Math.min(8, Math.max(2, Math.ceil(cluster.nodes.length / 32))));
   if (seeds.length < 2) return [cluster];
@@ -34,7 +40,7 @@ function splitLargeCluster(cluster, neighbors) {
   };
 
   cluster.nodes
-    .filter((node) => node.type !== 'person' && !assignment.has(node.id))
+    .filter((node) => !isConnectorNode(node) && !assignment.has(node.id))
     .forEach((node, i) => {
       const groupIndex = seedForNode(node);
       const fallback = i % groups.length;
@@ -157,7 +163,8 @@ function labelPriority(node, adj) {
   let score = degree * 8;
   if (node.focus) score += 10000;
   if (node.type === 'meeting') score += 44;
-  if (node.type === 'person') score += 22;
+  if (node.type === 'participant') score += 28;
+  if (node.type === 'topic' || node.type === 'person') score += 22;
   if (String(node.label || '').length > 36) score -= 8;
   return score;
 }

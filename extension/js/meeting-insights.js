@@ -18,7 +18,9 @@ export const MEETING_INSIGHT_SECTIONS = [
     instruction: [
       'Write the Topics section for these meeting notes.',
       'Return only a markdown bullet list.',
-      'Use 5 to 10 concise durable topics, not filler words or people-only names.',
+      'Use 5 to 10 concise durable noun phrases, 2 to 4 words each, useful as graph nodes for finding related meetings later.',
+      'Prefer project, architecture, API, workflow, product, decision, incident, and operational concepts.',
+      'Exclude filler/action phrases and people-only names, such as "yeah think", "should add", "more details", or "figure out".',
     ].join('\n'),
   },
   {

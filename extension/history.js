@@ -10,7 +10,7 @@ import { buildIndex, bm25Search, buildGraph, tokenize } from './js/meeting-index
 import { drawGraph } from './js/graph-view.js';
 import { initialHistoryView } from './js/history-state.js';
 import { renderMarkdown } from './js/markdown.js';
-import { topicItemsForDisplay } from './js/topic-extraction.js';
+import { topicDisplayForSource } from './js/topic-extraction.js';
 
 const $ = (id) => document.getElementById(id);
 const GRAPH_RENDER_LIMIT = 150;
@@ -37,6 +37,19 @@ function relTime(ts) {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   if (s < 604800) return `${Math.floor(s / 86400)}d ago`;
   return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+function relatedReasonList(items, limit = 3) {
+  const values = [...new Set((items || []).map((item) => String(item || '').trim()).filter(Boolean))];
+  if (values.length <= limit) return values.join(', ');
+  return `${values.slice(0, limit).join(', ')} +${values.length - limit}`;
+}
+function relatedHistoryReason(r) {
+  const parts = [];
+  const topics = relatedReasonList(r.sharedTopics || []);
+  const titleTerms = relatedReasonList(r.sharedTitleTerms || []);
+  if (topics) parts.push(`shared topics: ${topics}`);
+  if (titleTerms) parts.push(`similar title: ${titleTerms}`);
+  return parts.join(' · ') || `relationship score ${r.weight || 0}`;
 }
 function toast(msg) {
   const t = $('h-toast');
@@ -242,6 +255,10 @@ function renderRelated() {
   const id = current.entry.id;
   const related = graph.relatedMeetings(id);
   const topics = current.terms || [];
+  const topicTitle = current.topicFallback ? '# Suggested Topics' : '# Topics';
+  const topicHint = current.topicFallback && topics.length
+    ? '<p class="muted tiny">Local fallback from this chat. Saved model-extracted topics replace these after topic extraction runs.</p>'
+    : '';
   const topicChips = topics.length
     ? `<div class="chips">${topics.map((t) => `<button class="chip" data-topic="${esc(t)}" type="button"># ${esc(t)}</button>`).join('')}</div>`
     : '<div class="tile-empty">No strong topics detected yet.</div>';
@@ -249,13 +266,13 @@ function renderRelated() {
     ? `<ul>${related.map((r) => {
         const d = store.get(r.id); if (!d) return '';
         return `<li class="rel" data-id="${esc(r.id)}"><span class="dot">↗</span><span><strong>${esc(d.conv.title || 'Untitled')}</strong>
-          <span class="owner">— ${esc(relTime(d.entry.updatedAt))} · shared topics</span></span></li>`;
+          <span class="owner">— ${esc(relTime(d.entry.updatedAt))} · ${esc(relatedHistoryReason(r))}</span></span></li>`;
       }).join('')}</ul>`
     : '<div class="tile-empty">No related chats found yet.</div>';
 
   $('h-tabbody').innerHTML = `
     <div class="tiles">
-      <div class="tile span"><h3># Topics</h3>${topicChips}</div>
+      <div class="tile span"><h3>${topicTitle}</h3>${topicChips}${topicHint}</div>
       <div class="tile span"><h3>🔗 Related chats</h3>${relatedList}</div>
       <div class="tile span"><h3>🕸 Topic graph</h3><div class="graph-host" id="h-relgraph"></div></div>
     </div>`;
@@ -391,8 +408,8 @@ async function boot() {
   await Promise.all(index.map(async (e) => {
     const conv = await getConversation(e.id); if (!conv) return;
     const text = docText(e, conv);
-    const terms = topicItemsForDisplay(conv.topics, text, 10);
-    store.set(e.id, { entry: e, conv, agent: agentLabel(conv), terms, text });
+    const topicDisplay = topicDisplayForSource(conv.topics, text, 10);
+    store.set(e.id, { entry: e, conv, agent: agentLabel(conv), terms: topicDisplay.items, topicFallback: topicDisplay.fallback, text });
   }));
   rebuildIndexes();
   renderList();

@@ -73,13 +73,15 @@ const plainText = parseTranscriptText(`--- Meeting Transcript (Zoom) ---
 
 AL - Alice Lee (Host)
 BO - Bob Olson
+WC - S - Platform - Eng - Robin Fox
 `, 'plain.txt', { now: 1710000000000 });
 
 assert.equal(plainText.segments.length, 1);
 assert.equal(plainText.segments[0].speaker, 'Alice');
 assert.equal(plainText.chat.length, 1);
 assert.match(plainText.chat[0].text, /https:\/\/example\.com\/plain/);
-assert.equal(plainText.participants.length, 2);
+assert.equal(plainText.participants.length, 3);
+assert.deepEqual(plainText.participants[2], { initials: 'WC', name: 'Robin Fox', role: 'Platform - Eng' });
 
 const zoomExportWithMeetingSections = parseTranscriptText(`--- Meeting Transcript ---
 

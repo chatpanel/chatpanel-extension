@@ -163,7 +163,9 @@ li.rel:hover strong { color: var(--accent); }
 .legend .lg { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .legend .sw { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
 .legend .sw.meeting { background: var(--accent); }
+.legend .sw.topic,
 .legend .sw.person { background: var(--decision); }
+.legend .sw.participant { background: var(--question); }
 #m-graph { padding: 22px 26px; }
 
 svg { cursor: grab; touch-action: none; user-select: none; display: block; }
@@ -172,10 +174,14 @@ svg .gedge { stroke: var(--border-strong); stroke-width: 1; opacity: .55; transi
 svg .gnode { cursor: grab; }
 svg .gnode circle { stroke: var(--bg); stroke-width: 1.5; transition: filter .12s ease; }
 svg .gnode.meeting circle { fill: var(--accent); }
+svg .gnode.topic circle,
 svg .gnode.person circle { fill: var(--decision); }
+svg .gnode.participant circle { fill: var(--question); }
 svg .gnode.focus circle { fill: var(--accent); stroke: var(--accent); stroke-width: 3; }
 svg .gnode text { fill: var(--text); font-size: 11px; font-family: -apple-system, sans-serif; pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; opacity: .86; transition: opacity .12s ease, fill .12s ease; }
-svg .gnode.person text { fill: var(--muted); }
+svg .gnode.topic text,
+svg .gnode.person text,
+svg .gnode.participant text { fill: var(--muted); }
 svg .gnode.label-hidden text { opacity: 0; }
 svg .gnode.label-visible text,
 svg .gnode.label-near text,

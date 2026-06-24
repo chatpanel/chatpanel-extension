@@ -13,5 +13,9 @@ assert.match(historyJs, /let mode = 'smart';\s*\/\/ smart \| keyword/, 'history 
 assert.doesNotMatch(historyJs, /mode === 'agent'/, 'history search should not branch on an agent mode.');
 assert.doesNotMatch(historyJs, /function searchAgent\(/, 'history page should not keep the old Agent-mode action.');
 assert.doesNotMatch(historyJs, /dataset\.mode === 'agent'/, 'history mode buttons should not activate an Agent mode.');
+assert.match(historyJs, /Suggested Topics/, 'history should label local fallback topics as suggestions.');
+assert.match(historyJs, /function relatedHistoryReason/, 'history related items should render explicit relationship reasons.');
+assert.match(historyJs, /similar title:/, 'history related items should explain title similarity.');
+assert.doesNotMatch(historyJs, /shared topics<\/span>/, 'history related items should not hardcode shared-topic reasons.');
 
 console.log('history search mode tests passed');

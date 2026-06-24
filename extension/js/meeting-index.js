@@ -14,6 +14,11 @@ const STOP = new Set((
   'going get got know think mean right well say said also one two how what when where which who whom why'
 ).split(/\s+/));
 
+const TITLE_STOP = new Set((
+  'zoom meet google teams microsoft webex transcript transcripts transcription full light meeting meetings invitation ' +
+  'invite room personal imported import recording recorded call video audio minutes minute min mins'
+).split(/\s+/));
+
 function normalizeToken(raw) {
   let word = String(raw || '')
     .toLowerCase()
@@ -32,6 +37,14 @@ export function tokenize(text) {
   const m = String(text || '').toLowerCase().match(/[a-z0-9][a-z0-9'_+-]{1,}/g);
   if (!m) return [];
   return m.map(normalizeToken).filter(Boolean);
+}
+
+function titleTerms(title) {
+  const normalized = String(title || '')
+    .toLowerCase()
+    .replace(/\b1\s*[:/-]\s*1\b/g, ' one-on-one ')
+    .replace(/\bone\s+on\s+one\b/g, ' one-on-one ');
+  return [...new Set(tokenize(normalized).filter((term) => !TITLE_STOP.has(term)))];
 }
 
 // docs: [{ id, text }] → an index usable by bm25Search().
@@ -77,8 +90,10 @@ export function bm25Search(idx, query, { k1 = 1.5, b = 0.75 } = {}) {
 export function buildGraph(meetings) {
   const meetingsByPerson = new Map(); // person -> Set(meetingId)
   const byId = new Map();
+  const titleTermsById = new Map();
   for (const m of meetings) {
     byId.set(m.id, m);
+    titleTermsById.set(m.id, titleTerms(m.title));
     for (const p of m.people) {
       if (!meetingsByPerson.has(p)) meetingsByPerson.set(p, new Set());
       meetingsByPerson.get(p).add(m.id);
@@ -92,6 +107,8 @@ export function buildGraph(meetings) {
     if (!m) return [];
     const score = new Map();
     const why = new Map();
+    const whyTopics = new Map();
+    const whyTitles = new Map();
     for (const p of m.people) {
       for (const mid of meetingsByPerson.get(p) || []) {
         if (mid === id) continue;
@@ -101,14 +118,40 @@ export function buildGraph(meetings) {
       }
     }
     const myTerms = new Set(m.terms || []);
+    const myTitleTerms = new Set(titleTermsById.get(id) || []);
     for (const other of meetings) {
       if (other.id === id) continue;
-      let shared = 0;
-      for (const t of other.terms || []) if (myTerms.has(t)) shared++;
-      if (shared) score.set(other.id, (score.get(other.id) || 0) + Math.min(shared, 5));
+      const sharedTopics = [];
+      const seen = new Set();
+      for (const t of other.terms || []) {
+        if (!myTerms.has(t) || seen.has(t)) continue;
+        seen.add(t);
+        sharedTopics.push(t);
+      }
+      if (sharedTopics.length) {
+        score.set(other.id, (score.get(other.id) || 0) + Math.min(sharedTopics.length, 5));
+        whyTopics.set(other.id, sharedTopics);
+      }
+      const sharedTitleTerms = [];
+      const seenTitles = new Set();
+      for (const t of titleTermsById.get(other.id) || []) {
+        if (!myTitleTerms.has(t) || seenTitles.has(t)) continue;
+        seenTitles.add(t);
+        sharedTitleTerms.push(t);
+      }
+      if (sharedTitleTerms.length) {
+        score.set(other.id, (score.get(other.id) || 0) + Math.min(sharedTitleTerms.length, 4));
+        whyTitles.set(other.id, sharedTitleTerms);
+      }
     }
     return [...score.entries()]
-      .map(([mid, w]) => ({ id: mid, weight: w, sharedPeople: [...(why.get(mid) || [])] }))
+      .map(([mid, w]) => ({
+        id: mid,
+        weight: w,
+        sharedPeople: [...(why.get(mid) || [])],
+        sharedTopics: whyTopics.get(mid) || [],
+        sharedTitleTerms: whyTitles.get(mid) || [],
+      }))
       .sort((a, b) => b.weight - a.weight)
       .slice(0, limit);
   }

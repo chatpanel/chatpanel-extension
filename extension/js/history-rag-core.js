@@ -248,6 +248,17 @@ function graphTerms(source) {
   return topTerms(`${source?.title || ''}\n${topicText(source)}`, 10);
 }
 
+function relatedReason(r) {
+  const people = r.sharedPeople || [];
+  const topics = r.sharedTopics || [];
+  const titleTerms = r.sharedTitleTerms || [];
+  const parts = [];
+  if (people.length) parts.push(`shares ${people.join(', ')}`);
+  if (topics.length) parts.push(`shared topics: ${topics.join(', ')}`);
+  if (titleTerms.length) parts.push(`similar title: ${titleTerms.join(', ')}`);
+  return parts.join(' · ') || `relationship score ${r.weight || 0}`;
+}
+
 export function relatedHistorySources(sources, sourceId, options = {}) {
   const limit = clampInt(options.limit, 8, 1, 30);
   const scoped = scopedSources(sources, options.scope || 'all', options.includeMeetings !== false);
@@ -272,7 +283,7 @@ export function relatedHistorySources(sources, sourceId, options = {}) {
       url: source?.url || '',
       weight: r.weight,
       shared,
-      reason: shared.length ? `shares ${shared.join(', ')}` : 'shared topics',
+      reason: relatedReason(r),
     };
   });
 }
