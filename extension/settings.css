@@ -289,6 +289,7 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 #restore-box > summary, #key-box > summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 8px 0; user-select: none; font-weight: 550; }
 #restore-box[open] > summary, #key-box[open] > summary { color: var(--text); font-weight: 600; }
 #restore-box .row, #key-box .row { margin-top: 4px; margin-bottom: 12px; }
+.storage-health { margin-top: 12px; }
 #btn-subscribe-pro { font-weight: 600; }
 #subscribe-row { gap: 10px; }
 .account-secondary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr)); gap: 18px; align-items: start; margin-bottom: 18px; }

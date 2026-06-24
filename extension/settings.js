@@ -31,6 +31,7 @@ import { applyProviderPreset, orderedProviderPresets, providerPresetById, provid
 import { filterComboboxOptions, normalizeComboboxOptions } from './js/combobox.js';
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
+import { localStorageHealth } from './js/storage-health.js';
 import {
   getLicense,
   can,
@@ -76,6 +77,7 @@ async function init() {
   });
 
   renderAbout();
+  renderStorageHealth();
 
   wireTabs();
   renderEndpoints();
@@ -1558,6 +1560,15 @@ function renderPrefs() {
   $('pref-live-notes').value = String(settings.ui.liveNotesIntervalMin ?? 2);
   $('pref-meeting-window').value = String(settings.ui.meetingWindowMin ?? 0);
 }
+
+async function renderStorageHealth() {
+  const el = $('meeting-storage-health');
+  if (!el) return;
+  el.textContent = 'Checking local storage...';
+  const health = await localStorageHealth();
+  const meetingLabel = `${health.meetings} recorded meeting${health.meetings === 1 ? '' : 's'}`;
+  el.textContent = `${meetingLabel} · ${health.bytesLabel} stored locally. No automatic meeting-count retention cap.`;
+}
 async function savePrefs() {
   settings.ui.theme = $('pref-theme').value;
   settings.ui.sendOnEnter = $('pref-enter').checked;
@@ -1912,6 +1923,7 @@ function wireBackup() {
         renderPrefs();
         renderGateBadges();
       }
+      renderStorageHealth();
       const skipped = (conversations.total - conversations.imported) + (meetings.total - meetings.imported);
       setStatus(msg, `✓ Restored ${parts.join(' + ')}${skipped ? ` (${skipped} skipped)` : ''}. Reopen ChatPanel to see everything.`, 'ok');
     } catch (err) {

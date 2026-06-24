@@ -77,4 +77,22 @@ assert.equal(
 );
 assert.equal((await getMeetingIndex()).length, 80);
 
+storage.clear();
+for (let i = 0; i < 650; i++) {
+  await persistMeeting({
+    id: `retained-${i}`,
+    platform: 'zoom',
+    title: `Retained meeting ${i}`,
+    startedAt: now - i * 60_000,
+    endedAt: now - i * 60_000 + 30_000,
+    status: 'ended',
+    segments: [{ t: now - i * 60_000, speaker: 'Alex', text: `Retained meeting transcript ${i}` }],
+  });
+}
+assert.equal(await pruneMeetings(), 0, 'Default meeting pruning should not enforce a meeting-count retention cap.');
+assert.equal((await getMeetingIndex()).length, 650);
+assert.ok(await getMeeting('retained-649'), 'Old meetings should remain readable until the user deletes or exports them.');
+assert.equal(await pruneMeetings({ keep: 600 }), 50, 'Explicit manual pruning should still be available.');
+assert.equal((await getMeetingIndex()).length, 600);
+
 console.log('store meeting encryption tests passed');

@@ -231,19 +231,23 @@ export async function importMeetings(list, { mode = 'merge' } = {}) {
   return { imported, total: list.length };
 }
 
-// Keep storage bounded: drop the oldest ended meetings beyond `keep`, and any
-// older than `maxAgeDays`. Live meetings are never pruned. Defaults are intentionally
-// history-friendly because search/RAG needs more than the first dashboard page.
-export async function pruneMeetings({ keep = 500, maxAgeDays = 365 } = {}) {
+// Optional manual cleanup: drop the oldest ended meetings beyond `keep`, and any
+// older than `maxAgeDays`. Live meetings are never pruned. By default this is
+// non-destructive; meeting history is user data and should not disappear because
+// someone has many daily calls.
+export async function pruneMeetings({ keep = Infinity, maxAgeDays = Infinity } = {}) {
+  const keepCount = Number.isFinite(Number(keep)) ? Math.max(0, Math.floor(Number(keep))) : Infinity;
+  const hasAgeLimit = Number.isFinite(Number(maxAgeDays));
+  if (keepCount === Infinity && !hasAgeLimit) return 0;
   const index = await getMeetingIndex();
-  const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+  const cutoff = hasAgeLimit ? Date.now() - Number(maxAgeDays) * 24 * 60 * 60 * 1000 : -Infinity;
   const ended = index.filter((e) => e.status === 'ended');
   const live = index.filter((e) => e.status !== 'ended');
   ended.sort((a, b) => (b.endedAt || b.startedAt || 0) - (a.endedAt || a.startedAt || 0));
   const kept = [];
   const drop = [];
   ended.forEach((e, i) => {
-    if (i < keep && (e.endedAt || e.startedAt || 0) >= cutoff) kept.push(e);
+    if (i < keepCount && (e.endedAt || e.startedAt || 0) >= cutoff) kept.push(e);
     else drop.push(e);
   });
   if (!drop.length) return 0;

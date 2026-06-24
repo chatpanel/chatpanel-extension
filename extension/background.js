@@ -8,7 +8,7 @@
 // re-validating a paid license daily so a lapsed subscription downgrades itself.
 
 import { revalidate } from './js/license.js';
-import { persistMeeting, pruneMeetings, getLatestSessionRecord } from './js/store-meetings.js';
+import { persistMeeting, getLatestSessionRecord } from './js/store-meetings.js';
 
 const REVALIDATE_ALARM = 'chatpanel-revalidate-license';
 
@@ -93,7 +93,3 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   return false;
 });
-
-// Tidy old meetings opportunistically so transcript history can't grow unbounded.
-chrome.runtime.onStartup.addListener(() => pruneMeetings().catch(() => {}));
-chrome.runtime.onInstalled.addListener(() => pruneMeetings().catch(() => {}));
