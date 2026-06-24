@@ -22,8 +22,30 @@ test('mcpProvider exposes an inventory prompt with exact callable tool names', (
   assert.match(provider.system, /query\*/);
   assert.match(provider.system, /Prefer relevant MCP tools over web search/);
   assert.match(provider.system, /Do not call MCP tools when the attached page or provided context is enough/);
+  assert.match(provider.system, /Match the user's request domain to the tool's domain/);
+  assert.match(provider.system, /Do not retry the exact same failed tool call/);
+  assert.match(provider.system, /Hacker News requests should use Hacker News tools/);
   assert.match(provider.system, /<sup>\[1\]<\/sup>/, 'MCP prompt should require superscript citations for source-backed answers.');
   assert.match(provider.system, /Sources/, 'MCP prompt should require a Sources section when MCP sources are used.');
+});
+
+test('mcpProvider returns corrective retry hints for invalid tool parameters', async () => {
+  const provider = mcpProvider({
+    tools: [{
+      name: 'confluence_search',
+      description: 'Search Confluence pages.',
+      inputSchema: { type: 'object', properties: { cql: { type: 'string' } }, required: ['cql'] },
+    }],
+    async callTool() {
+      throw new Error('MCP error -32602: Invalid request parameters');
+    },
+  }, 'Central Jira Confluence');
+
+  const result = await provider.execute('mcp_central_jira_confluence__confluence_search', { query: 'top 10 hacker news for today' });
+  const json = JSON.parse(result);
+  assert.equal(json.error, 'MCP error -32602: Invalid request parameters');
+  assert.match(json.retry_hint, /Do not retry/);
+  assert.match(json.retry_hint, /Hacker News/);
 });
 
 test('toolStatus prefers the upstream MCP error message over generic tool_error', () => {

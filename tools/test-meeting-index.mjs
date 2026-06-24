@@ -52,6 +52,18 @@ const relatedGraph = buildGraph([
     people: [],
     terms: [],
   },
+  {
+    id: 'm5',
+    title: 'Zoom transcript Jordan 1 on 1',
+    people: [],
+    terms: [],
+  },
+  {
+    id: 'm6',
+    title: 'Google Meet one-on-one',
+    people: [],
+    terms: [],
+  },
 ]);
 
 const related = relatedGraph.relatedMeetings('m1');
@@ -74,6 +86,16 @@ assert.deepEqual(
   related.find((r) => r.id === 'm4')?.sharedTitleTerms,
   ['jordan', 'one-on-one'],
   'title-only related meetings should explain the meaningful title terms.',
+);
+assert.deepEqual(
+  related.find((r) => r.id === 'm5')?.sharedTitleTerms,
+  ['jordan', 'one-on-one'],
+  'semantic title aliases should connect 1:1, 1 on 1, and one-on-one titles.',
+);
+assert.equal(
+  related.some((r) => r.id === 'm6'),
+  false,
+  'weak title aliases such as one-on-one should not create related meetings by themselves.',
 );
 
 const platformTitleGraph = buildGraph([

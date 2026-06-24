@@ -798,6 +798,8 @@ function bridgeAgentCard(agent) {
   q('.ba-modelarg').value = agent.modelArg || '';
   q('.ba-imagearg').value = agent.imageArg || '';
   q('.ba-mcparg').value = agent.mcpArg || '';
+  q('.ba-stablemcp').value = agent.stableMcpSetupCommand || '';
+  q('.ba-trusttoolsarg').value = agent.trustToolsArg || '';
   gateField('advancedAgent', q('.ba-system')); // per-agent system prompt is Pro
   applyFreeSlot(node, agent, 'bridge'); // Free uses one agent — the user's pick
 
@@ -917,6 +919,9 @@ function bridgeAgentCard(agent) {
       modelArg: q('.ba-modelarg').value.trim(),
       imageArg: q('.ba-imagearg').value.trim(),
       mcpArg: q('.ba-mcparg').value.trim(),
+      stableMcpSetupCommand: q('.ba-stablemcp').value.trim(),
+      requiresStableMcp: Boolean(q('.ba-stablemcp').value.trim()),
+      trustToolsArg: q('.ba-trusttoolsarg').value.trim(),
     });
     await saveSettings(settings);
     setStatus(q('.ba-status'), '✓ Saved', 'ok');

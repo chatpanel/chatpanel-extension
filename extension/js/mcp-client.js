@@ -7,6 +7,7 @@
 // Spec: https://modelcontextprotocol.io (Streamable HTTP, 2025-06-18).
 
 import { mcpInventorySystem } from './tool-hints.js';
+import { adaptiveToolRetryHint } from './adaptive-tool-policy.js';
 
 const PROTOCOL_VERSION = '2025-06-18';
 
@@ -208,7 +209,12 @@ export function mcpProvider(client, serverName) {
       try {
         return toToolResult(await client.callTool(tool, input));
       } catch (e) {
-        return JSON.stringify({ error: String(e?.message || e) });
+        const message = String(e?.message || e);
+        return JSON.stringify({
+          error: message,
+          tool: name,
+          retry_hint: adaptiveToolRetryHint(name),
+        });
       }
     },
   };

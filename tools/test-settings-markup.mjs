@@ -23,6 +23,13 @@ assert.match(js, /skill-mcp-pick-list/, 'Skills MCP selector should render a ded
 assert.match(js, /skill-mcp-pick/, 'Skills MCP selector should render dedicated selectable rows');
 assert.match(js, /q\('\.s-mcp-mode'\)\.value = skill\.mcpMode \|\| 'none'/, 'Skills editor should default missing MCP mode to No MCP tools');
 assert.match(js, /mcpMode: 'none'/, 'New custom skills should default to No MCP tools');
+assert.match(html, /class="ba-stablemcp"/, 'Custom bridge agents should expose a stable MCP setup command field.');
+assert.match(html, /class="ba-trusttoolsarg"/, 'Custom bridge agents should expose a trusted tool names argument field.');
+assert.match(js, /q\('\.ba-stablemcp'\)\.value = agent\.stableMcpSetupCommand \|\| ''/, 'Settings should load custom stable MCP setup commands.');
+assert.match(js, /q\('\.ba-trusttoolsarg'\)\.value = agent\.trustToolsArg \|\| ''/, 'Settings should load custom trust-tools arguments.');
+assert.match(js, /stableMcpSetupCommand: q\('\.ba-stablemcp'\)\.value\.trim\(\)/, 'Settings should save custom stable MCP setup commands.');
+assert.match(js, /trustToolsArg: q\('\.ba-trusttoolsarg'\)\.value\.trim\(\)/, 'Settings should save custom trust-tools arguments.');
+assert.match(js, /requiresStableMcp: Boolean\(q\('\.ba-stablemcp'\)\.value\.trim\(\)\)/, 'Settings should mark custom agents as stable-MCP based on the setup command.');
 assert.match(css, /\.skill-mcp-pick-list\s*\{[^}]*overflow-y:\s*auto/s, 'Skills MCP selector should have an explicit scroll container');
 assert.match(css, /\.skill-mcp-pick-list\.scrollable\s*\{[^}]*overflow-y:\s*scroll/s, 'Long Skills MCP selector lists should show a persistent scrollbar');
 assert.match(css, /\.skill-mcp-pick-list::\-webkit-scrollbar-thumb/, 'Skills MCP selector should style the scrollbar thumb so scrolling is visible');

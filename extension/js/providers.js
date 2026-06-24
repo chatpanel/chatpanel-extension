@@ -11,6 +11,7 @@
 // use, status) so the UI can show what a coding agent is doing.
 
 import { getEntitlementToken } from './license.js';
+import { createAdaptiveToolPolicy } from './adaptive-tool-policy.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
 import { authHeadersForEndpoint } from './oauth.js';
 import { mergeExtraBody, sanitizeExtraHeaders } from './request-options.js';
@@ -196,6 +197,7 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
     function: { name: s.name, description: s.description, parameters: s.parameters },
   }));
   const loopGuard = createToolLoopGuard();
+  const adaptivePolicy = createAdaptiveToolPolicy();
 
   // Native OpenAI message list — appended to across tool-use steps. Multimodal
   // so pasted/attached images ride along to vision models.
@@ -205,7 +207,7 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
   // One model turn = one streamed completion. Loops only when the model asks to
   // call tools; without tools it runs exactly once (unchanged single-shot path).
   for (let step = 0; step < (tools ? MAX_TOOL_STEPS : 1); step++) {
-    const activeToolSpecs = loopGuard.disabled ? undefined : toolSpecs;
+    const activeToolSpecs = loopGuard.disabled ? undefined : adaptivePolicy.filterOpenAITools(toolSpecs);
     const body = mergeExtraBody({
       model: agent.model || 'gpt-4o-mini',
       messages: msgs,
@@ -275,6 +277,7 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
       const result = guard.blocked
         ? guard.result
         : await tools.execute(c.name, input, { callId: c.id });
+      adaptivePolicy.recordResult(c.name, result);
       const _image = result && typeof result === 'object' ? result.image : undefined;
       onEvent?.({ type: 'tool', name: c.name, phase: 'done', callId: c.id, image: _image, status: toolStatus(result) });
       const text = typeof result === 'string' ? result : (result?.text ?? '');
@@ -316,6 +319,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
     input_schema: s.parameters,
   }));
   const loopGuard = createToolLoopGuard();
+  const adaptivePolicy = createAdaptiveToolPolicy();
 
   // Native Anthropic message list — appended to across tool-use steps. Multimodal
   // so pasted/attached images ride along as image blocks.
@@ -323,7 +327,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
   let full = '';
 
   for (let step = 0; step < (tools ? MAX_TOOL_STEPS : 1); step++) {
-    const activeToolSpecs = loopGuard.disabled ? undefined : toolSpecs;
+    const activeToolSpecs = loopGuard.disabled ? undefined : adaptivePolicy.filterAnthropicTools(toolSpecs);
     const body = mergeExtraBody({
       model: agent.model || 'claude-opus-4-8',
       max_tokens: agent.maxTokens || 4096,
@@ -403,6 +407,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
       const result = guard.blocked
         ? guard.result
         : await tools.execute(b.name, input, { callId: b.id });
+      adaptivePolicy.recordResult(b.name, result);
       const _image = result && typeof result === 'object' ? result.image : undefined;
       onEvent?.({ type: 'tool', name: b.name, phase: 'done', callId: b.id, image: _image, status: toolStatus(result) });
       const text = typeof result === 'string' ? result : (result?.text ?? '');
@@ -482,6 +487,11 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
       // the bridge writes a standard mcpServers JSON (pointing at its stdio proxy)
       // so "Act on page" tools reach this CLI. Empty = no browser tools.
       mcpArg: agent.mcpArg || '',
+      // Stable MCP is for CLIs that only read persistent/global MCP config.
+      requiresStableMcp: Boolean(agent.requiresStableMcp || agent.stableMcpSetupCommand),
+      stableMcpSetupCommand: agent.stableMcpSetupCommand || '',
+      // Some CLIs need the active tool names explicitly trusted for headless runs.
+      trustToolsArg: agent.trustToolsArg || '',
       label: agent.name || agent.command || 'Custom',
     };
     options.entitlement = await getEntitlementToken();

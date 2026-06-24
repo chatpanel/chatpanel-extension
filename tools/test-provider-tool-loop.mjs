@@ -43,8 +43,12 @@ assert.equal(manyMcpCalls.disabled, false);
 const providersJs = readFileSync(new URL('../extension/js/providers.js', import.meta.url), 'utf8');
 assert.doesNotMatch(providersJs, /MCP tool limit reached/, 'Providers should not emit an MCP-specific per-turn cap error.');
 assert.match(providersJs, /function streamOpenAI[\s\S]*const loopGuard = createToolLoopGuard\(\);/, 'OpenAI-compatible loop should create a tool loop guard.');
-assert.match(providersJs, /const activeToolSpecs = loopGuard\.disabled \? undefined : toolSpecs;/, 'OpenAI-compatible loop should stop exposing tools after a repeated-call block.');
+assert.match(providersJs, /createAdaptiveToolPolicy/, 'Providers should create an adaptive tool policy per turn.');
+assert.match(providersJs, /adaptivePolicy\.filterOpenAITools\(toolSpecs\)/, 'OpenAI-compatible loop should filter tools suppressed by adaptive policy.');
+assert.match(providersJs, /adaptivePolicy\.recordResult\(c\.name, result\)/, 'OpenAI-compatible loop should record invalid tool results.');
 assert.match(providersJs, /function streamAnthropic[\s\S]*const loopGuard = createToolLoopGuard\(\);/, 'Anthropic loop should create a tool loop guard.');
+assert.match(providersJs, /adaptivePolicy\.filterAnthropicTools\(toolSpecs\)/, 'Anthropic loop should filter tools suppressed by adaptive policy.');
+assert.match(providersJs, /adaptivePolicy\.recordResult\(b\.name, result\)/, 'Anthropic loop should record invalid tool results.');
 assert.match(providersJs, /relayBridgeTool\(base, ev, tools, onEvent, loopGuard\)/, 'Bridge relays should share the turn tool loop guard.');
 
 console.log('provider tool loop tests passed');

@@ -45,6 +45,8 @@ export function mcpInventorySystem(serverName, specs = []) {
     'Use its MCP tools directly when the user asks for matching data or actions. Do not ask the user to configure or discover these tools if they are listed here.',
     'Do not call MCP tools when the attached page or provided context is enough to answer; summarize or analyze that context directly.',
     'Prefer relevant MCP tools over web search for their domain. If an MCP tool fails, state the exact tool error first, then say whether you are falling back to another source.',
+    "Match the user's request domain to the tool's domain: Hacker News requests should use Hacker News tools, Confluence requests should use Confluence tools, and Jira requests should use Jira tools.",
+    'Do not retry the exact same failed tool call. Re-check the listed inputs, choose a better matching tool, or answer with the tool error.',
     'When MCP or search results inform the answer, include inline citations and a bottom Sources section; do not wait for the user to ask for links.',
     sourceCitationSystem(),
     `Callable MCP tool names: ${shownNames}${moreNames}.`,

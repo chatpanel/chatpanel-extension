@@ -529,7 +529,9 @@
           <div class="row"><label>Pass model via</label><input class="ba-modelarg" placeholder="e.g. --model {model}  ·  -m {model}  ({model} = the chosen id)" /></div>
           <div class="row"><label>Pass image via</label><input class="ba-imagearg" placeholder="e.g. -i {path}  ·  @{path}  (pi)  ·  --image {path}  — blank = no image support" /></div>
           <div class="row"><label>Pass MCP config via</label><input class="ba-mcparg" placeholder="e.g. --mcp-config {file}  — enables “Act on page” browser tools (blank = none)" /></div>
-          <p class="muted">OpenCode ignores per-run MCP config files. For OpenCode browser tools, run once: <code>opencode mcp add chatpanel --url http://127.0.0.1:4319/mcp</code>.</p>
+          <div class="row"><label>Stable MCP setup</label><input class="ba-stablemcp" placeholder="e.g. my-agent mcp add chatpanel --url http://127.0.0.1:4319/mcp  (blank = no stable MCP)" /></div>
+          <div class="row"><label>Trust tools via</label><input class="ba-trusttoolsarg" placeholder="e.g. --trust-tools={tools}  ({tools} = comma-separated ChatPanel tool names)" /></div>
+          <p class="muted">Use <strong>Pass MCP config via</strong> for CLIs that accept a per-run config file. Use <strong>Stable MCP setup</strong> for CLIs that read MCP only from persistent/global config, then run that setup command once.</p>
         </div>
         <div class="row ba-model-row"><label>Model</label><input class="ba-model" placeholder="blank = the CLI's default model" /><button class="btn ba-loadmodels" type="button" title="List this CLI's available models">Load models</button></div>
         <div class="row ba-model-row"><label>Autocomplete model</label><input class="ba-acmodel" placeholder="last-resort only — CLI autocomplete is slow (~seconds); prefer a fast API endpoint" /><span class="ba-models-status status"></span></div>
