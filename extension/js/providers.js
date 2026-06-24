@@ -12,12 +12,14 @@
 
 import { getEntitlementToken } from './license.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
-
+import { authHeadersForEndpoint } from './oauth.js';
+import { mergeExtraBody, sanitizeExtraHeaders } from './request-options.js';
 // Safety cap on the agent tool-use loop: a turn may call tools at most this many
 // times before we stop, so a confused model can't loop forever. Generous enough
 // for real multi-step tasks (filling a table, a multi-field booking, drawing a
 // shape) — each click/type/Enter is a step, so these add up fast.
 const MAX_TOOL_STEPS = Number(globalThis.CHATPANEL_MAX_TOOL_STEPS) || 60;
+const MAX_IDENTICAL_TOOL_CALLS = Number(globalThis.CHATPANEL_MAX_IDENTICAL_TOOL_CALLS) || 2;
 
 // Parse a tool-call argument string, tolerating the empty/partial case (a tool
 // with no inputs streams "" or "{}").
@@ -28,6 +30,74 @@ function safeJson(s) {
   } catch {
     return {};
   }
+}
+
+function stableStringify(value) {
+  if (value == null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+    .join(',')}}`;
+}
+
+export function stableToolCallKey(name, input) {
+  return `${String(name || '')}\n${stableStringify(input ?? {})}`;
+}
+
+function blockedToolResult(name, message, extra = {}) {
+  return JSON.stringify({
+    ok: false,
+    blocked: true,
+    error: 'tool_loop_blocked',
+    tool: name || 'tool',
+    message,
+    retry_hint: 'Answer using the already available conversation context and tool results. Do not call more tools unless the user asks you to continue.',
+    ...extra,
+  });
+}
+
+export function createToolLoopGuard({
+  maxIdenticalCalls = MAX_IDENTICAL_TOOL_CALLS,
+} = {}) {
+  const counts = new Map();
+  let disabled = false;
+
+  return {
+    get disabled() {
+      return disabled;
+    },
+    check(name, input) {
+      if (disabled) {
+        return {
+          blocked: true,
+          result: blockedToolResult(
+            name,
+            'Tool use disabled for the rest of this turn after repeated or excessive tool calls.',
+          ),
+        };
+      }
+
+      const key = stableToolCallKey(name, input);
+      const count = (counts.get(key) || 0) + 1;
+      counts.set(key, count);
+      if (count > maxIdenticalCalls) {
+        disabled = true;
+        return {
+          blocked: true,
+          count,
+          key,
+          result: blockedToolResult(
+            name,
+            `Repeated tool call suppressed after ${maxIdenticalCalls} identical attempt${maxIdenticalCalls === 1 ? '' : 's'}: ${name || 'tool'}.`,
+            { repeated: true, identicalCallCount: count, maxIdenticalCalls },
+          ),
+        };
+      }
+
+      return { blocked: false, count, key };
+    },
+  };
 }
 
 // --------------------------------------------------------------------------
@@ -118,12 +188,14 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
   const base = (agent.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
   const system = combineSystemPrompt(agent.systemPrompt, tools?.system);
   const sys = system ? [{ role: 'system', content: system }] : [];
-  const headers = { 'Content-Type': 'application/json', ...(agent.headers || {}) };
-  if (agent.apiKey) headers['Authorization'] = `Bearer ${agent.apiKey}`;
+  const headers = { ...sanitizeExtraHeaders(agent.headers), 'Content-Type': 'application/json' };
+  Object.assign(headers, await authHeadersForEndpoint(agent));
+  if (!headers.Authorization && agent.apiKey) headers['Authorization'] = `Bearer ${agent.apiKey}`;
   const toolSpecs = tools?.specs?.map((s) => ({
     type: 'function',
     function: { name: s.name, description: s.description, parameters: s.parameters },
   }));
+  const loopGuard = createToolLoopGuard();
 
   // Native OpenAI message list — appended to across tool-use steps. Multimodal
   // so pasted/attached images ride along to vision models.
@@ -133,14 +205,15 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
   // One model turn = one streamed completion. Loops only when the model asks to
   // call tools; without tools it runs exactly once (unchanged single-shot path).
   for (let step = 0; step < (tools ? MAX_TOOL_STEPS : 1); step++) {
-    const body = {
+    const activeToolSpecs = loopGuard.disabled ? undefined : toolSpecs;
+    const body = mergeExtraBody({
       model: agent.model || 'gpt-4o-mini',
       messages: msgs,
       stream: true,
-      ...(toolSpecs?.length ? { tools: toolSpecs } : {}),
+      ...(activeToolSpecs?.length ? { tools: activeToolSpecs } : {}),
       ...(agent.temperature != null ? { temperature: agent.temperature } : {}),
       ...(agent.maxTokens ? { max_tokens: agent.maxTokens } : {}),
-    };
+    }, agent.extraBody);
     const res = await reachableFetch(`${base}/chat/completions`, {
       method: 'POST',
       headers,
@@ -181,7 +254,7 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
     const wanted = Object.keys(calls)
       .sort((a, b) => a - b)
       .map((k) => calls[k]);
-    if (!tools || finish !== 'tool_calls' || wanted.length === 0) {
+    if (!tools || !activeToolSpecs?.length || finish !== 'tool_calls' || wanted.length === 0) {
       onEvent?.({ type: 'finish', reason: finish || 'stop' });
       return full;
     }
@@ -198,7 +271,10 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
     for (const c of wanted) {
       const input = safeJson(c.args);
       onEvent?.({ type: 'tool', name: c.name, phase: 'start', callId: c.id, input });
-      const result = await tools.execute(c.name, input);
+      const guard = loopGuard.check(c.name, input);
+      const result = guard.blocked
+        ? guard.result
+        : await tools.execute(c.name, input, { callId: c.id });
       const _image = result && typeof result === 'object' ? result.image : undefined;
       onEvent?.({ type: 'tool', name: c.name, phase: 'done', callId: c.id, image: _image, status: toolStatus(result) });
       const text = typeof result === 'string' ? result : (result?.text ?? '');
@@ -228,15 +304,18 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
   const system = combineSystemPrompt(agent.systemPrompt, tools?.system);
   const headers = {
     'Content-Type': 'application/json',
-    'x-api-key': agent.apiKey || '',
     'anthropic-version': '2023-06-01',
     'anthropic-dangerous-direct-browser-access': 'true',
+    ...sanitizeExtraHeaders(agent.headers),
   };
+  Object.assign(headers, await authHeadersForEndpoint(agent));
+  if (!headers.Authorization) headers['x-api-key'] = agent.apiKey || '';
   const toolSpecs = tools?.specs?.map((s) => ({
     name: s.name,
     description: s.description,
     input_schema: s.parameters,
   }));
+  const loopGuard = createToolLoopGuard();
 
   // Native Anthropic message list — appended to across tool-use steps. Multimodal
   // so pasted/attached images ride along as image blocks.
@@ -244,15 +323,16 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
   let full = '';
 
   for (let step = 0; step < (tools ? MAX_TOOL_STEPS : 1); step++) {
-    const body = {
+    const activeToolSpecs = loopGuard.disabled ? undefined : toolSpecs;
+    const body = mergeExtraBody({
       model: agent.model || 'claude-opus-4-8',
       max_tokens: agent.maxTokens || 4096,
       stream: true,
       ...(system ? { system } : {}),
       ...(agent.temperature != null ? { temperature: agent.temperature } : {}),
-      ...(toolSpecs?.length ? { tools: toolSpecs } : {}),
+      ...(activeToolSpecs?.length ? { tools: activeToolSpecs } : {}),
       messages: msgs,
-    };
+    }, agent.extraBody);
     const res = await fetch(`${base}/v1/messages`, {
       method: 'POST',
       headers,
@@ -299,7 +379,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
     }
 
     const toolUses = blocks.filter((b) => b?.type === 'tool_use');
-    if (!tools || stopReason !== 'tool_use' || toolUses.length === 0) {
+    if (!tools || !activeToolSpecs?.length || stopReason !== 'tool_use' || toolUses.length === 0) {
       onEvent?.({ type: 'finish', reason: stopReason || 'stop' });
       return full;
     }
@@ -319,7 +399,10 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
     for (const b of toolUses) {
       const input = safeJson(b.json);
       onEvent?.({ type: 'tool', name: b.name, phase: 'start', callId: b.id, input });
-      const result = await tools.execute(b.name, input);
+      const guard = loopGuard.check(b.name, input);
+      const result = guard.blocked
+        ? guard.result
+        : await tools.execute(b.name, input, { callId: b.id });
       const _image = result && typeof result === 'object' ? result.image : undefined;
       onEvent?.({ type: 'tool', name: b.name, phase: 'done', callId: b.id, image: _image, status: toolStatus(result) });
       const text = typeof result === 'string' ? result : (result?.text ?? '');
@@ -346,11 +429,16 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
 // Relay one CLI-agent tool call back to the extension's executor and POST the
 // result to the bridge. Fire-and-forget so the SSE loop keeps reading; the
 // bridge is blocked awaiting /tool-result, so there's nothing to read until then.
-async function relayBridgeTool(base, ev, tools, onEvent) {
+async function relayBridgeTool(base, ev, tools, onEvent, loopGuard = createToolLoopGuard()) {
   onEvent?.({ type: 'tool', name: ev.name, phase: 'start', callId: ev.id, input: ev.input });
   let result;
   try {
-    result = tools ? await tools.execute(ev.name, ev.input) : JSON.stringify({ error: 'no tools armed' });
+    const guard = loopGuard.check(ev.name, ev.input);
+    result = guard.blocked
+      ? guard.result
+      : tools
+        ? await tools.execute(ev.name, ev.input, { callId: ev.id, session: ev.session })
+        : JSON.stringify({ error: 'no tools armed' });
   } catch (e) {
     result = JSON.stringify({ error: String(e?.message || e) });
   }
@@ -415,7 +503,7 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
     options,
     messages: toChatMessages(messages),
     ...(images.length ? { images } : {}),
-    // Hand the CLI agent our browser tools: the bridge hosts an MCP server with
+    // Hand the CLI agent our turn tools. The bridge hosts an MCP server with
     // these specs and relays each call back to us (tools.execute) over the SSE.
     ...(tools?.specs?.length ? { pageTools: { specs: tools.specs } } : {}),
   };
@@ -435,6 +523,7 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
   if (!res.ok) throw new Error(`Bridge: HTTP ${res.status} — ${await safeText(res)}`);
 
   let full = '';
+  const loopGuard = createToolLoopGuard();
   for await (const data of sseLines(res)) {
     let ev;
     try {
@@ -454,10 +543,10 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
       }
       break;
     } else if (ev.type === 'tool_request') {
-      // The CLI agent called one of our browser tools (via the bridge's MCP
+      // The CLI agent called one of our turn tools (via the bridge's MCP
       // server) — run it here and POST the result back. Don't await: the bridge
       // is blocked on /tool-result, so no further SSE arrives until we answer.
-      relayBridgeTool(base, ev, tools, onEvent);
+      relayBridgeTool(base, ev, tools, onEvent, loopGuard);
     } else {
       // tool use / status / reasoning — surface for the activity strip.
       onEvent?.(ev);
@@ -592,35 +681,95 @@ function modelSizeScore(id) {
   return 50;
 }
 
+function isOpenRouterEndpoint(agent, base = '') {
+  try {
+    return agent?.authMode === 'openrouter' || /(^|\.)openrouter\.ai$/i.test(new URL(base || 'https://example.com').hostname);
+  } catch {
+    return agent?.authMode === 'openrouter' || /openrouter\.ai/i.test(base);
+  }
+}
+
+function priceIsZero(value) {
+  if (value == null || value === '') return false;
+  return Number(value) === 0;
+}
+
+function compactTokens(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n >= 1_000_000) return `${Math.round(n / 1_000_000)}M`;
+  if (n >= 1000) return `${Math.round(n / 1000)}K`;
+  return String(n);
+}
+
+function modelLabel(option) {
+  const parts = [];
+  if (option.free) parts.push('FREE');
+  if (option.name && option.name !== option.id) parts.push(option.name);
+  if (option.contextLength) parts.push(`${compactTokens(option.contextLength)} ctx`);
+  if (option.maxCompletionTokens) parts.push(`${compactTokens(option.maxCompletionTokens)} max`);
+  return parts.length ? parts.join(' · ') : option.id;
+}
+
+export function normalizeModelOptions(json, agent = {}, base = '') {
+  const openRouter = isOpenRouterEndpoint(agent, base || agent.baseUrl);
+  const list = json?.data || json?.models || [];
+  return list
+    .map((m) => {
+      const id = m?.id || m?.name || '';
+      const name = m?.name || id;
+      const free = openRouter && (
+        /:free$/i.test(id) ||
+        /\bfree\b/i.test(name) ||
+        (priceIsZero(m?.pricing?.prompt) && priceIsZero(m?.pricing?.completion))
+      );
+      const option = {
+        id,
+        name,
+        free,
+        contextLength: Number(m?.context_length || m?.contextLength || 0) || 0,
+        maxCompletionTokens: Number(m?.top_provider?.max_completion_tokens || m?.max_completion_tokens || 0) || 0,
+      };
+      option.label = modelLabel(option);
+      return option;
+    })
+    .filter((m) => m.id)
+    .sort((a, b) => Number(b.free) - Number(a.free) || a.id.localeCompare(b.id));
+}
+
 // Pick the smallest/fastest model id from a list (for autocomplete).
 export function smallestModel(ids) {
   if (!ids || !ids.length) return null;
   return ids.slice().sort((a, b) => modelSizeScore(a) - modelSizeScore(b))[0];
 }
 
-export async function listModels(agent) {
+export async function listModelOptions(agent) {
   if (agent.kind === 'anthropic') {
     const base = (agent.baseUrl || 'https://api.anthropic.com').replace(/\/$/, '');
+    const headers = {
+      ...sanitizeExtraHeaders(agent.headers),
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    };
+    Object.assign(headers, await authHeadersForEndpoint(agent));
+    if (!headers.Authorization) headers['x-api-key'] = agent.apiKey || '';
     const res = await reachableFetch(`${base}/v1/models`, {
-      headers: {
-        'x-api-key': agent.apiKey || '',
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
+      headers,
     }, agent, base);
     if (!res.ok) throw new Error(openAiError(agent, base, res.status, await safeText(res)));
-    const json = await res.json();
-    return (json.data || []).map((m) => m.id).filter(Boolean).sort();
+    return normalizeModelOptions(await res.json(), agent, base);
   }
   const base = (agent.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
-  const headers = { ...(agent.headers || {}) };
-  if (agent.apiKey) headers['Authorization'] = `Bearer ${agent.apiKey}`;
+  const headers = { ...sanitizeExtraHeaders(agent.headers) };
+  Object.assign(headers, await authHeadersForEndpoint(agent));
+  if (!headers.Authorization && agent.apiKey) headers['Authorization'] = `Bearer ${agent.apiKey}`;
   const res = await reachableFetch(`${base}/models`, { headers }, agent, base);
   if (!res.ok) throw new Error(openAiError(agent, base, res.status, await safeText(res)));
-  const json = await res.json();
-  // OpenAI/Ollama: {data:[{id}]}. A few servers use {models:[{id|name}]}.
-  const list = json.data || json.models || [];
-  return list.map((m) => m.id || m.name).filter(Boolean).sort();
+  return normalizeModelOptions(await res.json(), agent, base);
+}
+
+export async function listModels(agent) {
+  return (await listModelOptions(agent)).map((m) => m.id);
 }
 
 // fetch() that turns a CONNECTION failure (server not running, wrong URL, or a

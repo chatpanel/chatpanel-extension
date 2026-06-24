@@ -4,15 +4,33 @@
 //             model and optional system prompt/tuning. Chat with one directly.
 //   Agents  — the local bridge (CLI) agents: Claude Code, Codex, Gemini CLI,
 //             plus the bridge connection itself.
-import { getSettings, saveSettings, uid, exportDataArchive, importAllData } from './js/store.js';
+import { getSettings, saveSettings, uid, exportDataArchive, importAllData, resetSkillsToDefaults } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
-import { checkBridge, updateBridge, testAgent, listModels, listBridgeModels, checkAgentCommand } from './js/providers.js';
+import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand } from './js/providers.js';
+import {
+  applyOAuthPreset,
+  connectOAuthEndpoint,
+  disconnectOAuthEndpoint,
+  getOAuthToken,
+  hasOAuthConfig,
+  isOAuthMode,
+  oauthConfigMessage,
+  oauthProvider,
+  oauthProviderId,
+  oauthRedirectUri,
+  oauthSetupHelp,
+  oauthStatusLabel,
+} from './js/oauth.js';
 import { testMcpServer } from './js/mcp-manager.js';
 import { MCP_CATALOG } from './js/mcp-catalog.js';
 import { argsToText, parseArgsInput, parseMcpConfig } from './js/mcp-config-import.js';
 import { fetchMcpRegistryPage } from './js/mcp-registry.js';
 import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
+import { applyProviderPreset, orderedProviderPresets, providerPresetById, providerPresetForEndpoint } from './js/provider-presets.js';
+import { filterComboboxOptions, normalizeComboboxOptions } from './js/combobox.js';
+import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
+import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import {
   getLicense,
   can,
@@ -112,35 +130,158 @@ function wireTabs() {
 const K_SETTINGS_TAB = 'chatpanel:settingsTab';
 
 // --------------------------------------------------------------------------
-// Model picker (a real <select> populated from the endpoint, + a Custom… entry)
+// Model picker: custom combobox that filters in an anchored popup while still
+// accepting any free-typed model id.
 // --------------------------------------------------------------------------
-function populateModelSelect(sel, customEl, models, current) {
-  models = models || [];
-  sel.innerHTML = '';
-  const opt = (v, label, selected) => {
-    const o = document.createElement('option');
-    o.value = v;
-    o.textContent = label;
-    if (selected) o.selected = true;
-    sel.appendChild(o);
-  };
-  opt('', '— Select a model —', !current);
-  if (current && !models.includes(current)) opt(current, current, true);
-  for (const m of models) opt(m, m, m === current);
-  opt('__custom__', '✏️ Custom…', false);
-  customEl.classList.add('hidden');
-  customEl.value = '';
+function normalizeStoredModelOptions(models, modelOptions) {
+  const byId = new Map();
+  for (const m of modelOptions || []) {
+    if (m?.id) byId.set(m.id, m);
+  }
+  for (const id of models || []) {
+    if (id && !byId.has(id)) byId.set(id, { id, label: id, free: false });
+  }
+  return [...byId.values()];
 }
-function wireModelSelect(sel, customEl, models, current) {
-  populateModelSelect(sel, customEl, models, current);
-  sel.onchange = () => {
-    const custom = sel.value === '__custom__';
-    customEl.classList.toggle('hidden', !custom);
-    if (custom) customEl.focus();
+
+function ensureCombobox(input) {
+  if (input.parentElement?.classList.contains('combo')) {
+    return {
+      wrap: input.parentElement,
+      menu: input.parentElement.querySelector('.combo-menu'),
+      toggle: input.parentElement.querySelector('.combo-toggle'),
+    };
+  }
+  const wrap = document.createElement('div');
+  wrap.className = 'combo';
+  input.insertAdjacentElement('beforebegin', wrap);
+  wrap.appendChild(input);
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.setAttribute('role', 'combobox');
+  input.setAttribute('aria-autocomplete', 'list');
+  input.setAttribute('aria-expanded', 'false');
+
+  const toggle = document.createElement('button');
+  toggle.className = 'combo-toggle';
+  toggle.type = 'button';
+  toggle.setAttribute('aria-label', 'Show options');
+  toggle.textContent = '▾';
+  wrap.appendChild(toggle);
+
+  const menu = document.createElement('div');
+  menu.className = 'combo-menu hidden';
+  menu.setAttribute('role', 'listbox');
+  wrap.appendChild(menu);
+  return { wrap, menu, toggle };
+}
+
+function renderCombobox(input, state, open = true) {
+  const matches = filterComboboxOptions(state.options, input.value);
+  const menu = state.menu;
+  menu.innerHTML = '';
+  if (!matches.length) {
+    const empty = document.createElement('div');
+    empty.className = 'combo-empty';
+    empty.textContent = input.value ? 'No matches. Press Enter or Save to keep this value.' : state.emptyText;
+    menu.appendChild(empty);
+  } else {
+    for (const option of matches) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'combo-item';
+      item.setAttribute('role', 'option');
+      item.dataset.value = option.value;
+      item.innerHTML = `<span>${escapeHtml(option.value)}</span>${option.meta ? `<small>${escapeHtml(option.meta)}</small>` : ''}`;
+      item.onclick = () => {
+        input.value = option.value;
+        closeCombobox(state);
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      menu.appendChild(item);
+    }
+  }
+  menu.classList.toggle('hidden', !open);
+  input.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function closeCombobox(state) {
+  state.menu.classList.add('hidden');
+  state.input.setAttribute('aria-expanded', 'false');
+}
+
+function wireCombobox(input, options, current, placeholder, emptyText = 'No options loaded yet. Type any value.') {
+  const normalized = normalizeComboboxOptions(options);
+  const existing = input._chatpanelCombo;
+  const parts = existing || ensureCombobox(input);
+  const state = {
+    input,
+    menu: parts.menu,
+    toggle: parts.toggle,
+    options: normalized,
+    emptyText,
   };
+  input._chatpanelCombo = state;
+  input.value = current ?? input.value ?? '';
+  input.placeholder = placeholder;
+  input.removeAttribute('list');
+
+  if (!existing) {
+    input.addEventListener('focus', () => renderCombobox(input, input._chatpanelCombo, true));
+    input.addEventListener('input', () => renderCombobox(input, input._chatpanelCombo, true));
+    input.addEventListener('keydown', (event) => {
+      const currentState = input._chatpanelCombo;
+      if (event.key === 'Escape') {
+        closeCombobox(currentState);
+        return;
+      }
+      if (event.key !== 'Enter' && event.key !== 'ArrowDown') return;
+      const first = currentState.menu.querySelector('.combo-item');
+      if (!first) return;
+      event.preventDefault();
+      first.click();
+    });
+    state.toggle.addEventListener('click', () => {
+      const currentState = input._chatpanelCombo;
+      const open = currentState.menu.classList.contains('hidden');
+      renderCombobox(input, currentState, open);
+      input.focus();
+    });
+    document.addEventListener('click', (event) => {
+      const currentState = input._chatpanelCombo;
+      if (!currentState?.input?.parentElement?.contains(event.target)) closeCombobox(currentState);
+    });
+  }
+  renderCombobox(input, state, false);
+}
+
+function populateModelSelect(sel, customEl, models, current, modelOptions) {
+  const options = normalizeStoredModelOptions(models, modelOptions);
+  wireCombobox(
+    sel,
+    options,
+    current,
+    options.length ? 'Search or type a model id' : 'Click Load models or type a model id',
+    'Click Load models or type a model id',
+  );
+  customEl?.classList.add('hidden');
+  if (customEl) customEl.value = '';
+}
+function wireModelSelect(sel, customEl, models, current, modelOptions) {
+  populateModelSelect(sel, customEl, models, current, modelOptions);
 }
 function readModel(sel, customEl) {
-  return sel.value === '__custom__' ? customEl.value.trim() : sel.value;
+  return (sel.value === '__custom__' ? customEl?.value : sel.value).trim();
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[ch]);
 }
 
 // --------------------------------------------------------------------------
@@ -148,6 +289,47 @@ function readModel(sel, customEl) {
 // --------------------------------------------------------------------------
 function customEndpointCount() {
   return (settings.endpoints || []).filter((e) => !e.builtin).length;
+}
+
+function providerPresetDisplayName(id) {
+  return providerPresetById(id)?.name || providerPresetById('custom')?.name || 'Custom / self-hosted';
+}
+
+function providerPresetOptions() {
+  return orderedProviderPresets().map((preset) => ({
+    value: preset.name,
+    label: preset.id,
+  }));
+}
+
+function providerPresetIdFromInput(input) {
+  const value = String(input?.value || '').trim();
+  const current = input?.dataset.providerPreset;
+  const currentPreset = providerPresetById(current);
+  if (currentPreset && (!value || value === currentPreset.name || value === currentPreset.id)) return currentPreset.id;
+  const match = orderedProviderPresets().find((preset) => (
+    preset.name.toLowerCase() === value.toLowerCase() ||
+    preset.id.toLowerCase() === value.toLowerCase()
+  ));
+  return match?.id || 'custom';
+}
+
+function setProviderPresetInput(input, id) {
+  const preset = providerPresetById(id) || providerPresetById('custom');
+  input.dataset.providerPreset = preset?.id || 'custom';
+  input.value = preset?.name || 'Custom / self-hosted';
+}
+
+function populateProviderPresetSelect(input, current) {
+  const id = providerPresetById(current) ? current : 'custom';
+  wireCombobox(
+    input,
+    providerPresetOptions(),
+    providerPresetDisplayName(id),
+    'Search providers or choose Custom',
+    'No providers match. Choose Custom for a private endpoint.',
+  );
+  input.dataset.providerPreset = id;
 }
 
 function renderEndpoints() {
@@ -160,46 +342,224 @@ function renderEndpoints() {
 function endpointCard(ep) {
   const node = $('endpoint-tpl').content.firstElementChild.cloneNode(true);
   const q = (sel) => node.querySelector(sel);
+  const selectedPresetId = ep.providerPreset || providerPresetForEndpoint(ep)?.id || 'custom';
+  const selectedPreset = providerPresetById(selectedPresetId);
   q('.ep-name').value = ep.name || '';
+  populateProviderPresetSelect(q('.ep-provider'), selectedPresetId);
   q('.ep-kind').value = ep.kind || 'openai';
   q('.ep-baseurl').value = ep.baseUrl || '';
+  q('.ep-authmode').value = isOAuthMode(ep.authMode) ? ep.authMode : 'apiKey';
   q('.ep-apikey').value = ep.apiKey || '';
+  q('.ep-oauth-clientid').value = ep.oauth?.clientId || '';
+  q('.ep-oauth-project').value = ep.oauth?.projectId || '';
   q('.ep-temp').value = ep.temperature ?? '';
   q('.ep-maxtok').value = ep.maxTokens ?? '';
+  q('.ep-extra-body').value = prettyJson(ep.extraBody);
+  q('.ep-extra-headers').value = prettyJson({ ...(selectedPreset?.defaultHeaders || {}), ...(ep.headers || {}) });
   q('.ep-system').value = ep.systemPrompt || '';
   q('.ep-acmodel').value = ep.autocompleteModel || '';
   gateField('advancedAgent', q('.ep-system')); // per-agent system prompt is Pro
   applyFreeSlot(node, ep, 'endpoint'); // Free uses one endpoint — the user's pick
-  wireModelSelect(q('.ep-model'), q('.ep-model-custom'), ep.models, ep.model);
-  // Offer this endpoint's known models as autocomplete-model suggestions (free text
-  // still accepted — e.g. a small/fast model your local server also hosts).
-  if ((ep.models || []).length) {
-    const dl = document.createElement('datalist');
-    dl.id = `ep-acmodels-${uid()}`;
-    dl.replaceChildren(...ep.models.map((m) => { const o = document.createElement('option'); o.value = m; return o; }));
-    node.appendChild(dl);
-    q('.ep-acmodel').setAttribute('list', dl.id);
-  }
+  wireModelSelect(q('.ep-model'), q('.ep-model-custom'), ep.models, ep.model, ep.modelOptions);
+  wireCombobox(
+    q('.ep-acmodel'),
+    normalizeStoredModelOptions(ep.models, ep.modelOptions),
+    ep.autocompleteModel || '',
+    'optional — a small/fast model just for inline autocomplete (avoid reasoning models)',
+  );
 
-  const conn = () => ({
+  const readOauth = () => ({
+    providerId: q('.ep-authmode').value,
+    clientId: q('.ep-oauth-clientid').value.trim(),
+    projectId: q('.ep-oauth-project').value.trim(),
+  });
+
+  const readAdvancedOptions = () => ({
+    extraBody: sanitizeExtraBody(parseJsonObject(q('.ep-extra-body').value, 'Extra request JSON')),
+    headers: sanitizeExtraHeaders(parseJsonObject(q('.ep-extra-headers').value, 'Extra headers JSON')),
+  });
+
+  const readProviderPresetId = () => providerPresetIdFromInput(q('.ep-provider'));
+  const writeProviderPresetId = (id) => {
+    setProviderPresetInput(q('.ep-provider'), id);
+    wireCombobox(
+      q('.ep-provider'),
+      providerPresetOptions(),
+      providerPresetDisplayName(providerPresetIdFromInput(q('.ep-provider'))),
+      'Search providers or choose Custom',
+      'No providers match. Choose Custom for a private endpoint.',
+    );
+  };
+
+  const rawConn = (includeAdvanced = false) => ({
+    id: ep.id,
     name: q('.ep-name').value.trim() || 'Endpoint',
+    providerPreset: readProviderPresetId(),
     kind: q('.ep-kind').value,
     baseUrl: q('.ep-baseurl').value.trim(),
-    apiKey: q('.ep-apikey').value,
+    authMode: q('.ep-authmode').value,
+    apiKey: isOAuthMode(q('.ep-authmode').value) ? '' : q('.ep-apikey').value,
+    oauth: readOauth(),
+    ...(includeAdvanced ? readAdvancedOptions() : { extraBody: ep.extraBody || {}, headers: ep.headers || {} }),
   });
+
+  const writeConn = (next) => {
+    q('.ep-name').value = next.name || '';
+    writeProviderPresetId(next.providerPreset || providerPresetForEndpoint(next)?.id || 'custom');
+    q('.ep-kind').value = next.kind || 'openai';
+    q('.ep-baseurl').value = next.baseUrl || '';
+    q('.ep-authmode').value = next.authMode || 'apiKey';
+    q('.ep-extra-headers').value = prettyJson(next.headers);
+    if (next.extraBody) q('.ep-extra-body').value = prettyJson(next.extraBody);
+  };
+
+  const resetModelPickers = () => {
+    Object.assign(ep, clearEndpointModelState(ep));
+    const modelEl = q('.ep-model');
+    const customModelEl = q('.ep-model-custom');
+    const autocompleteEl = q('.ep-acmodel');
+    modelEl.value = '';
+    if (customModelEl) customModelEl.value = '';
+    autocompleteEl.value = '';
+    wireModelSelect(modelEl, customModelEl, [], '', []);
+    wireCombobox(
+      autocompleteEl,
+      [],
+      '',
+      'optional — a small/fast model just for inline autocomplete (avoid reasoning models)',
+    );
+  };
+
+  const setAuthStatus = (text, cls = '') => {
+    setStatus(q('.ep-auth-status'), text, cls);
+  };
+
+  const setEndpointError = (statusEl, error, options = {}) => {
+    const message = error?.message || String(error || '');
+    setStatus(statusEl, '✕ ' + message, 'err');
+    const authText = endpointErrorAuthStatus(error, options);
+    setAuthStatus(authText, authText ? 'err' : '');
+  };
+
+  const conn = (includeAdvanced = false) => applyOAuthPreset(rawConn(includeAdvanced));
+
+  const syncProviderHelp = () => {
+    const preset = providerPresetById(readProviderPresetId());
+    const links = q('.ep-provider-links');
+    const note = q('.ep-provider-note');
+    links.innerHTML = '';
+    const addLink = (label, url) => {
+      if (!url) return;
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = label;
+      links.appendChild(a);
+    };
+    addLink('Sign up', preset?.signupUrl);
+    addLink('Get API key', preset?.keyUrl);
+    addLink('Docs', preset?.docsUrl);
+    links.classList.toggle('hidden', !links.children.length);
+    note.textContent = preset?.note || '';
+    note.classList.toggle('hidden', !preset?.note);
+  };
+
+  const markCustomProviderIfEdited = () => {
+    const matched = providerPresetForEndpoint({ ...rawConn(), providerPreset: '' });
+    if (!matched || matched.id !== readProviderPresetId()) writeProviderPresetId('custom');
+  };
+
+  const updateOAuthRedirect = () => {
+    const temp = { ...ep, ...conn() };
+    try {
+      q('.ep-oauth-redirect').value = oauthRedirectUri(oauthProviderId(temp));
+    } catch {
+      q('.ep-oauth-redirect').value = 'Available after loading as a Chrome extension';
+    }
+  };
+  const updateOAuthStatus = async () => {
+    const temp = { ...ep, ...conn() };
+    const token = await getOAuthToken(temp).catch(() => null);
+    q('.ep-oauth-disconnect').disabled = !token?.access_token;
+    const configMessage = oauthConfigMessage(temp);
+    setStatus(q('.ep-oauth-status'), configMessage || oauthStatusLabel(temp, token), configMessage ? 'err' : token?.access_token ? 'ok' : '');
+  };
+  const syncAuthMode = () => {
+    const mode = q('.ep-authmode').value;
+    const oauth = isOAuthMode(mode);
+    const temp = applyOAuthPreset({ ...ep, authMode: mode, oauth: readOauth() });
+    const provider = oauthProvider(temp);
+    q('.ep-apikey-row').classList.toggle('hidden', oauth);
+    q('.ep-oauth').classList.toggle('hidden', !oauth);
+    q('.ep-baseurl').disabled = oauth;
+    q('.ep-kind').disabled = oauth;
+    q('.ep-oauth-client-row').classList.toggle('hidden', mode === 'openrouter');
+    q('.ep-oauth-project-row').classList.toggle('hidden', mode !== 'gemini');
+    q('.ep-oauth-clientid').placeholder = mode === 'gemini'
+      ? 'Google OAuth client id'
+      : mode === 'huggingface'
+        ? 'optional override; blank uses ChatPanel hosted client'
+        : 'Public OAuth app client id';
+    q('.ep-oauth-note').textContent = oauth ? oauthSetupHelp(mode) : '';
+    const maxTokensNote = mode === 'openrouter'
+      ? 'OpenRouter credit errors often mean Max tokens is too high. Lower this below the affordable number in the error, for example 4096 or 7400, or add credits.'
+      : '';
+    q('.ep-maxtok-note').textContent = maxTokensNote;
+    q('.ep-maxtok-note').classList.toggle('hidden', !maxTokensNote);
+    if (oauth && provider) q('.ep-baseurl').value = provider.baseUrl || q('.ep-baseurl').value;
+    if (oauth) {
+      updateOAuthRedirect();
+      updateOAuthStatus();
+    }
+  };
+  q('.ep-authmode').onchange = syncAuthMode;
+  q('.ep-provider').onchange = () => {
+    const selected = readProviderPresetId();
+    writeProviderPresetId(selected);
+    if (selected !== 'custom') {
+      writeConn(applyProviderPreset({ ...rawConn(), providerPreset: selected }));
+    }
+    resetModelPickers();
+    setAuthStatus('Run Load models or Test to check authentication.');
+    syncAuthMode();
+    syncProviderHelp();
+  };
+  q('.ep-baseurl').oninput = () => {
+    markCustomProviderIfEdited();
+    syncProviderHelp();
+  };
+  q('.ep-kind').onchange = () => {
+    markCustomProviderIfEdited();
+    syncProviderHelp();
+  };
+  syncAuthMode();
+  syncProviderHelp();
 
   q('.ep-load').onclick = async () => {
     const st = q('.ep-status');
     setStatus(st, 'Loading models…');
+    setAuthStatus('Checking authentication…');
     try {
-      const ids = await listModels(conn());
-      if (!ids.length) return setStatus(st, 'Endpoint returned no models', 'err');
+      const endpoint = conn(true);
+      const options = await listModelOptions(endpoint);
+      if (!options.length) {
+        const auth = modelListAuthStatus(endpoint);
+        setAuthStatus(auth.text, auth.cls);
+        return setStatus(st, 'Endpoint returned no models', 'err');
+      }
+      const ids = options.map((m) => m.id);
       ep.models = ids;
-      wireModelSelect(q('.ep-model'), q('.ep-model-custom'), ids, readModel(q('.ep-model'), q('.ep-model-custom')) || ep.model);
+      ep.modelOptions = options;
+      wireModelSelect(q('.ep-model'), q('.ep-model-custom'), ids, readModel(q('.ep-model'), q('.ep-model-custom')) || ep.model, options);
       await saveSettings(settings);
-      setStatus(st, `✓ ${ids.length} models — pick one below`, 'ok');
+      const freeCount = options.filter((m) => m.free).length;
+      const freeText = freeCount ? ` (${freeCount} free marked in the picker)` : '';
+      const auth = modelListAuthStatus(endpoint);
+      setAuthStatus(auth.text, auth.cls);
+      setStatus(st, `✓ ${ids.length} models${freeText} — search or type one below`, 'ok');
     } catch (e) {
-      setStatus(st, '✕ ' + e.message, 'err');
+      setEndpointError(st, e, { includeNonAuth: true });
     }
   };
 
@@ -208,28 +568,89 @@ function endpointCard(ep) {
     const model = readModel(q('.ep-model'), q('.ep-model-custom'));
     if (!model) return setStatus(st, '✕ Pick a model first', 'err');
     setStatus(st, 'Testing…');
+    setAuthStatus('Checking authentication…');
     try {
-      const reply = await testAgent({ ...conn(), model, systemPrompt: '', maxTokens: 64 }, settings);
+      const endpoint = { ...conn(true), model, systemPrompt: '', maxTokens: 64 };
+      if (isOAuthMode(endpoint.authMode) && !hasOAuthConfig(endpoint)) throw new Error('Fill OAuth fields and connect first');
+      const reply = await testAgent(endpoint, settings);
+      setAuthStatus('✓ Authentication accepted', 'ok');
       setStatus(st, `✓ Replied: "${reply.slice(0, 40)}"`, 'ok');
     } catch (e) {
-      setStatus(st, '✕ ' + e.message, 'err');
+      setEndpointError(st, e);
     }
   };
 
   q('.ep-save').onclick = async () => {
-    Object.assign(ep, {
+    let advanced;
+    try {
+      advanced = readAdvancedOptions();
+    } catch (e) {
+      return setStatus(q('.ep-status'), '✕ ' + e.message, 'err');
+    }
+    Object.assign(ep, applyOAuthPreset({
       name: q('.ep-name').value.trim() || 'Endpoint',
+      providerPreset: readProviderPresetId(),
       kind: q('.ep-kind').value,
       baseUrl: q('.ep-baseurl').value.trim(),
-      apiKey: q('.ep-apikey').value,
+      authMode: q('.ep-authmode').value,
+      apiKey: isOAuthMode(q('.ep-authmode').value) ? '' : q('.ep-apikey').value,
+      oauth: readOauth(),
+      ...advanced,
       model: readModel(q('.ep-model'), q('.ep-model-custom')),
       autocompleteModel: q('.ep-acmodel').value.trim(),
       temperature: q('.ep-temp').value === '' ? undefined : Number(q('.ep-temp').value),
       maxTokens: q('.ep-maxtok').value === '' ? undefined : Number(q('.ep-maxtok').value),
       systemPrompt: q('.ep-system').value,
-    });
+    }));
     await saveSettings(settings);
+    updateOAuthRedirect();
+    updateOAuthStatus();
     setStatus(q('.ep-status'), '✓ Saved', 'ok');
+  };
+
+  q('.ep-oauth-connect').onclick = async () => {
+    const st = q('.ep-oauth-status');
+    let temp;
+    try {
+      temp = applyOAuthPreset({
+        ...ep,
+        ...conn(true),
+        model: readModel(q('.ep-model'), q('.ep-model-custom')),
+        oauth: readOauth(),
+      });
+    } catch (e) {
+      return setStatus(st, '✕ ' + (e.message || e), 'err');
+    }
+    const configMessage = oauthConfigMessage(temp);
+    if (configMessage) return setStatus(st, '✕ ' + configMessage, 'err');
+    setStatus(st, 'Opening provider sign-in…');
+    try {
+      const token = await connectOAuthEndpoint(temp);
+      Object.assign(ep, {
+        name: temp.name,
+        kind: temp.kind,
+        baseUrl: temp.baseUrl,
+        providerPreset: temp.providerPreset,
+        authMode: temp.authMode,
+        apiKey: '',
+        oauth: temp.oauth,
+        extraBody: temp.extraBody,
+        headers: temp.headers,
+        model: temp.model,
+      });
+      await saveSettings(settings);
+      setStatus(st, oauthStatusLabel(ep, token), 'ok');
+      setAuthStatus(oauthStatusLabel(ep, token), 'ok');
+      setStatus(q('.ep-status'), '✓ OAuth connected and saved', 'ok');
+    } catch (e) {
+      setStatus(st, '✕ ' + (e.message || e), 'err');
+      setEndpointError(q('.ep-status'), e);
+    }
+  };
+
+  q('.ep-oauth-disconnect').onclick = async () => {
+    await disconnectOAuthEndpoint({ ...ep, ...conn() });
+    await updateOAuthStatus();
   };
 
   q('.ep-del').onclick = async () => {
@@ -390,9 +811,9 @@ function bridgeAgentCard(agent) {
     opencode: 'provider/model  (blank = default · “Load models” for the list)',
     kiro: 'model id  (blank = default · “Load models” for the list)',
   };
-  // Common model ids per engine, offered as a typeahead dropdown (datalist) while
-  // still accepting any custom string — CLIs have no queryable model list. The
-  // newer CLIs expose a "Load models" command, so their lists fill on demand.
+  // Common model ids per engine, offered through the same custom combobox while
+  // still accepting any custom string. The newer CLIs expose a "Load models"
+  // command, so their lists fill on demand.
   const MODEL_LIST = {
     claude: ['opus', 'sonnet', 'haiku'],
     antigravity: [],
@@ -401,11 +822,22 @@ function bridgeAgentCard(agent) {
     opencode: [],
     kiro: [],
   };
-  const dl = document.createElement('datalist');
-  dl.id = `ba-models-${uid()}`;
-  node.appendChild(dl);
-  q('.ba-model').setAttribute('list', dl.id);
-  q('.ba-acmodel').setAttribute('list', dl.id);
+  let bridgeModelOptions = [];
+  const wireBridgeModelFields = (kind, options = bridgeModelOptions) => {
+    bridgeModelOptions = options;
+    wireCombobox(
+      q('.ba-model'),
+      bridgeModelOptions,
+      q('.ba-model').value,
+      MODEL_HINT[kind] || "blank = default  ·  use Load models →",
+    );
+    wireCombobox(
+      q('.ba-acmodel'),
+      bridgeModelOptions,
+      q('.ba-acmodel').value,
+      'last-resort only — CLI autocomplete is slow (~seconds); prefer a fast API endpoint',
+    );
+  };
 
   // Show/hide the custom block and refresh the availability line for the kind.
   const syncKind = () => {
@@ -415,10 +847,9 @@ function bridgeAgentCard(agent) {
     // local skills/MCP & per-agent system prompt only apply to the built-in CLIs.
     q('.ba-local').closest('.check').classList.toggle('hidden', isCustom);
     // Model fields show for every kind — a custom CLI passes the chosen model via
-    // its configured "Pass model via" arg. Seed the datalist with known ids for
+    // its configured "Pass model via" arg. Seed the picker with known ids for
     // built-ins; custom starts empty until "Load models" populates it.
-    q('.ba-model').placeholder = MODEL_HINT[kind] || "blank = default  ·  use Load models →";
-    dl.replaceChildren(...(MODEL_LIST[kind] || []).map((m) => { const o = document.createElement('option'); o.value = m; return o; }));
+    wireBridgeModelFields(kind, MODEL_LIST[kind] || []);
     if (isCustom && !proCustom) {
       setStatus(q('.ba-avail'), '✨ Pro — upgrade to bring your own CLI', 'err');
     } else if (isCustom) {
@@ -453,7 +884,7 @@ function bridgeAgentCard(agent) {
           : 'This CLI has no model list — type one', '');
         return;
       }
-      dl.replaceChildren(...models.map((m) => { const o = document.createElement('option'); o.value = m; return o; }));
+      wireBridgeModelFields(q('.ba-kind').value, models);
       setStatus(st, `✓ ${models.length} models — pick from the Model field ▾`, 'ok');
     } catch (e) {
       setStatus(st, '✕ ' + (e.message || e), 'err');
@@ -656,6 +1087,8 @@ function mcpServerCard(server, index = 0) {
     status.textContent = 'Connecting…';
     try {
       const tools = await testMcpServer(server, { bridgeUrl: settings.bridgeUrl });
+      server.tools = tools;
+      await saveSettings(settings);
       renderMcpToolStatus(status, tools);
     } catch (e) {
       status.classList.remove('ok');
@@ -935,6 +1368,10 @@ function skillTargets() {
   ];
 }
 
+function enabledMcpServersForSkills() {
+  return (settings.mcpServers || []).filter((s) => s && s.enabled !== false && (s.url || s.command));
+}
+
 function skillCard(skill) {
   const node = $('skill-tpl').content.firstElementChild.cloneNode(true);
   const q = (sel) => node.querySelector(sel);
@@ -944,6 +1381,8 @@ function skillCard(skill) {
   q('.s-desc').value = skill.description || '';
   q('.s-prompt').value = skill.prompt || '';
   q('.s-context').value = skill.context || 'auto';
+  q('.s-history').value = skill.historyContext || 'none';
+  q('.s-mcp-mode').value = skill.mcpMode || 'none';
   if (skill.builtin) q('.s-del').classList.add('hidden');
 
   // "Run on" — Default (the agent picked in the panel) + every endpoint/agent.
@@ -956,6 +1395,67 @@ function skillCard(skill) {
     if (t.id === skill.agentId) o.selected = true;
     agentSel.appendChild(o);
   }
+
+  let draftMcpServerIds = Array.isArray(skill.mcpServerIds) ? [...skill.mcpServerIds] : [];
+  const currentDraftMcpServerIds = () => [
+    ...q('.s-mcp-picks').querySelectorAll('input[type="checkbox"]:checked'),
+  ].map((x) => x.value);
+
+  const renderMcpPicks = () => {
+    const box = q('.s-mcp-picks');
+    if (box.dataset.rendered === '1') draftMcpServerIds = currentDraftMcpServerIds();
+    const selected = new Set(draftMcpServerIds);
+    const servers = enabledMcpServersForSkills();
+    box.classList.toggle('hidden', q('.s-mcp-mode').value !== 'selected');
+    box.replaceChildren();
+    if (q('.s-mcp-mode').value !== 'selected') return;
+    box.dataset.rendered = '1';
+    const label = document.createElement('label');
+    label.textContent = 'Allowed MCP servers';
+    box.appendChild(label);
+    const hint = document.createElement('span');
+    hint.className = 'skill-mcp-hint';
+    hint.textContent = servers.length > 2
+      ? `${servers.length} enabled servers. Scroll this list to choose additional servers.`
+      : 'Choose which enabled MCP servers this skill can call.';
+    box.appendChild(hint);
+    const wrap = document.createElement('div');
+    wrap.className = 'skill-mcp-pick-list';
+    wrap.setAttribute('role', 'group');
+    wrap.setAttribute('aria-label', 'Allowed MCP servers for this skill');
+    wrap.tabIndex = 0;
+    if (servers.length > 2) wrap.classList.add('scrollable');
+    if (!servers.length) {
+      const empty = document.createElement('span');
+      empty.className = 'skill-mcp-empty';
+      empty.textContent = 'No enabled MCP servers yet.';
+      wrap.appendChild(empty);
+    }
+    for (const s of servers) {
+      const item = document.createElement('label');
+      item.className = 'skill-mcp-pick';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = s.id;
+      input.checked = selected.has(s.id);
+      input.onchange = () => { draftMcpServerIds = currentDraftMcpServerIds(); };
+      const text = document.createElement('span');
+      text.className = 'skill-mcp-pick-copy';
+      const name = document.createElement('span');
+      name.className = 'skill-mcp-pick-name';
+      name.textContent = s.name || s.id;
+      const tools = (s.tools || []).map((t) => t.name).filter(Boolean).slice(0, 8);
+      const toolText = document.createElement('span');
+      toolText.className = 'skill-mcp-pick-tools';
+      toolText.textContent = tools.length ? tools.join(', ') : 'No discovered tools yet';
+      text.append(name, toolText);
+      item.append(input, text);
+      wrap.appendChild(item);
+    }
+    box.appendChild(wrap);
+  };
+  q('.s-mcp-mode').onchange = renderMcpPicks;
+  renderMcpPicks();
 
   // ✨ Improve — expand/rewrite the prompt with the user's configured model.
   q('.s-assist').onclick = async () => {
@@ -986,6 +1486,7 @@ function skillCard(skill) {
   };
 
   q('.s-save').onclick = async () => {
+    const mcpMode = q('.s-mcp-mode').value;
     Object.assign(skill, {
       icon: q('.s-icon').value.trim(),
       name: q('.s-name').value.trim() || 'Skill',
@@ -993,9 +1494,14 @@ function skillCard(skill) {
       description: q('.s-desc').value.trim(),
       prompt: q('.s-prompt').value,
       context: q('.s-context').value,
+      historyContext: q('.s-history').value,
+      mcpMode,
+      mcpServerIds: mcpMode === 'selected'
+        ? currentDraftMcpServerIds()
+        : [],
       agentId: q('.s-agent').value,
     });
-    await saveSettings(settings);
+    settings = await saveSettings(settings);
     setStatus(q('.s-status'), '✓ Saved', 'ok');
   };
   q('.s-del').onclick = async () => {
@@ -1010,10 +1516,17 @@ function addSkill() {
   if (!can(license, 'customSkills')) {
     return upsell('Creating custom skills is Pro. You can edit the built-ins on any plan.');
   }
-  settings.skills.push({ id: uid(), name: 'New skill', command: 'mycmd', icon: '⚡', prompt: '' });
+  settings.skills.push({ id: uid(), name: 'New skill', command: 'mycmd', icon: '⚡', prompt: '', historyContext: 'none', mcpMode: 'none', mcpServerIds: [] });
   saveSettings(settings);
   renderSkills();
   $('skills').lastElementChild?.scrollIntoView({ behavior: 'smooth' });
+}
+
+async function resetSkills() {
+  if (!confirm('Reset all skills to ChatPanel defaults? This removes custom skills and discards edits to built-in skills.')) return;
+  settings = await resetSkillsToDefaults();
+  renderSkills();
+  toast('Skills reset to defaults');
 }
 
 // --------------------------------------------------------------------------
@@ -1023,6 +1536,17 @@ function renderPrefs() {
   $('pref-theme').value = settings.ui.theme || 'system';
   $('pref-enter').checked = settings.ui.sendOnEnter !== false;
   $('pref-stream').checked = settings.ui.streamResponses !== false;
+  const topicCfg = settings.ui.topicExtraction || { enabled: true, targetId: '' };
+  $('pref-topic-extract').checked = topicCfg.enabled !== false;
+  const topicTarget = $('pref-topic-target');
+  topicTarget.innerHTML = '<option value="">Default (active model/agent)</option>';
+  for (const t of skillTargets()) {
+    const o = document.createElement('option');
+    o.value = t.id;
+    o.textContent = t.name;
+    if (t.id === topicCfg.targetId) o.selected = true;
+    topicTarget.appendChild(o);
+  }
   // Autocomplete is a Pro feature — gate the toggle for Free users.
   const ac = $('pref-autocomplete');
   const pro = isPro(license);
@@ -1038,6 +1562,10 @@ async function savePrefs() {
   settings.ui.theme = $('pref-theme').value;
   settings.ui.sendOnEnter = $('pref-enter').checked;
   settings.ui.streamResponses = $('pref-stream').checked;
+  settings.ui.topicExtraction = {
+    enabled: $('pref-topic-extract').checked,
+    targetId: $('pref-topic-target').value,
+  };
   settings.ui.autocomplete = isPro(license) && $('pref-autocomplete').checked;
   settings.ui.liveNotesIntervalMin = Number($('pref-live-notes').value);
   settings.ui.meetingWindowMin = Number($('pref-meeting-window').value);
@@ -1244,6 +1772,7 @@ function wire() {
   $('mcp-import-cancel').onclick = () => toggleMcpImport(false);
   $('mcp-import-apply').onclick = importMcpConfig;
   $('add-skill').onclick = addSkill;
+  $('reset-skills').onclick = resetSkills;
   $('mcp-registry-search-btn').onclick = () => loadMcpRegistry();
   $('mcp-registry-more').onclick = () => loadMcpRegistry({ append: true });
   $('mcp-registry-search').onkeydown = (e) => {
@@ -1259,6 +1788,8 @@ function wire() {
   $('pref-theme').onchange = savePrefs;
   $('pref-enter').onchange = savePrefs;
   $('pref-stream').onchange = savePrefs;
+  $('pref-topic-extract').onchange = savePrefs;
+  $('pref-topic-target').onchange = savePrefs;
   $('pref-live-notes').onchange = savePrefs;
   $('pref-meeting-window').onchange = savePrefs;
   $('pref-autocomplete').onchange = () => {

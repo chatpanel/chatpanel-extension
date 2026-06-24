@@ -1,26 +1,30 @@
 // Full-page Chat-history dashboard — mirrors the Meetings dashboard for
-// conversations: full-text search (BM25 "Smart", exact "Keyword", "Agent"), the
-// conversation thread, related chats, and a chat⇄agent relationship graph.
+// conversations: full-text search (BM25 "Best match", exact "Exact text"), the
+// conversation thread, related chats, and a topic relationship graph.
 // Reads the same local storage the side panel uses; nothing leaves the device.
 import {
   getIndex, getConversation, deleteConversation, conversationToMarkdown,
   getSettings, getTarget,
 } from './js/store.js';
-import { buildIndex, bm25Search, buildGraph, topTerms, tokenize } from './js/meeting-index.js';
+import { buildIndex, bm25Search, buildGraph, tokenize } from './js/meeting-index.js';
 import { drawGraph } from './js/graph-view.js';
+import { initialHistoryView } from './js/history-state.js';
 import { renderMarkdown } from './js/markdown.js';
+import { topicItemsForDisplay } from './js/topic-extraction.js';
 
 const $ = (id) => document.getElementById(id);
+const GRAPH_RENDER_LIMIT = 150;
 
 let index = [];
 const store = new Map();   // id -> { entry, conv, agent, terms, text }
 let settings = null;
 let bm25 = null;
-let graph = null;          // chats ⇄ agents (agents modeled as "people")
+let graph = null;          // topic-overlap graph for related chats
 let current = null;        // selected store entry (+ .tab)
-let mode = 'smart';        // smart | keyword | agent
+let mode = 'smart';        // smart | keyword
 let inGraph = false;
 let winId = null;          // this window — to open the side panel within a gesture
+let graphDrawToken = 0;
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -46,7 +50,11 @@ function agentLabel(conv) {
   const t = conv.agentId ? getTarget(settings, conv.agentId) : null;
   return t?.name || 'Assistant';
 }
-const docText = (conv) => [conv.title || '', ...(conv.messages || []).map((m) => `${m.role === 'user' ? 'You' : (m.agentName || 'Assistant')}: ${m.content || ''}`)].join('\n');
+const docText = (entry, conv) => [
+  entry?.title || '',
+  conv.title || '',
+  ...(conv.messages || []).map((m) => `${m.role === 'user' ? 'You' : (m.agentName || 'Assistant')}: ${m.content || ''}`),
+].join('\n');
 
 // --- assistant tool actions (mirror the side panel's "Actions" log) --------
 const LABELED_TOOLS = new Set(['inspect_page', 'fill_form', 'fill_combobox', 'click_element', 'click_by_text', 'screenshot', 'marked_screenshot', 'click_mark', 'click_at', 'type_text', 'press_key', 'scroll', 'draw_path']);
@@ -124,10 +132,6 @@ function searchResults(q) {
   const query = (q || '').trim();
   const byDate = (arr) => arr.sort((a, b) => (b.d.entry.updatedAt || 0) - (a.d.entry.updatedAt || 0));
   if (!query) return byDate([...store.values()].map((d) => ({ d })));
-  if (mode === 'agent') {
-    const ql = query.toLowerCase();
-    return byDate([...store.values()].filter((d) => d.agent.toLowerCase().includes(ql)).map((d) => ({ d, agentMatch: true })));
-  }
   if (mode === 'keyword') {
     const ql = query.toLowerCase();
     return byDate([...store.values()].filter((d) => d.text.toLowerCase().includes(ql)).map((d) => ({ d, snippet: makeSnippet(d, [ql]) })));
@@ -160,7 +164,11 @@ async function select(id) {
   const d = store.get(id);
   if (!d) return;
   current = d; current.tab = current.tab || 'chat';
+  graphDrawToken += 1;
+  const graphHost = $('h-biggraph');
+  if (graphHost?._stop) graphHost._stop();
   inGraph = false; $('h-graph').classList.add('hidden');
+  $('h-graph-toggle').classList.remove('active');
   history.replaceState(null, '', '#' + id);
   renderList();
   renderDetail();
@@ -233,69 +241,102 @@ function renderThread() {
 function renderRelated() {
   const id = current.entry.id;
   const related = graph.relatedMeetings(id);
+  const topics = current.terms || [];
+  const topicChips = topics.length
+    ? `<div class="chips">${topics.map((t) => `<button class="chip" data-topic="${esc(t)}" type="button"># ${esc(t)}</button>`).join('')}</div>`
+    : '<div class="tile-empty">No strong topics detected yet.</div>';
   const relatedList = related.length
     ? `<ul>${related.map((r) => {
         const d = store.get(r.id); if (!d) return '';
-        const shared = r.sharedPeople.length ? `shares ${esc(r.sharedPeople.join(', '))}` : 'shared topics';
         return `<li class="rel" data-id="${esc(r.id)}"><span class="dot">↗</span><span><strong>${esc(d.conv.title || 'Untitled')}</strong>
-          <span class="owner">— ${esc(relTime(d.entry.updatedAt))} · ${shared}</span></span></li>`;
+          <span class="owner">— ${esc(relTime(d.entry.updatedAt))} · shared topics</span></span></li>`;
       }).join('')}</ul>`
     : '<div class="tile-empty">No related chats found yet.</div>';
 
   $('h-tabbody').innerHTML = `
     <div class="tiles">
-      <div class="tile span"><h3>🤖 Agent</h3><div class="chips"><button class="chip" data-agent="${esc(current.agent)}" type="button">🤖 ${esc(current.agent)}</button></div></div>
+      <div class="tile span"><h3># Topics</h3>${topicChips}</div>
       <div class="tile span"><h3>🔗 Related chats</h3>${relatedList}</div>
-      <div class="tile span"><h3>🕸 Relationship graph</h3><div class="graph-host" id="h-relgraph"></div></div>
+      <div class="tile span"><h3>🕸 Topic graph</h3><div class="graph-host" id="h-relgraph"></div></div>
     </div>`;
-  $('h-tabbody').querySelectorAll('.chip[data-agent]').forEach((b) => (b.onclick = () => searchAgent(b.dataset.agent)));
+  $('h-tabbody').querySelectorAll('.chip[data-topic]').forEach((b) => (b.onclick = () => searchTopic(b.dataset.topic)));
   $('h-tabbody').querySelectorAll('.rel[data-id]').forEach((li) => (li.onclick = () => select(li.dataset.id)));
 
-  const nodes = [{ id, type: 'meeting', label: current.conv.title || 'This chat', focus: true }, { id: 'a:' + current.agent, type: 'person', label: current.agent }];
-  const links = [{ s: id, t: 'a:' + current.agent }];
-  related.slice(0, 6).forEach((r) => {
-    const d = store.get(r.id); if (!d) return;
-    nodes.push({ id: r.id, type: 'meeting', label: d.conv.title || 'Untitled' });
-    if (d.agent === current.agent) links.push({ s: r.id, t: 'a:' + current.agent });
-    else links.push({ s: id, t: r.id });
-  });
-  drawGraph($('h-relgraph'), nodes, links, (nd) => { if (nd.type === 'meeting') select(nd.id); else searchAgent(nd.label); });
+  const chats = [current, ...related.slice(0, 6).map((r) => store.get(r.id)).filter(Boolean)];
+  const { nodes, links } = topicGraph(chats, 'h-topic:');
+  if (nodes.some((n) => n.id === id)) nodes.find((n) => n.id === id).focus = true;
+  drawGraph($('h-relgraph'), nodes, links, (nd) => { if (nd.type === 'meeting') select(nd.id); else searchTopic(nd.label); });
 }
 
 // --- global graph ----------------------------------------------------------
+function topicGraph(items, prefix) {
+  const nodes = [];
+  const links = [];
+  const topics = new Map();
+  items.forEach((d) => {
+    nodes.push({ id: d.entry.id, type: 'meeting', label: d.conv.title || 'Untitled' });
+    (d.terms || []).slice(0, 6).forEach((t) => {
+      if (!topics.has(t)) topics.set(t, []);
+      topics.get(t).push(d.entry.id);
+    });
+  });
+  for (const [topic, ids] of topics) {
+    if (ids.length < 2 && items.length > 1) continue;
+    const tid = `${prefix}${topic}`;
+    nodes.push({ id: tid, type: 'person', label: topic });
+    ids.forEach((id) => links.push({ s: id, t: tid }));
+  }
+  if (!links.length && items.length > 1) {
+    items.slice(1).forEach((d) => links.push({ s: items[0].entry.id, t: d.entry.id }));
+  }
+  return { nodes, links };
+}
+
 function showGraphView() {
   inGraph = true;
   $('h-empty').classList.add('hidden');
   $('h-content').classList.add('hidden');
   const host = $('h-graph'); host.classList.remove('hidden');
-  // Reflect the current search/mode: graph only the matching chats (+ their agents).
+  const previousGraph = $('h-biggraph');
+  if (previousGraph?._stop) previousGraph._stop();
+  // Reflect the current search/mode: graph only the matching chats (+ their topics).
   const q = $('h-search').value.trim();
-  const chats = searchResults(q).map((r) => r.d);
-  if (!chats.length) { host.innerHTML = `<div class="empty">${q ? 'No chats match your search.' : 'No chats to graph yet.'}</div>`; return; }
-  const agents = new Set(chats.map((d) => d.agent));
+  const allChats = searchResults(q).map((r) => r.d);
+  const chats = allChats.slice(0, GRAPH_RENDER_LIMIT);
+  if (!allChats.length) { host.innerHTML = `<div class="empty">${q ? 'No chats match your search.' : 'No chats to graph yet.'}</div>`; return; }
+  const topics = new Set(chats.flatMap((d) => d.terms || []));
+  const limited = allChats.length > chats.length;
   host.innerHTML = `
     <div class="graph-head">
-      <div><strong>Relationship graph</strong> <span class="owner">— ${chats.length} chat${chats.length === 1 ? '' : 's'} · ${agents.size} agent${agents.size === 1 ? '' : 's'}${q ? ` matching “${esc(q)}”` : ''}. Click a chat to open it, an agent to filter.</span></div>
-      <div class="legend"><span class="lg"><i class="sw meeting"></i> Chat</span><span class="lg"><i class="sw person"></i> Agent</span></div>
+      <div><strong>Topic graph</strong> <span class="owner">— ${chats.length} chat${chats.length === 1 ? '' : 's'} graphed · ${topics.size} topic${topics.size === 1 ? '' : 's'}${limited ? ` · showing ${chats.length} of ${allChats.length} matches` : ''}${q ? ` matching “${esc(q)}”` : ''}. Click a chat to open it, a topic to filter.</span></div>
+      <div class="legend"><span class="lg"><i class="sw meeting"></i> Chat</span><span class="lg"><i class="sw person"></i> Topic</span></div>
     </div>
     <div class="graph-host big" id="h-biggraph"></div>`;
-  const nodes = []; const links = [];
-  chats.forEach((d) => nodes.push({ id: d.entry.id, type: 'meeting', label: d.conv.title || 'Untitled' }));
-  agents.forEach((a) => nodes.push({ id: 'a:' + a, type: 'person', label: a }));
-  chats.forEach((d) => links.push({ s: d.entry.id, t: 'a:' + d.agent }));
-  drawGraph($('h-biggraph'), nodes, links, (nd) => { if (nd.type === 'meeting') select(nd.id); else searchAgent(nd.label); });
+  const token = ++graphDrawToken;
+  requestAnimationFrame(() => {
+    if (token !== graphDrawToken) return;
+    const graphHost = $('h-biggraph');
+    if (!graphHost?.isConnected) return;
+    const { nodes, links } = topicGraph(chats, 'h-topic:');
+    drawGraph(graphHost, nodes, links, (nd) => { if (nd.type === 'meeting') select(nd.id); else searchTopic(nd.label); });
+  });
 }
 function toggleGraph() {
-  if (inGraph) { inGraph = false; $('h-graph').classList.add('hidden'); if (current) renderDetail(); else $('h-empty').classList.remove('hidden'); }
+  if (inGraph) {
+    graphDrawToken += 1;
+    const graphHost = $('h-biggraph');
+    if (graphHost?._stop) graphHost._stop();
+    inGraph = false; $('h-graph').classList.add('hidden'); if (current) renderDetail(); else $('h-empty').classList.remove('hidden');
+  }
   else showGraphView();
   $('h-graph-toggle').classList.toggle('active', inGraph);
 }
 
 // --- actions ---------------------------------------------------------------
-function searchAgent(name) {
-  mode = 'agent';
-  $('h-modes').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === 'agent'));
-  $('h-search').value = name;
+function searchTopic(topic) {
+  mode = 'keyword';
+  $('h-modes').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === 'keyword'));
+  $('h-search').value = topic;
   renderList();
   if (inGraph) showGraphView();
 }
@@ -340,7 +381,7 @@ async function openInPanel() {
 function rebuildIndexes() {
   const ds = [...store.values()];
   bm25 = buildIndex(ds.map((d) => ({ id: d.entry.id, text: d.text })));
-  graph = buildGraph(ds.map((d) => ({ id: d.entry.id, title: d.conv.title, startedAt: d.entry.updatedAt, people: [d.agent], terms: d.terms })));
+  graph = buildGraph(ds.map((d) => ({ id: d.entry.id, title: d.conv.title, startedAt: d.entry.updatedAt, people: [], terms: d.terms })));
 }
 
 async function boot() {
@@ -349,8 +390,9 @@ async function boot() {
   index = await getIndex();
   await Promise.all(index.map(async (e) => {
     const conv = await getConversation(e.id); if (!conv) return;
-    const text = docText(conv);
-    store.set(e.id, { entry: e, conv, agent: agentLabel(conv), terms: topTerms(text, 10), text });
+    const text = docText(e, conv);
+    const terms = topicItemsForDisplay(conv.topics, text, 10);
+    store.set(e.id, { entry: e, conv, agent: agentLabel(conv), terms, text });
   }));
   rebuildIndexes();
   renderList();
@@ -359,14 +401,19 @@ async function boot() {
   $('h-search').oninput = () => { renderList(); if (inGraph) showGraphView(); };
   $('h-modes').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-mode]'); if (!b) return;
-    mode = b.dataset.mode;
+    mode = b.dataset.mode === 'keyword' ? 'keyword' : 'smart';
     $('h-modes').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
     renderList(); if (inGraph) showGraphView();
   });
   $('h-graph-toggle').onclick = toggleGraph;
   $('h-settings').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html') });
 
-  const fromHash = (location.hash || '').replace('#', '');
-  if (fromHash && store.has(fromHash)) await select(fromHash);
+  const initialView = initialHistoryView(location.hash);
+  if (initialView.view === 'chat' && store.has(initialView.id)) {
+    await select(initialView.id);
+  } else {
+    showGraphView();
+    $('h-graph-toggle').classList.add('active');
+  }
 }
 boot();

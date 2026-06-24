@@ -18,6 +18,7 @@
         </button>
         <div id="agent-menu" class="menu hidden" role="menu"></div>
       </div>
+      <span id="agent-model" class="agent-model hidden" title=""></span>
       <div class="topbar-spacer"></div>
       <button id="btn-new" class="new-chat-btn" title="Start a new chat">+ New chat</button>
       <button id="btn-upgrade" class="chip hidden" title="Upgrade to Pro">✨ Upgrade</button>
@@ -34,12 +35,23 @@
     <!-- History drawer -->
     <aside id="history" class="history hidden">
       <div class="history-head">
-        <input id="history-search" type="search" placeholder="Search chats…" />
-        <button id="history-expand" class="icon-btn" title="Open full chat-history dashboard" aria-label="Open full view">⤢</button>
-        <button id="history-close" class="icon-btn" aria-label="Close">✕</button>
+        <div class="history-search-row">
+          <input id="history-search" type="search" placeholder="Search chats…" />
+          <button id="history-expand" class="icon-btn" title="Open full chat-history dashboard" aria-label="Open full view">⤢</button>
+          <button id="history-close" class="icon-btn" aria-label="Close">✕</button>
+        </div>
+        <div id="history-modes" class="history-modes" role="tablist" aria-label="Chat search mode">
+          <button data-mode="smart" class="active" type="button" title="Ranked search across titles and messages">Best match</button>
+          <button data-mode="keyword" type="button" title="Literal text match across titles and messages">Exact text</button>
+        </div>
       </div>
       <div id="history-list" class="history-list"></div>
       <div class="history-foot">
+        <div id="history-pager" class="history-pager hidden">
+          <button id="history-page-prev" class="pager-btn" type="button" aria-label="Previous history page">‹</button>
+          <span id="history-page-status"></span>
+          <button id="history-page-next" class="pager-btn" type="button" aria-label="Next history page">›</button>
+        </div>
         <button id="history-clear" class="text-btn danger">Clear all history</button>
       </div>
     </aside>
@@ -52,8 +64,7 @@
       <div id="empty" class="empty">
         <div class="empty-logo"><img src="assets/icon128.png" alt="ChatPanel" /></div>
         <h1>ChatPanel</h1>
-        <p>Chat with Claude Code, Codex, Gemini CLI, or your own model — with the
-          context of your tabs.</p>
+        <p>Your Privacy-First AI Assistant</p>
         <div id="empty-suggestions" class="suggestions"></div>
       </div>
     </main>
@@ -91,6 +102,10 @@
           <button id="meetings-close" class="icon-btn" title="Close" aria-label="Close">✕</button>
         </div>
         <input id="meetings-search" class="live-notes-search" type="search" placeholder="Search meetings…" />
+        <div id="meetings-modes" class="meetings-modes" role="tablist" aria-label="Meeting search mode">
+          <button data-mode="smart" class="active" type="button" title="Ranked search across titles, notes, transcripts, chat, and participants">Best match</button>
+          <button data-mode="keyword" type="button" title="Literal text match across titles, notes, transcripts, chat, and participants">Exact text</button>
+        </div>
         <div id="meetings-list" class="live-notes-body meetings-list"></div>
       </div>
       <div id="meeting-view" class="hidden">
@@ -130,21 +145,24 @@
       <div id="composer-resize" class="composer-resize" title="Drag to resize · double-click to reset"></div>
       <div class="composer-box">
         <div class="input-wrap">
-          <textarea id="input" class="input" rows="1" placeholder="Message your agent…  ( / for skills · paste a URL to analyze it )"></textarea>
+          <textarea id="input" class="input" rows="1" placeholder="Message your agent…  ( /history searches chats · / for skills · paste a URL )"></textarea>
           <div id="input-ghost" class="input-ghost" aria-hidden="true"></div>
         </div>
         <div class="composer-tools">
           <button id="btn-attach" class="tool-btn" title="Add context" aria-label="Add context">＋</button>
           <button id="btn-skills" class="tool-btn" title="Skills" aria-label="Skills">⚡</button>
-          <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI" aria-label="Improve prompt">✨</button>
+          <button id="btn-mcp" class="tool-btn mcp-toggle" title="MCP tools: Auto" aria-label="MCP tools" aria-pressed="false">MCP</button>
+          <button id="btn-history-context" class="tool-btn history-toggle" title="History context: Off" aria-label="History context" aria-pressed="false">🕘</button>
           <button id="btn-pageact" class="tool-btn" title="Act on page — let the agent fill forms & click for you" aria-label="Act on page" aria-pressed="false">🕹️</button>
           <div class="composer-tools-spacer"></div>
+          <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI" aria-label="Improve prompt">✨</button>
           <button id="btn-send" class="send-btn" title="Send" aria-label="Send">↑</button>
           <button id="btn-stop" class="send-btn stop hidden" title="Stop" aria-label="Stop">■</button>
         </div>
       </div>
       <div id="attach-menu" class="menu up hidden"></div>
       <div id="skills-menu" class="menu up hidden"></div>
+      <div id="history-context-menu" class="menu up hidden"></div>
       <div id="watch-menu" class="menu up hidden">
         <div class="menu-section">👁 Watch this page</div>
         <label class="watch-row">Re-check every

@@ -13,10 +13,24 @@
 // an opt-in later. For meeting notes, obfuscation-at-rest is the sensible default.
 
 const K_KEY = 'chatpanel:meetingKey'; // raw AES-GCM key (base64), generated once
+const B64_CHUNK = 0x8000;
 let _keyPromise = null;
 
-const toB64 = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes)));
-const fromB64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+function toB64(bytes) {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let binary = '';
+  for (let i = 0; i < view.length; i += B64_CHUNK) {
+    binary += String.fromCharCode(...view.subarray(i, i + B64_CHUNK));
+  }
+  return btoa(binary);
+}
+
+function fromB64(s) {
+  const binary = atob(s);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+  return out;
+}
 
 async function getKey() {
   if (_keyPromise) return _keyPromise;

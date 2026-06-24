@@ -130,7 +130,10 @@
         <div class="card">
           <div class="card-head">
             <h2>Skills</h2>
-            <button id="add-skill" class="btn primary">+ Add skill</button>
+            <div class="card-actions">
+              <button id="reset-skills" class="btn" type="button">Reset defaults</button>
+              <button id="add-skill" class="btn primary">+ Add skill</button>
+            </div>
           </div>
           <p class="muted">
             Reusable prompts you drop into any chat with the ⚡ button. Editing the
@@ -267,6 +270,20 @@
               </div>
               <label class="check"><input type="checkbox" id="pref-enter" /> Send message on Enter (Shift+Enter for newline)</label>
               <label class="check"><input type="checkbox" id="pref-stream" /> Stream responses as they arrive</label>
+              <div class="pref-item">
+                <label class="check">
+                  <input type="checkbox" id="pref-topic-extract" />
+                  <span>Auto-extract topics for history graphs</span>
+                </label>
+                <div class="row">
+                  <label>Topic extraction model</label>
+                  <select id="pref-topic-target"></select>
+                </div>
+                <p class="muted tiny">
+                  Runs after chats or meeting transcripts change, then saves concise
+                  graph topics locally. Blank uses the active model/agent.
+                </p>
+              </div>
             </div>
             <div class="pref-col">
               <div class="pref-item">
@@ -307,42 +324,44 @@
           </div>
         </div>
 
-        <div class="card" id="about-card">
-          <h2>About &amp; updates</h2>
-          <p class="muted" id="about-version">ChatPanel</p>
-          <div id="update-status" class="status"></div>
-          <p class="muted tiny" id="manual-install-note">
-            You installed this build manually, so it doesn’t auto-update. Hit
-            <b>Check for updates</b> anytime — if a newer version is out,
-            <b>Download latest build</b>, then reload ChatPanel on
-            <code>chrome://extensions</code>. Prefer automatic updates? Install
-            ChatPanel from your browser’s extension store when it’s available there.
-          </p>
-          <div class="row">
-            <button id="check-updates" class="btn">Check for updates</button>
-            <a id="download-latest" class="btn" target="_blank" rel="noopener">Download latest build</a>
+        <div class="account-secondary-grid">
+          <div class="card" id="about-card">
+            <h2>About &amp; updates</h2>
+            <p class="muted" id="about-version">ChatPanel</p>
+            <div id="update-status" class="status"></div>
+            <p class="muted tiny" id="manual-install-note">
+              You installed this build manually, so it doesn’t auto-update. Hit
+              <b>Check for updates</b> anytime — if a newer version is out,
+              <b>Download latest build</b>, then reload ChatPanel on
+              <code>chrome://extensions</code>. Prefer automatic updates? Install
+              ChatPanel from your browser’s extension store when it’s available there.
+            </p>
+            <div class="row">
+              <button id="check-updates" class="btn">Check for updates</button>
+              <a id="download-latest" class="btn" target="_blank" rel="noopener">Download latest build</a>
+            </div>
           </div>
-        </div>
 
-        <div class="card" id="backup-card">
-          <h2>Back up &amp; restore your data <span class="pro-pill">Pro</span></h2>
-          <p class="muted">
-            Export <strong>everything</strong> to a single .zip — your settings
-            (API endpoints &amp; keys, agents, MCP servers, skills, preferences),
-            all chat history and all captured meetings — plus readable Markdown
-            copies. Restore it on a <strong>fresh install on another machine</strong>
-            to bring your whole setup across. Everything stays on your device —
-            nothing is uploaded. <strong>The file contains your API keys, so keep it
-            safe.</strong> Your Pro license isn’t included — it re-activates from your
-            purchase email.
-          </p>
-          <div class="row">
-            <button id="backup-export" class="btn">Export all data</button>
-            <button id="backup-import" class="btn">Restore from file…</button>
-            <input id="backup-file" type="file" accept="application/zip,.zip,application/json,.json" class="hidden" />
+          <div class="card" id="backup-card">
+            <h2>Back up &amp; restore your data <span class="pro-pill">Pro</span></h2>
+            <p class="muted">
+              Export <strong>everything</strong> to a single .zip — your settings
+              (API endpoints &amp; keys, agents, MCP servers, skills, preferences),
+              all chat history and all captured meetings — plus readable Markdown
+              copies. Restore it on a <strong>fresh install on another machine</strong>
+              to bring your whole setup across. Everything stays on your device —
+              nothing is uploaded. <strong>The file contains your API keys, so keep it
+              safe.</strong> Your Pro license isn’t included — it re-activates from your
+              purchase email.
+            </p>
+            <div class="row">
+              <button id="backup-export" class="btn">Export all data</button>
+              <button id="backup-import" class="btn">Restore from file…</button>
+              <input id="backup-file" type="file" accept="application/zip,.zip,application/json,.json" class="hidden" />
+            </div>
+            <label class="check"><input type="checkbox" id="backup-replace" /> Replace existing data on restore (default: merge)</label>
+            <div id="backup-msg" class="status"></div>
           </div>
-          <label class="check"><input type="checkbox" id="backup-replace" /> Replace existing data on restore (default: merge)</label>
-          <div id="backup-msg" class="status"></div>
         </div>
       </section>
         </main>
@@ -355,29 +374,87 @@
 
     <!-- Endpoint editor template -->
     <template id="endpoint-tpl">
-      <div class="entity">
-        <div class="entity-head">
-          <input class="ep-name" placeholder="Endpoint name (e.g. OpenAI)" />
-          <select class="ep-kind">
-            <option value="openai">OpenAI-compatible</option>
-            <option value="anthropic">Anthropic API</option>
-          </select>
-          <button class="btn ghost ep-test">Test</button>
+        <div class="entity">
+          <div class="entity-head">
+            <input class="ep-name" placeholder="Endpoint name (e.g. OpenAI)" />
           <button class="btn danger ep-del">Delete</button>
         </div>
+        <div class="endpoint-provider-grid">
+          <div class="field"><label>Provider</label><input class="ep-provider" placeholder="Search providers or choose Custom" /></div>
+          <div class="field"><label>API style</label>
+            <select class="ep-kind">
+              <option value="openai">OpenAI-compatible</option>
+              <option value="anthropic">Anthropic API</option>
+            </select>
+          </div>
+        </div>
+        <div class="provider-help">
+          <div class="provider-links ep-provider-links hidden"></div>
+          <p class="muted tiny ep-provider-note hidden"></p>
+        </div>
         <div class="row"><label>Base URL</label><input class="ep-baseurl" placeholder="http://localhost:11434/v1" /></div>
-        <div class="row"><label>API key</label><input class="ep-apikey" type="password" placeholder="(optional for local)" /></div>
-        <div class="row">
-          <label>Model</label>
-          <select class="ep-model"></select>
-          <input class="ep-model-custom hidden" placeholder="custom model id" />
-          <button class="btn accent ep-load" title="Fetch the models this endpoint offers">↻ Load models</button>
+
+        <div class="endpoint-section">
+          <div class="section-title">Authentication</div>
+          <div class="endpoint-provider-grid">
+            <div class="field"><label>Method</label>
+              <select class="ep-authmode">
+                <option value="apiKey">API key</option>
+                <option value="openrouter">OAuth: OpenRouter</option>
+                <option value="huggingface">OAuth: Hugging Face</option>
+                <option value="gemini">OAuth: Gemini (Google Cloud)</option>
+              </select>
+            </div>
+            <div class="field ep-apikey-row"><label>API key</label><input class="ep-apikey" type="password" placeholder="(optional for local)" /></div>
+          </div>
+          <div class="row auth-status-row">
+            <label>Authentication status</label>
+            <span class="ep-auth-status status"></span>
+          </div>
+          <div class="ep-oauth hidden">
+            <div class="row"><label>Redirect URI</label><input class="ep-oauth-redirect" readonly /></div>
+            <div class="row ep-oauth-client-row"><label>Client ID</label><input class="ep-oauth-clientid" placeholder="OAuth client id from the provider console" /></div>
+            <div class="row ep-oauth-project-row hidden"><label>Google Cloud project</label><input class="ep-oauth-project" placeholder="project id used for Gemini API billing/quota" /></div>
+            <div class="row">
+              <label>OAuth status</label>
+              <span class="ep-oauth-status status"></span>
+              <button class="btn ep-oauth-connect" type="button">Connect</button>
+              <button class="btn ghost ep-oauth-disconnect" type="button">Disconnect</button>
+            </div>
+            <p class="muted tiny ep-oauth-note"></p>
+          </div>
         </div>
-        <div class="row"><label>Autocomplete model</label><input class="ep-acmodel" placeholder="optional — a small/fast model just for inline autocomplete (avoid reasoning models)" /></div>
-        <div class="row half">
-          <div><label>Temp</label><input class="ep-temp" type="number" step="0.1" min="0" max="2" /></div>
-          <div><label>Max tokens</label><input class="ep-maxtok" type="number" step="64" /></div>
+
+        <div class="endpoint-section">
+          <div class="section-title">Models</div>
+          <div class="row">
+            <label>Model</label>
+            <input class="ep-model" placeholder="Search or type a model id" />
+            <input class="ep-model-custom hidden" placeholder="custom model id" />
+            <button class="btn accent ep-load" title="Fetch the models this endpoint offers">↻ Load models</button>
+            <button class="btn ghost ep-test" title="Send a small chat request with this model and auth">Test</button>
+          </div>
+          <div class="row"><label>Autocomplete model</label><input class="ep-acmodel" placeholder="optional — a small/fast model just for inline autocomplete (avoid reasoning models)" /></div>
         </div>
+
+        <div class="endpoint-section">
+          <div class="section-title">Generation</div>
+          <div class="row half">
+            <div><label>Temp</label><input class="ep-temp" type="number" step="0.1" min="0" max="2" /></div>
+            <div><label>Max tokens</label><input class="ep-maxtok" type="number" step="64" /></div>
+          </div>
+          <p class="muted tiny ep-maxtok-note hidden"></p>
+        </div>
+
+        <details class="endpoint-section endpoint-advanced">
+          <summary class="section-title">Advanced request options</summary>
+          <div class="endpoint-provider-grid">
+            <div class="field"><label>Extra request JSON</label><textarea class="ep-extra-body" rows="5" placeholder='{"top_p": 0.9, "reasoning_effort": "low"}'></textarea></div>
+            <div class="field"><label>Extra headers JSON</label><textarea class="ep-extra-headers" rows="5" placeholder='{"HTTP-Referer": "https://chatpanel.net"}'></textarea></div>
+          </div>
+          <p class="muted tiny">Managed by ChatPanel: <code>model</code>, <code>messages</code>, <code>stream</code>, <code>tools</code>, <code>Authorization</code>, <code>Content-Type</code>.</p>
+        </details>
+
         <div class="row"><label>System prompt</label><textarea class="ep-system" rows="2" placeholder="Optional system / role instructions"></textarea></div>
         <div class="entity-foot"><span class="ep-status status"></span><button class="btn primary ep-save">Save</button></div>
       </div>
@@ -497,6 +574,24 @@
             </select>
           </div>
         </div>
+        <div class="row half">
+          <div><label>History context</label>
+            <select class="s-history">
+              <option value="none">None</option>
+              <option value="chats">Chat history</option>
+              <option value="meetings">Meeting history</option>
+              <option value="all">Chats + meetings</option>
+            </select>
+          </div>
+          <div><label>MCP tools</label>
+            <select class="s-mcp-mode">
+              <option value="default">All enabled MCP tools</option>
+              <option value="selected">Selected MCP servers</option>
+              <option value="none">No MCP tools</option>
+            </select>
+          </div>
+        </div>
+        <div class="row s-mcp-picks hidden"></div>
         <div class="entity-foot"><span class="s-status status"></span><button class="btn primary s-save">Save</button></div>
       </div>
     </template>

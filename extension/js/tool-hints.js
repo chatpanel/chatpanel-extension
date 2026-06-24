@@ -5,6 +5,20 @@ export function combineSystemPrompt(...parts) {
     .join('\n\n');
 }
 
+export function sourceCitationSystem({ compact = false } = {}) {
+  if (compact) {
+    return 'Cite these sources inline with <sup>[1]</sup> and add a bottom "Sources" list with labels, links/IDs, and no invented links.';
+  }
+  return [
+    'Source citation policy:',
+    'When your answer uses any attached, retrieved, searched, or tool-provided source, including MCP tools and history/search tools, cite the relevant claim inline with superscript markers like <sup>[1]</sup>.',
+    'Finish with a "Sources" section listing each cited source once. Match the numbering used in the answer.',
+    'For each source, include the best available title/name and URL/link. If no URL is returned, include the source ID, page ID, tool name, search result label, or file/meeting/chat label so the user can find it.',
+    'Do not invent sources, links, page IDs, or titles. If a tool result does not return links, say that in the Sources entry instead of omitting the source.',
+    'If you did not use sources beyond general reasoning, omit the Sources section.',
+  ].join('\n');
+}
+
 export function toolStatus(result) {
   const o = resultObject(result);
   if (!o) return '';
@@ -29,7 +43,10 @@ export function mcpInventorySystem(serverName, specs = []) {
   return [
     `MCP server "${title}" is connected in ChatPanel for this conversation.`,
     'Use its MCP tools directly when the user asks for matching data or actions. Do not ask the user to configure or discover these tools if they are listed here.',
+    'Do not call MCP tools when the attached page or provided context is enough to answer; summarize or analyze that context directly.',
     'Prefer relevant MCP tools over web search for their domain. If an MCP tool fails, state the exact tool error first, then say whether you are falling back to another source.',
+    'When MCP or search results inform the answer, include inline citations and a bottom Sources section; do not wait for the user to ask for links.',
+    sourceCitationSystem(),
     `Callable MCP tool names: ${shownNames}${moreNames}.`,
     useful ? `MCP tool guide:\n${useful}` : '',
   ].filter(Boolean).join('\n');

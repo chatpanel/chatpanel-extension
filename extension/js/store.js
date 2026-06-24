@@ -27,7 +27,7 @@ export const uid = () =>
 // so it's safe to ship them as built-ins.
 export function defaultSettings() {
   return {
-    version: 5,
+    version: 6,
     bridgeUrl: 'http://127.0.0.1:4319',
     activeAgentId: 'claude-code',
     // MCP servers (Streamable HTTP) the in-extension agent loop can call as tools.
@@ -137,11 +137,22 @@ export function defaultSettings() {
       // merging new transcript into the existing summary. 0 = off. Default 2m so
       // meetings are summarized (and saved to Past Meetings) out of the box.
       liveNotesIntervalMin: 2,
+      // Topic extraction: when enabled, ChatPanel extracts durable graph topics
+      // after chats/meetings change. Blank targetId means the current active
+      // model/agent; a specific target id pins extraction to that configured model.
+      topicExtraction: { enabled: true, targetId: '' },
       // Watch mode: re-read the current tab on an interval and re-run the agent
       // when the page changes. Remembered config (the loop is runtime-only).
       watch: { intervalMs: 10000, onlyWhenChanged: true, instruction: '' },
       // Right icon-rail collapsed state.
       railCollapsed: false,
+      // MCP tool exposure for chat turns:
+      // auto = only skills that explicitly enable MCP get tools; off = never;
+      // on = expose configured MCP servers for the next turns.
+      mcpToolsMode: 'auto',
+      // Local RAG context for normal chat turns. Off by default for privacy;
+      // users can enable chats, meetings, or both from the composer.
+      historyContextMode: 'off',
     },
   };
 }
@@ -167,6 +178,7 @@ export function defaultSkills() {
         'Scale the length to the material — a short page gets a short summary. Be specific; prefer concrete details over vague generalities.',
       ].join('\n'),
       builtin: true,
+      mcpMode: 'none',
     },
     {
       id: 'explain',
@@ -187,6 +199,7 @@ export function defaultSkills() {
         'Define any jargon inline the first time it appears. Use short paragraphs or bullets; keep it concise and concrete.',
       ].join('\n'),
       builtin: true,
+      mcpMode: 'none',
     },
     {
       id: 'extract',
@@ -208,6 +221,7 @@ export function defaultSkills() {
         '- If there is no tabular or structured data to extract, say so in one line instead of forcing a table.',
       ].join('\n'),
       builtin: true,
+      mcpMode: 'none',
     },
     {
       id: 'review',
@@ -228,6 +242,7 @@ export function defaultSkills() {
         'For each finding: cite the location (file and/or line), explain the problem in a sentence, and give a concrete fix or short code snippet. If the code looks solid, say so plainly instead of inventing issues.',
       ].join('\n'),
       builtin: true,
+      mcpMode: 'none',
     },
     meetingNotesSkill(),
   ];
@@ -246,6 +261,7 @@ export function meetingNotesSkill() {
     description: 'Structured notes from the live meeting transcript',
     context: 'auto',
     builtin: true,
+    mcpMode: 'none',
     prompt: [
       'You are taking notes from a meeting transcript. It may be PARTIAL/LIVE — write everything "as of now" and never invent a meeting end, decision, owner, or date.',
       'Ground every line strictly in the transcript. Attribute an owner or due date ONLY when it is explicitly stated; otherwise leave it off. Do not pad or speculate.',
@@ -298,7 +314,7 @@ export async function getSettings() {
   _settingsCache = stored ? mergeSettings(base, stored) : base;
   // Persist a one-time migration (legacy agents → endpoints) so ids are stable
   // and the side panel & options page stay in agreement.
-  if (stored && (stored.version || 0) < 5) {
+  if (stored && (stored.version || 0) < base.version) {
     await chrome.storage.local.set({ [K_SETTINGS]: _settingsCache });
   }
   return _settingsCache;
@@ -306,6 +322,7 @@ export async function getSettings() {
 
 function mergeSettings(base, stored) {
   const out = { ...base, ...stored };
+  out.version = base.version;
   out.ui = { ...base.ui, ...(stored.ui || {}) };
   // Keep the user's agents/skills verbatim if present; otherwise the defaults.
   out.agents = Array.isArray(stored.agents) && stored.agents.length ? stored.agents : base.agents;
@@ -315,6 +332,9 @@ function mergeSettings(base, stored) {
   if (!out.skills.some((s) => s.id === 'meeting-notes')) {
     out.skills = [...out.skills, meetingNotesSkill()];
   }
+  out.skills = out.skills.map((skill) =>
+    normalizeSkillMcpDefaults(skill, { legacyBuiltins: !stored.version || stored.version < 6 }),
+  );
   out.endpoints = Array.isArray(stored.endpoints) ? stored.endpoints : null;
 
   // v2 migration: include the current page as context by default.
@@ -339,7 +359,27 @@ function mergeSettings(base, stored) {
       : ags.find((a) => a.kind === 'bridge')?.id || null;
     out.freeEndpointId = eps.some((e) => e.id === active) ? active : eps[0]?.id || null;
   }
-  out.version = 5;
+  out.version = base.version;
+  return out;
+}
+
+function normalizeSkillMcpDefaults(skill, { legacyBuiltins = false } = {}) {
+  if (!skill || typeof skill !== 'object') return skill;
+  const out = { ...skill };
+  if (!out.mcpMode || (legacyBuiltins && out.builtin && out.mcpMode === 'default')) out.mcpMode = 'none';
+  return normalizeSkillForSave(out);
+}
+
+export function normalizeSkillForSave(skill) {
+  if (!skill || typeof skill !== 'object') return skill;
+  const out = { ...skill };
+  const mode = String(out.mcpMode || 'none').toLowerCase();
+  out.mcpMode = mode === 'selected' || mode === 'default' ? mode : 'none';
+  const ids = Array.isArray(out.mcpServerIds) ? out.mcpServerIds : [];
+  out.mcpServerIds =
+    out.mcpMode === 'selected'
+      ? [...new Set(ids.map((id) => String(id || '').trim()).filter(Boolean))]
+      : [];
   return out;
 }
 
@@ -397,9 +437,19 @@ function migrateToEndpoints(out) {
 }
 
 export async function saveSettings(settings) {
+  if (Array.isArray(settings?.skills)) {
+    settings.skills = settings.skills.map(normalizeSkillForSave);
+  }
+  if (settings && typeof settings === 'object') settings.version = defaultSettings().version;
   _settingsCache = settings;
   await chrome.storage.local.set({ [K_SETTINGS]: settings });
   return settings;
+}
+
+export async function resetSkillsToDefaults() {
+  const settings = await getSettings();
+  settings.skills = defaultSkills().map(normalizeSkillForSave);
+  return saveSettings(settings);
 }
 
 export async function updateSettings(patch) {
@@ -443,6 +493,11 @@ export function resolveTarget(target, settings) {
     kind: ep.kind || 'openai',
     baseUrl: ep.baseUrl,
     apiKey: ep.apiKey,
+    authMode: ep.authMode,
+    oauth: ep.oauth,
+    providerPreset: ep.providerPreset,
+    headers: ep.headers || {},
+    extraBody: ep.extraBody || {},
     model: target.model || ep.model || '',
     autocompleteModel: target.autocompleteModel || ep.autocompleteModel || '',
     systemPrompt: target.systemPrompt || '',

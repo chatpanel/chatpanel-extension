@@ -1,35 +1,41 @@
 // Full-page Meetings dashboard. Visualizes every recorded meeting from the same
 // encrypted storage the side panel uses, with:
-//  • full-text search (BM25 "Smart", exact "Keyword", "People")
+//  • full-text search (ranked "Best match" or literal "Exact text")
 //  • insights parsed from the saved notes markdown (no new model calls)
-//  • a meeting⇄people relationship graph + related-meeting discovery
+//  • a topic relationship graph + related-meeting discovery
 import {
   getMeetingIndex, getMeeting, getMeetingNotes, saveMeetingNotes,
-  deleteMeeting, meetingToMarkdown, meetingToText, persistMeeting, PLATFORMS,
+  deleteMeeting, meetingToMarkdown, meetingToText, persistMeeting, PLATFORMS, getMeetingTopics,
 } from './js/store-meetings.js';
-import { getSettings, getTarget, meetingNotesSkill } from './js/store.js';
+import { getSettings, getTarget } from './js/store.js';
 import { getLicense, can, UPGRADE_URL } from './js/license.js';
 import { streamChat } from './js/providers.js';
-import { buildIndex, bm25Search, buildGraph, topTerms, tokenize } from './js/meeting-index.js';
+import { buildIndex, bm25Search, buildGraph, tokenize } from './js/meeting-index.js';
 import { drawGraph } from './js/graph-view.js';
+import { initialHistoryView } from './js/history-state.js';
+import { isMeetingImageValue, peopleOfMeeting, speakerCountOfMeeting } from './js/meeting-people.js';
+import { topicItemsForDisplay } from './js/topic-extraction.js';
+import { MEETING_INSIGHT_SECTIONS, composeMeetingInsightNotes, meetingInsightPrompt } from './js/meeting-insights.js';
+import { parseTranscriptText, repairImportedTranscriptDate, repairTranscriptParticipants } from './js/meeting-transcript-import.js';
 
 const $ = (id) => document.getElementById(id);
 const PLATFORM_ICON = { zoom: '📹', meet: '📹', teams: '🟦', webex: '🟢', imported: '📄' };
+const GRAPH_RENDER_LIMIT = 150;
 
 let index = [];            // index entries (metadata)
 const store = new Map();   // id -> { entry, rec, notes, parsed, people, terms, text }
 let bm25 = null;
 let graph = null;
 let current = null;        // selected store entry (+ .tab)
-let mode = 'smart';        // search mode: smart | keyword | people
+let mode = 'smart';        // search mode: smart | keyword
 let inGraph = false;       // global graph view shown?
 let winId = null;          // this window — to open the side panel within a gesture
+let graphDrawToken = 0;
 
 // --- helpers ---------------------------------------------------------------
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const isImg = (v) => typeof v === 'string' && /^https?:\/\/\S+$/i.test(v.trim())
-  && /\.(png|jpe?g|gif|webp|svg)(\?|#|$)|images\.zoom\.us|\/p\/v2\/|gravatar|avatar|googleusercontent|wbxcdn|teams\.(microsoft|live)/i.test(v);
+const isImg = isMeetingImageValue;
 const platIcon = (p) => PLATFORM_ICON[p] || '🎙';
 const platLabel = (p) => (p === 'imported' ? 'Imported' : (PLATFORMS[p]?.label || p || 'Meeting'));
 
@@ -45,12 +51,7 @@ function toast(msg) {
   t.textContent = msg; t.classList.remove('hidden');
   clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.add('hidden'), 2600);
 }
-function peopleOf(rec) {
-  const set = new Set();
-  (rec.participants || []).forEach((p) => { const n = (p?.name || '').trim(); if (n) set.add(n); });
-  (rec.segments || []).forEach((s) => { const sp = (s.speaker || '').trim(); if (sp && !isImg(sp)) set.add(sp); });
-  return [...set];
-}
+const peopleOf = peopleOfMeeting;
 
 // --- notes markdown → structured insights ----------------------------------
 const isBullet = (l) => /^\s*([-*+]|\d+\.)\s+/.test(l);
@@ -60,6 +61,7 @@ function sectionKind(h) {
   if (/tl;?dr|summary|overview|recap/.test(s)) return 'summary';
   if (/topic|agenda/.test(s)) return 'topics';
   if (/key moment|moments|highlight|decision/.test(s)) return 'moments';
+  if (/shared link|link|url|resource|reference/.test(s)) return 'links';
   if (/action|task|next step|to-?do|follow-?up/.test(s)) return 'actions';
   return null;
 }
@@ -71,7 +73,7 @@ function badgeOf(text) {
 const demd = (s) => String(s).replace(/\*\*(.+?)\*\*/g, '$1').replace(/(^|[^*])\*(?!\s)(.+?)\*/g, '$1$2').replace(/`(.+?)`/g, '$1').replace(/_(.+?)_/g, '$1').trim();
 
 function parseNotes(md) {
-  const out = { summary: '', topics: [], moments: [], actions: [], hasAny: false };
+  const out = { summary: '', topics: [], moments: [], links: [], actions: [], hasAny: false };
   if (!md || !md.trim()) return out;
   const lines = md.split('\n');
   let cur = 'summary';
@@ -84,6 +86,12 @@ function parseNotes(md) {
     if (cur === 'summary') summaryParts.push(isBullet(line) ? stripBullet(line) : line.trim());
     else if (cur === 'topics') { if (isBullet(line)) out.topics.push(demd(stripBullet(line))); }
     else if (cur === 'moments') { if (isBullet(line)) { const b = badgeOf(stripBullet(line)); out.moments.push({ badge: b.badge, text: demd(b.text) }); } }
+    else if (cur === 'links') {
+      if (isBullet(line)) {
+        const value = demd(stripBullet(line));
+        if (value && !/^no shared links\.?$/i.test(value)) out.links.push(value);
+      }
+    }
     else if (cur === 'actions') {
       const m = line.match(/^\s*[-*+]\s*\[([ xX])\]\s*(.*)$/);
       if (m) {
@@ -99,7 +107,7 @@ function parseNotes(md) {
     }
   });
   out.summary = demd(summaryParts.join(' ').trim());
-  out.hasAny = !!(out.summary || out.topics.length || out.moments.length || out.actions.length);
+  out.hasAny = !!(out.summary || out.topics.length || out.moments.length || out.links.length || out.actions.length);
   return out;
 }
 
@@ -120,15 +128,6 @@ function searchResults(q) {
   const query = (q || '').trim();
   const byDate = (arr) => arr.sort((a, b) => (b.d.rec.startedAt || 0) - (a.d.rec.startedAt || 0));
   if (!query) return byDate([...store.values()].map((d) => ({ d })));
-  if (mode === 'people') {
-    const ql = query.toLowerCase();
-    const matched = [...graph.meetingsByPerson.keys()].filter((p) => p.toLowerCase().includes(ql));
-    const set = new Map();
-    matched.forEach((p) => graph.meetingsByPerson.get(p).forEach((mid) => {
-      if (!set.has(mid)) set.set(mid, new Set()); set.get(mid).add(p);
-    }));
-    return byDate([...set.entries()].map(([id, ppl]) => ({ d: store.get(id), people: [...ppl] })).filter((r) => r.d));
-  }
   if (mode === 'keyword') {
     const ql = query.toLowerCase();
     return byDate([...store.values()].filter((d) => d.text.toLowerCase().includes(ql)).map((d) => ({ d, snippet: makeSnippet(d, [ql]) })));
@@ -147,14 +146,13 @@ function renderList() {
     host.innerHTML = `<div class="list-empty">${index.length ? 'No matches.' : 'No meetings yet. Join a Zoom / Meet / Teams / Webex call with captions on and ChatPanel records the transcript.'}</div>`;
     return;
   }
-  host.innerHTML = results.map(({ d, snippet, people }) => {
+  host.innerHTML = results.map(({ d, snippet }) => {
     const e = d.entry;
     const live = e.status && e.status !== 'ended';
     const dur = live ? '<span class="pill live">● live</span>' : (fmtDuration(e.startedAt, e.endedAt) ? `<span class="pill">${esc(fmtDuration(e.startedAt, e.endedAt))}</span>` : '');
     return `<div class="mitem${current && current.entry.id === e.id ? ' active' : ''}" data-id="${esc(e.id)}">
       <div class="t"><span>${platIcon(e.platform)}</span> ${esc(e.title || 'Untitled meeting')}</div>
       <div class="meta"><span>${esc(platLabel(e.platform))}</span><span>·</span><span>${esc(fmtDateShort(e.startedAt))}</span>${dur}</div>
-      ${people && people.length ? `<div class="snip">👤 ${esc(people.join(', '))}</div>` : ''}
       ${snippet ? `<div class="snip">${snippet}</div>` : ''}
     </div>`;
   }).join('');
@@ -162,16 +160,19 @@ function renderList() {
 
 // --- detail ----------------------------------------------------------------
 function speakerCount(rec) {
-  const set = new Set((rec.segments || []).map((s) => s.speaker).filter((x) => x && !isImg(x)));
-  return rec.participants?.length || set.size || 0;
+  return speakerCountOfMeeting(rec);
 }
 
 async function select(id) {
   const d = store.get(id);
   if (!d) return;
   current = d; current.tab = current.tab || 'insights';
+  graphDrawToken += 1;
+  const graphHost = $('m-biggraph');
+  if (graphHost?._stop) graphHost._stop();
   inGraph = false;
   $('m-graph').classList.add('hidden');
+  $('m-graph-toggle').classList.remove('active');
   history.replaceState(null, '', '#' + id);
   renderList();
   renderDetail();
@@ -216,6 +217,8 @@ function renderDetail() {
     <div class="tabs">
       <button data-tab="insights" class="${tab === 'insights' ? 'active' : ''}" type="button">Insights</button>
       <button data-tab="related" class="${tab === 'related' ? 'active' : ''}" type="button">Related</button>
+      <button data-tab="topic-graph" class="${tab === 'topic-graph' ? 'active' : ''}" type="button">Topic Graph</button>
+      <button data-tab="participants" class="${tab === 'participants' ? 'active' : ''}" type="button">Participants</button>
       <button data-tab="transcript" class="${tab === 'transcript' ? 'active' : ''}" type="button">Transcript</button>
     </div>
     <div id="m-tabbody"></div>`;
@@ -226,95 +229,241 @@ function renderDetail() {
   $('m-export').onclick = exportMeeting;
   $('m-delete').onclick = removeMeeting;
   if (tab === 'transcript') renderTranscript();
+  else if (tab === 'participants') renderParticipants();
+  else if (tab === 'topic-graph') renderTopicGraph();
   else if (tab === 'related') renderRelated();
   else renderInsights();
 }
 
-function tileList(items, render) {
+function tileList(items, render, listClass = '') {
   if (!items.length) return '<div class="tile-empty">Nothing captured.</div>';
-  return `<ul>${items.map(render).join('')}</ul>`;
+  return `<ul${listClass ? ` class="${listClass}"` : ''}>${items.map(render).join('')}</ul>`;
+}
+
+function streamBlock(section, placeholder) {
+  const text = (section?.text || '').trim();
+  const status = section?.error
+    ? `<div class="stream-status err">⚠ ${esc(section.error)}</div>`
+    : section?.done
+      ? '<div class="stream-status ok">✓ Complete</div>'
+      : '<div class="stream-status">Streaming…</div>';
+  const body = text || placeholder;
+  return `${status}<div class="stream-block${text ? '' : ' pending'}">${esc(body)}</div>`;
+}
+
+function renderInsightDraft(draft) {
+  const sections = draft?.sections || {};
+  $('m-tabbody').innerHTML = `
+    <div class="tiles">
+      <div class="tile span"><h3>▤ Summary</h3>${streamBlock(sections.summary, 'Waiting for summary…')}</div>
+      <div class="tile"><h3>◈ Topics</h3>${streamBlock(sections.topics, 'Waiting for topics…')}</div>
+      <div class="tile"><h3>✦ Key Moments</h3>${streamBlock(sections.moments, 'Waiting for key moments…')}</div>
+      <div class="tile"><h3>🔗 Shared Links</h3>${streamBlock(sections.links, 'Waiting for shared links…')}</div>
+      <div class="tile span"><h3>✓ Action Items</h3>${streamBlock(sections.actions, 'Waiting for action items…')}</div>
+    </div>`;
 }
 
 function renderInsights() {
+  if (current?.insightDraft) {
+    renderInsightDraft(current.insightDraft);
+    return;
+  }
   const { parsed } = current;
   if (!parsed.hasAny) {
     $('m-tabbody').innerHTML = `<div class="tile span"><div class="tile-empty">No summary yet. Open this meeting in the ChatPanel side panel and run <strong>Meeting notes</strong> (or let the live scribe auto-summarize) to populate insights here.</div></div>`;
     return;
   }
-  const moments = tileList(parsed.moments, (m) => `<li><span class="badge ${esc(m.badge)}">${esc(m.badge)}</span><span>${esc(m.text)}</span></li>`);
+  const moments = tileList(
+    parsed.moments,
+    (m) => `<li><span class="badge ${esc(m.badge)}">${esc(m.badge)}</span><span class="moment-text">${esc(m.text)}</span></li>`,
+    'moment-list',
+  );
   const topics = tileList(parsed.topics, (t) => `<li><span class="dot">•</span><span>${esc(t)}</span></li>`);
-  const actions = parsed.actions.length
-    ? `<ul>${parsed.actions.map((a, i) => `<li>
-        <input type="checkbox" class="chk" data-line="${a.lineIndex}" data-i="${i}" ${a.done ? 'checked' : ''} />
-        <span class="${a.done ? 'act-done' : ''}">${esc(a.text)}${a.owner ? ` <span class="owner">— ${esc(a.owner)}</span>` : ''}${a.due ? ` <span class="owner">· ${esc(a.due)}</span>` : ''}</span>
-      </li>`).join('')}</ul>`
-    : '<div class="tile-empty">No action items.</div>';
+  const links = (parsed.links || []).length
+    ? tileList(parsed.links, renderSharedLink, 'link-list')
+    : '<div class="tile-empty">No shared links.</div>';
+  const actions = renderActionItems(parsed.actions);
   $('m-tabbody').innerHTML = `
     <div class="tiles">
       <div class="tile span"><h3>▤ Summary</h3>${parsed.summary ? `<p>${esc(parsed.summary)}</p>` : '<div class="tile-empty">No summary.</div>'}</div>
       <div class="tile"><h3>◈ Topics</h3>${topics}</div>
       <div class="tile"><h3>✦ Key Moments</h3>${moments}</div>
+      <div class="tile"><h3>🔗 Shared Links</h3>${links}</div>
       <div class="tile span"><h3>✓ Action Items</h3>${actions}</div>
     </div>`;
   $('m-tabbody').querySelectorAll('.chk').forEach((cb) => (cb.onchange = () => toggleAction(Number(cb.dataset.line), Number(cb.dataset.i), cb.checked)));
 }
 
+function groupActionsByOwner(actions) {
+  const groups = new Map();
+  (actions || []).forEach((action, index) => {
+    const owner = (action.owner || '').trim() || 'Unassigned';
+    if (!groups.has(owner)) groups.set(owner, { owner, items: [] });
+    groups.get(owner).items.push({ action, index });
+  });
+  return [...groups.values()].sort((a, b) => {
+    if (a.owner === 'Unassigned') return 1;
+    if (b.owner === 'Unassigned') return -1;
+    return a.owner.localeCompare(b.owner);
+  });
+}
+
+function renderActionItems(actions) {
+  if (!actions.length) return '<div class="tile-empty">No action items.</div>';
+  return groupActionsByOwner(actions).map((group) => `
+    <div class="action-group">
+      <h4>${esc(group.owner)}</h4>
+      <ul>${group.items.map(({ action: a, index: i }) => `<li>
+        <input type="checkbox" class="chk" data-line="${a.lineIndex}" data-i="${i}" ${a.done ? 'checked' : ''} />
+        <span class="${a.done ? 'act-done' : ''}">${esc(a.text)}${a.due ? ` <span class="owner">· ${esc(a.due)}</span>` : ''}</span>
+      </li>`).join('')}</ul>
+    </div>`).join('');
+}
+
+function linkParts(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/https?:\/\/[^\s<>)\]]+/i);
+  if (!match) return { label: text, url: '' };
+  const url = match[0].replace(/[.,;:!?]+$/, '');
+  const label = text.slice(0, match.index).replace(/[-–—:|\s]+$/, '').trim() || url;
+  return { label, url };
+}
+
+function renderSharedLink(value) {
+  const { label, url } = linkParts(value);
+  if (!url) return `<li><span class="dot">↗</span><span>${esc(label)}</span></li>`;
+  return `<li><span class="dot">↗</span><a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a></li>`;
+}
+
 function renderRelated() {
   const id = current.entry.id;
-  const people = current.people;
   const related = graph.relatedMeetings(id);
-  const peopleChips = people.length
-    ? `<div class="chips">${people.map((p) => `<button class="chip" data-person="${esc(p)}" type="button">👤 ${esc(p)}</button>`).join('')}</div>`
-    : '<div class="tile-empty">No participants detected (captions didn’t include speaker names).</div>';
+  const topics = current.terms || [];
+  const topicChips = topics.length
+    ? `<div class="chips">${topics.map((t) => `<button class="chip" data-topic="${esc(t)}" type="button"># ${esc(t)}</button>`).join('')}</div>`
+    : '<div class="tile-empty">No strong topics detected yet.</div>';
   const relatedList = related.length
     ? `<ul>${related.map((r) => {
         const d = store.get(r.id); if (!d) return '';
         return `<li class="rel" data-id="${esc(r.id)}"><span class="dot">↗</span><span><strong>${esc(d.rec.title || 'Untitled')}</strong>
-          <span class="owner">— ${esc(fmtDateShort(d.rec.startedAt))}${r.sharedPeople.length ? ` · shares ${esc(r.sharedPeople.join(', '))}` : ' · shared topics'}</span></span></li>`;
+          <span class="owner">— ${esc(fmtDateShort(d.rec.startedAt))} · shared topics</span></span></li>`;
       }).join('')}</ul>`
     : '<div class="tile-empty">No related meetings found yet.</div>';
 
   $('m-tabbody').innerHTML = `
     <div class="tiles">
-      <div class="tile span"><h3>👥 People</h3>${peopleChips}</div>
+      <div class="tile span"><h3># Topics</h3>${topicChips}</div>
       <div class="tile span"><h3>🔗 Related meetings</h3>${relatedList}</div>
-      <div class="tile span"><h3>🕸 Relationship graph</h3><div class="graph-host" id="m-relgraph"></div></div>
     </div>`;
 
-  $('m-tabbody').querySelectorAll('.chip[data-person]').forEach((b) => (b.onclick = () => searchPerson(b.dataset.person)));
+  $('m-tabbody').querySelectorAll('.chip[data-topic]').forEach((b) => (b.onclick = () => searchTopic(b.dataset.topic)));
   $('m-tabbody').querySelectorAll('.rel[data-id]').forEach((li) => (li.onclick = () => select(li.dataset.id)));
+}
 
-  // Neighborhood graph: this meeting + its people + related meetings.
-  const nodes = [{ id, type: 'meeting', label: current.rec.title || 'This meeting', focus: true }];
-  const links = [];
-  people.forEach((p) => { nodes.push({ id: 'p:' + p, type: 'person', label: p }); links.push({ s: id, t: 'p:' + p }); });
-  related.slice(0, 6).forEach((r) => {
-    const d = store.get(r.id); if (!d) return;
-    nodes.push({ id: r.id, type: 'meeting', label: d.rec.title || 'Untitled' });
-    r.sharedPeople.forEach((p) => { if (nodes.some((n) => n.id === 'p:' + p)) links.push({ s: r.id, t: 'p:' + p }); });
-    if (!r.sharedPeople.length) links.push({ s: id, t: r.id });
-  });
-  drawGraph($('m-relgraph'), nodes, links, (n) => { if (n.type === 'meeting') select(n.id); else searchPerson(n.label); });
+function renderTopicGraph() {
+  const id = current.entry.id;
+  const related = graph.relatedMeetings(id);
+  const meetings = [current, ...related.slice(0, 6).map((r) => store.get(r.id)).filter(Boolean)];
+  const topics = new Set(meetings.flatMap((d) => d.terms || []));
+  $('m-tabbody').innerHTML = `
+    <div class="graph-head">
+      <div><strong>Topic graph</strong> <span class="owner">— ${meetings.length} meeting${meetings.length === 1 ? '' : 's'} · ${topics.size} topic${topics.size === 1 ? '' : 's'}. Click a meeting to open it, a topic to filter.</span></div>
+      <div class="legend"><span class="lg"><i class="sw meeting"></i> Meeting</span><span class="lg"><i class="sw person"></i> Topic</span></div>
+    </div>
+    <div class="graph-host big" id="m-meetinggraph"></div>`;
+  const { nodes, links } = topicGraph(meetings, 'm-topic:');
+  if (nodes.some((n) => n.id === id)) nodes.find((n) => n.id === id).focus = true;
+  drawGraph($('m-meetinggraph'), nodes, links, (n) => { if (n.type === 'meeting') select(n.id); else searchTopic(n.label); });
+}
+
+function renderParticipants() {
+  const participants = (current.rec.participants || [])
+    .map((p) => ({
+      name: String(p?.name || '').trim(),
+      initials: String(p?.initials || '').trim(),
+      role: String(p?.role || '').trim(),
+    }))
+    .filter((p) => p.name && !isImg(p.name));
+  const seen = new Set(participants.map((p) => p.name.toLowerCase()));
+  const speakerOnly = (current.people || [])
+    .filter((name) => name && !seen.has(String(name).toLowerCase()))
+    .map((name) => ({ name, initials: '', role: 'Speaker' }));
+  const rows = [...participants, ...speakerOnly];
+  const list = rows.length
+    ? `<ul class="participant-list">${rows.map((p) => `<li>
+        <span class="avatar">${esc((p.initials || p.name.slice(0, 2)).toUpperCase())}</span>
+        <span><strong>${esc(p.name)}</strong>${p.role ? ` <span class="owner">— ${esc(p.role)}</span>` : ''}</span>
+      </li>`).join('')}</ul>`
+    : '<div class="tile-empty">No participants captured for this meeting.</div>';
+
+  $('m-tabbody').innerHTML = `
+    <div class="tiles">
+      <div class="tile span"><h3>👥 Participants</h3>${list}</div>
+    </div>`;
+}
+
+function linkifyText(text) {
+  return esc(text).replace(/https?:\/\/[^\s<]+/g, (url) => `<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
+}
+
+function highlightText(text, query) {
+  if (!query) return linkifyText(text);
+  const safe = esc(text);
+  return safe.replace(new RegExp(`(${reEsc(esc(query))})`, 'ig'), '<mark>$1</mark>');
+}
+
+function transcriptSection(title, rows, query) {
+  const shown = query ? rows.filter((row) => row.search.toLowerCase().includes(query)) : rows;
+  if (!shown.length) return '';
+  return `
+    <div class="transcript-section-title">${esc(title)}</div>
+    ${shown.map((row) => row.html(query)).join('')}`;
 }
 
 function renderTranscript() {
   const segs = current.rec.segments || [];
+  const chats = current.rec.chat || [];
+  const participants = current.rec.participants || [];
   const body = $('m-tabbody');
-  if (!segs.length) { body.innerHTML = '<div class="tile-empty">No transcript captured for this meeting.</div>'; return; }
+  if (!segs.length && !chats.length && !participants.length) { body.innerHTML = '<div class="tile-empty">No transcript captured for this meeting.</div>'; return; }
   body.innerHTML = `<input id="m-tsearch" class="tsearch" type="search" placeholder="Search transcript…" /><div class="transcript" id="m-tlines"></div>`;
   const paint = (q = '') => {
     const ql = q.trim().toLowerCase();
-    const rows = segs.filter((s) => !ql || (!isImg((s.text || '').trim()) && (s.text || '').toLowerCase().includes(ql)));
-    $('m-tlines').innerHTML = rows.length ? rows.map((s) => {
+    const transcriptRows = segs.map((s) => ({
+      search: `${s.speaker || ''} ${s.text || ''}`,
+      html: (query) => {
       const time = esc(new Date(s.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
       const spk = (s.speaker || '').trim();
       const spHtml = isImg(spk) ? `<img class="av" src="${esc(spk)}" alt="" loading="lazy" />` : `<span class="sp">${esc(spk)}</span>`;
       const tt = (s.text || '').trim();
       let bodyHtml;
       if (isImg(tt)) bodyHtml = `<a class="tline-imglink" href="${esc(tt)}" target="_blank" rel="noopener"><img class="tline-img" src="${esc(tt)}" alt="shared image" loading="lazy" /></a>`;
-      else { let txt = esc(s.text || ''); if (ql) txt = txt.replace(new RegExp(`(${reEsc(ql)})`, 'ig'), '<mark>$1</mark>'); bodyHtml = `<span class="ttext">${txt}</span>`; }
+      else bodyHtml = `<span class="ttext">${highlightText(s.text || '', query)}</span>`;
       return `<div class="tline"><span class="ts">${time}</span>${spHtml}${bodyHtml}</div>`;
-    }).join('') : '<div class="tile-empty">No matching lines.</div>';
+      },
+    }));
+    const chatRows = chats.map((c) => ({
+      search: `${c.sender || ''} ${c.receiver || ''} ${c.text || ''}`,
+      html: (query) => `<div class="tline chat-line">
+        <span class="ts">${esc(new Date(c.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</span>
+        <span class="sp">${esc(c.sender || 'Chat')} → ${esc(c.receiver || 'Everyone')}</span>
+        <span class="ttext">${highlightText(c.text || '', query)}</span>
+      </div>`,
+    }));
+    const participantRows = participants.map((p) => ({
+      search: `${p.name || ''} ${p.role || ''} ${p.initials || ''}`,
+      html: () => `<div class="tline participant-line">
+        <span class="ts"></span>
+        <span class="sp">${esc(p.initials || '👥')}</span>
+        <span class="ttext">${esc(p.name || '')}${p.role ? ` <span class="owner">— ${esc(p.role)}</span>` : ''}</span>
+      </div>`,
+    }));
+    const html = [
+      transcriptSection('Transcript', transcriptRows, ql),
+      transcriptSection('Chat', chatRows, ql),
+      transcriptSection('Participants', participantRows, ql),
+    ].filter(Boolean).join('');
+    $('m-tlines').innerHTML = html || '<div class="tile-empty">No matching lines.</div>';
     $('m-tlines').querySelectorAll('img.av').forEach((img) => (img.onerror = () => { const x = document.createElement('span'); x.className = 'sp'; x.textContent = '👤'; img.replaceWith(x); }));
     $('m-tlines').querySelectorAll('img.tline-img').forEach((img) => (img.onerror = () => { const x = document.createElement('span'); x.className = 'img-chip'; x.textContent = '🖼 image'; (img.closest('.tline-imglink') || img).replaceWith(x); }));
   };
@@ -323,43 +472,75 @@ function renderTranscript() {
 }
 
 // --- global relationship graph ---------------------------------------------
+function topicGraph(items, prefix) {
+  const nodes = [];
+  const links = [];
+  const topics = new Map();
+  items.forEach((d) => {
+    nodes.push({ id: d.entry.id, type: 'meeting', label: d.rec.title || 'Untitled' });
+    (d.terms || []).slice(0, 6).forEach((t) => {
+      if (!topics.has(t)) topics.set(t, []);
+      topics.get(t).push(d.entry.id);
+    });
+  });
+  for (const [topic, ids] of topics) {
+    if (ids.length < 2 && items.length > 1) continue;
+    const tid = `${prefix}${topic}`;
+    nodes.push({ id: tid, type: 'person', label: topic });
+    ids.forEach((id) => links.push({ s: id, t: tid }));
+  }
+  if (!links.length && items.length > 1) {
+    items.slice(1).forEach((d) => links.push({ s: items[0].entry.id, t: d.entry.id }));
+  }
+  return { nodes, links };
+}
+
 function showGraphView() {
   inGraph = true;
   $('m-empty').classList.add('hidden');
   $('m-content').classList.add('hidden');
   const host = $('m-graph'); host.classList.remove('hidden');
-  // Reflect the current search/mode: graph only the matching meetings (+ their people).
+  const previousGraph = $('m-biggraph');
+  if (previousGraph?._stop) previousGraph._stop();
+  // Reflect the current search/mode: graph only the matching meetings (+ their topics).
   const q = $('m-search').value.trim();
-  const meetings = searchResults(q).map((r) => r.d);
-  if (!meetings.length) { host.innerHTML = `<div class="empty">${q ? 'No meetings match your search.' : 'No meetings to graph yet.'}</div>`; return; }
-  const people = new Map(); // person -> meeting ids (within the filtered set)
-  meetings.forEach((d) => d.people.forEach((p) => { if (!people.has(p)) people.set(p, []); people.get(p).push(d.entry.id); }));
+  const allMeetings = searchResults(q).map((r) => r.d);
+  const meetings = allMeetings.slice(0, GRAPH_RENDER_LIMIT);
+  if (!allMeetings.length) { host.innerHTML = `<div class="empty">${q ? 'No meetings match your search.' : 'No meetings to graph yet.'}</div>`; return; }
+  const topics = new Set(meetings.flatMap((d) => d.terms || []));
+  const limited = allMeetings.length > meetings.length;
   host.innerHTML = `
     <div class="graph-head">
-      <div><strong>Relationship graph</strong> <span class="owner">— ${meetings.length} meeting${meetings.length === 1 ? '' : 's'} · ${people.size} people${q ? ` matching “${esc(q)}”` : ''}. Click a meeting to open it, a person to find their meetings.</span></div>
-      <div class="legend"><span class="lg"><i class="sw meeting"></i> Meeting</span><span class="lg"><i class="sw person"></i> Person</span></div>
+      <div><strong>Topic graph</strong> <span class="owner">— ${meetings.length} meeting${meetings.length === 1 ? '' : 's'} graphed · ${topics.size} topic${topics.size === 1 ? '' : 's'}${limited ? ` · showing ${meetings.length} of ${allMeetings.length} matches` : ''}${q ? ` matching “${esc(q)}”` : ''}. Click a meeting to open it, a topic to filter.</span></div>
+      <div class="legend"><span class="lg"><i class="sw meeting"></i> Meeting</span><span class="lg"><i class="sw person"></i> Topic</span></div>
     </div>
     <div class="graph-host big" id="m-biggraph"></div>`;
-  const nodes = []; const links = [];
-  meetings.forEach((d) => nodes.push({ id: d.entry.id, type: 'meeting', label: d.rec.title || 'Untitled' }));
-  for (const [person, mids] of people) {
-    nodes.push({ id: 'p:' + person, type: 'person', label: person });
-    mids.forEach((mid) => links.push({ s: mid, t: 'p:' + person }));
-  }
-  drawGraph($('m-biggraph'), nodes, links, (n) => { if (n.type === 'meeting') select(n.id); else searchPerson(n.label); });
+  const token = ++graphDrawToken;
+  requestAnimationFrame(() => {
+    if (token !== graphDrawToken) return;
+    const graphHost = $('m-biggraph');
+    if (!graphHost?.isConnected) return;
+    const { nodes, links } = topicGraph(meetings, 'm-topic:');
+    drawGraph(graphHost, nodes, links, (n) => { if (n.type === 'meeting') select(n.id); else searchTopic(n.label); });
+  });
 }
 
 function toggleGraph() {
-  if (inGraph) { inGraph = false; $('m-graph').classList.add('hidden'); if (current) renderDetail(); else $('m-empty').classList.remove('hidden'); }
+  if (inGraph) {
+    graphDrawToken += 1;
+    const graphHost = $('m-biggraph');
+    if (graphHost?._stop) graphHost._stop();
+    inGraph = false; $('m-graph').classList.add('hidden'); if (current) renderDetail(); else $('m-empty').classList.remove('hidden');
+  }
   else showGraphView();
   $('m-graph-toggle').classList.toggle('active', inGraph);
 }
 
 // --- actions ---------------------------------------------------------------
-function searchPerson(name) {
-  mode = 'people';
-  $('m-modes').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === 'people'));
-  $('m-search').value = name;
+function searchTopic(topic) {
+  mode = 'keyword';
+  $('m-modes').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === 'keyword'));
+  $('m-search').value = topic;
   renderList();
   if (inGraph) showGraphView();
 }
@@ -406,18 +587,89 @@ async function removeMeeting() {
 async function askAboutMeeting() {
   if (!current) return;
   const id = current.entry.id;
-  await chrome.storage.local.set({ 'chatpanel:openMeetingId': id }).catch(() => {});
+  await chrome.storage.local.set({ 'chatpanel:attachMeetingId': id }).catch(() => {});
   try { if (winId != null) await chrome.sidePanel.open({ windowId: winId }); } catch { /* may already be open */ }
-  chrome.runtime.sendMessage({ type: 'open-meeting', id }).catch(() => {});
-  toast('Opening this meeting in the side panel…');
+  chrome.runtime.sendMessage({ type: 'attach-meeting', id }).catch(() => {});
+  toast('Meeting transcript attached — ask in ChatPanel');
+}
+
+function searchableMeetingText(rec, notes = '', people = peopleOf(rec), entry = {}) {
+  const transcriptText = (rec.segments || []).map((s) => (isImg((s.text || '').trim()) ? '' : (s.text || ''))).join(' ');
+  const chatText = (rec.chat || []).map((c) => `${c.sender || ''} ${c.receiver || ''} ${c.text || ''}`).join(' ');
+  const peopleText = (people || []).join(' ');
+  return [
+    entry.title || '',
+    rec.title || '',
+    entry.meetingKey || rec.meetingKey || '',
+    notes || '',
+    peopleText,
+    transcriptText,
+    chatText,
+  ].join('\n');
 }
 
 // --- generate insights (uses the configured ChatPanel agent/model) ---------
+let insightDraftRenderTimer = null;
+
+function newInsightDraft() {
+  return {
+    sections: Object.fromEntries(MEETING_INSIGHT_SECTIONS.map((section) => [
+      section.id,
+      { text: '', done: false, error: '' },
+    ])),
+  };
+}
+
+function scheduleInsightDraftRender(d) {
+  if (current !== d || (current.tab || 'insights') !== 'insights') return;
+  if (insightDraftRenderTimer) return;
+  insightDraftRenderTimer = setTimeout(() => {
+    insightDraftRenderTimer = null;
+    if (current === d && d.insightDraft && (current.tab || 'insights') === 'insights') renderInsights();
+  }, 80);
+}
+
+function sectionMaxTokens(agent, section) {
+  const configured = Number(agent?.maxTokens);
+  if (Number.isFinite(configured) && configured > 0) return Math.min(configured, section.maxTokens || configured);
+  return section.maxTokens;
+}
+
+async function runMeetingInsightJob({ section, d, agent, settings, transcript }) {
+  const slot = d.insightDraft.sections[section.id];
+  let text = '';
+  try {
+    await streamChat({
+      agent: {
+        ...agent,
+        systemPrompt: 'You extract one section of meeting notes. Follow the user prompt exactly.',
+        temperature: 0.2,
+        maxTokens: sectionMaxTokens(agent, section),
+      },
+      messages: [{ role: 'user', content: meetingInsightPrompt(section, transcript) }],
+      settings,
+      onDelta: (delta) => {
+        text += delta;
+        slot.text = text;
+        scheduleInsightDraftRender(d);
+      },
+      onEvent: () => {},
+    });
+    slot.text = text.trim();
+    slot.done = true;
+    scheduleInsightDraftRender(d);
+    return { id: section.id, text: slot.text };
+  } catch (e) {
+    slot.error = e?.message || String(e);
+    scheduleInsightDraftRender(d);
+    throw e;
+  }
+}
+
 function refreshDoc(d) {
-  const transcriptText = (d.rec.segments || []).map((s) => (isImg((s.text || '').trim()) ? '' : (s.text || ''))).join(' ');
-  d.text = [d.rec.title || '', d.notes || '', transcriptText].join('\n');
-  d.terms = topTerms(d.text, 10);
   d.people = peopleOf(d.rec);
+  d.text = searchableMeetingText(d.rec, d.notes, d.people, d.entry);
+  d.terms = topicItemsForDisplay(null, d.text, 10);
   d.parsed = parseNotes(d.notes);
 }
 
@@ -428,62 +680,46 @@ async function generateInsights(d) {
   if (!agent) { toast('No active model/agent — configure one in Settings → API/Agents.'); return; }
   const gen = $('m-gen');
   if (gen) { gen.disabled = true; gen.textContent = '✨ Generating…'; }
-  toast('Generating insights with your active agent…');
+  d.insightDraft = newInsightDraft();
+  if (current === d) renderInsights();
+  toast('Generating insight sections in parallel…');
   const transcript = meetingToText(d.rec);
-  let notes = '';
-  try {
-    await streamChat({
-      agent: { ...agent, systemPrompt: meetingNotesSkill().prompt, temperature: 0.3 },
-      messages: [{ role: 'user', content: `Here is the meeting transcript. Produce the notes.\n\n${transcript}` }],
-      settings,
-      onDelta: (t) => { notes += t; },
-      onEvent: () => {},
-    });
-  } catch (e) {
+  const jobs = MEETING_INSIGHT_SECTIONS.map((section) => runMeetingInsightJob({ section, d, agent, settings, transcript }));
+  const results = await Promise.allSettled(jobs);
+  const parts = {};
+  results.forEach((result) => {
+    if (result.status === 'fulfilled') parts[result.value.id] = result.value.text;
+  });
+  const notes = composeMeetingInsightNotes(parts);
+  const successCount = Object.values(parts).filter((value) => String(value || '').trim()).length;
+  const errorCount = results.filter((result) => result.status === 'rejected').length;
+  if (!successCount) {
+    delete d.insightDraft;
     if (gen) { gen.disabled = false; gen.textContent = d.parsed.hasAny ? '✨ Regenerate' : '✨ Generate insights'; }
-    toast(`Couldn’t generate: ${e?.message || e}`);
+    if (current === d) renderDetail();
+    toast(errorCount ? 'Couldn’t generate insights.' : 'No insights returned by the model.');
     return;
   }
-  if (!notes.trim()) { if (gen) gen.disabled = false; toast('No insights returned by the model.'); return; }
-  d.notes = notes.trim();
+  d.notes = notes;
   await saveMeetingNotes(d.entry.id, d.notes).catch(() => {});
+  delete d.insightDraft;
   refreshDoc(d);
   rebuildIndexes();          // related insights / graph reflect the new notes
   if (current === d) renderDetail();
   renderList();
-  toast('Insights generated.');
+  toast(errorCount ? `Insights saved (${errorCount} section${errorCount === 1 ? '' : 's'} failed).` : 'Insights generated.');
 }
 
 // --- import existing transcripts (.md / .txt) ------------------------------
-function parseTranscriptMd(text, filename) {
-  let title = (filename || 'Imported meeting').replace(/\.(md|markdown|txt)$/i, '').replace(/[._-]+/g, ' ').trim();
-  const segs = [];
-  const start = Date.now();
-  let i = 0;
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line) continue;
-    const h1 = line.match(/^#\s+(.+)/);
-    if (h1) { title = demd(h1[1]); continue; }
-    if (/^#{2,}\s/.test(line) || /^[-*_]{3,}$/.test(line) || /^_.*_$/.test(line)) continue; // sub-headings, rules, meta line
-    let m = line.match(/^\*\*(.+?)\*\*\s*(?:_\(([^)]*)\)_)?\s*:?\s*(.*)$/); // ChatPanel export
-    if (m && (m[3] || '').trim()) { segs.push({ t: start + i * 4000, speaker: demd(m[1]), text: demd(m[3]) }); i++; continue; }
-    m = line.match(/^(?:\[([^\]]+)\]\s*)?([A-Z][\w .'’-]{0,40}?):\s+(.+)$/); // [time] Speaker: text | Speaker: text
-    if (m) { segs.push({ t: start + i * 4000, speaker: m[2].trim(), text: demd(m[3]) }); i++; continue; }
-    segs.push({ t: start + i * 4000, speaker: '', text: demd(line) }); i++; // plain line
-  }
-  return { title: title || 'Imported meeting', startedAt: start, endedAt: start + segs.length * 4000, segments: segs };
-}
-
 async function importFiles(files) {
   let last = null;
   for (const file of [...files]) {
     let text = '';
     try { text = await file.text(); } catch { toast(`Couldn’t read ${file.name}`); continue; }
-    const p = parseTranscriptMd(text, file.name);
-    if (!p.segments.length) { toast(`No transcript lines found in ${file.name}`); continue; }
+    const p = parseTranscriptText(text, file.name);
+    if (!p.segments.length && !p.chat.length && !p.participants.length) { toast(`No transcript lines found in ${file.name}`); continue; }
     const id = `imp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-    const rec = { id, platform: 'imported', meetingKey: 'import:' + id, title: p.title, startedAt: p.startedAt, endedAt: p.endedAt, status: 'ended', segments: p.segments };
+    const rec = { id, platform: 'imported', meetingKey: 'import:' + id, title: p.title, startedAt: p.startedAt, endedAt: p.endedAt, status: 'ended', segments: p.segments, chat: p.chat, participants: p.participants };
     await persistMeeting(rec);
     const d = { entry: { id, platform: 'imported', title: p.title, startedAt: p.startedAt, endedAt: p.endedAt, status: 'ended', lines: p.segments.length }, rec, notes: '', parsed: parseNotes(''), people: peopleOf(rec), terms: [], text: '' };
     refreshDoc(d);
@@ -502,7 +738,7 @@ async function importFiles(files) {
 function rebuildIndexes() {
   const ds = [...store.values()];
   bm25 = buildIndex(ds.map((d) => ({ id: d.entry.id, text: d.text })));
-  graph = buildGraph(ds.map((d) => ({ id: d.entry.id, title: d.rec.title, platform: d.rec.platform, startedAt: d.rec.startedAt, people: d.people, terms: d.terms })));
+  graph = buildGraph(ds.map((d) => ({ id: d.entry.id, title: d.rec.title, platform: d.rec.platform, startedAt: d.rec.startedAt, people: [], terms: d.terms })));
 }
 
 function showProGate() {
@@ -526,10 +762,15 @@ async function boot() {
   index = await getMeetingIndex();
   await Promise.all(index.map(async (e) => {
     const rec = await getMeeting(e.id); if (!rec) return;
+    if (repairTranscriptParticipants(rec) || repairImportedTranscriptDate(rec)) {
+      await persistMeeting(rec).catch(() => {});
+    }
     const notes = await getMeetingNotes(e.id).catch(() => '');
-    const transcriptText = (rec.segments || []).map((s) => (isImg((s.text || '').trim()) ? '' : (s.text || ''))).join(' ');
-    const text = [rec.title || '', notes || '', transcriptText].join('\n');
-    store.set(e.id, { entry: e, rec, notes, parsed: parseNotes(notes), people: peopleOf(rec), terms: topTerms(text, 10), text });
+    const people = peopleOf(rec);
+    const text = searchableMeetingText(rec, notes, people, e);
+    const savedTopics = await getMeetingTopics(e.id).catch(() => null);
+    const terms = topicItemsForDisplay(savedTopics, text, 10);
+    store.set(e.id, { entry: e, rec, notes, parsed: parseNotes(notes), people, terms, text });
   }));
   rebuildIndexes();
   renderList();
@@ -547,7 +788,12 @@ async function boot() {
   $('m-import-file').onchange = (e) => { const fs = e.target.files; if (fs && fs.length) importFiles(fs); e.target.value = ''; };
   $('m-settings').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#meetings') });
 
-  const fromHash = (location.hash || '').replace('#', '');
-  if (fromHash && store.has(fromHash)) await select(fromHash);
+  const initialView = initialHistoryView(location.hash, 'meeting');
+  if (initialView.view === 'meeting' && store.has(initialView.id)) {
+    await select(initialView.id);
+  } else {
+    showGraphView();
+    $('m-graph-toggle').classList.add('active');
+  }
 }
 boot();

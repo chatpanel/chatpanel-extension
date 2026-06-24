@@ -1,0 +1,50 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+import {
+  createToolLoopGuard,
+  stableToolCallKey,
+} from '../extension/js/providers.js';
+import { toolStatus } from '../extension/js/tool-hints.js';
+
+assert.equal(
+  stableToolCallKey('mcp_demo__search', { limit: 5, query: 'same' }),
+  stableToolCallKey('mcp_demo__search', { query: 'same', limit: 5 }),
+  'Tool loop keys should be stable across object key order.',
+);
+assert.notEqual(
+  stableToolCallKey('mcp_demo__search', { query: 'same' }),
+  stableToolCallKey('mcp_demo__search', { query: 'different' }),
+  'Different inputs should remain distinct tool calls.',
+);
+
+const guard = createToolLoopGuard({ maxIdenticalCalls: 2 });
+assert.equal(guard.check('mcp_demo__search', { query: 'same' }).blocked, false);
+assert.equal(guard.check('mcp_demo__search', { query: 'same' }).blocked, false);
+const repeated = guard.check('mcp_demo__search', { query: 'same' });
+assert.equal(repeated.blocked, true);
+assert.equal(guard.disabled, true);
+assert.match(toolStatus(repeated.result), /^blocked: Repeated tool call suppressed/);
+
+const afterDisabled = guard.check('mcp_demo__other', { query: 'different' });
+assert.equal(afterDisabled.blocked, true);
+assert.match(toolStatus(afterDisabled.result), /^blocked: Tool use disabled/);
+
+const manyMcpCalls = createToolLoopGuard({ maxIdenticalCalls: 99 });
+for (let i = 0; i < 25; i += 1) {
+  assert.equal(
+    manyMcpCalls.check('mcp_demo__search', { query: `query-${i}` }).blocked,
+    false,
+    'Distinct MCP tool calls should not hit a per-turn MCP count cap.',
+  );
+}
+assert.equal(manyMcpCalls.disabled, false);
+
+const providersJs = readFileSync(new URL('../extension/js/providers.js', import.meta.url), 'utf8');
+assert.doesNotMatch(providersJs, /MCP tool limit reached/, 'Providers should not emit an MCP-specific per-turn cap error.');
+assert.match(providersJs, /function streamOpenAI[\s\S]*const loopGuard = createToolLoopGuard\(\);/, 'OpenAI-compatible loop should create a tool loop guard.');
+assert.match(providersJs, /const activeToolSpecs = loopGuard\.disabled \? undefined : toolSpecs;/, 'OpenAI-compatible loop should stop exposing tools after a repeated-call block.');
+assert.match(providersJs, /function streamAnthropic[\s\S]*const loopGuard = createToolLoopGuard\(\);/, 'Anthropic loop should create a tool loop guard.');
+assert.match(providersJs, /relayBridgeTool\(base, ev, tools, onEvent, loopGuard\)/, 'Bridge relays should share the turn tool loop guard.');
+
+console.log('provider tool loop tests passed');

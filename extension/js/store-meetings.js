@@ -12,7 +12,7 @@
 // keep them in sync. The meeting↔conversation link lives on the CONVERSATION
 // (conv.meetingId), so this record stays purely capture data and never races.
 
-import { encryptJSON, decryptJSON } from './meeting-crypto.js';
+import { encryptJSON, decryptJSON, isEncrypted } from './meeting-crypto.js';
 
 export const MEETING_SCHEMA_VERSION = 1;
 
@@ -21,6 +21,7 @@ export const meetingKey = (id) => `chatpanel:meeting:${id}`;
 // The AI scribe summary is stored under a SEPARATE key the side panel owns, so it
 // never races the content-script's single-writer ownership of the meeting record.
 const notesKey = (id) => `chatpanel:meetingNotes:${id}`;
+const topicsKey = (id) => `chatpanel:meetingTopics:${id}`;
 
 // Size ceilings so one long meeting can't balloon storage. Transcripts are kept as
 // a rolling tail: when a record exceeds these, the OLDEST segments are dropped
@@ -79,6 +80,20 @@ async function saveIndex(index) {
   await chrome.storage.local.set({ [K_MINDEX]: await encryptJSON(index) });
 }
 
+async function readStoredJSON(key) {
+  const got = await chrome.storage.local.get(key);
+  const raw = got[key];
+  const value = await decryptJSON(raw);
+  if (raw !== undefined && !isEncrypted(raw) && value != null) {
+    try {
+      await chrome.storage.local.set({ [key]: await encryptJSON(value) });
+    } catch {
+      // Reads must keep working even if a best-effort legacy/plaintext repair fails.
+    }
+  }
+  return value;
+}
+
 // Persist (or update) one meeting record + its index entry, capped and encrypted.
 export async function persistMeeting(rec) {
   if (!rec?.id) return;
@@ -128,14 +143,12 @@ export async function markMeetingEnded(id) {
 // --------------------------------------------------------------------------
 
 export async function getMeetingIndex() {
-  const got = await chrome.storage.local.get(K_MINDEX);
-  const idx = await decryptJSON(got[K_MINDEX]);
+  const idx = await readStoredJSON(K_MINDEX);
   return Array.isArray(idx) ? idx : [];
 }
 
 export async function getMeeting(id) {
-  const got = await chrome.storage.local.get(meetingKey(id));
-  return (await decryptJSON(got[meetingKey(id)])) || null;
+  return (await readStoredJSON(meetingKey(id))) || null;
 }
 
 // The most-recently-active record for a platform+meetingKey — so a (re)started
@@ -149,14 +162,14 @@ export async function getLatestSessionRecord(platform, key) {
 }
 
 export async function deleteMeeting(id) {
-  await chrome.storage.local.remove([meetingKey(id), notesKey(id)]);
+  await chrome.storage.local.remove([meetingKey(id), notesKey(id), topicsKey(id)]);
   const index = (await getMeetingIndex()).filter((e) => e.id !== id);
   await saveIndex(index);
 }
 
 export async function clearAllMeetings() {
   const index = await getMeetingIndex();
-  await chrome.storage.local.remove(index.flatMap((e) => [meetingKey(e.id), notesKey(e.id)]));
+  await chrome.storage.local.remove(index.flatMap((e) => [meetingKey(e.id), notesKey(e.id), topicsKey(e.id)]));
   await saveIndex([]);
 }
 
@@ -167,9 +180,16 @@ export async function saveMeetingNotes(id, text) {
   await chrome.storage.local.set({ [notesKey(id)]: await encryptJSON(String(text || '')) });
 }
 export async function getMeetingNotes(id) {
-  const got = await chrome.storage.local.get(notesKey(id));
-  const v = await decryptJSON(got[notesKey(id)]);
+  const v = await readStoredJSON(notesKey(id));
   return typeof v === 'string' ? v : '';
+}
+
+export async function saveMeetingTopics(id, topics) {
+  if (!id) return;
+  await chrome.storage.local.set({ [topicsKey(id)]: await encryptJSON(topics || null) });
+}
+export async function getMeetingTopics(id) {
+  return (await readStoredJSON(topicsKey(id))) || null;
 }
 
 // --------------------------------------------------------------------------
@@ -212,10 +232,9 @@ export async function importMeetings(list, { mode = 'merge' } = {}) {
 }
 
 // Keep storage bounded: drop the oldest ended meetings beyond `keep`, and any
-// older than `maxAgeDays`. Live meetings are never pruned. Call opportunistically
-// (e.g. on side-panel open) so a long history of transcripts can't accumulate
-// unbounded even with unlimitedStorage.
-export async function pruneMeetings({ keep = 50, maxAgeDays = 60 } = {}) {
+// older than `maxAgeDays`. Live meetings are never pruned. Defaults are intentionally
+// history-friendly because search/RAG needs more than the first dashboard page.
+export async function pruneMeetings({ keep = 500, maxAgeDays = 365 } = {}) {
   const index = await getMeetingIndex();
   const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
   const ended = index.filter((e) => e.status === 'ended');
@@ -276,6 +295,19 @@ export function meetingToMarkdown(rec) {
   ];
   for (const s of rec.segments || []) {
     L.push(`**${s.speaker}** _(${new Date(s.t).toLocaleTimeString()})_: ${s.text}`, '');
+  }
+  if (rec.chat?.length) {
+    L.push('## Chat', '');
+    for (const c of rec.chat) {
+      L.push(`[${new Date(c.t).toLocaleTimeString()}] ${c.sender || 'Chat'} to ${c.receiver || 'Everyone'}: ${c.text}`, '');
+    }
+  }
+  if (rec.participants?.length) {
+    L.push('## Participants', '');
+    for (const p of rec.participants) {
+      L.push(`${p.initials || '?'} - ${p.name}${p.role ? ` (${p.role})` : ''}`);
+    }
+    L.push('');
   }
   return L.join('\n');
 }

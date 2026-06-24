@@ -12,6 +12,7 @@
     "activeTab",
     "contextMenus",
     "alarms",
+    "identity",
     "unlimitedStorage",
     "webNavigation",
     "debugger"

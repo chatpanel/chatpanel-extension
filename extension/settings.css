@@ -72,6 +72,21 @@ body {
 .row.half { display: grid; grid-template-columns: 1fr 1fr; gap: 13px 16px; }
 .row.half > div { display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-width: 0; }
 .row.half label { flex: none; width: auto; font-size: 12px; font-weight: 600; color: var(--muted); }
+.field { display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-width: 0; }
+.field label { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .005em; }
+.field > :is(input, select, textarea, .combo) { flex: 0 0 auto; width: 100%; }
+.endpoint-provider-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 13px 16px; margin: 13px 0; }
+.endpoint-section { margin: 16px 0 0; padding-top: 14px; border-top: 1px dashed var(--border); }
+.section-title { color: var(--text); font-size: 13px; font-weight: 650; margin: 0 0 12px; }
+.provider-help { margin: -4px 0 10px; }
+.provider-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.provider-links a { font-size: 12px; font-weight: 600; }
+.provider-help .muted { margin: 6px 0 0; max-width: none; }
+.endpoint-advanced > summary { cursor: pointer; list-style-position: inside; user-select: none; }
+.endpoint-advanced textarea { font-family: var(--mono); font-size: 12.5px; min-height: 104px; }
+.auth-status-row { margin-top: 6px; }
+.auth-status-row .status { min-height: 18px; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .endpoint-provider-grid { grid-template-columns: 1fr; } }
 
 input, select, textarea {
   flex: 1 1 auto; min-width: 0; padding: 9px 11px; border: 1px solid var(--border-strong);
@@ -87,6 +102,37 @@ select {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a909b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: right 11px center;
 }
+
+.combo {
+  position: relative; flex: 1 1 260px; min-width: 0; display: flex; align-items: stretch;
+}
+.combo input { width: 100%; padding-right: 38px; }
+.combo-toggle {
+  position: absolute; top: 1px; right: 1px; bottom: 1px; width: 36px;
+  border: 0; border-left: 1px solid var(--border); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: transparent; color: var(--muted); cursor: pointer; font: inherit; line-height: 1;
+}
+.combo-toggle:hover { color: var(--text); background: rgba(127,127,127,.08); }
+.combo-menu {
+  position: absolute; z-index: 20; top: calc(100% + 5px); left: 0; right: 0;
+  max-height: 260px; overflow: auto; padding: 6px;
+  border: 1px solid var(--border-strong); border-radius: 10px;
+  background: var(--elev); box-shadow: var(--shadow-lg);
+}
+.combo-item {
+  width: 100%; display: flex; flex-direction: column; gap: 1px; align-items: flex-start;
+  border: 0; border-radius: 7px; background: transparent; color: var(--text);
+  padding: 8px 9px; cursor: pointer; font: inherit; text-align: left;
+}
+.combo-item:hover, .combo-item:focus { outline: none; background: var(--accent-weak); }
+.combo-item span {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600;
+}
+.combo-item small {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-size: 11px;
+}
+.combo-empty { padding: 10px 9px; color: var(--muted); font-size: 12px; }
 
 /* Checkboxes / radios must NOT inherit input styling. */
 .check { display: flex; align-items: center; gap: 9px; margin: 11px 0; font-size: 13.5px; }
@@ -162,6 +208,32 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .row.prompt-row .s-prompt { flex: 1 1 100%; }
 .row.prompt-row .btn.assist { flex: 0 0 auto; align-self: flex-start; }
 
+.s-mcp-picks { align-items: flex-start; }
+.s-mcp-picks .skill-mcp-hint { flex: 1 1 100%; margin-top: -3px; color: var(--faint); font-size: 12px; }
+.skill-mcp-pick-list {
+  display: grid; gap: 6px; width: 100%; max-height: 168px; min-width: 0;
+  overflow-y: auto; padding: 7px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--field);
+  scrollbar-gutter: stable; scrollbar-width: thin;
+  scrollbar-color: var(--accent) rgba(127,127,127,.14);
+}
+.skill-mcp-pick-list.scrollable { overflow-y: scroll; }
+.skill-mcp-pick-list:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
+.skill-mcp-pick-list::-webkit-scrollbar { width: 12px; }
+.skill-mcp-pick-list::-webkit-scrollbar-track { background: rgba(127,127,127,.14); border-radius: 999px; }
+.skill-mcp-pick-list::-webkit-scrollbar-thumb { background: var(--accent); border: 3px solid var(--field); border-radius: 999px; }
+.skill-mcp-pick {
+  display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 10px; align-items: flex-start;
+  margin: 0; padding: 9px 10px; border: 1px solid transparent; border-radius: 8px;
+  background: var(--card); color: var(--text); cursor: pointer;
+}
+.skill-mcp-pick:hover { border-color: var(--border-strong); background: var(--elev); }
+.skill-mcp-pick input { margin-top: 2px; }
+.skill-mcp-pick-copy { min-width: 0; display: grid; gap: 1px; }
+.skill-mcp-pick-name { font-weight: 650; line-height: 1.25; }
+.skill-mcp-pick-tools { color: var(--muted); font-family: var(--mono); font-size: 11.5px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-mcp-empty { color: var(--faint); font-size: 12px; padding: 7px 8px; }
+
 /* Toast ------------------------------------------------------------------- */
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #111827; color: #fff; padding: 11px 17px; border-radius: 11px; font-size: 14px; box-shadow: var(--shadow-lg); z-index: 50; max-width: 92vw; }
 .toast-action { appearance: none; border: 0; cursor: pointer; background: var(--accent); color: #fff; font: inherit; font-weight: 700; padding: 5px 13px; border-radius: 8px; margin-left: 6px; }
@@ -219,6 +291,9 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 #restore-box .row, #key-box .row { margin-top: 4px; margin-bottom: 12px; }
 #btn-subscribe-pro { font-weight: 600; }
 #subscribe-row { gap: 10px; }
+.account-secondary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr)); gap: 18px; align-items: start; margin-bottom: 18px; }
+.account-secondary-grid .card { margin-bottom: 0; height: 100%; }
+.account-secondary-grid .muted { max-width: none; }
 
 /* Preferences — two-column so help text fills the width instead of leaving a gutter */
 .pref-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 44px; align-items: start; }

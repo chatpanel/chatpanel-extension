@@ -36,19 +36,51 @@ import {
   getMeetingIndex,
   getMeeting,
   getMeetingNotes,
+  getMeetingTopics,
   saveMeetingNotes,
+  saveMeetingTopics,
   deleteMeeting,
   markMeetingEnded,
 } from './js/store-meetings.js';
 import { renderMarkdown } from './js/markdown.js';
+import { combineSystemPrompt, sourceCitationSystem } from './js/tool-hints.js';
 import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
 import { assistPrompt } from './js/assist.js';
 import { PAGE_TOOL_SPECS, makePageToolExecutor, PAGE_AUTOMATION_SYSTEM } from './js/page-tools.js';
 import { buildToolset } from './js/toolset.js';
 import { getMcpProviders } from './js/mcp-manager.js';
+import { upsertMeetingChatAttachment } from './js/meeting-chat-context.js';
+import { historyToolProvider, inferHistoryScopeFromQuery, parseHistoryCommand, retrieveHistory } from './js/history-rag.js';
+import { filterMcpServersForSkill, skillRunFromSkill, skillToolSystem } from './js/skill-runtime.js';
+import { slashCommandInsert, slashCommandItems } from './js/slash-commands.js';
+import {
+  HISTORY_CONTEXT_MODES,
+  historyContextForMode,
+  historyContextLabel,
+  normalizeHistoryContextMode,
+} from './js/history-context.js';
+import {
+  MCP_TURN_MODES,
+  cancelledToolResult,
+  normalizeMcpTurnMode,
+  shouldExposeMcpForTurn,
+} from './js/tool-policy.js';
+import { paginateEntries, rankConversationEntries } from './js/conversation-search.js';
+import { rankMeetingEntries } from './js/meeting-search.js';
+import {
+  contentHash,
+  fallbackTopicItems,
+  makeTopicIndex,
+  parseTopicExtractionResponse,
+  shouldExtractTopics,
+  topicExtractionPrompt,
+  topicSourceTextForConversation,
+  topicSourceTextForMeeting,
+} from './js/topic-extraction.js';
 
 const $ = (id) => document.getElementById(id);
+const HISTORY_PAGE_SIZE = 25;
 
 // Page-action tools to hand the chat loop, IF the agent can use them: an API
 // agent (bridge CLIs run their own loop), the "Act on page" opt-in is on, and we
@@ -82,19 +114,31 @@ function pageToolProvider(resolvedAgent) {
 // (in-extension) tool loop for API agents, AND relayed to bridge/CLI agents
 // (Claude Code, Codex, custom) through the bridge — so MCP servers configured
 // once in ChatPanel work with EVERY agent. Returns undefined when nothing armed.
-async function toolsetFor(resolvedAgent) {
+async function toolsetFor(
+  resolvedAgent,
+  { historyRag = null, skillRun = null, mcpMode = MCP_TURN_MODES.AUTO, userText = '', attachments = [] } = {},
+) {
   const providers = [];
   const page = pageToolProvider(resolvedAgent);
   if (page) providers.push(page);
+  const history = historyRag || skillRun?.history || null;
+  if (resolvedAgent && history?.enabled) {
+    providers.push(historyToolProvider({ includeMeetings: !!history.includeMeetings }));
+  }
 
   // MCP servers — Free uses the first FREE_LIMITS.mcpServers by list position
   // (matching the Settings lock); Pro is unlimited. Soft client gate, consistent
   // with our other Free ceilings. A server is usable if it has an http url OR a
   // local command (stdio, run via the bridge).
+  const turnMcpMode = normalizeMcpTurnMode(mcpMode);
+  const includeMcp = shouldExposeMcpForTurn({ turnMcpMode, skillRun, userText, attachments });
   const all = state.settings.mcpServers || [];
   const limit = isPro(state.license) ? Infinity : FREE_LIMITS.mcpServers;
   const isSet = (s) => s?.enabled !== false && (s?.url || s?.command);
-  const usable = all.slice(0, limit).filter(isSet);
+  let usable = includeMcp ? all.slice(0, limit).filter(isSet) : [];
+  if (includeMcp && skillRun && turnMcpMode !== MCP_TURN_MODES.ON) {
+    usable = filterMcpServersForSkill(usable, skillRun);
+  }
   if (resolvedAgent && usable.length) {
     const enabledCount = all.filter(isSet).length;
     if (enabledCount > usable.length) {
@@ -109,7 +153,33 @@ async function toolsetFor(resolvedAgent) {
     });
     providers.push(...mcps);
   }
-  return buildToolset(providers);
+  const toolset = buildToolset(providers);
+  const systemSkillRun =
+    turnMcpMode === MCP_TURN_MODES.ON && skillRun
+      ? { ...skillRun, mcp: { mode: 'default', serverIds: [] } }
+      : skillRun;
+  const skillSystem = skillToolSystem(systemSkillRun, usable);
+  if (!toolset && skillSystem) return { specs: [], execute: async () => '', system: skillSystem };
+  if (toolset && skillSystem) toolset.system = [skillSystem, toolset.system].filter(Boolean).join('\n\n');
+  return toolset;
+}
+
+function runProfileForTurn(conv, assistant) {
+  const idx = conv.messages.findIndex((m) => m.id === assistant.id);
+  const stop = idx >= 0 ? idx - 1 : conv.messages.length - 1;
+  for (let i = stop; i >= 0; i--) {
+    const m = conv.messages[i];
+    if (m.role === 'user') {
+      return {
+        historyRag: m.historyRag || null,
+        skillRun: m.skillRun || null,
+        mcpMode: m.mcpMode || MCP_TURN_MODES.AUTO,
+        userText: m.content || '',
+        attachments: m.attachments || [],
+      };
+    }
+  }
+  return { historyRag: null, skillRun: null, mcpMode: MCP_TURN_MODES.AUTO, userText: '', attachments: [] };
 }
 
 const state = {
@@ -118,12 +188,14 @@ const state = {
   conv: null, // active conversation
   index: [], // history index
   attachments: [], // pending context for the next message
+  pendingSkillRun: null, // set when a skill is picked from the menu before send
   usePage: true, // auto-include the current tab as context
   activeTab: null, // { id, title, url } of the tab the panel is looking at
   bridge: { ok: false, agents: [] },
   convCache: new Map(), // id -> live conv object (kept so streams survive switches)
   streams: new Map(), // convId -> { controller, started, lastEvent }
   bubbles: new Map(), // messageId -> bubble element (active view only)
+  toolCancels: new Map(), // provider call id -> { cancel, tool, convId, assistantId }
   // Watch mode: re-read a FIXED tab on an interval and re-run the agent on change.
   watch: {
     on: false,
@@ -141,6 +213,56 @@ const state = {
     maxRuns: 50,
   },
 };
+
+function withToolCancellation(tools, assistant, conv) {
+  if (!tools?.execute) return tools;
+  return {
+    ...tools,
+    async execute(name, input, meta = {}) {
+      const callId =
+        meta.callId || `${assistant.id}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 7)}`;
+      let cancel;
+      const skipped = new Promise((resolve) => {
+        cancel = () => resolve(cancelledToolResult(name));
+      });
+      const running = Promise.resolve().then(() => tools.execute(name, input, meta));
+      // If the user skips first, the underlying MCP request may still settle
+      // later. Observe that rejection so it does not become an unhandled promise.
+      running.catch(() => {});
+      state.toolCancels.set(callId, { cancel, tool: name, convId: conv.id, assistantId: assistant.id });
+      try {
+        return await Promise.race([running, skipped]);
+      } finally {
+        state.toolCancels.delete(callId);
+      }
+    },
+  };
+}
+
+function skipToolCall(callId) {
+  const entry = state.toolCancels.get(callId);
+  if (!entry) {
+    toast('That tool call already finished', 1400);
+    return;
+  }
+  entry.cancel();
+  markToolStep(callId, 'skipped by user');
+  const stream = state.streams.get(entry.convId);
+  if (stream) stream.lastEvent = `Skipped ${entry.tool || 'tool'}`;
+  renderActivity();
+  toast('Skipped tool; continuing without it', 1600);
+}
+
+function markToolStep(callId, status) {
+  for (const conv of state.convCache.values()) {
+    const msg = conv.messages.find((m) => m.steps?.some((s) => s.callId === callId));
+    if (!msg) continue;
+    const step = msg.steps.find((s) => s.callId === callId);
+    if (step) step.status = status;
+    if (conv.id === state.conv?.id) updateBubble(msg);
+    return;
+  }
+}
 
 // --------------------------------------------------------------------------
 // Boot
@@ -168,9 +290,16 @@ async function init() {
     if (t) { t.textContent = '›'; t.title = 'Show panel rail'; }
   }
   renderRail();
-  // Handoff from the full Meetings dashboard's "Ask" button: it stashes a meeting
-  // id and opens this side panel — pick it up and open that meeting's view.
+  // Handoffs from the full Meetings dashboard. "Ask" attaches the meeting to the
+  // normal chat composer; older/open-view paths still open the meeting drawer.
   try {
+    const attach = await chrome.storage.local.get('chatpanel:attachMeetingId');
+    const attachMid = attach['chatpanel:attachMeetingId'];
+    if (attachMid) {
+      await chrome.storage.local.remove('chatpanel:attachMeetingId');
+      await attachStoredMeetingToChat(attachMid);
+    }
+
     const g = await chrome.storage.local.get('chatpanel:openMeetingId');
     const mid = g['chatpanel:openMeetingId'];
     if (mid) {
@@ -200,6 +329,9 @@ async function init() {
     else if (msg?.type === 'open-conversation' && msg.id) {
       chrome.storage.local.remove('chatpanel:openConversationId').catch(() => {});
       openConversation(msg.id);
+    } else if (msg?.type === 'attach-meeting' && msg.id && can(state.license, 'liveMeetings')) {
+      chrome.storage.local.remove('chatpanel:attachMeetingId').catch(() => {});
+      attachStoredMeetingToChat(msg.id);
     } else if (msg?.type === 'open-meeting' && msg.id && can(state.license, 'liveMeetings')) {
       chrome.storage.local.remove('chatpanel:openMeetingId').catch(() => {});
       $('meetings-drawer').classList.remove('hidden');
@@ -293,6 +425,16 @@ async function refreshBridge() {
 function renderAgentName() {
   const a = currentAgent();
   $('agent-name').textContent = a?.name || 'Select agent';
+  const modelLabel = agentModelLabel(a);
+  $('agent-model').textContent = modelLabel;
+  $('agent-model').title = modelLabel ? `Model: ${modelLabel}` : '';
+  $('agent-model').classList.toggle('hidden', !modelLabel);
+}
+
+function agentModelLabel(target) {
+  if (!target) return '';
+  if (target.kind === 'bridge') return target.model || '';
+  return resolveTarget(target, state.settings)?.model || '';
 }
 
 function renderAgentMenu() {
@@ -409,6 +551,7 @@ function renderMessage(m) {
     bubble.innerHTML = assistantBody(m);
     if (m.pending && !m.content && !m.thinking && !m.steps?.length) bubble.classList.add('cursor-blink');
     enhanceCode(bubble);
+    wireStepControls(bubble);
   } else {
     // user bubble: plain text + attachment note (+ image thumbnails)
     bubble.textContent = m.content;
@@ -467,6 +610,7 @@ function updateBubble(m) {
   bubble.classList.toggle('cursor-blink', !!m.pending && !m.content && !m.thinking && !m.steps?.length);
   bubble.innerHTML = assistantBody(m);
   enhanceCode(bubble);
+  wireStepControls(bubble);
 }
 
 // A human label for one agent action (tool call), so the user can SEE what the
@@ -539,15 +683,20 @@ function stepArgs(s) {
   return `<div class="step-args">${escapeAttr(str)}</div>`;
 }
 
-function stepHeader(s, badge) {
+function stepHeader(s, badge, controls = '') {
   const info = mcpInfo(s.tool);
-  if (!info) return `<div class="step">${escapeAttr(stepLabel(s))}${badge}</div>`;
+  if (!info) return `<div class="step">${escapeAttr(stepLabel(s))}${badge}${controls}</div>`;
   return (
     `<div class="step step-mcp">` +
     `<span class="step-server">${escapeAttr(info.server)}</span>` +
     `<span class="step-tool">${escapeAttr(info.tool)}</span>` +
-    `${badge}</div>`
+    `<span class="step-meta">${badge}${controls}</span></div>`
   );
+}
+
+function stepControls(s) {
+  if (!s.callId || s.status) return '';
+  return ` <button type="button" class="step-skip" data-skip-tool="${escapeAttr(s.callId)}" title="Skip waiting for this tool result">Skip</button>`;
 }
 
 // Collapsible "Actions" log of the agent's tool calls (args, status, screenshots).
@@ -559,10 +708,20 @@ function renderSteps(m) {
         ? `<img class="step-shot" src="${escapeAttr(s.image)}" alt="screenshot" />`
         : '';
       const badge = s.status ? ` <span class="step-status ${/error|fail|blocked|CDP failed/i.test(s.status) ? 'bad' : ''}">${escapeAttr(s.status)}</span>` : '';
-      return `${stepHeader(s, badge)}${stepArgs(s)}${shot}`;
+      return `${stepHeader(s, badge, stepControls(s))}${stepArgs(s)}${shot}`;
     })
     .join('');
   return `<details class="agent-steps"${open}><summary>🔧 Actions (${m.steps.length})</summary><div class="steps-body">${items}</div></details>`;
+}
+
+function wireStepControls(root) {
+  root.querySelectorAll('[data-skip-tool]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      skipToolCall(btn.dataset.skipTool);
+    };
+  });
 }
 
 // Assistant bubble = an optional "Actions" log + streamed "thinking" + the answer.
@@ -628,6 +787,11 @@ async function send() {
   const input = $('input');
   clearPromptSuggest();
   const raw = input.value.trim();
+  const historyCommand = parseHistoryCommand(raw);
+  if (historyCommand && !historyCommand.query) {
+    toast('Type a question after /history');
+    return;
+  }
   const conv = state.conv; // capture: the user may switch chats while this streams
   // Guard BEFORE any await: a second fast Enter would otherwise slip through the
   // gap while we read the page, producing duplicate requests. `sendingLock` covers
@@ -642,26 +806,39 @@ async function send() {
     // A /command invokes its skill: switch agent, attach its context, and fill
     // {{variables}} — all before the page auto-attach below reads state.usePage.
     // Skills are Pro; on Free the command is sent as literal text with a nudge.
-    let text = raw;
-    const sk = matchSlashSkill(raw);
+    let text = historyCommand ? historyCommand.query : raw;
+    let skillRun = state.pendingSkillRun || null;
+    const sk = historyCommand ? null : matchSlashSkill(raw);
     if (sk && !skillsAllowed()) {
       upsell('customSkills');
     } else if (sk) {
       await applySkillPrep(sk.skill);
+      skillRun = skillRunFromSkill(sk.skill, { includeMeetings: can(state.license, 'liveMeetings') });
       text = await substituteVars(sk.skill.prompt + (sk.args ? `\n\n${sk.args}` : ''), { args: sk.args });
     }
 
+    const includeMeetingsForHistory = can(state.license, 'liveMeetings');
+    const autoHistoryContext = historyCommand ? null : historyContextForMode(state.settings.ui?.historyContextMode, {
+      canMeetings: includeMeetingsForHistory,
+    });
+    const inferredHistoryScope = autoHistoryContext?.enabled
+      ? inferHistoryScopeFromQuery(text, { includeMeetings: autoHistoryContext.includeMeetings })
+      : 'all';
+    const skipLivePageForHistoryIntent = !!historyCommand || (autoHistoryContext?.enabled && inferredHistoryScope !== 'all');
+
     // Live meeting: if capture is active on this tab, automatically include a FRESH
     // transcript snapshot (read at send time) so the user doesn't have to hit Attach
-    // for every question. Replaces any earlier meeting attachment so we never send a
-    // stale copy, and skips the generic page-read below (the meeting shell page has
-    // no useful text — the transcript IS the context).
+    // for every question. If the user manually attached a meeting, respect that for
+    // this turn instead of replacing it with live context. Skips the generic page-read
+    // below (the meeting shell page has no useful text — the transcript IS the context).
     // Live meeting rides along on EVERY message, from any tab, unless excluded —
     // so you never have to navigate to a button to ask about an in-progress call.
     let meetingIncluded = false;
+    const hasMeetingAttachment = state.attachments.some((a) => a.kind === 'meeting');
     if (
       can(state.license, 'liveMeetings') &&
       state.liveMeeting &&
+      !hasMeetingAttachment &&
       state.excludedMeetingId !== state.liveMeeting.id
     ) {
       try {
@@ -698,6 +875,7 @@ async function send() {
     // page is skipped (it's just Meet's UI, and the transcript already covers it).
     const onMeetingTab = !!(state.activeTab && meetingPlatform(state.activeTab.url || ''));
     if (
+      !skipLivePageForHistoryIntent &&
       !onMeetingTab &&
       state.usePage &&
       state.activeTab &&
@@ -714,6 +892,54 @@ async function send() {
     // Auto-attach any URLs found in the message (the "paste a URL" flow).
     await autoAttachUrls(text);
 
+    let historyRag = null;
+    if (historyCommand) {
+      const includeMeetings = includeMeetingsForHistory;
+      if (!includeMeetings && historyCommand.scope === 'meetings') {
+        upsell('liveMeetings', 'Meeting history search is a Pro feature. Use /history chats for chat history.');
+        return;
+      }
+      historyRag = { enabled: true, includeMeetings, scope: historyCommand.scope };
+      try {
+        const retrieved = await retrieveHistory(text, {
+          includeMeetings,
+          scope: historyCommand.scope,
+          limit: 8,
+          maxChars: 12000,
+        });
+        if (retrieved.results.length) {
+          state.attachments.unshift(retrieved.attachment);
+        } else {
+          toast('No matching local history found', 2200);
+        }
+      } catch (e) {
+        toast(`History search unavailable: ${e.message || e}`, 2800);
+      }
+    } else {
+      if (autoHistoryContext.enabled) {
+        historyRag = {
+          enabled: true,
+          includeMeetings: autoHistoryContext.includeMeetings,
+          scope: autoHistoryContext.scope,
+        };
+        try {
+          const retrieved = await retrieveHistory(text, {
+            includeMeetings: autoHistoryContext.includeMeetings,
+            scope: autoHistoryContext.scope,
+            limit: 8,
+            maxChars: 12000,
+          });
+          if (retrieved.results.length) {
+            state.attachments.unshift(retrieved.attachment);
+          } else {
+            toast('No matching local history found', 1800);
+          }
+        } catch (e) {
+          toast(`History search unavailable: ${e.message || e}`, 2800);
+        }
+      }
+    }
+
     // Final guard: never send the same source twice (e.g. live page + a manual
     // attach of the same tab).
     const seen = new Set();
@@ -724,7 +950,16 @@ async function send() {
       return true;
     });
 
-    const userMsg = { id: uid(), role: 'user', content: text, attachments, ts: Date.now() };
+    const userMsg = {
+      id: uid(),
+      role: 'user',
+      content: text,
+      attachments,
+      ts: Date.now(),
+      mcpMode: normalizeMcpTurnMode(state.settings.ui?.mcpToolsMode),
+    };
+    if (historyRag) userMsg.historyRag = historyRag;
+    if (skillRun) userMsg.skillRun = skillRun;
     const queued = state.streams.has(conv.id); // a reply is already in flight
     userMsg.queued = queued;
     conv.messages.push(userMsg);
@@ -733,6 +968,7 @@ async function send() {
     suggestSuppressed = false;
     $('skill-suggest').classList.add('hidden');
     state.attachments = [];
+    state.pendingSkillRun = null;
     renderContextBar();
 
     $('empty').classList.add('hidden');
@@ -921,12 +1157,15 @@ async function runStream(agent, assistant, conv) {
   // (possibly just-compacted) history + system prompt.
   const runOnce = async () => {
     const resolved = resolveTarget(agent, state.settings);
-    const tools = await toolsetFor(resolved);
-    // System prompt = the agent's own + (when compacted) the running summary +
-    // (when page tools are armed) the automation harness guidance.
-    const systemPrompt = [systemWithSummary(resolved.systemPrompt, conv), tools?.system]
-      .filter(Boolean)
-      .join('\n\n');
+    const profile = runProfileForTurn(conv, assistant);
+    const rawTools = await toolsetFor(resolved, profile);
+    const tools = withToolCancellation(rawTools, assistant, conv);
+    // System prompt = the agent's own + (when compacted) the running summary.
+    // providers.js appends tools.system once per backend, so keep it out here.
+    const systemPrompt = combineSystemPrompt(
+      systemWithSummary(resolved.systemPrompt, conv),
+      sourceCitationSystem(),
+    );
     await streamChat({
       agent: { ...resolved, systemPrompt },
       messages: messagesForModel(conv, assistant),
@@ -1004,7 +1243,7 @@ async function runStream(agent, assistant, conv) {
     }
     await saveConversation(conv);
     refreshHistory();
-    maybeAutoTitle(conv); // fire-and-forget: name the chat from its first exchange
+    maybeAutoTitle(conv).finally(() => maybeExtractConversationTopics(conv).catch(() => {})); // fire-and-forget background metadata
     // Answer anything the user queued while this ran. This also powers "steer":
     // hitting Stop ends the current reply, then the queued message is answered.
     maybeDrainQueue(conv);
@@ -1029,6 +1268,87 @@ async function maybeAutoTitle(conv) {
   }
   await saveConversation(conv).catch(() => {});
   refreshHistory();
+}
+
+const topicJobs = new Set();
+
+function topicExtractionConfig() {
+  return state.settings?.ui?.topicExtraction || { enabled: true, targetId: '' };
+}
+
+function topicTargetId(fallbackId = '') {
+  const cfg = topicExtractionConfig();
+  return cfg.targetId || fallbackId || state.settings?.activeAgentId || '';
+}
+
+function topicTarget(fallbackId = '') {
+  const id = topicTargetId(fallbackId);
+  const target = getTarget(state.settings, id || state.settings?.activeAgentId);
+  return target ? resolveTarget(target, state.settings) : null;
+}
+
+async function extractTopicItems(kind, title, text, fallbackId = '') {
+  const target = topicTarget(fallbackId);
+  if (!target) return { items: fallbackTopicItems(text, 10), fallback: true, targetId: '' };
+  let out = '';
+  try {
+    await streamChat({
+      agent: { ...target, systemPrompt: 'Return only valid JSON. Do not include markdown fences.', temperature: 0.2, maxTokens: 500 },
+      messages: [{ role: 'user', content: topicExtractionPrompt({ kind, title, text }) }],
+      settings: state.settings,
+      onDelta: (d) => { out += d; },
+      onEvent: () => {},
+    });
+    const parsed = parseTopicExtractionResponse(out);
+    if (parsed.length) return { items: parsed, fallback: false, targetId: target.id || topicTargetId(fallbackId) };
+  } catch {
+    /* fallback below */
+  }
+  return { items: fallbackTopicItems(text, 10), fallback: true, targetId: target.id || topicTargetId(fallbackId) };
+}
+
+async function maybeExtractConversationTopics(conv) {
+  const cfg = topicExtractionConfig();
+  if (cfg.enabled === false || !conv?.id) return;
+  const text = topicSourceTextForConversation(conv);
+  if (!text) return;
+  const hash = contentHash(text);
+  const targetId = topicTargetId(conv.agentId);
+  if (!shouldExtractTopics(conv.topics, { hash, targetId, enabled: cfg.enabled !== false })) return;
+  const key = `chat:${conv.id}`;
+  if (topicJobs.has(key)) return;
+  topicJobs.add(key);
+  try {
+    const { items, fallback, targetId: usedTargetId } = await extractTopicItems('chat', conv.title || 'Chat', text, conv.agentId);
+    conv.topics = makeTopicIndex({ hash, targetId: usedTargetId || targetId, items, fallback });
+    await saveConversation(conv);
+    refreshHistory();
+  } finally {
+    topicJobs.delete(key);
+  }
+}
+
+async function maybeExtractMeetingTopics(id) {
+  const cfg = topicExtractionConfig();
+  if (cfg.enabled === false || !id) return;
+  const key = `meeting:${id}`;
+  if (topicJobs.has(key)) return;
+  topicJobs.add(key);
+  try {
+    const rec = await getMeeting(id);
+    if (!rec) return;
+    const notes = await getMeetingNotes(id).catch(() => '');
+    const text = topicSourceTextForMeeting(rec, notes);
+    if (!text) return;
+    const hash = contentHash(text);
+    const targetId = topicTargetId(state.settings?.activeAgentId);
+    const existing = await getMeetingTopics(id).catch(() => null);
+    if (!shouldExtractTopics(existing, { hash, targetId, enabled: cfg.enabled !== false })) return;
+    const { items, fallback, targetId: usedTargetId } = await extractTopicItems('meeting', rec.title || 'Meeting', text, state.settings?.activeAgentId);
+    await saveMeetingTopics(id, makeTopicIndex({ hash, targetId: usedTargetId || targetId, items, fallback }));
+  } finally {
+    topicJobs.delete(key);
+  }
 }
 
 function cleanTitle(s) {
@@ -1174,6 +1494,8 @@ function updateComposerUI() {
   $('btn-send').classList.remove('hidden');
   $('btn-stop').classList.add('hidden');
   renderPageActBtn();
+  renderMcpToolsBtn();
+  renderHistoryContextBtn();
 }
 
 // Activity strip: latest tool/status for the active stream + elapsed seconds.
@@ -1347,6 +1669,7 @@ async function runLiveNotesTick() {
         const text = await summarizeMeeting(prev, delta, isFirst);
         if (text) {
           await saveMeetingNotes(e.id, text);
+          maybeExtractMeetingTopics(e.id).catch(() => {});
           if (meetingsView.rec && meetingsView.rec.id === e.id) refreshLiveMeetingView();
         }
         st.lastTs = latestTs;
@@ -1505,8 +1828,12 @@ async function runWatchStream(agent, assistant, conv, userMsg) {
   };
 
   try {
+    const resolved = resolveTarget(agent, state.settings);
     await streamChat({
-      agent: resolveTarget(agent, state.settings),
+      agent: {
+        ...resolved,
+        systemPrompt: combineSystemPrompt(resolved?.systemPrompt, sourceCitationSystem()),
+      },
       messages: [userMsg], // single-shot: just this tick's instruction + page capture
       settings: state.settings,
       signal: controller.signal,
@@ -1586,6 +1913,129 @@ function renderPageActBtn() {
   btn.setAttribute('aria-pressed', on ? 'true' : 'false');
 }
 
+function mcpToolsMode() {
+  return normalizeMcpTurnMode(state.settings.ui?.mcpToolsMode);
+}
+
+function renderMcpToolsBtn() {
+  const btn = $('btn-mcp');
+  if (!btn) return;
+  const mode = mcpToolsMode();
+  const titles = {
+    [MCP_TURN_MODES.AUTO]: 'MCP tools: Auto — only skills configured for MCP can use them',
+    [MCP_TURN_MODES.OFF]: 'MCP tools: Off — never expose MCP tools for chat turns',
+    [MCP_TURN_MODES.ON]: 'MCP tools: On — expose enabled MCP servers for chat turns',
+  };
+  btn.dataset.mode = mode;
+  btn.classList.toggle('active', mode === MCP_TURN_MODES.ON);
+  btn.setAttribute('aria-pressed', mode === MCP_TURN_MODES.ON ? 'true' : 'false');
+  btn.title = `${titles[mode] || titles[MCP_TURN_MODES.AUTO]} (click to change)`;
+  btn.setAttribute('aria-label', titles[mode] || titles[MCP_TURN_MODES.AUTO]);
+}
+
+function historyContextMode() {
+  return normalizeHistoryContextMode(state.settings.ui?.historyContextMode);
+}
+
+function renderHistoryContextBtn() {
+  const btn = $('btn-history-context');
+  if (!btn) return;
+  const canMeetings = can(state.license, 'liveMeetings');
+  const mode = historyContextMode();
+  const label = historyContextLabel(mode, { canMeetings });
+  const active = mode !== HISTORY_CONTEXT_MODES.OFF;
+  btn.dataset.mode = mode;
+  btn.classList.toggle('active', active);
+  btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  btn.title = `${label} (click to choose)`;
+  btn.setAttribute('aria-label', label);
+}
+
+async function setHistoryContextMode(mode) {
+  const normalized = normalizeHistoryContextMode(mode);
+  const canMeetings = can(state.license, 'liveMeetings');
+  if (normalized === HISTORY_CONTEXT_MODES.MEETINGS && !canMeetings) {
+    upsell('liveMeetings', 'Meeting history search is a Pro feature. Chat history is available now.');
+    return;
+  }
+  state.settings = await updateSettings({ ui: { historyContextMode: normalized } });
+  renderHistoryContextBtn();
+  const label = historyContextLabel(normalized, { canMeetings });
+  toast(`🕘 ${label}`, 1800);
+}
+
+function renderHistoryContextMenu() {
+  const menu = $('history-context-menu');
+  const canMeetings = can(state.license, 'liveMeetings');
+  const current = historyContextMode();
+  const choices = [
+    {
+      mode: HISTORY_CONTEXT_MODES.OFF,
+      icon: '○',
+      label: 'Off',
+      sub: 'Do not search local history automatically.',
+    },
+    {
+      mode: HISTORY_CONTEXT_MODES.CHATS,
+      icon: '💬',
+      label: 'Chat history',
+      sub: 'Search prior ChatPanel chats for each message.',
+    },
+    {
+      mode: HISTORY_CONTEXT_MODES.MEETINGS,
+      icon: '🎙️',
+      label: 'Meeting history',
+      sub: canMeetings ? 'Search saved meeting transcripts.' : 'Pro: search saved meeting transcripts.',
+      locked: !canMeetings,
+    },
+    {
+      mode: HISTORY_CONTEXT_MODES.ALL,
+      icon: '🧭',
+      label: 'Chats + meetings',
+      sub: canMeetings ? 'Search both local history sources.' : 'Chats now; meetings unlock with Pro.',
+    },
+  ];
+  menu.innerHTML = '';
+  menu.appendChild(sectionLabel('History context'));
+  for (const choice of choices) {
+    const item = document.createElement('button');
+    item.className = `menu-item${choice.locked ? ' locked' : ''}`;
+    const active = current === choice.mode;
+    item.innerHTML =
+      `<span>${choice.icon}</span>` +
+      `<span style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">` +
+      `<span>${active ? '✓ ' : ''}${escapeAttr(choice.label)}</span>` +
+      `<span class="mi-sub">${escapeAttr(choice.sub)}</span>` +
+      `</span>` +
+      `${choice.locked ? '<span class="badge lock">Pro</span>' : ''}`;
+    item.onmousedown = (e) => {
+      e.preventDefault();
+      closeMenus();
+      setHistoryContextMode(choice.mode);
+    };
+    menu.appendChild(item);
+  }
+}
+
+async function cycleMcpToolsMode() {
+  const mode = mcpToolsMode();
+  const next =
+    mode === MCP_TURN_MODES.AUTO
+      ? MCP_TURN_MODES.OFF
+      : mode === MCP_TURN_MODES.OFF
+        ? MCP_TURN_MODES.ON
+        : MCP_TURN_MODES.AUTO;
+  state.settings = await updateSettings({ ui: { mcpToolsMode: next } });
+  renderMcpToolsBtn();
+  const label =
+    next === MCP_TURN_MODES.AUTO
+      ? 'Auto: only MCP-enabled skills get MCP tools'
+      : next === MCP_TURN_MODES.OFF
+        ? 'MCP tools off for chat turns'
+        : 'MCP tools on for chat turns';
+  toast(`🔌 ${label}`, 1800);
+}
+
 function renderWatchMenu() {
   const cfg = (state.settings.ui && state.settings.ui.watch) || {};
   const ms = state.watch.on ? state.watch.intervalMs : cfg.intervalMs || 10000;
@@ -1634,7 +2084,7 @@ function renderWatchPerm() {
 // Past Meetings — list + reopen recorded meetings (transcript + saved AI summary).
 // Reuses the scribe drawer styles; its own state so a live meeting never conflicts.
 // --------------------------------------------------------------------------
-const meetingsView = { rec: null, notes: '', tab: 'summary', generating: false, live: false, liveTimer: null };
+const meetingsView = { rec: null, notes: '', tab: 'summary', generating: false, live: false, liveTimer: null, searchToken: 0, mode: 'smart' };
 const PLATFORM_ICON = { zoom: '🟦', meet: '🟩', teams: '🟪', webex: '🟧' };
 
 async function openMeetings() {
@@ -1649,14 +2099,26 @@ function closeMeetings() { clearInterval(meetingsView.liveTimer); $('meetings-dr
 
 async function renderMeetingsList(query) {
   const list = $('meetings-list');
+  const token = ++meetingsView.searchToken;
   let index = [];
   try { index = await getMeetingIndex(); } catch { /* none */ }
-  const q = (query || '').trim().toLowerCase();
-  index = index
-    .filter((e) => !q || (e.title || '').toLowerCase().includes(q))
-    .sort((a, b) => (b.endedAt || b.startedAt || 0) - (a.endedAt || a.startedAt || 0));
+  const q = (query || '').trim();
+  const details = new Map();
+  if (q) {
+    await Promise.all(index.map(async (e) => {
+      const [rec, notes] = await Promise.all([
+        getMeeting(e.id).catch(() => null),
+        getMeetingNotes(e.id).catch(() => ''),
+      ]);
+      details.set(e.id, { rec, notes });
+    }));
+  }
+  if (token !== meetingsView.searchToken) return;
+  index = rankMeetingEntries(index, q, details, { mode: meetingsView.mode });
   if (!index.length) {
-    list.innerHTML = '<div class="empty-notes">No meetings yet. Join a Zoom/Meet/Teams/Webex call with captions on and ChatPanel records the transcript.</div>';
+    list.innerHTML = q
+      ? '<div class="empty-notes">No meetings match that search.</div>'
+      : '<div class="empty-notes">No meetings yet. Join a Zoom/Meet/Teams/Webex call with captions on and ChatPanel records the transcript.</div>';
     return;
   }
   list.innerHTML = '';
@@ -1758,30 +2220,29 @@ async function viewActiveMeeting(tabId) {
   await openStoredMeeting(rec.id);
 }
 
+function attachMeetingToChat(rec, notes = '') {
+  state.attachments = state.attachments || [];
+  state.attachments = upsertMeetingChatAttachment(state.attachments, rec, notes);
+  closeMeetings();
+  renderContextBar();
+  $('input').focus();
+  toast('Meeting attached — ask your question');
+}
+
+async function attachStoredMeetingToChat(id) {
+  if (!can(state.license, 'liveMeetings')) { upsell('liveMeetings'); return; }
+  const rec = await getMeeting(id);
+  if (!rec) { toast('Meeting not found'); return; }
+  const notes = await getMeetingNotes(id).catch(() => '');
+  attachMeetingToChat(rec, notes);
+}
+
 // Attach the viewed meeting's transcript as context and focus the composer, so the
 // user can ask about it from ANY tab.
 function askAboutMeeting() {
   const rec = meetingsView.rec;
   if (!rec) return;
-  const transcript = meetingToText(rec, { sinceTs: 0 });
-  const notes = meetingsView.notes || '';
-  let body = (notes ? `SUMMARY:\n${notes}\n\n` : '') + 'TRANSCRIPT:\n';
-  const room = Math.max(2000, 40000 - body.length);
-  body += transcript.length > room ? '…' + transcript.slice(-room) : transcript;
-  state.attachments = state.attachments || [];
-  state.attachments = state.attachments.filter((a) => !(typeof a.id === 'string' && a.id.startsWith(`mtg_${rec.id}`)));
-  state.attachments.unshift({
-    id: `mtg_${rec.id}_${Date.now()}`,
-    kind: 'meeting',
-    title: `🎙 ${rec.title || 'Meeting'}`,
-    url: rec.url || '',
-    text: body,
-    chars: body.length,
-  });
-  closeMeetings();
-  renderContextBar();
-  $('input').focus();
-  toast('Meeting attached — ask your question');
+  attachMeetingToChat(rec, meetingsView.notes || '');
 }
 
 // Slim "N meetings recording" strip, shown from any non-meeting tab.
@@ -1799,7 +2260,7 @@ async function renderScribeIndicator(liveOpt) {
   const fresh = [];
   for (const e of live) {
     if (e.persistedAt && now - e.persistedAt < ZOMBIE_MS) fresh.push(e);
-    else markMeetingEnded(e.id).catch(() => {});
+    else markMeetingEnded(e.id).then(() => maybeExtractMeetingTopics(e.id)).catch(() => {});
   }
   live = fresh;
 
@@ -1962,6 +2423,7 @@ async function generateMeetingSummary() {
     });
     meetingsView.notes = text.trim();
     await saveMeetingNotes(meetingsView.rec.id, meetingsView.notes);
+    maybeExtractMeetingTopics(meetingsView.rec.id).catch(() => {});
     renderMeetingSummary();
     toast('Summary saved');
   } catch (e) {
@@ -2598,6 +3060,7 @@ function renderSkillsMenu() {
 async function applySkill(skill) {
   const input = $('input');
   await applySkillPrep(skill);
+  state.pendingSkillRun = skillRunFromSkill(skill, { includeMeetings: can(state.license, 'liveMeetings') });
   const text = await substituteVars(skill.prompt, { args: '' });
   input.value = text + (input.value ? '\n\n' + input.value : '');
   autoGrow();
@@ -2759,24 +3222,29 @@ function slashMenuOpen() { return slashItems.length > 0; }
 
 function renderSlashMenu() {
   const box = $('skill-suggest');
-  const m = /^\/(\S*)$/.exec($('input').value); // a lone slash + partial command (no space yet)
-  if (!m || !skillsAllowed()) { hideSlashMenu(); return false; }
+  const m = /^\/([a-z0-9_-]*(?:\s+[a-z0-9_-]*)?)$/i.exec($('input').value); // slash + partial command, optional subcommand
+  if (!m) { hideSlashMenu(); return false; }
   const prefix = m[1].toLowerCase();
-  const matches = (state.settings.skills || []).filter((s) =>
-    (s.command || '').toLowerCase().startsWith(prefix),
-  );
+  const matches = slashCommandItems({
+    skills: state.settings.skills || [],
+    prefix,
+    skillsAllowed: skillsAllowed(),
+    canMeetings: can(state.license, 'liveMeetings'),
+  });
   if (!matches.length) { hideSlashMenu(); return false; }
   slashItems = matches;
   slashActive = Math.max(0, Math.min(slashActive, matches.length - 1));
   box.innerHTML = '';
   box.classList.add('slash-menu');
-  matches.forEach((skill, i) => {
+  matches.forEach((itemData, i) => {
     const item = document.createElement('button');
     item.className = 'slash-item' + (i === slashActive ? ' active' : '');
+    const badge = itemData.locked ? '<span class="si-badge">Pro</span>' : '';
     item.innerHTML =
-      `<span class="si-icon">${skill.icon || '⚡'}</span>` +
-      `<span class="si-cmd">/${escapeAttr(skill.command || '')}</span>` +
-      `<span class="si-desc">${escapeAttr(skill.description || skill.name || '')}</span>`;
+      `<span class="si-icon">${escapeAttr(itemData.icon || '⚡')}</span>` +
+      `<span class="si-cmd">/${escapeAttr(itemData.command || '')}</span>` +
+      `${badge}` +
+      `<span class="si-desc">${escapeAttr(itemData.description || '')}</span>`;
     // mousedown (not click) so we act before the textarea blur hides the menu.
     item.onmousedown = (e) => { e.preventDefault(); chooseSlash(i); };
     box.appendChild(item);
@@ -2796,11 +3264,11 @@ function hideSlashMenu() {
 }
 
 function chooseSlash(i) {
-  const skill = slashItems[i];
+  const item = slashItems[i];
   hideSlashMenu();
-  if (!skill) return;
+  if (!item) return;
   const input = $('input');
-  input.value = `/${skill.command || ''} `; // complete the command; user adds args + Enter
+  input.value = slashCommandInsert(item); // complete the command; user adds args + Enter
   autoGrow();
   input.focus();
   input.selectionStart = input.selectionEnd = input.value.length;
@@ -2809,21 +3277,49 @@ function chooseSlash(i) {
 // --------------------------------------------------------------------------
 // History
 // --------------------------------------------------------------------------
+const historyView = { mode: 'smart', page: 1, renderToken: 0 };
+
 async function refreshHistory() {
   state.index = await getIndex();
-  if (!$('history').classList.contains('hidden')) renderHistory();
+  if (!$('history').classList.contains('hidden')) await renderHistory();
 }
 
-function renderHistory(filter = '') {
+function renderHistoryPager(pageData) {
+  const pager = $('history-pager');
+  const status = $('history-page-status');
+  if (!pager || !status) return;
+  pager.classList.toggle('hidden', pageData.total <= HISTORY_PAGE_SIZE);
+  status.textContent = pageData.total
+    ? `${pageData.start}-${pageData.end} of ${pageData.total}`
+    : '0 of 0';
+  $('history-page-prev').disabled = !pageData.hasPrev;
+  $('history-page-next').disabled = !pageData.hasNext;
+}
+
+async function renderHistory(filter = '') {
   const list = $('history-list');
   list.innerHTML = '';
-  const f = filter.toLowerCase();
-  const items = state.index.filter((e) => !f || e.title.toLowerCase().includes(f));
-  if (!items.length) {
-    list.innerHTML = '<div class="menu-section">No chats yet</div>';
+  const token = ++historyView.renderToken;
+  const q = String(filter || '').trim();
+  const conversations = new Map();
+  if (q) {
+    list.innerHTML = '<div class="menu-section">Searching chats…</div>';
+    await Promise.all(state.index.map(async (e) => {
+      const conv = state.convCache.get(e.id) || (await getConversation(e.id).catch(() => null));
+      if (conv) conversations.set(e.id, conv);
+    }));
+  }
+  if (token !== historyView.renderToken) return;
+  const matches = rankConversationEntries(state.index, q, conversations, { mode: historyView.mode });
+  const pageData = paginateEntries(matches, { page: historyView.page, pageSize: HISTORY_PAGE_SIZE });
+  historyView.page = pageData.page;
+  renderHistoryPager(pageData);
+  if (!pageData.items.length) {
+    list.innerHTML = q ? '<div class="menu-section">No chats match that search</div>' : '<div class="menu-section">No chats yet</div>';
     return;
   }
-  for (const e of items) {
+  list.innerHTML = '';
+  for (const e of pageData.items) {
     const item = document.createElement('div');
     item.className = 'history-item' + (e.id === state.conv.id ? ' active' : '');
     const main = document.createElement('div');
@@ -3369,6 +3865,11 @@ function wireEvents() {
   $('btn-upgrade').onclick = () =>
     chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#license') });
   $('btn-assist').onclick = improvePrompt;
+  $('btn-mcp').onclick = async (e) => {
+    e.stopPropagation();
+    closeMenus();
+    await cycleMcpToolsMode();
+  };
 
   wireComposerResize();
 
@@ -3478,6 +3979,16 @@ function wireEvents() {
       m.classList.remove('hidden');
     }
   };
+  $('btn-history-context').onclick = (e) => {
+    e.stopPropagation();
+    const m = $('history-context-menu');
+    const opening = m.classList.contains('hidden');
+    closeMenus();
+    if (opening) {
+      renderHistoryContextMenu();
+      m.classList.remove('hidden');
+    }
+  };
   // "Act on page" arms page-action tools for API agents directly and for bridge
   // agents through the local MCP relay.
   $('btn-pageact').onclick = async (e) => {
@@ -3514,12 +4025,29 @@ function wireEvents() {
 
   // History drawer
   $('btn-history').onclick = () => {
-    renderHistory($('history-search').value);
     $('history').classList.remove('hidden');
+    historyView.page = 1;
+    renderHistory($('history-search').value);
   };
-  $('history-close').onclick = () => $('history').classList.add('hidden');
+  $('history-close').onclick = () => { historyView.renderToken += 1; $('history').classList.add('hidden'); };
   $('history-expand').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('history.html') });
-  $('history-search').oninput = (e) => renderHistory(e.target.value);
+  $('history-search').oninput = (e) => { historyView.page = 1; renderHistory(e.target.value); };
+  $('history-modes').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-mode]');
+    if (!b) return;
+    historyView.mode = b.dataset.mode === 'keyword' ? 'keyword' : 'smart';
+    historyView.page = 1;
+    $('history-modes').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    renderHistory($('history-search').value);
+  });
+  $('history-page-prev').onclick = () => {
+    historyView.page = Math.max(1, historyView.page - 1);
+    renderHistory($('history-search').value);
+  };
+  $('history-page-next').onclick = () => {
+    historyView.page += 1;
+    renderHistory($('history-search').value);
+  };
   // Live-notes drawer controls (Summary / Transcript tabs, search, copy, download).
   $('live-notes-close').onclick = () => closeLiveNotes();
   $('live-notes-copy').onclick = () => copyLiveNotesActive();
@@ -3534,6 +4062,13 @@ function wireEvents() {
   $('meeting-vclose').onclick = () => closeMeetings();
   $('meeting-back').onclick = () => meetingBackToList();
   $('meetings-search').oninput = (e) => renderMeetingsList(e.target.value);
+  $('meetings-modes').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-mode]');
+    if (!b) return;
+    meetingsView.mode = b.dataset.mode === 'keyword' ? 'keyword' : 'smart';
+    $('meetings-modes').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    renderMeetingsList($('meetings-search').value);
+  });
   $('mv-tab-summary').onclick = () => switchMeetingTab('summary');
   $('mv-tab-transcript').onclick = () => switchMeetingTab('transcript');
   $('meeting-search').oninput = () => renderMeetingTranscript();
@@ -3567,7 +4102,7 @@ function wireEvents() {
   };
 
   // Keep clicks inside an open menu (e.g. the URL input) from closing it.
-  ['agent-menu', 'attach-menu', 'skills-menu', 'watch-menu'].forEach((id) =>
+  ['agent-menu', 'attach-menu', 'skills-menu', 'history-context-menu', 'watch-menu'].forEach((id) =>
     $(id).addEventListener('click', (e) => e.stopPropagation()),
   );
   document.body.onclick = () => closeMenus();
@@ -3591,6 +4126,8 @@ function wireEvents() {
       state.settings = await getSettings();
       applyTheme();
       renderAgentName();
+      renderMcpToolsBtn();
+      renderHistoryContextBtn();
       refreshBridge();
     }
     if (changes['chatpanel:license']) {
@@ -3598,6 +4135,7 @@ function wireEvents() {
       ensureUsableActiveAgent();
       renderUpgradeChip();
       renderAgentName();
+      renderHistoryContextBtn();
     }
   });
 }

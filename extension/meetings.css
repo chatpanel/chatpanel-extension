@@ -88,14 +88,47 @@ a { color: var(--accent); text-decoration: none; }
 .tile ul { margin: 0; padding: 0; list-style: none; }
 .tile li { padding: 6px 0; display: flex; gap: 9px; align-items: flex-start; line-height: 1.45; border-top: 1px solid var(--border); }
 .tile li:first-child { border-top: 0; }
+.tile li > :last-child { min-width: 0; }
 .tile .dot { color: var(--accent); flex: 0 0 auto; }
 .tile-empty { color: var(--faint); font-size: 13px; }
+
+.stream-status { margin: -2px 0 7px; color: var(--muted); font-size: 12px; font-weight: 650; }
+.stream-status.ok { color: var(--decision); }
+.stream-status.err { color: var(--risk); }
+.stream-block { white-space: pre-wrap; line-height: 1.48; color: var(--text); }
+.stream-block.pending { color: var(--faint); font-style: italic; }
+
+.participant-list li { align-items: center; gap: 11px; }
+.participant-list .avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  background: rgba(129,140,248,.18);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+}
+.action-group + .action-group { margin-top: 13px; }
+.action-group h4 { margin: 0 0 5px; color: var(--muted); font-size: 12px; font-weight: 800; }
+.action-group ul { border-top: 1px solid var(--border); }
 
 .badge { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; padding: 2px 8px; border-radius: 999px; font-weight: 700; flex: 0 0 auto; margin-top: 1px; }
 .badge.decision { background: rgba(52,211,153,.16); color: var(--decision); }
 .badge.risk { background: rgba(248,113,113,.16); color: var(--risk); }
 .badge.question { background: rgba(251,191,36,.16); color: var(--question); }
 .badge.highlight { background: rgba(129,140,248,.16); color: var(--highlight); }
+
+.moment-list li { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 0 14px; align-items: start; padding: 8px 0; }
+.moment-list .badge { box-sizing: border-box; width: 112px; justify-self: start; text-align: center; margin-top: 3px; }
+.moment-list .moment-text { min-width: 0; }
+
+@media (max-width: 560px) {
+  .moment-list li { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .moment-list .badge { width: auto; }
+}
 
 .chk { accent-color: var(--decision); margin-top: 3px; flex: 0 0 auto; width: 15px; height: 15px; cursor: pointer; }
 .act-done { color: var(--muted); text-decoration: line-through; }
@@ -104,6 +137,7 @@ a { color: var(--accent); text-decoration: none; }
 /* Transcript ------------------------------------------------------------- */
 .tsearch { width: 100%; max-width: 320px; padding: 8px 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--field); color: var(--text); font: inherit; margin-bottom: 12px; }
 .transcript { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 16px; }
+.transcript-section-title { padding: 10px 0 5px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 .tline { display: flex; gap: 10px; padding: 5px 0; border-top: 1px solid var(--border); font-size: 13px; align-items: flex-start; }
 .tline:first-child { border-top: 0; }
 .tline .ts { color: var(--faint); font-family: var(--mono); font-size: 11px; flex: 0 0 auto; width: 56px; padding-top: 1px; }
@@ -140,8 +174,12 @@ svg .gnode circle { stroke: var(--bg); stroke-width: 1.5; transition: filter .12
 svg .gnode.meeting circle { fill: var(--accent); }
 svg .gnode.person circle { fill: var(--decision); }
 svg .gnode.focus circle { fill: var(--accent); stroke: var(--accent); stroke-width: 3; }
-svg .gnode text { fill: var(--text); font-size: 11px; font-family: -apple-system, sans-serif; pointer-events: none; }
+svg .gnode text { fill: var(--text); font-size: 11px; font-family: -apple-system, sans-serif; pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; opacity: .86; transition: opacity .12s ease, fill .12s ease; }
 svg .gnode.person text { fill: var(--muted); }
+svg .gnode.label-hidden text { opacity: 0; }
+svg .gnode.label-visible text,
+svg .gnode.label-near text,
+svg .gnode:hover text { opacity: 1; }
 svg .gnode:hover circle { filter: brightness(1.2); }
 svg .gnode:hover text { fill: var(--accent); }
 svg .gnode.faded { opacity: .12; }

@@ -6,16 +6,32 @@
 
 const STOP = new Set((
   'the a an and or but of to in on at for with is are was were be been being it this that these those as i you he ' +
+  'if am because need needs needed its lets let ' +
   'she they we us my your our their me him her them so no yes not do does did have has had will would can could ' +
   'should from by about into over under again further then once here there all any both each few more most other ' +
-  'some such only own same than too very just dont cant im ive id youre were theyre okay yeah uh um like really ' +
+  'some such only own same than too very just dont cant couldnt didnt doesnt hadnt hasnt havent im ive id isnt ' +
+  'youre were werent theyre thats theres whats wheres whos wont wouldnt shouldnt okay yeah uh um like really ' +
   'going get got know think mean right well say said also one two how what when where which who whom why'
 ).split(/\s+/));
+
+function normalizeToken(raw) {
+  let word = String(raw || '')
+    .toLowerCase()
+    .replace(/[’‘`]/g, "'")
+    .replace(/[‐‑‒–—]/g, '-')
+    .replace(/^['+_-]+|['+_-]+$/g, '');
+  if (word.endsWith("'s")) word = word.slice(0, -2);
+  const compact = word.replace(/['_-]+/g, '');
+  if (/^[a-z]\+\+$/.test(word)) return word;
+  if (compact.length < 2 || /^\d+$/.test(compact)) return '';
+  if (STOP.has(word) || STOP.has(compact)) return '';
+  return word.replace(/'/g, '');
+}
 
 export function tokenize(text) {
   const m = String(text || '').toLowerCase().match(/[a-z0-9][a-z0-9'_+-]{1,}/g);
   if (!m) return [];
-  return m.filter((w) => w.length > 1 && !STOP.has(w.replace(/['_+-]+$/, '')));
+  return m.map(normalizeToken).filter(Boolean);
 }
 
 // docs: [{ id, text }] → an index usable by bm25Search().

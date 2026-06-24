@@ -31,8 +31,6 @@ test('parseMcpConfig imports Codex-style stdio TOML args as an argv array', () =
     'mcp-atlassian',
     '--jira-url',
     'https://jira.example.com',
-    '--jira-url',
-    'https://jira-sd.example.com',
     '--jira-use-web-session',
     '--confluence-url',
     'https://confluence.example.com',

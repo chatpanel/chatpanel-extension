@@ -27,10 +27,10 @@ export function buildToolset(providers) {
   return {
     specs,
     system,
-    async execute(name, input) {
+    async execute(name, input, meta = {}) {
       const fn = route.get(name);
       if (!fn) return JSON.stringify({ error: `Unknown tool: ${name}` });
-      return fn(name, input);
+      return fn(name, input, meta);
     },
   };
 }

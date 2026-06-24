@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mcpProvider } from '../extension/js/mcp-client.js';
-import { combineSystemPrompt, toolStatus } from '../extension/js/tool-hints.js';
+import { combineSystemPrompt, sourceCitationSystem, toolStatus } from '../extension/js/tool-hints.js';
 
 test('mcpProvider exposes an inventory prompt with exact callable tool names', () => {
   const provider = mcpProvider({
@@ -21,6 +21,9 @@ test('mcpProvider exposes an inventory prompt with exact callable tool names', (
   assert.match(provider.system, /mcp_movies__search_movies/);
   assert.match(provider.system, /query\*/);
   assert.match(provider.system, /Prefer relevant MCP tools over web search/);
+  assert.match(provider.system, /Do not call MCP tools when the attached page or provided context is enough/);
+  assert.match(provider.system, /<sup>\[1\]<\/sup>/, 'MCP prompt should require superscript citations for source-backed answers.');
+  assert.match(provider.system, /Sources/, 'MCP prompt should require a Sources section when MCP sources are used.');
 });
 
 test('toolStatus prefers the upstream MCP error message over generic tool_error', () => {
@@ -35,4 +38,12 @@ test('toolStatus reads JSON error messages from object text payloads', () => {
 
 test('combineSystemPrompt keeps agent and tool hints in order', () => {
   assert.equal(combineSystemPrompt('agent rules', '', 'tool hints'), 'agent rules\n\ntool hints');
+});
+
+test('sourceCitationSystem describes source-backed citation format', () => {
+  const policy = sourceCitationSystem();
+  assert.match(policy, /<sup>\[1\]<\/sup>/);
+  assert.match(policy, /Sources/);
+  assert.match(policy, /MCP tools/);
+  assert.match(policy, /Do not invent/);
 });
