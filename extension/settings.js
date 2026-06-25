@@ -80,13 +80,15 @@ async function init() {
   renderStorageHealth();
 
   wireTabs();
+  // Bind the static controls BEFORE rendering any cards: a render() that throws
+  // (e.g. a stale template missing an element) must not leave every button dead.
+  wire();
   renderEndpoints();
   renderBridge();
   renderMcpServers();
   renderSkills();
   renderPrefs();
   renderLicense();
-  wire();
   refreshBridgeState();
   loadMcpRegistry({ reset: true });
 }
@@ -178,8 +180,11 @@ function ensureCombobox(input) {
   return { wrap, menu, toggle };
 }
 
-function renderCombobox(input, state, open = true) {
-  const matches = filterComboboxOptions(state.options, input.value);
+function renderCombobox(input, state, open = true, showAll = false) {
+  // When the field shows a committed selection, opening it (focus/toggle) must
+  // list every option — filtering by the displayed value would hide all but the
+  // current pick. Only narrow the list once the user actually types a query.
+  const matches = filterComboboxOptions(state.options, showAll ? '' : input.value);
   const menu = state.menu;
   menu.innerHTML = '';
   if (!matches.length) {
@@ -229,7 +234,7 @@ function wireCombobox(input, options, current, placeholder, emptyText = 'No opti
   input.removeAttribute('list');
 
   if (!existing) {
-    input.addEventListener('focus', () => renderCombobox(input, input._chatpanelCombo, true));
+    input.addEventListener('focus', () => renderCombobox(input, input._chatpanelCombo, true, true));
     input.addEventListener('input', () => renderCombobox(input, input._chatpanelCombo, true));
     input.addEventListener('keydown', (event) => {
       const currentState = input._chatpanelCombo;
@@ -246,7 +251,7 @@ function wireCombobox(input, options, current, placeholder, emptyText = 'No opti
     state.toggle.addEventListener('click', () => {
       const currentState = input._chatpanelCombo;
       const open = currentState.menu.classList.contains('hidden');
-      renderCombobox(input, currentState, open);
+      renderCombobox(input, currentState, open, true);
       input.focus();
     });
     document.addEventListener('click', (event) => {
@@ -415,6 +420,38 @@ function endpointCard(ep) {
     if (next.extraBody) q('.ep-extra-body').value = prettyJson(next.extraBody);
   };
 
+  // Switching to a hosted preset overwrites baseUrl/kind/auth with the preset's
+  // values. Stash the user's Custom/self-hosted fields verbatim (raw strings, so
+  // an in-progress JSON edit survives too) when leaving custom, and put them back
+  // when they switch back — instead of stranding them on the preset's values.
+  let customDraft = ep.providerPreset === 'custom' || !ep.providerPreset ? {
+    name: ep.name || '',
+    kind: ep.kind || 'openai',
+    baseUrl: ep.baseUrl || '',
+    authMode: ep.authMode || 'apiKey',
+    apiKey: ep.apiKey || '',
+  } : null;
+  const snapshotCustomDraft = () => {
+    customDraft = {
+      name: q('.ep-name').value,
+      kind: q('.ep-kind').value,
+      baseUrl: q('.ep-baseurl').value,
+      authMode: q('.ep-authmode').value,
+      apiKey: q('.ep-apikey').value,
+      headers: q('.ep-extra-headers').value,
+      extraBody: q('.ep-extra-body').value,
+    };
+  };
+  const restoreCustomDraft = (d) => {
+    if (d.name !== undefined) q('.ep-name').value = d.name;
+    q('.ep-kind').value = d.kind || 'openai';
+    q('.ep-baseurl').value = d.baseUrl || '';
+    q('.ep-authmode').value = d.authMode || 'apiKey';
+    q('.ep-apikey').value = d.apiKey || '';
+    if (d.headers !== undefined) q('.ep-extra-headers').value = d.headers;
+    if (d.extraBody !== undefined) q('.ep-extra-body').value = d.extraBody;
+  };
+
   const resetModelPickers = () => {
     Object.assign(ep, clearEndpointModelState(ep));
     const modelEl = q('.ep-model');
@@ -517,10 +554,14 @@ function endpointCard(ep) {
   };
   q('.ep-authmode').onchange = syncAuthMode;
   q('.ep-provider').onchange = () => {
+    const previous = q('.ep-provider').dataset.providerPreset;
+    if (previous === 'custom') snapshotCustomDraft();
     const selected = readProviderPresetId();
     writeProviderPresetId(selected);
     if (selected !== 'custom') {
       writeConn(applyProviderPreset({ ...rawConn(), providerPreset: selected }));
+    } else if (customDraft) {
+      restoreCustomDraft(customDraft);
     }
     resetModelPickers();
     setAuthStatus('Run Load models or Test to check authentication.');
@@ -554,6 +595,14 @@ function endpointCard(ep) {
       ep.models = ids;
       ep.modelOptions = options;
       wireModelSelect(q('.ep-model'), q('.ep-model-custom'), ids, readModel(q('.ep-model'), q('.ep-model-custom')) || ep.model, options);
+      // Refresh the autocomplete picker from the same freshly loaded list — it is
+      // wired once at render time, so without this it stays empty after Load.
+      wireCombobox(
+        q('.ep-acmodel'),
+        normalizeStoredModelOptions(ids, options),
+        q('.ep-acmodel').value.trim() || ep.autocompleteModel || '',
+        'optional — a small/fast model just for inline autocomplete (avoid reasoning models)',
+      );
       await saveSettings(settings);
       const freeCount = options.filter((m) => m.free).length;
       const freeText = freeCount ? ` (${freeCount} free marked in the picker)` : '';
