@@ -48,7 +48,7 @@ import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpoi
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
 import { assistPrompt } from './js/assist.js';
 import { PAGE_TOOL_SPECS, makePageToolExecutor, PAGE_AUTOMATION_SYSTEM } from './js/page-tools.js';
-import { matchCanvasAdapter } from './js/canvas-adapters.js';
+import { detectCanvasAdapter } from './js/canvas-adapters.js';
 import { buildToolset } from './js/toolset.js';
 import { getMcpProviders } from './js/mcp-manager.js';
 import { upsertMeetingChatAttachment } from './js/meeting-chat-context.js';
@@ -95,7 +95,7 @@ const HISTORY_PAGE_SIZE = 25;
 // their own loop), the 🕹️ Act-on-page opt-in, and a readable tab. The user's
 // "High-reliability page control" setting selects the backend per turn: CDP
 // trusted events (js/page-actions-cdp.js) when on, synthetic events otherwise.
-function pageToolProvider(resolvedAgent) {
+async function pageToolProvider(resolvedAgent) {
   if (!state.settings.ui?.pageActions) return null; // feature off — stay silent
   // API agents run the in-extension tool loop; bridge/CLI agents (Claude Code,
   // Codex) get the SAME tools relayed through the bridge's MCP server. Both need
@@ -115,11 +115,16 @@ function pageToolProvider(resolvedAgent) {
   let specs = PAGE_TOOL_SPECS;
   let system = PAGE_AUTOMATION_SYSTEM;
   let adapter = null;
-  // Adapters insert via chrome.scripting (+ tab reload); they don't need trusted
-  // events, so don't gate on CDP — only the optional zoom/fit-to-view uses it (and
-  // is guarded per-adapter). Gating on CDP made the tools vanish when high-
-  // reliability was off, so the agent fell back to its own (missing) browser.
-  const candidate = matchCanvasAdapter(state.activeTab.url || '');
+  // Pick a structured-editor adapter by CAPABILITY (probe the live page), falling
+  // back to URL — so it works on embeds/self-hosted, not just known hosts. Adapters
+  // insert via chrome.scripting (+ tab reload); they don't need trusted events, so
+  // don't gate on CDP — only the optional zoom/fit uses it (guarded per-adapter).
+  let candidate = null;
+  try {
+    candidate = await detectCanvasAdapter(state.activeTab.id, state.activeTab.url || '');
+  } catch (e) {
+    console.warn('[chatpanel] canvas-adapter detection failed; using base page tools', e);
+  }
   if (candidate && can(state.license, 'structuredInsert')) {
     adapter = candidate;
     specs = [...PAGE_TOOL_SPECS, ...adapter.toolSpecs()];
@@ -142,7 +147,7 @@ async function toolsetFor(
   { historyRag = null, skillRun = null, mcpMode = MCP_TURN_MODES.AUTO, userText = '', attachments = [] } = {},
 ) {
   const providers = [];
-  const page = pageToolProvider(resolvedAgent);
+  const page = await pageToolProvider(resolvedAgent);
   if (page) providers.push(page);
   const history = historyRag || skillRun?.history || null;
   if (resolvedAgent && history?.enabled) {

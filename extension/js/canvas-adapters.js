@@ -371,6 +371,7 @@ function waitForTabComplete(tabId, timeoutMs = 10000) {
 const excalidrawAdapter = {
   id: 'excalidraw',
   label: 'Excalidraw',
+  capability: 'excalidraw',
   toolNames: ['structured_insert', 'read_canvas'],
   match(host) {
     return host === 'excalidraw.com' || host.endsWith('.excalidraw.com');
@@ -748,6 +749,7 @@ async function drawioOp(opJson) {
 const drawioAdapter = {
   id: 'drawio',
   label: 'draw.io',
+  capability: 'drawio',
   toolNames: ['structured_insert', 'read_canvas'],
   match(host) {
     return host === 'app.diagrams.net' || host === 'draw.io' || host === 'www.draw.io' || host.endsWith('.diagrams.net');
@@ -827,12 +829,266 @@ const drawioAdapter = {
 };
 
 // --------------------------------------------------------------------------
-// Registry
+// tldraw (tldraw.com) — the cleanest path: the live Editor is on window.editor,
+// so we use its public API directly (createShapes / updateShapes /
+// getCurrentPageShapes / zoomToFit). No dialog, no reload, exact coordinates.
 // --------------------------------------------------------------------------
 
-export const CANVAS_ADAPTERS = [excalidrawAdapter, drawioAdapter];
+const TLDRAW_FORMAT =
+  'Provide `elements` as an array of shape skeletons inserted via tldraw’s API at exact ' +
+  'coordinates (x,y = top-left; y grows downward).\n' +
+  'Shapes:\n' +
+  '- geo: { id?, type:"rectangle"|"ellipse"|"diamond"|"triangle"|"rhombus"|"oval"|"cloud"|"star"|' +
+  '"hexagon"|"pentagon", x, y, width, height, text?, color?, fill? }\n' +
+  '- text: { type:"text", x, y, text, color? }\n' +
+  '- arrow: { type:"arrow", x, y, width, height }  (straight arrow from x,y by width/height)\n' +
+  'tldraw uses NAMED colors, NOT hex: black, grey, blue, light-blue, green, light-green, red, ' +
+  'light-red, orange, yellow, violet, light-violet, white. fill: none | semi | solid | pattern.\n' +
+  'To UPDATE a shape, reuse its id (from read_canvas).\n' +
+  'Example: [ {"id":"a","type":"rectangle","x":120,"y":100,"width":160,"height":80,"text":"Start","color":"green"},' +
+  ' {"id":"b","type":"ellipse","x":120,"y":260,"width":160,"height":80,"text":"End","color":"blue"} ]';
 
-// The adapter matching this tab's URL, or null. Feature-gating is applied by the
+function tldrawReadScript() {
+  try {
+    const ed = window.editor;
+    if (!ed || typeof ed.getCurrentPageShapes !== 'function') return { ok: false, error: 'tldraw editor not available on this page' };
+    const els = ed.getCurrentPageShapes().map((s) => ({
+      id: s.id,
+      type: s.type === 'geo' ? s.props?.geo || 'geo' : s.type,
+      x: Math.round(s.x || 0),
+      y: Math.round(s.y || 0),
+      w: Math.round(s.props?.w || 0),
+      h: Math.round(s.props?.h || 0),
+      ...(s.props?.text ? { text: String(s.props.text).slice(0, 40) } : {}),
+    }));
+    let bbox = null;
+    if (els.length) {
+      bbox = {
+        minX: Math.min(...els.map((e) => e.x)),
+        minY: Math.min(...els.map((e) => e.y)),
+        maxX: Math.max(...els.map((e) => e.x + e.w)),
+        maxY: Math.max(...els.map((e) => e.y + e.h)),
+      };
+    }
+    return { ok: true, count: els.length, bbox, elements: els.slice(0, 200) };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+function tldrawInsertScript(payloadJson) {
+  try {
+    const ed = window.editor;
+    if (!ed || typeof ed.createShapes !== 'function') return { ok: false, error: 'tldraw editor not available on this page' };
+    const skeletons = (() => {
+      try {
+        const v = JSON.parse(payloadJson).elements;
+        return Array.isArray(v) ? v : [];
+      } catch {
+        return [];
+      }
+    })();
+    if (!skeletons.length) return { ok: false, error: 'no elements provided' };
+    const GEO = {
+      rectangle: 'rectangle', rounded: 'rectangle', box: 'rectangle', square: 'rectangle',
+      ellipse: 'ellipse', circle: 'ellipse', oval: 'oval', diamond: 'diamond', rhombus: 'rhombus',
+      triangle: 'triangle', cloud: 'cloud', star: 'star', hexagon: 'hexagon', pentagon: 'pentagon',
+    };
+    const COLORS = new Set(['black', 'grey', 'light-violet', 'violet', 'blue', 'light-blue', 'yellow', 'orange', 'green', 'light-green', 'light-red', 'red', 'white']);
+    const FILLS = new Set(['none', 'semi', 'solid', 'pattern', 'fill']);
+    const mkId = () => 'shape:' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const normId = (id) => (!id ? mkId() : String(id).startsWith('shape:') ? String(id) : 'shape:' + String(id).replace(/[^a-zA-Z0-9_-]/g, ''));
+    // tldraw v3 labels are richText (a ProseMirror doc), not a plain string.
+    const richTextOf = (s) => ({
+      type: 'doc',
+      content: String(s == null ? '' : s)
+        .split('\n')
+        .map((line) => (line ? { type: 'paragraph', content: [{ type: 'text', text: line }] } : { type: 'paragraph' })),
+    });
+    // The label-less base shape, plus its label text (applied separately so we can
+    // try richText → plain text → no label across tldraw versions).
+    const baseShape = (el) => {
+      const raw = String(el.type || 'rectangle');
+      const id = normId(el.id);
+      const x = Number(el.x) || 0;
+      const y = Number(el.y) || 0;
+      if (raw === 'arrow' || raw === 'line') {
+        return { shape: { id, type: 'arrow', x, y, props: { start: { x: 0, y: 0 }, end: { x: Number(el.width) || 120, y: Number(el.height) || 0 } } }, label: null };
+      }
+      if (raw === 'text') {
+        const props = {};
+        if (el.color && COLORS.has(el.color)) props.color = el.color;
+        return { shape: { id, type: 'text', x, y, props }, label: el.text };
+      }
+      const kind = raw === 'geo' ? GEO[el.geo] || el.geo || 'rectangle' : GEO[raw] || 'rectangle';
+      const props = { geo: kind, w: Number(el.width) || 120, h: Number(el.height) || 60 };
+      if (el.color && COLORS.has(el.color)) props.color = el.color;
+      if (el.fill && FILLS.has(el.fill)) props.fill = el.fill;
+      return { shape: { id, type: 'geo', x, y, props }, label: el.text };
+    };
+    // Apply via the right call, trying label as richText (v3), then plain text (v2),
+    // then no label — so one schema quirk can't drop the whole shape.
+    const apply = (fn, base, label) => {
+      const variants = label
+        ? [
+            { ...base, props: { ...base.props, richText: richTextOf(label) } },
+            { ...base, props: { ...base.props, text: String(label) } },
+            base,
+          ]
+        : [base];
+      for (const v of variants) {
+        try {
+          fn([v]);
+          return true;
+        } catch {
+          /* try next variant */
+        }
+      }
+      return false;
+    };
+    const existing = new Set(ed.getCurrentPageShapes().map((s) => s.id));
+    let added = 0;
+    let updated = 0;
+    for (const el of skeletons) {
+      const { shape, label } = baseShape(el);
+      const isUpdate = existing.has(shape.id);
+      const ok = apply(isUpdate ? ed.updateShapes.bind(ed) : ed.createShapes.bind(ed), shape, label);
+      if (!ok) continue;
+      if (isUpdate) {
+        updated += 1;
+      } else {
+        existing.add(shape.id);
+        added += 1;
+      }
+    }
+    try {
+      if (typeof ed.zoomToFit === 'function') ed.zoomToFit();
+    } catch {
+      /* ignore */
+    }
+    return { ok: true, via: 'tldraw-api', added, updated, total: ed.getCurrentPageShapes().length };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+const tldrawAdapter = {
+  id: 'tldraw',
+  label: 'tldraw',
+  capability: 'tldraw',
+  toolNames: ['structured_insert', 'read_canvas'],
+  match(host) {
+    return host === 'tldraw.com' || host === 'www.tldraw.com' || host.endsWith('.tldraw.com');
+  },
+  handles(name) {
+    return this.toolNames.includes(name);
+  },
+  systemGuidance() {
+    return (
+      'This page is tldraw. Build shapes as DATA with `structured_insert` — do NOT pixel-draw. If ' +
+      'the canvas is NOT empty, FIRST call `read_canvas` for existing shapes (ids + bounding box), ' +
+      'then place new shapes in free space or UPDATE one by reusing its id. tldraw uses NAMED colors ' +
+      '(blue/green/red/…), not hex. It applies instantly via tldraw’s API and zooms to fit. Take ONE ' +
+      'screenshot at the end to validate; do not re-insert.'
+    );
+  },
+  toolSpecs() {
+    return [
+      {
+        name: 'structured_insert',
+        description:
+          'Insert into / update the tldraw canvas by describing shapes as data — exact coordinates, ' +
+          'applied instantly via tldraw’s API (no dragging). To UPDATE a shape, reuse its id (from ' +
+          'read_canvas); a new id ADDS. Place new shapes in free space on a non-empty canvas. ' +
+          TLDRAW_FORMAT,
+        parameters: {
+          type: 'object',
+          properties: {
+            elements: {
+              type: 'array',
+              description: 'Shape skeletons (see the format above). Reuse an existing id to UPDATE that shape.',
+              items: { type: 'object' },
+            },
+          },
+          required: ['elements'],
+        },
+      },
+      {
+        name: 'read_canvas',
+        description:
+          'List the shapes currently on the tldraw canvas — each id, type, position (x,y) and size ' +
+          '(w,h), plus the bounding box. ALWAYS call before adding to or editing a non-empty canvas so ' +
+          'new shapes go in free space and updates target the right id.',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    ];
+  },
+  async _exec(tabId, func, arg) {
+    try {
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func,
+        args: arg === undefined ? [] : [arg],
+      });
+      return res?.result || { ok: false, error: 'injection returned no result' };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  },
+  async run(tabId, name, input) {
+    if (name === 'read_canvas') return this._exec(tabId, tldrawReadScript);
+    const elements = Array.isArray(input?.elements) ? input.elements : [];
+    const r = await this._exec(tabId, tldrawInsertScript, JSON.stringify({ elements }));
+    if (!r.ok) return r;
+    const landed = (r.added || 0) + (r.updated || 0);
+    return {
+      ...r,
+      verified: landed > 0 ? true : false,
+      note:
+        landed > 0
+          ? `Inserted ${r.added}, updated ${r.updated} via tldraw’s API (scene now has ${r.total}); zoomed to fit. Take ONE screenshot to validate — do NOT re-insert.`
+          : 'No shapes landed — the shape schema was rejected by this tldraw version. Report this; do NOT pixel-draw.',
+    };
+  },
+};
+
+// --------------------------------------------------------------------------
+// Registry + capability router
+// --------------------------------------------------------------------------
+
+export const CANVAS_ADAPTERS = [excalidrawAdapter, drawioAdapter, tldrawAdapter];
+
+// MAIN-world probe: which known canvas framework is present? Capability-based, so
+// it works on embeds / self-hosted / unknown domains — not just the exact hosts.
+function probeCanvasScript() {
+  const has = (fn) => {
+    try {
+      return !!fn();
+    } catch {
+      return false;
+    }
+  };
+  return {
+    tldraw: has(() => window.editor && typeof window.editor.createShapes === 'function' && typeof window.editor.getCurrentPageShapes === 'function'),
+    excalidraw:
+      has(() => !!document.querySelector('.excalidraw')) ||
+      has(() => JSON.parse(localStorage.getItem('excalidraw') || 'null') !== null) ||
+      has(() => !!(window.excalidrawAPI || window.ExcalidrawAPI)),
+    drawio: has(() => !!(window.mxUtils && window.EditorUi)) || has(() => !!document.querySelector('.geDiagramContainer, .geEditor, .geMenubar')),
+  };
+}
+
+async function probeCanvas(tabId) {
+  try {
+    const [res] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: probeCanvasScript });
+    return res?.result || {};
+  } catch {
+    return {};
+  }
+}
+
+// The adapter for a tab's URL (sync fast path). Feature-gating is applied by the
 // caller — matching here is purely "does this app have a structured path?".
 export function matchCanvasAdapter(url) {
   let host = '';
@@ -842,4 +1098,16 @@ export function matchCanvasAdapter(url) {
     return null;
   }
   return CANVAS_ADAPTERS.find((a) => a.match(host)) || null;
+}
+
+// The adapter for a tab — by URL first (cheap), else by CAPABILITY (probe the live
+// page), so any page running a known framework gets the right adapter regardless
+// of its domain. Returns null when nothing structured is detected (the agent then
+// falls back to the universal pixel tools).
+export async function detectCanvasAdapter(tabId, url) {
+  const byUrl = matchCanvasAdapter(url);
+  if (byUrl) return byUrl;
+  if (tabId == null) return null;
+  const caps = await probeCanvas(tabId);
+  return CANVAS_ADAPTERS.find((a) => a.capability && caps[a.capability]) || null;
 }
