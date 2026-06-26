@@ -51,7 +51,8 @@ function prepareExcalidraw(payloadJson) {
   try {
     const input = JSON.parse(payloadJson);
     const skeletons = Array.isArray(input.elements) ? input.elements : [];
-    if (!skeletons.length) return { ok: false, error: 'no elements provided' };
+    const native = Array.isArray(input.native) ? input.native : null; // raw Excalidraw elements
+    if (!native && !skeletons.length) return { ok: false, error: 'no elements provided' };
 
     const rnd = () => Math.floor(Math.random() * 2 ** 31);
     const uid = () => {
@@ -90,7 +91,11 @@ function prepareExcalidraw(payloadJson) {
       locked: false,
     });
 
+    // native: raw Excalidraw elements authored by the model — fill only the
+    // required bookkeeping fields if missing so Excalidraw doesn't drop them.
+    const ensure = (el) => ({ id: uid(), seed: rnd(), version: 1, versionNonce: rnd(), isDeleted: false, updated: now, ...el });
     const out = [];
+    if (native) for (const el of native) out.push(ensure(el || {}));
     for (const el of skeletons) {
       const t = String(el.type || 'rectangle');
       if (t === 'text') {
@@ -403,8 +408,10 @@ const excalidrawAdapter = {
           '`id` (from read_canvas) — a matching id REPLACES that shape, a new/absent id ADDS one. When ' +
           'adding to a non-empty canvas, call read_canvas first and place new shapes in free space so ' +
           'they don’t overlap. BACKUP: pass `mermaid` instead — a Mermaid diagram Excalidraw lays out ' +
-          '(standalone flowchart/sequence/class/ER). Provide ONE of the two, then screenshot to validate. ' +
-          EXCALIDRAW_FORMAT,
+          '(standalone flowchart/sequence/class/ER). Provide ONE input, then screenshot to validate. ' +
+          EXCALIDRAW_FORMAT +
+          '\nADVANCED: instead of `elements`, pass `native` — an array of raw Excalidraw element objects ' +
+          '(official element schema) for full control; missing bookkeeping fields are filled in.',
         parameters: {
           type: 'object',
           properties: {
@@ -420,6 +427,11 @@ const excalidrawAdapter = {
               description:
                 'BACKUP. A Mermaid diagram (flowchart/sequence/class/ER) for Excalidraw to auto-layout. ' +
                 'Use instead of `elements` for a standalone diagram; the elements path is preferred otherwise.',
+            },
+            native: {
+              type: 'array',
+              description: 'ADVANCED. Raw Excalidraw element objects. Use instead of `elements` for full-schema control.',
+              items: { type: 'object' },
             },
           },
         },
@@ -475,8 +487,12 @@ const excalidrawAdapter = {
       };
     }
 
-    // PRIMARY path — explicit elements → localStorage merge + reload (exact coords).
-    const payloadJson = JSON.stringify({ elements: Array.isArray(input?.elements) ? input.elements : [] });
+    // PRIMARY path — explicit elements (or raw `native` elements) → localStorage
+    // merge + reload (exact coords).
+    const payloadJson = JSON.stringify({
+      elements: Array.isArray(input?.elements) ? input.elements : [],
+      native: Array.isArray(input?.native) ? input.native : undefined,
+    });
     let r;
     try {
       const [res] = await chrome.scripting.executeScript({
@@ -674,9 +690,10 @@ async function drawioOp(opJson) {
       return { ok: true, count: els.length, bbox, elements: els.slice(0, 200) };
     }
 
-    // insert / upsert
+    // insert / upsert — from `elements` skeletons OR raw `native` mxGraph XML.
     const skeletons = Array.isArray(op.elements) ? op.elements : [];
-    if (!skeletons.length) {
+    const native = typeof op.native === 'string' ? op.native.trim() : '';
+    if (!native && !skeletons.length) {
       clickBtn(/^cancel$/i);
       return { ok: false, error: 'no elements provided' };
     }
@@ -686,49 +703,67 @@ async function drawioOp(opJson) {
     const byId = new Map(cells.map((c) => [c.getAttribute('id'), c]));
     let added = 0;
     let updated = 0;
-    for (const el of skeletons) {
-      const t = String(el.type || 'rectangle');
-      const id = el.id || uid();
-      const cell = doc.createElement('mxCell');
-      cell.setAttribute('id', id);
-      cell.setAttribute('parent', el.parent || layerParent);
-      cell.setAttribute('value', el.text || '');
-      if (t === 'edge') {
-        cell.setAttribute('edge', '1');
-        cell.setAttribute('style', el.style || 'edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;');
-        if (el.source) cell.setAttribute('source', String(el.source));
-        if (el.target) cell.setAttribute('target', String(el.target));
-        const g = doc.createElement('mxGeometry');
-        g.setAttribute('relative', '1');
-        g.setAttribute('as', 'geometry');
-        cell.appendChild(g);
-      } else {
-        cell.setAttribute('vertex', '1');
-        const shape = t === 'ellipse' ? 'ellipse;' : t === 'diamond' ? 'rhombus;' : t === 'text' ? 'text;' : '';
-        const rounded = t === 'rounded' ? 'rounded=1;' : t === 'rectangle' ? 'rounded=0;' : '';
-        const fill = el.fillColor || el.backgroundColor;
-        cell.setAttribute(
-          'style',
-          el.style ||
-            `${shape}${rounded}whiteSpace=wrap;html=1;${fill ? `fillColor=${fill};` : ''}${el.strokeColor ? `strokeColor=${el.strokeColor};` : ''}`,
-        );
-        const g = doc.createElement('mxGeometry');
-        g.setAttribute('x', String(Number(el.x) || 0));
-        g.setAttribute('y', String(Number(el.y) || 0));
-        g.setAttribute('width', String(Number(el.width) || 120));
-        g.setAttribute('height', String(Number(el.height) || 60));
-        g.setAttribute('as', 'geometry');
-        cell.appendChild(g);
-      }
-      const old = byId.get(id);
+    const upsert = (cell) => {
+      const cid = cell.getAttribute('id');
+      const old = cid && byId.get(cid);
       if (old && old.parentNode) {
         old.parentNode.replaceChild(cell, old);
         updated += 1;
       } else {
         root.appendChild(cell);
+        if (cid) byId.set(cid, cell);
         added += 1;
       }
-    }
+    };
+    if (native) {
+      // Raw mxGraph XML — accept a full <mxGraphModel> or bare <mxCell> fragments.
+      const wrapped = native.includes('<mxGraphModel') ? native : `<root>${native}</root>`;
+      const ndoc = new DOMParser().parseFromString(wrapped, 'text/xml');
+      const newCells = [...ndoc.querySelectorAll('mxCell')].filter(
+        (c) => c.getAttribute('vertex') === '1' || c.getAttribute('edge') === '1',
+      );
+      if (!newCells.length) {
+        clickBtn(/^cancel$/i);
+        return { ok: false, error: 'native XML contained no <mxCell vertex=…/edge=…> nodes' };
+      }
+      for (const c of newCells) upsert(doc.importNode(c, true));
+    } else
+      for (const el of skeletons) {
+        const t = String(el.type || 'rectangle');
+        const id = el.id || uid();
+        const cell = doc.createElement('mxCell');
+        cell.setAttribute('id', id);
+        cell.setAttribute('parent', el.parent || layerParent);
+        cell.setAttribute('value', el.text || '');
+        if (t === 'edge') {
+          cell.setAttribute('edge', '1');
+          cell.setAttribute('style', el.style || 'edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;');
+          if (el.source) cell.setAttribute('source', String(el.source));
+          if (el.target) cell.setAttribute('target', String(el.target));
+          const g = doc.createElement('mxGeometry');
+          g.setAttribute('relative', '1');
+          g.setAttribute('as', 'geometry');
+          cell.appendChild(g);
+        } else {
+          cell.setAttribute('vertex', '1');
+          const shape = t === 'ellipse' ? 'ellipse;' : t === 'diamond' ? 'rhombus;' : t === 'text' ? 'text;' : '';
+          const rounded = t === 'rounded' ? 'rounded=1;' : t === 'rectangle' ? 'rounded=0;' : '';
+          const fill = el.fillColor || el.backgroundColor;
+          cell.setAttribute(
+            'style',
+            el.style ||
+              `${shape}${rounded}whiteSpace=wrap;html=1;${fill ? `fillColor=${fill};` : ''}${el.strokeColor ? `strokeColor=${el.strokeColor};` : ''}`,
+          );
+          const g = doc.createElement('mxGeometry');
+          g.setAttribute('x', String(Number(el.x) || 0));
+          g.setAttribute('y', String(Number(el.y) || 0));
+          g.setAttribute('width', String(Number(el.width) || 120));
+          g.setAttribute('height', String(Number(el.height) || 60));
+          g.setAttribute('as', 'geometry');
+          cell.appendChild(g);
+        }
+        upsert(cell);
+      }
     const newXml = new XMLSerializer().serializeToString(model);
     if (!writeXml(newXml)) {
       clickBtn(/^cancel$/i);
@@ -775,7 +810,9 @@ const drawioAdapter = {
           'coordinates, no pixel-dragging. To UPDATE a cell, reuse its id (from read_canvas); a new id ' +
           'ADDS. When adding to a non-empty diagram, call read_canvas first and place new nodes in free ' +
           'space. Screenshot once to validate. ' +
-          DRAWIO_FORMAT,
+          DRAWIO_FORMAT +
+          '\nADVANCED: instead of `elements`, pass `native` — a raw mxGraph XML string (bare <mxCell> ' +
+          'nodes or a full <mxGraphModel>) using the official draw.io schema, merged by id.',
         parameters: {
           type: 'object',
           properties: {
@@ -784,8 +821,11 @@ const drawioAdapter = {
               description: 'Node/edge skeletons (see the format above). Reuse an existing id to UPDATE that cell.',
               items: { type: 'object' },
             },
+            native: {
+              type: 'string',
+              description: 'ADVANCED. Raw mxGraph XML (<mxCell> nodes or a full <mxGraphModel>). Use instead of `elements`.',
+            },
           },
-          required: ['elements'],
         },
       },
       {
@@ -814,7 +854,8 @@ const drawioAdapter = {
   async run(tabId, name, input, { cdp = false } = {}) {
     if (name === 'read_canvas') return this._op(tabId, { op: 'read' });
     const elements = Array.isArray(input?.elements) ? input.elements : [];
-    const r = await this._op(tabId, { op: 'insert', elements });
+    const native = typeof input?.native === 'string' ? input.native : undefined;
+    const r = await this._op(tabId, { op: 'insert', elements, native });
     if (!r.ok) return r;
     // Ctrl+Shift+H = Fit Page, so the result is framed in view.
     if (cdp) await cdpKeyChord(tabId, { key: 'h', code: 'KeyH', windowsVirtualKeyCode: 72 }, 2 | 8).catch(() => {});
@@ -880,15 +921,16 @@ function tldrawInsertScript(payloadJson) {
   try {
     const ed = window.editor;
     if (!ed || typeof ed.createShapes !== 'function') return { ok: false, error: 'tldraw editor not available on this page' };
-    const skeletons = (() => {
+    const parsed = (() => {
       try {
-        const v = JSON.parse(payloadJson).elements;
-        return Array.isArray(v) ? v : [];
+        return JSON.parse(payloadJson) || {};
       } catch {
-        return [];
+        return {};
       }
     })();
-    if (!skeletons.length) return { ok: false, error: 'no elements provided' };
+    const skeletons = Array.isArray(parsed.elements) ? parsed.elements : [];
+    const native = Array.isArray(parsed.native) ? parsed.native : null; // raw tldraw shape partials
+    if (!native && !skeletons.length) return { ok: false, error: 'no elements or native shapes provided' };
     const GEO = {
       rectangle: 'rectangle', rounded: 'rectangle', box: 'rectangle', square: 'rectangle',
       ellipse: 'ellipse', circle: 'ellipse', oval: 'oval', diamond: 'diamond', rhombus: 'rhombus',
@@ -936,24 +978,33 @@ function tldrawInsertScript(payloadJson) {
             base,
           ]
         : [base];
+      let lastErr = '';
       for (const v of variants) {
         try {
           fn([v]);
-          return true;
-        } catch {
-          /* try next variant */
+          return { ok: true };
+        } catch (e) {
+          lastErr = String((e && e.message) || e);
         }
       }
-      return false;
+      return { ok: false, error: lastErr.slice(0, 160) };
     };
     const existing = new Set(ed.getCurrentPageShapes().map((s) => s.id));
+    // native: raw tldraw shape partials (full power, model-authored, validated by
+    // tldraw). skeletons: our safe converter. One path per call.
+    const items = native
+      ? native.map((sh) => ({ shape: { ...(sh || {}), id: normId(sh && sh.id), type: (sh && sh.type) || 'geo' }, label: null }))
+      : skeletons.map(baseShape);
     let added = 0;
     let updated = 0;
-    for (const el of skeletons) {
-      const { shape, label } = baseShape(el);
+    const failed = [];
+    for (const { shape, label } of items) {
       const isUpdate = existing.has(shape.id);
-      const ok = apply(isUpdate ? ed.updateShapes.bind(ed) : ed.createShapes.bind(ed), shape, label);
-      if (!ok) continue;
+      const r = apply(isUpdate ? ed.updateShapes.bind(ed) : ed.createShapes.bind(ed), shape, label);
+      if (!r.ok) {
+        failed.push({ id: shape.id, error: r.error });
+        continue;
+      }
       if (isUpdate) {
         updated += 1;
       } else {
@@ -966,7 +1017,14 @@ function tldrawInsertScript(payloadJson) {
     } catch {
       /* ignore */
     }
-    return { ok: true, via: 'tldraw-api', added, updated, total: ed.getCurrentPageShapes().length };
+    return {
+      ok: true,
+      via: native ? 'tldraw-api(native)' : 'tldraw-api',
+      added,
+      updated,
+      total: ed.getCurrentPageShapes().length,
+      ...(failed.length ? { failed } : {}),
+    };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
@@ -1000,7 +1058,11 @@ const tldrawAdapter = {
           'Insert into / update the tldraw canvas by describing shapes as data — exact coordinates, ' +
           'applied instantly via tldraw’s API (no dragging). To UPDATE a shape, reuse its id (from ' +
           'read_canvas); a new id ADDS. Place new shapes in free space on a non-empty canvas. ' +
-          TLDRAW_FORMAT,
+          TLDRAW_FORMAT +
+          '\nADVANCED: instead of `elements`, pass `native` — an array of raw tldraw shape records ' +
+          '(the official TLShapePartial schema: {id?, type, x, y, props}) — for full power (frames, ' +
+          'notes, draw, bindings). Rejected shapes are reported back with the validation error so you ' +
+          'can fix and retry.',
         parameters: {
           type: 'object',
           properties: {
@@ -1009,8 +1071,12 @@ const tldrawAdapter = {
               description: 'Shape skeletons (see the format above). Reuse an existing id to UPDATE that shape.',
               items: { type: 'object' },
             },
+            native: {
+              type: 'array',
+              description: 'ADVANCED. Raw tldraw shape records (TLShapePartial). Use instead of `elements` for full-schema control.',
+              items: { type: 'object' },
+            },
           },
-          required: ['elements'],
         },
       },
       {
@@ -1038,17 +1104,21 @@ const tldrawAdapter = {
   },
   async run(tabId, name, input) {
     if (name === 'read_canvas') return this._exec(tabId, tldrawReadScript);
-    const elements = Array.isArray(input?.elements) ? input.elements : [];
-    const r = await this._exec(tabId, tldrawInsertScript, JSON.stringify({ elements }));
+    const payload = {
+      elements: Array.isArray(input?.elements) ? input.elements : [],
+      native: Array.isArray(input?.native) ? input.native : undefined,
+    };
+    const r = await this._exec(tabId, tldrawInsertScript, JSON.stringify(payload));
     if (!r.ok) return r;
     const landed = (r.added || 0) + (r.updated || 0);
+    const failNote = r.failed?.length ? ` ${r.failed.length} shape(s) were REJECTED: ${r.failed[0].error} — fix the schema and retry only those.` : '';
     return {
       ...r,
-      verified: landed > 0 ? true : false,
+      verified: landed > 0,
       note:
-        landed > 0
+        (landed > 0
           ? `Inserted ${r.added}, updated ${r.updated} via tldraw’s API (scene now has ${r.total}); zoomed to fit. Take ONE screenshot to validate — do NOT re-insert.`
-          : 'No shapes landed — the shape schema was rejected by this tldraw version. Report this; do NOT pixel-draw.',
+          : 'No shapes landed — the schema was rejected by this tldraw version.') + failNote,
     };
   },
 };
