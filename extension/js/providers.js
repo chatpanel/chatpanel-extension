@@ -20,7 +20,12 @@ import { mergeExtraBody, sanitizeExtraHeaders } from './request-options.js';
 // for real multi-step tasks (filling a table, a multi-field booking, drawing a
 // shape) — each click/type/Enter is a step, so these add up fast.
 const MAX_TOOL_STEPS = Number(globalThis.CHATPANEL_MAX_TOOL_STEPS) || 60;
-const MAX_IDENTICAL_TOOL_CALLS = Number(globalThis.CHATPANEL_MAX_IDENTICAL_TOOL_CALLS) || 2;
+const MAX_IDENTICAL_TOOL_CALLS = Number(globalThis.CHATPANEL_MAX_IDENTICAL_TOOL_CALLS) || 3;
+
+// Observation/read tools are MEANT to be repeated (read → act → read again, with
+// the SAME empty input) — re-reading after an action is correct, not a loop. They
+// don't count toward the loop guard at all.
+const OBSERVATION_TOOLS = new Set(['inspect_page', 'read_canvas', 'screenshot', 'marked_screenshot']);
 
 // Parse a tool-call argument string, tolerating the empty/partial case (a tool
 // with no inputs streams "" or "{}").
@@ -75,11 +80,12 @@ export function createToolLoopGuard({
   maxIdenticalCalls = MAX_IDENTICAL_TOOL_CALLS,
 } = {}) {
   const counts = new Map();
-  let disabled = false;
 
   return {
+    // No nuclear per-turn kill switch — one looping tool must not disable the rest.
+    // The MAX_TOOL_STEPS budget is the overall backstop.
     get disabled() {
-      return disabled;
+      return false;
     },
     // Clear a call's repeat count when it actually made progress — lets an
     // inherently-repetitive tool (scroll-to-bottom) keep going, while a genuinely
@@ -88,28 +94,22 @@ export function createToolLoopGuard({
       if (key) counts.delete(key);
     },
     check(name, input) {
-      if (disabled) {
-        return {
-          blocked: true,
-          result: blockedToolResult(
-            name,
-            'Tool use disabled for the rest of this turn after repeated or excessive tool calls.',
-          ),
-        };
-      }
+      // Reads are idempotent observations — re-reading after an action is correct,
+      // so they never count toward the loop guard.
+      if (OBSERVATION_TOOLS.has(name)) return { blocked: false };
 
       const key = stableToolCallKey(name, input);
       const count = (counts.get(key) || 0) + 1;
       counts.set(key, count);
       if (count > maxIdenticalCalls) {
-        disabled = true;
+        // Block only THIS exact repeated call — every other tool stays available.
         return {
           blocked: true,
           count,
           key,
           result: blockedToolResult(
             name,
-            `Repeated tool call suppressed after ${maxIdenticalCalls} identical attempt${maxIdenticalCalls === 1 ? '' : 's'}: ${name || 'tool'}.`,
+            `Skipped a repeated identical ${name || 'tool'} call (${count}× with the same input). Vary the input or try a different action — your other tools still work.`,
             { repeated: true, identicalCallCount: count, maxIdenticalCalls },
           ),
         };
