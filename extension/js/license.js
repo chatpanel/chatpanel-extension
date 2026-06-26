@@ -75,6 +75,7 @@ export const FEATURE_TIER = {
   customSkills: 'pro',
   customAgents: 'pro', // "bring your own" CLI agent — HARD-gated, verified by the bridge
   advancedAgent: 'pro',
+  structuredInsert: 'pro', // native-format insert for canvas apps (Excalidraw, …)
   exportChats: 'pro',
   promptLibrary: 'pro',
   fileAttachments: 'pro',
@@ -93,6 +94,7 @@ export const PRO_FEATURES = {
   unlimitedAgents: 'Unlimited custom agents',
   customSkills: 'Create & edit your own skills',
   advancedAgent: 'Per-agent system prompts & working directories',
+  structuredInsert: 'Native diagram insert for canvas apps (Excalidraw) — no pixel-drawing',
   exportChats: 'Export conversations as Markdown',
   liveMeetings: 'Live meeting scribe — capture & summarize Zoom, Google Meet, Teams & Webex',
   watch: 'Watch a page & act on changes — the agent reacts as the page updates',

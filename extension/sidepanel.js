@@ -48,6 +48,7 @@ import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpoi
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
 import { assistPrompt } from './js/assist.js';
 import { PAGE_TOOL_SPECS, makePageToolExecutor, PAGE_AUTOMATION_SYSTEM } from './js/page-tools.js';
+import { matchCanvasAdapter } from './js/canvas-adapters.js';
 import { buildToolset } from './js/toolset.js';
 import { getMcpProviders } from './js/mcp-manager.js';
 import { upsertMeetingChatAttachment } from './js/meeting-chat-context.js';
@@ -107,7 +108,26 @@ function pageToolProvider(resolvedAgent) {
   }
   const cdp = !!state.settings.ui?.pageActionsCdp;
   console.info('[chatpanel] page actions attached for', resolvedAgent.kind, 'on tab', state.activeTab.id, cdp ? '(trusted/CDP)' : '(synthetic)');
-  return { specs: PAGE_TOOL_SPECS, execute: makePageToolExecutor(state.activeTab.id, { cdp }), system: PAGE_AUTOMATION_SYSTEM };
+
+  // Structured-editor adapter (Excalidraw, …): when the active tab is a canvas app
+  // with a native data format, expose a `structured_insert` tool so the agent
+  // builds diagrams as DATA instead of pixel-driving. Pro-gated.
+  let specs = PAGE_TOOL_SPECS;
+  let system = PAGE_AUTOMATION_SYSTEM;
+  let adapter = null;
+  const candidate = matchCanvasAdapter(state.activeTab.url || '');
+  if (candidate && can(state.license, 'structuredInsert') && cdp) {
+    adapter = candidate;
+    specs = [...PAGE_TOOL_SPECS, ...adapter.toolSpecs()];
+    system = `${PAGE_AUTOMATION_SYSTEM}\n\n${adapter.systemGuidance()}`;
+    console.info('[chatpanel] structured-insert adapter active:', adapter.id);
+  } else if (candidate && !cdp) {
+    console.info('[chatpanel] structured-insert (', candidate.id, ') needs High-reliability page control — not offered');
+  } else if (candidate) {
+    console.info('[chatpanel] structured-insert (', candidate.id, ') is a Pro feature — not offered');
+  }
+
+  return { specs, execute: makePageToolExecutor(state.activeTab.id, { cdp, adapter }), system };
 }
 
 // Build the full toolset for a turn: page-action tools + any configured MCP
