@@ -25,15 +25,32 @@ import {
 // but the hard rule overriding everything is step 4/6: judge "done" from the
 // SCREENSHOT, never from your plan, and never fabricate a result.
 export const PAGE_AUTOMATION_SYSTEM =
-  'You drive the current browser tab to complete the user’s request. Follow these steps IN ORDER — skipping verification is the #1 cause of wrong results:\n' +
-  '1) PLAN. Restate the request as an explicit checklist: each target → the EXACT value/option (for a drawing: list the parts — body, wheels, windows, steering wheel, driver). Resolve any ambiguity yourself first, e.g. "working week" = Mon–Fri, so the last working day is FRIDAY (not Tuesday/Sunday).\n' +
-  '2) READ / LOCATE. inspect_page gives form fields + selectors. To CLICK something reliably — buttons, menus, toolbar tools (e.g. Excalidraw’s pencil) — call marked_screenshot (it boxes every clickable element with a NUMBER) then click_mark {n}; this beats guessing coordinates and works on canvas-app toolbars. Use the raw coordinate tools (click_at/type_text/press_key/scroll/draw_path) for the canvas SURFACE itself — those screenshots carry a red coordinate grid; read it, never guess.\n' +
-  '3) ACT one checklist item at a time. fill_form for inputs/checkboxes/radios; fill_combobox for typeahead pickers where you must pick a suggestion (city/airport); click_element/click_by_text for buttons.\n' +
-  '   DRAW a picture with the pencil + draw_path: select the pencil (marked_screenshot → click_mark), then draw EACH part as its own draw_path stroke — do NOT reduce a drawing to a single rectangle; use several strokes for the real shape.\n' +
-  '   SPREADSHEET (Sheets/Excel): click the FIRST cell once (below the toolbar — use the grid), then type_text + press_key Enter per value (the selection moves DOWN automatically — don’t click every cell); formulas start with "=".\n' +
-  '4) VERIFY after acting — ALWAYS. After every action you receive a screenshot of the RESULT; LOOK at it and check each checklist item against what is actually on screen. A tool replying "ok"/"trusted"/"filled" only means the input LANDED — NOT that the goal is met. If anything is wrong or incomplete, FIX it and re-verify before moving on. Your judgement of "done" must come from the screenshot, not from your plan.\n' +
-  '5) SUBMIT LAST. Never click Submit/Save/Send/Pay/Confirm until a screenshot confirms EVERY checklist item is correct. Submitting wrong data is worse than pausing — if unsure, ask the user instead.\n' +
-  '6) DONE only after you have SEEN the correct final state in a screenshot. Keep going until the goal is actually visible; if you genuinely cannot after a couple of tries, say so plainly — do not loop and do not pretend it worked. You have NO image-generation tool and cannot fetch/export images: NEVER output an image URL or markdown image, and never claim you generated or exported an image — only the canvas reflects your work. Never invent selectors — use only ones from inspect_page.';
+  'You drive the current browser tab to complete the user’s request. Work from a PLAN and the ' +
+  'tools’ TEXT results — you do NOT get a screenshot after every action. Take a screenshot only ' +
+  'when you genuinely need to SEE the page, and ONCE at the end to validate. This keeps you fast ' +
+  'and lets you operate even without vision.\n' +
+  '1) PLAN. Restate the request as an explicit checklist: each target → the EXACT value/option. For ' +
+  'a drawing, list every part with rough coordinates (body, cabin, wheels, windows, …). Resolve any ' +
+  'ambiguity yourself first, e.g. "working week" = Mon–Fri, so the last working day is FRIDAY.\n' +
+  '2) LOCATE. inspect_page returns the page’s fields, buttons, and links with selectors — prefer ' +
+  'those. Only if you must act by raw pixel coordinate on a canvas, call screenshot ONCE (it carries ' +
+  'a red coordinate grid) to read positions, then act — do NOT screenshot after each move.\n' +
+  '3) ACT from your plan. fill_form for inputs/checkboxes/radios; fill_combobox for typeahead pickers ' +
+  '(city/airport); click_element/click_by_text for buttons. On a structured app (e.g. Excalidraw) ' +
+  'PREFER structured_insert — one data call, exact coordinates, no pixel-dragging. Each tool returns ' +
+  'a TEXT result telling you what landed; proceed on that without a screenshot.\n' +
+  '4) VALIDATE — at the END, and EARLY on any failure. When the checklist is complete, take ONE ' +
+  'screenshot and check every item against what is on screen. A tool replying "ok"/"verified" means ' +
+  'the action LANDED — the end screenshot (or a tool’s verified:true) is your proof the GOAL is met. ' +
+  'But if a tool result reports an error, or a later step won’t act as expected, STOP and validate ' +
+  'THEN — a later failure usually means an EARLIER step went wrong, so re-check from there instead of ' +
+  'pushing on. (No vision? Rely on the tools’ verified results and report exactly what they say.)\n' +
+  '5) SUBMIT LAST. Never click Submit/Save/Send/Pay/Confirm until the end screenshot — or the tool’s ' +
+  'verified result — confirms EVERY checklist item. If unsure, ask the user instead.\n' +
+  '6) BE HONEST when a tool reports FAILURE (e.g. structured_insert verified:false): say so plainly ' +
+  'and stop — do NOT silently switch to a flailing pixel-drawing fallback. You have NO ' +
+  'image-generation tool and cannot fetch/export images: never claim you generated or exported one. ' +
+  'Never invent selectors — use only ones from inspect_page.';
 
 // Capture a screenshot, preferring CDP (works on background tabs) then the
 // visible-tab fallback. Returns a JPEG data URL or null.
@@ -283,13 +300,19 @@ export const PAGE_TOOL_SPECS = [
   {
     name: 'press_key',
     description:
-      'Press one key: Enter, Tab, Escape, Backspace, Delete, Home, End, Space, or Arrow{Up,Down,Left,Right}. ' +
-      'E.g. Enter to commit a spreadsheet cell. Needs High-reliability mode.',
+      'Press one key or a modifier CHORD. Single keys: Enter, Tab, Escape, Backspace, Delete, ' +
+      'Home, End, Space, Arrow{Up,Down,Left,Right}, a letter, or a digit. Chords use "+": e.g. ' +
+      '"Shift+1" (Excalidraw zoom-to-fit), "Cmd+A"/"Ctrl+A" (select all), "Ctrl+Enter". ' +
+      'Needs High-reliability mode.',
     parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] },
   },
   {
     name: 'scroll',
-    description: 'Scroll the page vertically by `dy` pixels (positive = down). Needs High-reliability mode.',
+    description:
+      'Scroll the page vertically by `dy` pixels (positive = down). Returns `movedBy` and ' +
+      '`atBottom` — when `atBottom` is true you have reached the end, so STOP scrolling. ' +
+      'Prefer one large scroll (about a full viewport, e.g. 800–1000) over many small ones. ' +
+      'Needs High-reliability mode.',
     parameters: { type: 'object', properties: { dy: { type: 'number' } }, required: ['dy'] },
   },
   {
@@ -364,28 +387,43 @@ const blockedPageResult = () =>
     blocked: true,
   });
 
-export function makePageToolExecutor(tabId, { cdp = false } = {}) {
+export function makePageToolExecutor(tabId, { cdp = false, adapter = null } = {}) {
   const doFill = cdp ? cdpFillForm : fillForm;
   const doClick = cdp ? cdpClickElement : clickElement;
   const doClickText = cdp ? cdpClickByText : clickByText;
   const doCombobox = cdp ? cdpFillCombobox : fillCombobox;
   let lastMarks = []; // Set-of-Mark from the latest marked_screenshot (for click_mark)
-  // Attach a fresh screenshot of the RESULT to a visual action, so the model is
-  // forced to see what happened and can self-correct (computer-use pattern).
-  const withResultShot = async (resultObj) => {
+  // A result is "trouble" if it errored, didn't take, or couldn't be confirmed.
+  const resultIndicatesError = (r) =>
+    !!r && typeof r === 'object' && (r.error != null || r.ok === false || r.verified === false || r.blocked);
+
+  // Coordinate / "computer use" actions return TEXT only on success — NO per-step
+  // screenshot (cheap, and non-vision models can operate). Strategy (see
+  // PAGE_AUTOMATION_SYSTEM): PLAN → act from text results → validate at the END.
+  // BUT if an action REPORTS A PROBLEM, validation kicks in immediately: attach a
+  // screenshot so the model can SEE the state and recover — a later step failing
+  // usually means an EARLIER step went wrong.
+  const actionResult = async (resultObj) => {
+    if (!resultIndicatesError(resultObj)) return JSON.stringify(resultObj);
     const image = await screenshot(tabId, cdp).catch(() => null);
     if (!image) return JSON.stringify(resultObj);
     const vp = await viewportInfo(tabId);
     return {
       text: JSON.stringify({
         ...resultObj,
-        note: 'Screenshot of the RESULT is attached — LOOK at it: does it match the goal? If a stroke/click landed wrong or is misplaced, FIX it (e.g. press_key Escape / undo, then redo) before continuing. Do not declare done until it looks right.',
+        note: 'This step reported a PROBLEM — screenshot attached. Validate before continuing: a later step failing usually means an EARLIER step went wrong. Re-check from the last known-good state instead of blindly pushing on.',
       }),
       image: await annotateGrid(image, vp),
     };
   };
   return async function execute(name, input) {
     try {
+      // Structured-editor adapter (e.g. Excalidraw): insert the app's native data
+      // in one shot instead of pixel-driving. Only present when the active tab
+      // matched an adapter AND the user is entitled (gated where the tool is added).
+      if (adapter && adapter.handles(name)) {
+        return JSON.stringify(await adapter.run(tabId, name, input, { cdp }));
+      }
       if (name === 'inspect_page') {
         return JSON.stringify(compactInspect(await inspectForms(tabId)));
       }
@@ -411,7 +449,7 @@ export function makePageToolExecutor(tabId, { cdp = false } = {}) {
         const m = lastMarks[n - 1];
         if (!m) return JSON.stringify({ error: `No mark ${n}. Call marked_screenshot first, then use a number from it.` });
         try {
-          if (cdp) return withResultShot({ ...(await cdpClickAt(tabId, m.x, m.y)), label: m.label });
+          if (cdp) return actionResult({ ...(await cdpClickAt(tabId, m.x, m.y)), label: m.label });
           return JSON.stringify({ ...(await clickAtSynthetic(tabId, m.x, m.y)), label: m.label });
         } catch (e) {
           if (BLOCKED_PAGE_RE.test(e.message)) return blockedPageResult();
@@ -450,13 +488,16 @@ export function makePageToolExecutor(tabId, { cdp = false } = {}) {
             error: 'This needs High-reliability page control (trusted events) — turn it on in Settings → page control.',
           });
         }
+        // Scroll is cheap and self-reporting (returns movedBy/atBottom), so skip
+        // the costly per-step screenshot here — the model stops on atBottom. The
+        // other coordinate tools are visual-only, so they keep the result shot.
+        if (name === 'scroll') return JSON.stringify(await cdpScroll(tabId, undefined, undefined, input?.dy));
         let r;
         if (name === 'click_at') r = await cdpClickAt(tabId, input?.x, input?.y);
         else if (name === 'type_text') r = await cdpTypeText(tabId, input?.text);
         else if (name === 'press_key') r = await cdpPressKey(tabId, input?.key);
-        else if (name === 'scroll') r = await cdpScroll(tabId, undefined, undefined, input?.dy);
         else r = await cdpDrag(tabId, input?.points);
-        return withResultShot(r);
+        return actionResult(r);
       }
       if (name === 'fill_form') {
         const fields = input?.fields || [];

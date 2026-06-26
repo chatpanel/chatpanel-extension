@@ -160,6 +160,41 @@ async function trustedKey(tabId, name) {
   await send(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...k });
 }
 
+// CDP modifier bitmask, for key CHORDS (Shift+1, Cmd+A, Ctrl+Enter…).
+const MODS = { alt: 1, option: 1, ctrl: 2, control: 2, meta: 4, cmd: 4, command: 4, win: 4, super: 4, shift: 8 };
+const namedKey = (name) => Object.keys(KEY_DEFS).find((k) => k.toLowerCase() === String(name).toLowerCase());
+// A CDP key descriptor for a single letter/digit/named key (no modifiers here).
+function keyDefFor(name) {
+  const named = namedKey(name);
+  if (named) return KEY_DEFS[named];
+  const s = String(name);
+  if (/^[a-z]$/i.test(s)) return { key: s.toLowerCase(), code: 'Key' + s.toUpperCase(), windowsVirtualKeyCode: s.toUpperCase().charCodeAt(0) };
+  if (/^[0-9]$/.test(s)) return { key: s, code: 'Digit' + s, windowsVirtualKeyCode: 48 + Number(s) };
+  return null;
+}
+// Parse "Shift+1" / "Cmd+A" / "Enter" into { def, modifiers }.
+function parseChord(spec) {
+  const parts = String(spec).split('+').map((p) => p.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  const keyName = parts.pop();
+  const modifiers = parts.reduce((m, p) => m | (MODS[p.toLowerCase()] || 0), 0);
+  const def = keyDefFor(keyName);
+  return def ? { def, modifiers, plainNamed: modifiers === 0 ? namedKey(keyName) : null } : null;
+}
+
+// Press one key WITH modifiers held — a trusted chord. Used for app shortcuts
+// like Excalidraw's Shift+1 (zoom to fit) and the system paste (Cmd/Ctrl+V).
+export async function cdpKeyChord(tabId, def, modifiers = 0) {
+  await ensureAttached(tabId);
+  try {
+    await sendResilient(tabId, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers, ...def });
+    await sendResilient(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', modifiers, ...def });
+    return { ok: true };
+  } finally {
+    bump(tabId);
+  }
+}
+
 // --------------------------------------------------------------------------
 // Coordinate-based "computer use" — the model reads a screenshot and drives the
 // page by COORDINATES, so it works on canvas apps (Google Sheets/Docs, Figma)
@@ -188,28 +223,74 @@ export async function cdpTypeText(tabId, text) {
 }
 export async function cdpPressKey(tabId, key) {
   await ensureAttached(tabId);
+  const chord = parseChord(key);
+  if (!chord) return { ok: false, error: `unknown key "${key}"` };
   try {
-    if (!KEY_DEFS[key]) return { ok: false, error: `unknown key "${key}"` };
-    await trustedKey(tabId, key);
+    // Plain named key (Enter/Space/…) keeps the text-producing keyDown path;
+    // anything with a modifier (or a letter/digit) goes through the chord helper.
+    if (chord.plainNamed) await trustedKey(tabId, chord.plainNamed);
+    else await cdpKeyChord(tabId, chord.def, chord.modifiers);
     return { ok: true, key };
   } finally {
     bump(tabId);
   }
 }
+// Best-effort scroll position, so the caller (and the model) can tell when the
+// page has actually reached the bottom — and stop, instead of scrolling forever.
+async function readScrollState(tabId) {
+  try {
+    return await script(tabId, () => {
+      const el = document.scrollingElement || document.documentElement;
+      const y = Math.round(window.scrollY || el.scrollTop || 0);
+      const maxY = Math.max(0, Math.round((el.scrollHeight || 0) - window.innerHeight));
+      return { y, maxY, atBottom: y >= maxY - 2 };
+    });
+  } catch {
+    return null;
+  }
+}
+
+// chrome.debugger can detach mid-command on navigation-heavy / scroll-jacked
+// pages ("Detached while handling command."). Drop the dead session, re-attach,
+// and retry the command once before giving up.
+const DETACHED_RE = /detached|target closed|tab with given id|cannot access/i;
+async function sendResilient(tabId, method, params) {
+  try {
+    return await send(tabId, method, params);
+  } catch (e) {
+    if (!DETACHED_RE.test(e?.message || '')) throw e;
+    await detach(tabId);
+    await ensureAttached(tabId);
+    return await send(tabId, method, params);
+  }
+}
+
 export async function cdpScroll(tabId, x, y, dy) {
   await ensureAttached(tabId);
+  const requested = Math.round(dy ?? 400);
+  const before = await readScrollState(tabId);
   try {
-    await send(tabId, 'Input.dispatchMouseEvent', {
+    await sendResilient(tabId, 'Input.dispatchMouseEvent', {
       type: 'mouseWheel',
       x: Math.round(x ?? 100),
       y: Math.round(y ?? 100),
       deltaX: 0,
-      deltaY: Math.round(dy ?? 400),
+      deltaY: requested,
     });
-    return { ok: true, scrolledBy: Math.round(dy ?? 400) };
-  } finally {
-    bump(tabId);
+  } catch {
+    // CDP wheel still failing after a re-attach — fall back to a plain DOM scroll.
+    // It doesn't need the debugger and is the more reliable way to reach a bottom.
+    await script(tabId, (d) => window.scrollBy(0, d), [requested]).catch(() => {});
   }
+  const after = await readScrollState(tabId);
+  bump(tabId);
+  const movedBy = before && after ? after.y - before.y : undefined;
+  return {
+    ok: true,
+    requested,
+    ...(movedBy !== undefined ? { movedBy } : {}),
+    ...(after ? { atBottom: after.atBottom } : {}),
+  };
 }
 
 // Drag the mouse through a path with the button held — i.e. a freehand stroke.

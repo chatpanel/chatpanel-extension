@@ -11,7 +11,7 @@
 // use, status) so the UI can show what a coding agent is doing.
 
 import { getEntitlementToken } from './license.js';
-import { createAdaptiveToolPolicy } from './adaptive-tool-policy.js';
+import { createAdaptiveToolPolicy, resultText } from './adaptive-tool-policy.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
 import { authHeadersForEndpoint } from './oauth.js';
 import { mergeExtraBody, sanitizeExtraHeaders } from './request-options.js';
@@ -58,6 +58,19 @@ function blockedToolResult(name, message, extra = {}) {
   });
 }
 
+// Some tools are meant to be called repeatedly (e.g. scrolling to the bottom of
+// a long page). Treat such a call as progress — clearing its repeat count — as
+// long as it isn't a no-op. For scroll, "more page below" (atBottom === false) is
+// progress; once atBottom is true the repeat guard is allowed to bite again.
+function toolMadeProgress(name, result) {
+  if (name !== 'scroll') return false;
+  try {
+    return JSON.parse(resultText(result))?.atBottom === false;
+  } catch {
+    return false;
+  }
+}
+
 export function createToolLoopGuard({
   maxIdenticalCalls = MAX_IDENTICAL_TOOL_CALLS,
 } = {}) {
@@ -67,6 +80,12 @@ export function createToolLoopGuard({
   return {
     get disabled() {
       return disabled;
+    },
+    // Clear a call's repeat count when it actually made progress — lets an
+    // inherently-repetitive tool (scroll-to-bottom) keep going, while a genuinely
+    // stuck loop still trips the cap.
+    reset(key) {
+      if (key) counts.delete(key);
     },
     check(name, input) {
       if (disabled) {
@@ -278,6 +297,7 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
         ? guard.result
         : await tools.execute(c.name, input, { callId: c.id });
       adaptivePolicy.recordResult(c.name, result);
+      if (!guard.blocked && toolMadeProgress(c.name, result)) loopGuard.reset(guard.key);
       const _image = result && typeof result === 'object' ? result.image : undefined;
       onEvent?.({ type: 'tool', name: c.name, phase: 'done', callId: c.id, image: _image, status: toolStatus(result) });
       const text = typeof result === 'string' ? result : (result?.text ?? '');
@@ -408,6 +428,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
         ? guard.result
         : await tools.execute(b.name, input, { callId: b.id });
       adaptivePolicy.recordResult(b.name, result);
+      if (!guard.blocked && toolMadeProgress(b.name, result)) loopGuard.reset(guard.key);
       const _image = result && typeof result === 'object' ? result.image : undefined;
       onEvent?.({ type: 'tool', name: b.name, phase: 'done', callId: b.id, image: _image, status: toolStatus(result) });
       const text = typeof result === 'string' ? result : (result?.text ?? '');
@@ -444,6 +465,7 @@ async function relayBridgeTool(base, ev, tools, onEvent, loopGuard = createToolL
       : tools
         ? await tools.execute(ev.name, ev.input, { callId: ev.id, session: ev.session })
         : JSON.stringify({ error: 'no tools armed' });
+    if (!guard.blocked && toolMadeProgress(ev.name, result)) loopGuard.reset(guard.key);
   } catch (e) {
     result = JSON.stringify({ error: String(e?.message || e) });
   }
