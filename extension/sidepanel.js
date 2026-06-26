@@ -115,14 +115,16 @@ function pageToolProvider(resolvedAgent) {
   let specs = PAGE_TOOL_SPECS;
   let system = PAGE_AUTOMATION_SYSTEM;
   let adapter = null;
+  // Adapters insert via chrome.scripting (+ tab reload); they don't need trusted
+  // events, so don't gate on CDP — only the optional zoom/fit-to-view uses it (and
+  // is guarded per-adapter). Gating on CDP made the tools vanish when high-
+  // reliability was off, so the agent fell back to its own (missing) browser.
   const candidate = matchCanvasAdapter(state.activeTab.url || '');
-  if (candidate && can(state.license, 'structuredInsert') && cdp) {
+  if (candidate && can(state.license, 'structuredInsert')) {
     adapter = candidate;
     specs = [...PAGE_TOOL_SPECS, ...adapter.toolSpecs()];
     system = `${PAGE_AUTOMATION_SYSTEM}\n\n${adapter.systemGuidance()}`;
-    console.info('[chatpanel] structured-insert adapter active:', adapter.id);
-  } else if (candidate && !cdp) {
-    console.info('[chatpanel] structured-insert (', candidate.id, ') needs High-reliability page control — not offered');
+    console.info('[chatpanel] structured-insert adapter active:', adapter.id, cdp ? '(cdp)' : '(no cdp)');
   } else if (candidate) {
     console.info('[chatpanel] structured-insert (', candidate.id, ') is a Pro feature — not offered');
   }

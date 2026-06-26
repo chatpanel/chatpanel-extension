@@ -526,10 +526,311 @@ const excalidrawAdapter = {
 };
 
 // --------------------------------------------------------------------------
+// draw.io / diagrams.net (app.diagrams.net)
+// --------------------------------------------------------------------------
+// The live EditorUi instance isn't exposed on window, and there's no diagram in
+// localStorage — so we drive draw.io's OWN "Extras → Edit Diagram" XML editor:
+// read the current mxGraphModel, upsert our <mxCell> nodes, write it back, OK.
+// Deterministic (draw.io parses the XML) and honors exact coordinates.
+
+const DRAWIO_FORMAT =
+  'Provide `elements` as an array of node/edge skeletons; ChatPanel turns them into draw.io ' +
+  'mxGraph cells and applies them via the Edit Diagram XML. Coordinates are diagram pixels ' +
+  '(x,y = top-left; y grows downward).\n' +
+  'Nodes — give each an `id` so edges can reference it:\n' +
+  '- { id, type:"rectangle"|"rounded"|"ellipse"|"diamond"|"text", x, y, width, height, text?, ' +
+  'fillColor?, strokeColor? }\n' +
+  'Edges (connectors between two nodes):\n' +
+  '- { type:"edge", source:<nodeId>, target:<nodeId>, text? }\n' +
+  'Colors are hex (e.g. "#d5e8d4"). To UPDATE an existing cell, reuse its id (from read_canvas).\n' +
+  'OFFICIAL ICONS (AWS / GCP / Azure / UML …): set a full draw.io `style` on the node — it ' +
+  'overrides the shape defaults. AWS example (size ~78×78): "sketch=0;html=1;aspect=fixed;' +
+  'verticalLabelPosition=bottom;verticalAlign=top;align=center;shape=mxgraph.aws4.resourceIcon;' +
+  'resIcon=mxgraph.aws4.ec2;" — use the real mxgraph.aws4.* resIcon names (ec2, s3, rds, lambda, ' +
+  'vpc, cloudfront, route_53, elastic_load_balancing, cloudwatch, …). So for an AWS diagram, emit ' +
+  'icon nodes with these styles instead of plain colored boxes.\n' +
+  'Example — a two-box flow:\n' +
+  '[ {"id":"a","type":"rounded","x":160,"y":80,"width":120,"height":60,"text":"Start","fillColor":"#d5e8d4"},' +
+  ' {"id":"b","type":"rectangle","x":160,"y":220,"width":120,"height":60,"text":"Process"},' +
+  ' {"type":"edge","source":"a","target":"b","text":"next"} ]';
+
+// Self-contained MAIN-world routine: op = {op:'read'} or {op:'insert', elements}.
+async function drawioOp(opJson) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const findByText = (sel, re) => {
+    for (const el of document.querySelectorAll(sel)) if (re.test((el.textContent || '').trim())) return el;
+    return null;
+  };
+  const dialog = () => document.querySelector('.geDialog, [role="dialog"]');
+  const getCM = () => {
+    const el = (dialog() || document).querySelector('.CodeMirror');
+    return el && el.CodeMirror ? el.CodeMirror : null;
+  };
+  const textarea = () => {
+    const ta = (dialog() || document).querySelector('textarea');
+    return ta && ta.offsetParent ? ta : null;
+  };
+  const editorReady = () => !!(getCM() || textarea());
+  const readXml = () => {
+    const cm = getCM();
+    if (cm) return cm.getValue();
+    const ta = textarea();
+    return ta ? ta.value : null;
+  };
+  const writeXml = (xml) => {
+    const cm = getCM();
+    if (cm) {
+      cm.setValue(xml);
+      return true;
+    }
+    const ta = textarea();
+    if (!ta) return false;
+    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(ta), 'value')?.set;
+    if (setter) setter.call(ta, xml);
+    else ta.value = xml;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  };
+  // draw.io's menubar + popup menus use mxgraph GESTURE listeners (mousedown/
+  // mouseup), not plain click — a bare .click() won't open them.
+  const fire = (el, type) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0 }));
+  const gesture = (el) => {
+    fire(el, 'mousedown');
+    fire(el, 'mouseup');
+    fire(el, 'click');
+  };
+  const clickBtn = (re) => {
+    // Search the dialog first, then the whole document (draw.io's primary button
+    // can sit just outside the matched container). Visible elements only.
+    for (const scope of [dialog(), document].filter(Boolean)) {
+      const btn = [...scope.querySelectorAll('button, .geBtn, .gePrimaryBtn, a, input[type=button], input[type=submit]')].find(
+        (b) => b.offsetParent !== null && re.test((b.textContent || b.value || '').trim()),
+      );
+      if (btn) {
+        gesture(btn);
+        return true;
+      }
+    }
+    return false;
+  };
+  const openDialog = async () => {
+    if (editorReady()) return true;
+    const extras = findByText('a.geItem, a, div, td', /^extras$/i);
+    if (!extras) return false;
+    gesture(extras);
+    await sleep(280);
+    const item = findByText('.mxPopupMenuItem, .mxPopupMenu td, .mxPopupMenu tr, a, div, td', /^edit diagram/i);
+    if (!item) return false;
+    gesture(item);
+    await sleep(450);
+    return editorReady();
+  };
+
+  try {
+    const op = JSON.parse(opJson);
+    if (!(await openDialog())) return { ok: false, error: 'Could not open draw.io Extras → Edit Diagram dialog.' };
+    const xml = readXml();
+    if (xml == null) return { ok: false, error: 'Edit Diagram editor not found.' };
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    const model = doc.querySelector('mxGraphModel');
+    const root = model && model.querySelector('root');
+    if (!root) {
+      clickBtn(/^cancel$/i);
+      return { ok: false, error: 'Unexpected diagram XML (no <root>).' };
+    }
+    const cells = [...root.querySelectorAll('mxCell')];
+
+    if (op.op === 'read') {
+      const els = cells
+        .filter((c) => c.getAttribute('vertex') === '1')
+        .map((c) => {
+          const g = c.querySelector('mxGeometry');
+          const style = c.getAttribute('style') || '';
+          let type = 'rectangle';
+          if (/ellipse/.test(style)) type = 'ellipse';
+          else if (/rhombus/.test(style)) type = 'diamond';
+          else if (/(^|;)text(;|$)/.test(style)) type = 'text';
+          return {
+            id: c.getAttribute('id'),
+            type,
+            x: Math.round(parseFloat(g?.getAttribute('x') || '0')),
+            y: Math.round(parseFloat(g?.getAttribute('y') || '0')),
+            w: Math.round(parseFloat(g?.getAttribute('width') || '0')),
+            h: Math.round(parseFloat(g?.getAttribute('height') || '0')),
+            ...(c.getAttribute('value') ? { text: c.getAttribute('value').replace(/<[^>]+>/g, '').slice(0, 40) } : {}),
+          };
+        });
+      clickBtn(/^cancel$/i);
+      let bbox = null;
+      if (els.length) {
+        bbox = {
+          minX: Math.min(...els.map((e) => e.x)),
+          minY: Math.min(...els.map((e) => e.y)),
+          maxX: Math.max(...els.map((e) => e.x + e.w)),
+          maxY: Math.max(...els.map((e) => e.y + e.h)),
+        };
+      }
+      return { ok: true, count: els.length, bbox, elements: els.slice(0, 200) };
+    }
+
+    // insert / upsert
+    const skeletons = Array.isArray(op.elements) ? op.elements : [];
+    if (!skeletons.length) {
+      clickBtn(/^cancel$/i);
+      return { ok: false, error: 'no elements provided' };
+    }
+    const uid = () => 'c' + Math.random().toString(36).slice(2, 10);
+    const layerCell = cells.find((c) => c.getAttribute('parent') === '0');
+    const layerParent = (layerCell && layerCell.getAttribute('id')) || '1';
+    const byId = new Map(cells.map((c) => [c.getAttribute('id'), c]));
+    let added = 0;
+    let updated = 0;
+    for (const el of skeletons) {
+      const t = String(el.type || 'rectangle');
+      const id = el.id || uid();
+      const cell = doc.createElement('mxCell');
+      cell.setAttribute('id', id);
+      cell.setAttribute('parent', el.parent || layerParent);
+      cell.setAttribute('value', el.text || '');
+      if (t === 'edge') {
+        cell.setAttribute('edge', '1');
+        cell.setAttribute('style', el.style || 'edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;');
+        if (el.source) cell.setAttribute('source', String(el.source));
+        if (el.target) cell.setAttribute('target', String(el.target));
+        const g = doc.createElement('mxGeometry');
+        g.setAttribute('relative', '1');
+        g.setAttribute('as', 'geometry');
+        cell.appendChild(g);
+      } else {
+        cell.setAttribute('vertex', '1');
+        const shape = t === 'ellipse' ? 'ellipse;' : t === 'diamond' ? 'rhombus;' : t === 'text' ? 'text;' : '';
+        const rounded = t === 'rounded' ? 'rounded=1;' : t === 'rectangle' ? 'rounded=0;' : '';
+        const fill = el.fillColor || el.backgroundColor;
+        cell.setAttribute(
+          'style',
+          el.style ||
+            `${shape}${rounded}whiteSpace=wrap;html=1;${fill ? `fillColor=${fill};` : ''}${el.strokeColor ? `strokeColor=${el.strokeColor};` : ''}`,
+        );
+        const g = doc.createElement('mxGeometry');
+        g.setAttribute('x', String(Number(el.x) || 0));
+        g.setAttribute('y', String(Number(el.y) || 0));
+        g.setAttribute('width', String(Number(el.width) || 120));
+        g.setAttribute('height', String(Number(el.height) || 60));
+        g.setAttribute('as', 'geometry');
+        cell.appendChild(g);
+      }
+      const old = byId.get(id);
+      if (old && old.parentNode) {
+        old.parentNode.replaceChild(cell, old);
+        updated += 1;
+      } else {
+        root.appendChild(cell);
+        added += 1;
+      }
+    }
+    const newXml = new XMLSerializer().serializeToString(model);
+    if (!writeXml(newXml)) {
+      clickBtn(/^cancel$/i);
+      return { ok: false, error: 'Could not write the diagram XML into the editor.' };
+    }
+    await sleep(150);
+    const clicked = clickBtn(/^ok$/i);
+    await sleep(350);
+    // The dialog closing is the real confirmation that draw.io accepted the XML.
+    const applied = clicked && !editorReady();
+    const total = root.querySelectorAll('mxCell[vertex="1"], mxCell[edge="1"]').length;
+    return { ok: true, via: 'edit-diagram', added, updated, total, applied };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+const drawioAdapter = {
+  id: 'drawio',
+  label: 'draw.io',
+  toolNames: ['structured_insert', 'read_canvas'],
+  match(host) {
+    return host === 'app.diagrams.net' || host === 'draw.io' || host === 'www.draw.io' || host.endsWith('.diagrams.net');
+  },
+  handles(name) {
+    return this.toolNames.includes(name);
+  },
+  systemGuidance() {
+    return (
+      'This page is draw.io. Build the diagram as DATA with `structured_insert` (nodes + edges) — do ' +
+      'NOT pixel-draw. If the canvas is NOT empty, FIRST call `read_canvas` to see existing cells (ids, ' +
+      'positions, bounding box), then place NEW nodes in free space or UPDATE one by reusing its id. ' +
+      'Give nodes ids so edges can reference them via source/target. It applies through draw.io’s Edit ' +
+      'Diagram XML and re-renders. Take ONE screenshot at the end to validate; do not re-insert.'
+    );
+  },
+  toolSpecs() {
+    return [
+      {
+        name: 'structured_insert',
+        description:
+          'Insert into / update the draw.io diagram by describing nodes and edges as data — exact ' +
+          'coordinates, no pixel-dragging. To UPDATE a cell, reuse its id (from read_canvas); a new id ' +
+          'ADDS. When adding to a non-empty diagram, call read_canvas first and place new nodes in free ' +
+          'space. Screenshot once to validate. ' +
+          DRAWIO_FORMAT,
+        parameters: {
+          type: 'object',
+          properties: {
+            elements: {
+              type: 'array',
+              description: 'Node/edge skeletons (see the format above). Reuse an existing id to UPDATE that cell.',
+              items: { type: 'object' },
+            },
+          },
+          required: ['elements'],
+        },
+      },
+      {
+        name: 'read_canvas',
+        description:
+          'List the cells currently in the draw.io diagram — each id, type, position (x,y) and size ' +
+          '(w,h), plus the bounding box. ALWAYS call before adding to or editing a non-empty diagram so ' +
+          'new nodes go in free space (e.g. below bbox.maxY) and edges/updates can reference the right ids.',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    ];
+  },
+  async _op(tabId, payload) {
+    try {
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: drawioOp,
+        args: [JSON.stringify(payload)],
+      });
+      return res?.result || { ok: false, error: 'injection returned no result' };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  },
+  async run(tabId, name, input, { cdp = false } = {}) {
+    if (name === 'read_canvas') return this._op(tabId, { op: 'read' });
+    const elements = Array.isArray(input?.elements) ? input.elements : [];
+    const r = await this._op(tabId, { op: 'insert', elements });
+    if (!r.ok) return r;
+    // Ctrl+Shift+H = Fit Page, so the result is framed in view.
+    if (cdp) await cdpKeyChord(tabId, { key: 'h', code: 'KeyH', windowsVirtualKeyCode: 72 }, 2 | 8).catch(() => {});
+    return {
+      ...r,
+      verified: r.applied ? null : false,
+      note: r.applied
+        ? `Applied to the diagram (${r.added} added, ${r.updated} updated). Take ONE screenshot to validate — do NOT re-insert.`
+        : 'Wrote the XML but could not confirm the dialog’s OK was clicked — screenshot to check; report if nothing changed.',
+    };
+  },
+};
+
+// --------------------------------------------------------------------------
 // Registry
 // --------------------------------------------------------------------------
 
-export const CANVAS_ADAPTERS = [excalidrawAdapter];
+export const CANVAS_ADAPTERS = [excalidrawAdapter, drawioAdapter];
 
 // The adapter matching this tab's URL, or null. Feature-gating is applied by the
 // caller — matching here is purely "does this app have a structured path?".
