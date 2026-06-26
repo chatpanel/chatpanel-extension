@@ -204,6 +204,30 @@ function toMultimodalMessages(messages, provider) {
 // --------------------------------------------------------------------------
 // OpenAI-compatible
 // --------------------------------------------------------------------------
+// A model without vision rejects image_url content (e.g. HF Router 400 "does not
+// support image inputs"). Rather than fail, we strip images and continue text-only.
+function isVisionUnsupportedError(text) {
+  return /does not support image|image input|image_url|no.{0,3}vision|multimodal|cannot process image/i.test(String(text || ''));
+}
+function stripImagesFromMessages(msgs) {
+  for (const m of msgs) {
+    if (!Array.isArray(m.content)) continue;
+    let hadImage = false;
+    m.content = m.content.filter((c) => {
+      if (c?.type === 'image_url') {
+        hadImage = true;
+        return false;
+      }
+      return true;
+    });
+    if (hadImage && !m.content.some((c) => c?.type === 'text')) {
+      m.content.push({ type: 'text', text: '(image omitted — this model has no vision)' });
+    }
+    if (m.content.length === 1 && m.content[0]?.type === 'text') m.content = m.content[0].text;
+  }
+  return msgs;
+}
+
 async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }) {
   const base = (agent.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
   const system = combineSystemPrompt(agent.systemPrompt, tools?.system);
@@ -222,26 +246,39 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
   // so pasted/attached images ride along to vision models.
   const msgs = [...sys, ...toMultimodalMessages(messages, 'openai')];
   let full = '';
+  let noVision = false; // set once the model rejects images, then we go text-only
 
   // One model turn = one streamed completion. Loops only when the model asks to
   // call tools; without tools it runs exactly once (unchanged single-shot path).
   for (let step = 0; step < (tools ? MAX_TOOL_STEPS : 1); step++) {
     const activeToolSpecs = loopGuard.disabled ? undefined : adaptivePolicy.filterOpenAITools(toolSpecs);
-    const body = mergeExtraBody({
-      model: agent.model || 'gpt-4o-mini',
-      messages: msgs,
-      stream: true,
-      ...(activeToolSpecs?.length ? { tools: activeToolSpecs } : {}),
-      ...(agent.temperature != null ? { temperature: agent.temperature } : {}),
-      ...(agent.maxTokens ? { max_tokens: agent.maxTokens } : {}),
-    }, agent.extraBody);
-    const res = await reachableFetch(`${base}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal,
-    }, agent, base);
-    if (!res.ok) throw new Error(openAiError(agent, base, res.status, await safeText(res)));
+    const doFetch = () => {
+      const body = mergeExtraBody({
+        model: agent.model || 'gpt-4o-mini',
+        messages: msgs,
+        stream: true,
+        ...(activeToolSpecs?.length ? { tools: activeToolSpecs } : {}),
+        ...(agent.temperature != null ? { temperature: agent.temperature } : {}),
+        ...(agent.maxTokens ? { max_tokens: agent.maxTokens } : {}),
+      }, agent.extraBody);
+      return reachableFetch(`${base}/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body), signal }, agent, base);
+    };
+    let res = await doFetch();
+    if (!res.ok) {
+      const errText = await safeText(res);
+      // Vision-less model: drop images and retry text-only instead of failing.
+      // Providers use different status codes (OpenAI 400, OpenRouter 404, …), so
+      // key off the error MESSAGE, not the status.
+      if (!noVision && isVisionUnsupportedError(errText)) {
+        noVision = true;
+        stripImagesFromMessages(msgs);
+        console.info('[chatpanel] model rejected image inputs — continuing text-only');
+        res = await doFetch();
+        if (!res.ok) throw new Error(openAiError(agent, base, res.status, await safeText(res)));
+      } else {
+        throw new Error(openAiError(agent, base, res.status, errText));
+      }
+    }
 
     let stepText = '';
     const calls = {}; // index → { id, name, args } accumulated across deltas
@@ -303,15 +340,14 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
       const text = typeof result === 'string' ? result : (result?.text ?? '');
       msgs.push({ role: 'tool', tool_call_id: c.id, content: text });
       // OpenAI tool messages can't carry images — feed any screenshot back as a
-      // follow-up user message so the (vision) model can see the page.
+      // follow-up user message so the (vision) model can see the page. Skip once the
+      // model has told us it has no vision (noVision) — send a text note instead.
       if (result && typeof result === 'object' && result.image) {
-        msgs.push({
-          role: 'user',
-          content: [
-            { type: 'text', text: `(Screenshot from ${c.name})` },
-            { type: 'image_url', image_url: { url: result.image } },
-          ],
-        });
+        msgs.push(
+          noVision
+            ? { role: 'user', content: `(Screenshot from ${c.name} omitted — this model has no vision. Rely on read_canvas / inspect_page / tool results.)` }
+            : { role: 'user', content: [{ type: 'text', text: `(Screenshot from ${c.name})` }, { type: 'image_url', image_url: { url: result.image } }] },
+        );
       }
     }
   }

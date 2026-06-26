@@ -25,6 +25,11 @@ import {
 // but the hard rule overriding everything is step 4/6: judge "done" from the
 // SCREENSHOT, never from your plan, and never fabricate a result.
 export const PAGE_AUTOMATION_SYSTEM =
+  'PREFER the ChatPanel browser tools provided here (inspect_page, screenshot, read_canvas, ' +
+  'structured_insert, click_element, click_by_text, fill_form, scroll, …) to see and act on this ' +
+  'page — they are purpose-built for this tab and connected to it, so use them FIRST. Only if they ' +
+  'are genuinely unavailable or failing should you fall back to any other/native browser tool you ' +
+  'may have.\n' +
   'You drive the current browser tab to complete the user’s request. Work from a PLAN and the ' +
   'tools’ TEXT results — you do NOT get a screenshot after every action. Take a screenshot only ' +
   'when you genuinely need to SEE the page, and ONCE at the end to validate. This keeps you fast ' +
