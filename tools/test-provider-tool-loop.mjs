@@ -22,13 +22,15 @@ const guard = createToolLoopGuard({ maxIdenticalCalls: 2 });
 assert.equal(guard.check('mcp_demo__search', { query: 'same' }).blocked, false);
 assert.equal(guard.check('mcp_demo__search', { query: 'same' }).blocked, false);
 const repeated = guard.check('mcp_demo__search', { query: 'same' });
-assert.equal(repeated.blocked, true);
-assert.equal(guard.disabled, true);
-assert.match(toolStatus(repeated.result), /^blocked: Repeated tool call suppressed/);
+assert.equal(repeated.blocked, true, 'The 3rd identical call (> maxIdenticalCalls) is blocked.');
+// No nuclear per-turn kill switch: only the exact looping call is suppressed; the
+// guard never globally disables tool use for the rest of the turn.
+assert.equal(guard.disabled, false, 'There is no global kill switch.');
+assert.match(toolStatus(repeated.result), /^blocked: Skipped a repeated identical/);
 
-const afterDisabled = guard.check('mcp_demo__other', { query: 'different' });
-assert.equal(afterDisabled.blocked, true);
-assert.match(toolStatus(afterDisabled.result), /^blocked: Tool use disabled/);
+// A DIFFERENT tool call still works — one looping tool must not disable the rest.
+const otherCall = guard.check('mcp_demo__other', { query: 'different' });
+assert.equal(otherCall.blocked, false, 'A distinct tool call is unaffected when another call loops.');
 
 const manyMcpCalls = createToolLoopGuard({ maxIdenticalCalls: 99 });
 for (let i = 0; i < 25; i += 1) {
