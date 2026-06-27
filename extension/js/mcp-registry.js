@@ -55,7 +55,9 @@ export function normalizeRegistryEntry(entry = {}) {
     kind: 'local',
     command: pkg.command,
     args: pkg.args,
-    env: envPlaceholders(pkg.envInputs),
+    // presetEnv (e.g. the public-registry pin) first, then the declared token
+    // placeholders the user fills in.
+    env: { ...(pkg.presetEnv || {}), ...envPlaceholders(pkg.envInputs) },
     auth: hasAuthInputs(pkg.envInputs),
     packageLabel: pkg.packageLabel,
   });
@@ -88,6 +90,12 @@ function packageConfig(pkg = {}) {
       command: 'npx',
       args: `-y ${versioned}`,
       envInputs: pkg.environmentVariables || [],
+      // Pin the public npm registry via env (position-independent, unlike a
+      // `--registry` flag that's easy to misplace after the package name). Makes
+      // registry-added servers work even when ~/.npmrc points at a private/
+      // corporate registry that the bridge process can't reach. Shown in the Env
+      // vars field, so a user on a reachable private registry can remove it.
+      presetEnv: { npm_config_registry: 'https://registry.npmjs.org' },
       packageLabel: `npm:${id}`,
     };
   }

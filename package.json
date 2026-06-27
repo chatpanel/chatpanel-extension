@@ -1,6 +1,6 @@
 {
   "name": "chatpanel-extension",
-  "version": "0.14.8",
+  "version": "0.14.9",
   "private": true,
   "type": "module",
   "description": "ChatPanel — a Chrome side-panel chatbot for Claude Code, Codex, Gemini CLI, or any model/API you bring. MV3 extension source.",

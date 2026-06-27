@@ -69,7 +69,7 @@ test('normalizeRegistryEntry maps npm stdio packages to local bridge commands', 
   assert.equal(item.kind, 'local');
   assert.equal(item.command, 'npx');
   assert.equal(item.args, '-y @example/mcp-server@0.4.0');
-  assert.deepEqual(item.env, { EXAMPLE_TOKEN: '' });
+  assert.deepEqual(item.env, { npm_config_registry: 'https://registry.npmjs.org', EXAMPLE_TOKEN: '' });
   assert.equal(item.auth, true);
 });
 
