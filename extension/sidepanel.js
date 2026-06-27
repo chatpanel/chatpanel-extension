@@ -4074,7 +4074,7 @@ function wireEvents() {
       renderAgentMenu();
       m.classList.remove('hidden');
       // Re-poll the bridge so availability is fresh (it may have just started or
-      // gained a new agent like Gemini); re-render the menu if it's still open.
+      // gained a new agent like Antigravity); re-render the menu if it's still open.
       refreshBridge().then(() => {
         if (!m.classList.contains('hidden')) renderAgentMenu();
       });

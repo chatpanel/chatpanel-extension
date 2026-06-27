@@ -2,12 +2,13 @@
 
 A **side-panel chatbot** for Chrome / Edge / Brave / Arc that lets you chat with
 **multiple AI agents from any tab** — the coding agents already on your machine
-(**Claude Code**, **Codex**, **Gemini CLI**) *and* **any model or API you bring**
+(**Claude Code**, **Codex**, **Antigravity CLI** — Google's successor to Gemini CLI,
+which remains available for business/enterprise) *and* **any model or API you bring**
 (local Ollama / LM Studio, or a hosted OpenAI-/Anthropic-compatible endpoint).
 Full chat history, tab/URL context, custom agents & skills — all local-first.
 
 This repo is the **extension** source. The optional local **Bridge** (for Claude
-Code / Codex / Gemini CLI) lives at
+Code / Codex / Antigravity CLI) lives at
 [`chatpanel/chatpanel-bridge`](https://github.com/chatpanel/chatpanel-bridge).
 
 ## Install

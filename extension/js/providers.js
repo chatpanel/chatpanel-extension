@@ -1,7 +1,7 @@
 // Provider abstraction. Every agent, whatever its backend, is driven through a
 // single streamChat() call. Three backends are supported:
 //
-//   kind: 'bridge'    → the local ChatPanel Bridge (Claude Code / Codex / Gemini CLI)
+//   kind: 'bridge'    → the local ChatPanel Bridge (Claude Code / Codex / Antigravity CLI)
 //   kind: 'openai'    → any OpenAI-compatible /chat/completions endpoint
 //                       (Ollama, LM Studio, OpenAI, OpenRouter, Together, …)
 //   kind: 'anthropic' → the Anthropic Messages API (direct browser access)
@@ -486,7 +486,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
 }
 
 // --------------------------------------------------------------------------
-// ChatPanel Bridge (Claude Code / Codex / Gemini CLI on the user's machine)
+// ChatPanel Bridge (Claude Code / Codex / Antigravity CLI on the user's machine)
 // --------------------------------------------------------------------------
 // Relay one CLI-agent tool call back to the extension's executor and POST the
 // result to the bridge. Fire-and-forget so the SSE loop keeps reading; the

@@ -2,7 +2,7 @@
 //
 //   API     — endpoints: a connection (provider + base URL + key) with a chosen
 //             model and optional system prompt/tuning. Chat with one directly.
-//   Agents  — the local bridge (CLI) agents: Claude Code, Codex, Gemini CLI,
+//   Agents  — the local bridge (CLI) agents: Claude Code, Codex, Antigravity CLI,
 //             plus the bridge connection itself.
 import { getSettings, saveSettings, uid, exportDataArchive, importAllData, resetSkillsToDefaults } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
@@ -735,7 +735,7 @@ function addEndpoint() {
 }
 
 // --------------------------------------------------------------------------
-// Agents (local bridge: Claude Code / Codex / Gemini CLI)
+// Agents (local bridge: Claude Code / Codex / Antigravity CLI)
 // --------------------------------------------------------------------------
 function renderBridge() {
   $('bridge-url').value = settings.bridgeUrl || '';
