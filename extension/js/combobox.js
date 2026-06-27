@@ -11,6 +11,7 @@ export function normalizeComboboxOptions(options = []) {
       label,
       meta: label === value ? '' : label,
       free: Boolean(typeof option === 'object' && option?.free),
+      icon: (typeof option === 'object' && option?.icon) || null,
     });
   }
   return normalized;

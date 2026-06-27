@@ -27,7 +27,7 @@ import { argsToText, parseArgsInput, parseMcpConfig } from './js/mcp-config-impo
 import { fetchMcpRegistryPage } from './js/mcp-registry.js';
 import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
-import { applyProviderPreset, orderedProviderPresets, providerPresetById, providerPresetForEndpoint } from './js/provider-presets.js';
+import { applyProviderPreset, orderedProviderPresets, providerBrand, providerPresetById, providerPresetForEndpoint } from './js/provider-presets.js';
 import { filterComboboxOptions, normalizeComboboxOptions } from './js/combobox.js';
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
@@ -154,6 +154,7 @@ function ensureCombobox(input) {
       wrap: input.parentElement,
       menu: input.parentElement.querySelector('.combo-menu'),
       toggle: input.parentElement.querySelector('.combo-toggle'),
+      lead: input.parentElement.querySelector('.combo-lead'),
     };
   }
   const wrap = document.createElement('div');
@@ -166,6 +167,14 @@ function ensureCombobox(input) {
   input.setAttribute('aria-autocomplete', 'list');
   input.setAttribute('aria-expanded', 'false');
 
+  // Lead monogram: shown only when the committed value matches an option that
+  // carries an icon (e.g. the provider picker). Generic comboboxes leave it
+  // hidden, so there's no visual change for model/agent fields.
+  const lead = document.createElement('span');
+  lead.className = 'combo-lead hidden';
+  lead.setAttribute('aria-hidden', 'true');
+  wrap.appendChild(lead);
+
   const toggle = document.createElement('button');
   toggle.className = 'combo-toggle';
   toggle.type = 'button';
@@ -177,7 +186,26 @@ function ensureCombobox(input) {
   menu.className = 'combo-menu hidden';
   menu.setAttribute('role', 'listbox');
   wrap.appendChild(menu);
-  return { wrap, menu, toggle };
+  return { wrap, menu, toggle, lead };
+}
+
+// Show/hide the lead monogram based on whether the current value matches an
+// option that carries an icon.
+function syncComboLead(input, state) {
+  const lead = state?.lead;
+  if (!lead) return;
+  const value = String(input.value || '');
+  const match = state.options.find((o) => o.value === value);
+  const icon = match?.icon;
+  if (icon) {
+    lead.textContent = icon.mark;
+    lead.style.setProperty('--logo-bg', icon.color);
+    lead.classList.remove('hidden');
+    input.classList.add('combo-has-lead');
+  } else {
+    lead.classList.add('hidden');
+    input.classList.remove('combo-has-lead');
+  }
 }
 
 function renderCombobox(input, state, open = true, showAll = false) {
@@ -199,10 +227,19 @@ function renderCombobox(input, state, open = true, showAll = false) {
       item.className = 'combo-item';
       item.setAttribute('role', 'option');
       item.dataset.value = option.value;
-      item.innerHTML = `<span>${escapeHtml(option.value)}</span>${option.meta ? `<small>${escapeHtml(option.meta)}</small>` : ''}`;
+      const textHtml = `<span>${escapeHtml(option.value)}</span>${option.meta ? `<small>${escapeHtml(option.meta)}</small>` : ''}`;
+      if (option.icon) {
+        item.classList.add('has-logo');
+        item.innerHTML =
+          `<span class="combo-logo" style="--logo-bg:${escapeHtml(option.icon.color)}">${escapeHtml(option.icon.mark)}</span>` +
+          `<span class="combo-text">${textHtml}</span>`;
+      } else {
+        item.innerHTML = textHtml;
+      }
       item.onclick = () => {
         input.value = option.value;
         closeCombobox(state);
+        syncComboLead(input, state);
         input.dispatchEvent(new Event('change', { bubbles: true }));
       };
       menu.appendChild(item);
@@ -225,6 +262,7 @@ function wireCombobox(input, options, current, placeholder, emptyText = 'No opti
     input,
     menu: parts.menu,
     toggle: parts.toggle,
+    lead: parts.lead || existing?.lead || null,
     options: normalized,
     emptyText,
   };
@@ -235,7 +273,10 @@ function wireCombobox(input, options, current, placeholder, emptyText = 'No opti
 
   if (!existing) {
     input.addEventListener('focus', () => renderCombobox(input, input._chatpanelCombo, true, true));
-    input.addEventListener('input', () => renderCombobox(input, input._chatpanelCombo, true));
+    input.addEventListener('input', () => {
+      renderCombobox(input, input._chatpanelCombo, true);
+      syncComboLead(input, input._chatpanelCombo);
+    });
     input.addEventListener('keydown', (event) => {
       const currentState = input._chatpanelCombo;
       if (event.key === 'Escape') {
@@ -260,6 +301,7 @@ function wireCombobox(input, options, current, placeholder, emptyText = 'No opti
     });
   }
   renderCombobox(input, state, false);
+  syncComboLead(input, state);
 }
 
 function populateModelSelect(sel, customEl, models, current, modelOptions) {
@@ -306,6 +348,7 @@ function providerPresetOptions() {
   return orderedProviderPresets().map((preset) => ({
     value: preset.name,
     label: preset.id,
+    icon: providerBrand(preset.id),
   }));
 }
 

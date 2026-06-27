@@ -228,6 +228,44 @@ export const API_PROVIDER_PRESETS = [
 
 const LOCAL_PROVIDER_PRESET_IDS = new Set(['ollama', 'lmstudio', 'llamacpp', 'vllm']);
 
+// Monogram "logos" for the provider picker and the site: a brand-tinted rounded
+// square + a 1–2 letter mark. We use monograms (not official trademarked logos)
+// so nothing brand-owned is bundled, while each provider still gets a
+// recognizable color + initial.
+const PROVIDER_BRANDS = {
+  custom: { mark: '+', color: '#64748b' },
+  openai: { mark: 'AI', color: '#10a37f' },
+  anthropic: { mark: 'A', color: '#d97757' },
+  openrouter: { mark: 'OR', color: '#6467f2' },
+  'huggingface-api-key': { mark: 'HF', color: '#ff9d00' },
+  'gemini-api-key': { mark: 'G', color: '#1a73e8' },
+  nvidia: { mark: 'N', color: '#76b900' },
+  groq: { mark: 'GQ', color: '#f55036' },
+  'vercel-ai-gateway': { mark: '▲', color: '#111317' },
+  'opencode-zen': { mark: 'Z', color: '#3b82f6' },
+  cohere: { mark: 'C', color: '#ff7759' },
+  together: { mark: 'T', color: '#0f6fff' },
+  mistral: { mark: 'M', color: '#fa520f' },
+  'mistral-codestral': { mark: 'MC', color: '#fa520f' },
+  xai: { mark: 'X', color: '#111317' },
+  deepinfra: { mark: 'DI', color: '#4f46e5' },
+  fireworks: { mark: 'F', color: '#5019c5' },
+  cerebras: { mark: 'CB', color: '#ff6b35' },
+  'github-models': { mark: 'GH', color: '#2b3137' },
+  'cloudflare-workers-ai': { mark: 'CF', color: '#f6821f' },
+  ollama: { mark: 'OL', color: '#0b0d12' },
+  lmstudio: { mark: 'LM', color: '#2563eb' },
+  llamacpp: { mark: 'LC', color: '#6b7280' },
+  vllm: { mark: 'VL', color: '#0ea5e9' },
+};
+
+// A brand monogram for any preset id; falls back to the first letter on slate.
+export function providerBrand(id) {
+  if (PROVIDER_BRANDS[id]) return PROVIDER_BRANDS[id];
+  const ch = String(id || '?').replace(/[^a-z0-9]/gi, '').charAt(0).toUpperCase() || '?';
+  return { mark: ch, color: '#64748b' };
+}
+
 function cleanBaseUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '');
 }
