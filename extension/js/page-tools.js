@@ -8,8 +8,11 @@
 //   User route:   sidepanel calls inspectForms/fillForm/clickElement directly, or
 //                 runPageActionTurn() to kick off a tool-enabled turn on demand.
 //
-// Pro gate lives in page-actions.js (requirePro on every entry), so neither route
-// can drive page writes on Free even if a caller forgets to pre-check.
+// These primitives are intentionally UNGATED (free). The only access control is
+// the user's explicit "Act on page" toggle (state.settings.ui.pageActions), checked
+// in sidepanel.js where the provider is built; the CDP/"High-reliability" tools need
+// the additional pageActionsCdp toggle. There is no Pro/requirePro check here — do
+// not assume one exists when adding a new caller.
 
 import {
   inspectForms, fillForm, clickElement, clickByText, fillCombobox, captureViewport, viewportInfo,

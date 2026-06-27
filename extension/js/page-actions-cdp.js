@@ -225,6 +225,14 @@ export async function cdpPressKey(tabId, key) {
   await ensureAttached(tabId);
   const chord = parseChord(key);
   if (!chord) return { ok: false, error: `unknown key "${key}"` };
+  // Refuse clipboard chords (Cmd/Ctrl + V/X/C). The model can't see the clipboard,
+  // so pasting it into a page — or copying page data out — is an exfiltration path
+  // with no legitimate autonomous use. App shortcuts (Shift+1, Ctrl+Enter, arrows,
+  // Cmd/Ctrl+A select-all used by form-fill) are unaffected.
+  const hasCmdCtrl = (chord.modifiers & (MODS.ctrl | MODS.meta)) !== 0;
+  if (hasCmdCtrl && ['v', 'x', 'c'].includes(String(chord.def?.key || '').toLowerCase())) {
+    return { ok: false, error: 'clipboard shortcuts (paste/cut/copy) are disabled for safety' };
+  }
   try {
     // Plain named key (Enter/Space/…) keeps the text-producing keyDown path;
     // anything with a modifier (or a letter/digit) goes through the chord helper.

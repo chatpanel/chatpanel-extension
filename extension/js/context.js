@@ -242,15 +242,53 @@ export async function captureMeetingTranscript(tabId, { sinceTs = 0 } = {}) {
 // --------------------------------------------------------------------------
 // URL fetch (host_permissions grant cross-origin fetch from the panel)
 // --------------------------------------------------------------------------
+
+// SSRF guard: the panel fetches with <all_urls> host permission, so a pasted (or
+// redirected-to) URL could otherwise reach the local bridge, cloud metadata, or
+// the LAN and ship the response to the configured model. Block private/loopback/
+// link-local/metadata hosts and non-http(s) schemes — on the initial URL AND on
+// the final URL after redirects.
+function isBlockedHost(hostname) {
+  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h || h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
+  // IPv6 loopback / unspecified / unique-local (fc00::/7) / link-local (fe80::/10)
+  if (h === '::1' || h === '::' || h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea') || h.startsWith('feb')) return true;
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const a = Number(m[1]), b = Number(m[2]);
+    if (a === 0 || a === 127 || a === 10) return true;        // this-host / loopback / RFC1918
+    if (a === 169 && b === 254) return true;                  // link-local + cloud metadata (169.254.169.254)
+    if (a === 172 && b >= 16 && b <= 31) return true;         // RFC1918
+    if (a === 192 && b === 168) return true;                  // RFC1918
+    if (a === 100 && b >= 64 && b <= 127) return true;        // CGNAT
+  }
+  return false;
+}
+
+function assertFetchable(u) {
+  let parsed;
+  try { parsed = new URL(u); } catch { throw new Error(`Invalid URL: ${u}`); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Only http(s) URLs can be fetched (got "${parsed.protocol}")`);
+  }
+  if (isBlockedHost(parsed.hostname)) {
+    throw new Error(`Refusing to fetch a private/loopback/metadata address (${parsed.hostname})`);
+  }
+  return parsed;
+}
+
 export async function captureUrl(rawUrl) {
   let url = rawUrl.trim();
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  assertFetchable(url); // block obvious private targets up front
   let res;
   try {
     res = await fetch(url, { redirect: 'follow' });
   } catch (e) {
     throw new Error(`Couldn't fetch ${url} — ${e.message}`);
   }
+  // A redirect may have landed on an internal host — refuse to surface its body.
+  if (res.url) assertFetchable(res.url);
   if (!res.ok) throw new Error(`Fetch failed: HTTP ${res.status} for ${url}`);
   const ct = res.headers.get('content-type') || '';
   const body = await res.text();
