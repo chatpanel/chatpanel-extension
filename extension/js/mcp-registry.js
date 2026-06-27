@@ -80,7 +80,12 @@ function packageConfig(pkg = {}) {
   const versioned = withVersion(id, pkg.version, pkg.registryType);
   if (pkg.registryType === 'npm') {
     return {
-      command: pkg.runtimeHint || 'npx',
+      // Always npx, even when the registry hints `bun`/`bunx`: our args are
+      // npx-shaped (`-y <pkg>`, which bunx rejects), and npx ships with Node while
+      // bun often isn't installed — so honoring the hint produces a broken command.
+      // Normalizing to npx gives a runner that works out of the box. (The user can
+      // still switch the command after adding.)
+      command: 'npx',
       args: `-y ${versioned}`,
       envInputs: pkg.environmentVariables || [],
       packageLabel: `npm:${id}`,
