@@ -3985,9 +3985,16 @@ function wireEvents() {
   $('btn-stop').onclick = stopStream;
   $('btn-new').onclick = () => startConversation();
   $('btn-settings').onclick = () => chrome.runtime.openOptionsPage();
-  // The plan chip (Pro badge or ✨ Upgrade) always opens the License tab.
-  $('btn-upgrade').onclick = () =>
-    chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#license') });
+  // The plan chip: Free → open the site pricing page (carrying this install's id)
+  // and poll so Pro auto-activates on return; Pro/Team → open the Account tab to
+  // manage the subscription.
+  $('btn-upgrade').onclick = () => {
+    if (isPro(state.license)) {
+      chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#license') });
+    } else {
+      startSubscribe('pro');
+    }
+  };
   $('btn-assist').onclick = improvePrompt;
   $('btn-mcp').onclick = async (e) => {
     e.stopPropagation();
