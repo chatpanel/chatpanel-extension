@@ -264,6 +264,7 @@ async function toolsetFor(
     }
     const mcps = await getMcpProviders(usable, {
       bridgeUrl: state.settings.bridgeUrl,
+      bridgeAvailable: !!state.bridge?.ok,
       onError: (s, e) => {
         console.warn('[chatpanel] MCP server failed:', s.name || s.url || s.command, e.message);
         toast(`🔌 MCP “${s.name || s.url || s.command}” unavailable: ${e.message}`, 2600);

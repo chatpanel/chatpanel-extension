@@ -7,15 +7,21 @@ import { McpClient, mcpProvider } from './mcp-client.js';
 const clients = new Map(); // key -> { client, sig, name }
 
 const keyOf = (s) => s.id || s.url || s.command;
-const sigOf = (s) => JSON.stringify([s.url, s.headers || {}, s.command, s.args, s.env || {}]);
+const sigOf = (s) => JSON.stringify([s.url, s.headers || {}, s.command, s.args, s.env || {}, s.remoteMode || 'auto']);
 
-// Build an McpClient from a server config: stdio (local command, via the bridge)
-// or http (Streamable HTTP, direct).
-function clientFor(s, bridgeUrl) {
+// Should this remote (http) server be reached via the bridge (server-side fetch,
+// no browser Origin) rather than a direct fetch? mode: 'auto' (bridge when the
+// bridge is running, else direct), 'bridge' (always), 'direct' (never).
+const remoteViaBridge = (s, bridgeAvailable) =>
+  !s.command && ((s.remoteMode || 'auto') === 'bridge' || ((s.remoteMode || 'auto') === 'auto' && !!bridgeAvailable));
+
+// Build an McpClient from a server config: stdio (local command, via the bridge),
+// or http (Streamable HTTP) connected directly OR proxied through the bridge.
+function clientFor(s, bridgeUrl, bridgeAvailable) {
   if (s.command) {
     return new McpClient({ transport: 'stdio', id: s.id, command: s.command, args: s.args, env: s.env, bridgeUrl });
   }
-  return new McpClient({ url: s.url, headers: s.headers || {} });
+  return new McpClient({ url: s.url, headers: s.headers || {}, bridgeUrl, viaBridge: remoteViaBridge(s, bridgeAvailable) });
 }
 
 async function withTimeout(fn, ms) {
@@ -31,7 +37,7 @@ async function withTimeout(fn, ms) {
 // Connect (or reuse) each enabled server and return its tool provider. Servers
 // whose config changed since last time are reconnected; failures are reported
 // via onError and skipped.
-export async function getMcpProviders(servers, { onError, timeoutMs = 8000, bridgeUrl } = {}) {
+export async function getMcpProviders(servers, { onError, timeoutMs = 8000, bridgeUrl, bridgeAvailable = false } = {}) {
   const enabled = (servers || []).filter((s) => s && s.enabled !== false && (s.url || s.command));
   const providers = [];
   await Promise.all(
@@ -45,10 +51,12 @@ export async function getMcpProviders(servers, { onError, timeoutMs = 8000, brid
       }
       try {
         if (!entry) {
-          const client = clientFor(s, bridgeUrl);
+          const client = clientFor(s, bridgeUrl, bridgeAvailable);
           // stdio servers spawn a process on the bridge (often `npx`, which may
           // download on first run) — give them much longer than HTTP servers.
-          await withTimeout((signal) => client.connect(signal), s.command ? 45000 : timeoutMs);
+          // Bridge-proxied http adds a hop (and may front a slow upstream) → a bit more.
+          const ms = s.command ? 45000 : (remoteViaBridge(s, bridgeAvailable) ? 20000 : timeoutMs);
+          await withTimeout((signal) => client.connect(signal), ms);
           entry = { client, sig, name: s.name || s.url || s.command };
           clients.set(key, entry);
         }
@@ -64,9 +72,10 @@ export async function getMcpProviders(servers, { onError, timeoutMs = 8000, brid
 
 // Test a single server config (used by Settings "Test" button). Returns the
 // tool list on success; throws on failure.
-export async function testMcpServer(server, { timeoutMs = 8000, bridgeUrl } = {}) {
-  const client = clientFor(server, bridgeUrl);
-  await withTimeout((signal) => client.connect(signal), server.command ? 45000 : timeoutMs);
+export async function testMcpServer(server, { timeoutMs = 8000, bridgeUrl, bridgeAvailable = false } = {}) {
+  const client = clientFor(server, bridgeUrl, bridgeAvailable);
+  const ms = server.command ? 45000 : (remoteViaBridge(server, bridgeAvailable) ? 20000 : timeoutMs);
+  await withTimeout((signal) => client.connect(signal), ms);
   return client.tools;
 }
 

@@ -17,7 +17,7 @@ export class McpClient {
   //   stdio — { transport:'stdio', id, command, args, env, bridgeUrl }: the
   //           extension can't spawn processes, so proxy JSON-RPC through the
   //           bridge's POST /mcp-local, which spawns & keeps the process alive.
-  constructor({ url, headers = {}, transport, id, command, args, env, bridgeUrl } = {}) {
+  constructor({ url, headers = {}, transport, id, command, args, env, bridgeUrl, viaBridge = false } = {}) {
     this.transport = transport === 'stdio' || command ? 'stdio' : 'http';
     this.url = url;
     this.headers = headers || {};
@@ -26,6 +26,10 @@ export class McpClient {
     this.args = args;
     this.env = env;
     this.bridgeUrl = (bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
+    // For an http server, route the request through the bridge (server-side fetch,
+    // no browser Origin) instead of a direct fetch — lets us reach remote servers
+    // that reject browser origins (their own DNS-rebinding/CORS protection).
+    this.viaBridge = viaBridge && this.transport === 'http';
     this.sessionId = null;
     this.tools = [];
     this._id = 0;
@@ -45,6 +49,7 @@ export class McpClient {
   // notifications (no id) return null. Handles both json and SSE responses.
   async _send(message, signal) {
     if (this.transport === 'stdio') return this._sendLocal(message, signal);
+    if (this.viaBridge) return this._sendRemoteViaBridge(message, signal);
     const res = await fetch(this.url, {
       method: 'POST',
       headers: this._hdrs(),
@@ -106,6 +111,65 @@ export class McpClient {
     const msg = await res.json();
     if (msg.error) throw new Error(`MCP error ${msg.error.code}: ${msg.error.message}`);
     return msg.result;
+  }
+
+  // Streamable-HTTP transport, but proxied through the bridge (server-side fetch,
+  // no browser Origin) so we can reach origin-locked remote servers. The bridge
+  // returns the upstream { status, sessionId, contentType, body }; we parse the
+  // buffered body exactly like a direct response.
+  async _sendRemoteViaBridge(message, signal) {
+    let res;
+    try {
+      res = await fetch(`${this.bridgeUrl}/mcp-remote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: this.url, headers: this._hdrs(), message }),
+        signal,
+      });
+    } catch (e) {
+      if (e?.name === 'AbortError' || signal?.aborted) {
+        throw new Error('The MCP server didn’t respond in time (proxied through the bridge).');
+      }
+      throw new Error(`Can't reach the ChatPanel Bridge to proxy this server (${e.message}). Start it with \`npx @chatpanel/bridge\`, or set this server to connect Directly.`);
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`Bridge proxy error HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`);
+    }
+    const wrap = await res.json(); // { status, sessionId, contentType, body }
+    if (wrap.sessionId) this.sessionId = wrap.sessionId;
+    if (wrap.status < 200 || wrap.status >= 300) {
+      throw new Error(`MCP HTTP ${wrap.status}${wrap.body ? `: ${String(wrap.body).slice(0, 200)}` : ''}`);
+    }
+    if (message.id == null) return null; // notification — nothing to parse
+    return this._unwrapBody(String(wrap.body || ''), String(wrap.contentType || ''), message.id);
+  }
+
+  // Parse a BUFFERED response body (the bridge already read the stream) — JSON or
+  // text/event-stream — and return the result of the message matching `id`.
+  _unwrapBody(body, contentType, id) {
+    if (contentType.includes('text/event-stream')) {
+      for (const block of body.split(/\r?\n\r?\n/)) {
+        const payload = block
+          .split(/\r?\n/)
+          .filter((l) => l.startsWith('data:'))
+          .map((l) => l.slice(5).replace(/^ /, ''))
+          .join('\n');
+        if (!payload) continue;
+        let json;
+        try { json = JSON.parse(payload); } catch { continue; }
+        for (const m of Array.isArray(json) ? json : [json]) {
+          if (m.id === id) {
+            if (m.error) throw new Error(`MCP error ${m.error.code}: ${m.error.message}`);
+            return m.result;
+          }
+        }
+      }
+      throw new Error('MCP: no response in bridge-proxied stream');
+    }
+    let json;
+    try { json = JSON.parse(body); } catch { throw new Error('MCP: bad JSON from bridge proxy'); }
+    return this._unwrap(json, id);
   }
 
   // Read an SSE body until we see the JSON-RPC response matching `id`.

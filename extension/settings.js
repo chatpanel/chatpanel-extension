@@ -1086,6 +1086,7 @@ function mcpServerCard(server, index = 0) {
   q('.mcp-transport').value = transport;
   q('.mcp-url').value = server.url || '';
   q('.mcp-auth').value = server.headers?.Authorization || '';
+  q('.mcp-remote-mode').value = server.remoteMode || 'auto';
   q('.mcp-command').value = server.command || '';
   q('.mcp-args').value = argsToText(server.args);
   q('.mcp-env').value = Object.entries(server.env || {}).map(([k, v]) => `${k}=${v}`).join(', ');
@@ -1125,6 +1126,7 @@ function mcpServerCard(server, index = 0) {
       server.url = q('.mcp-url').value.trim();
       const auth = q('.mcp-auth').value.trim();
       server.headers = auth ? { Authorization: auth } : {};
+      server.remoteMode = q('.mcp-remote-mode').value;
       delete server.command;
       delete server.args;
     }
@@ -1133,6 +1135,7 @@ function mcpServerCard(server, index = 0) {
   q('.mcp-name').onchange = commit;
   q('.mcp-url').onchange = commit;
   q('.mcp-auth').onchange = commit;
+  q('.mcp-remote-mode').onchange = commit;
   q('.mcp-command').onchange = commit;
   q('.mcp-args').onchange = commit;
   q('.mcp-env').onchange = commit;
@@ -1145,7 +1148,7 @@ function mcpServerCard(server, index = 0) {
     status.classList.remove('ok', 'err');
     status.textContent = 'Connecting…';
     try {
-      const tools = await testMcpServer(server, { bridgeUrl: settings.bridgeUrl });
+      const tools = await testMcpServer(server, { bridgeUrl: settings.bridgeUrl, bridgeAvailable: bridgeState.ok });
       server.tools = tools;
       await saveSettings(settings);
       renderMcpToolStatus(status, tools);

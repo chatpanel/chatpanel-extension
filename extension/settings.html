@@ -503,6 +503,12 @@
         <div class="mcp-http">
           <div class="row"><label>URL</label><input class="mcp-url" placeholder="https://example.com/mcp  (Streamable HTTP endpoint)" /></div>
           <div class="row"><label>Auth header</label><input class="mcp-auth" placeholder="optional — e.g. Bearer sk-…  (sent as Authorization)" /></div>
+          <div class="row"><label>Connect via</label><select class="mcp-remote-mode">
+            <option value="auto">Auto — bridge if running, else direct</option>
+            <option value="bridge">Bridge — fetched from your machine</option>
+            <option value="direct">Direct — from the extension</option>
+          </select></div>
+          <p class="muted tiny mcp-remote-note">Some remote servers reject browser extensions with <code>HTTP 403 “Invalid origin / DNS rebinding protection”</code>. Routing <strong>via the bridge</strong> fetches the server from your machine (no browser origin), which those servers accept — and it needs the bridge running. <strong>Auto</strong> uses the bridge when it’s available and falls back to a direct fetch otherwise.</p>
         </div>
         <div class="mcp-stdio hidden">
           <div class="row"><label>Command</label><input class="mcp-command" placeholder="e.g. docker  ·  npx  ·  uvx  ·  /full/path/to/server" /></div>
