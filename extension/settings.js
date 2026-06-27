@@ -189,8 +189,29 @@ function ensureCombobox(input) {
   return { wrap, menu, toggle, lead };
 }
 
-// Show/hide the lead monogram based on whether the current value matches an
-// option that carries an icon.
+// An icon chip is either a bundled brand logo (on a white tile) or a colored
+// monogram. comboIconHtml builds the markup string; applyComboIcon mutates an
+// existing element (used for the lead chip).
+function comboIconHtml(icon, cls) {
+  if (icon?.logo) {
+    return `<span class="${cls} is-img"><img src="${escapeHtml(icon.logo)}" alt="" loading="lazy"></span>`;
+  }
+  return `<span class="${cls}" style="--logo-bg:${escapeHtml(icon?.color || '#64748b')}">${escapeHtml(icon?.mark || '?')}</span>`;
+}
+function applyComboIcon(el, icon) {
+  if (icon?.logo) {
+    el.classList.add('is-img');
+    el.style.removeProperty('--logo-bg');
+    el.innerHTML = `<img src="${escapeHtml(icon.logo)}" alt="" loading="lazy">`;
+  } else {
+    el.classList.remove('is-img');
+    el.style.setProperty('--logo-bg', icon?.color || '#64748b');
+    el.textContent = icon?.mark || '?';
+  }
+}
+
+// Show/hide the lead chip based on whether the current value matches an option
+// that carries an icon.
 function syncComboLead(input, state) {
   const lead = state?.lead;
   if (!lead) return;
@@ -198,8 +219,7 @@ function syncComboLead(input, state) {
   const match = state.options.find((o) => o.value === value);
   const icon = match?.icon;
   if (icon) {
-    lead.textContent = icon.mark;
-    lead.style.setProperty('--logo-bg', icon.color);
+    applyComboIcon(lead, icon);
     lead.classList.remove('hidden');
     input.classList.add('combo-has-lead');
   } else {
@@ -230,9 +250,7 @@ function renderCombobox(input, state, open = true, showAll = false) {
       const textHtml = `<span>${escapeHtml(option.value)}</span>${option.meta ? `<small>${escapeHtml(option.meta)}</small>` : ''}`;
       if (option.icon) {
         item.classList.add('has-logo');
-        item.innerHTML =
-          `<span class="combo-logo" style="--logo-bg:${escapeHtml(option.icon.color)}">${escapeHtml(option.icon.mark)}</span>` +
-          `<span class="combo-text">${textHtml}</span>`;
+        item.innerHTML = comboIconHtml(option.icon, 'combo-logo') + `<span class="combo-text">${textHtml}</span>`;
       } else {
         item.innerHTML = textHtml;
       }

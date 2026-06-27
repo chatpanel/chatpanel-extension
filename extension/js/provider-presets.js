@@ -259,11 +259,24 @@ const PROVIDER_BRANDS = {
   vllm: { mark: 'VL', color: '#0ea5e9' },
 };
 
-// A brand monogram for any preset id; falls back to the first letter on slate.
+// Preset ids that ship a bundled brand SVG under assets/providers/<id>.svg.
+// Logos are full-color official marks (gilbarbara/logos — CC0, and svgl /
+// simple-icons); trademarks remain their owners' and are shown nominatively.
+// The rest fall back to the colored monogram above.
+const PROVIDER_LOGO_IDS = new Set([
+  'openai', 'anthropic', 'huggingface-api-key', 'gemini-api-key', 'nvidia',
+  'vercel-ai-gateway', 'mistral', 'mistral-codestral', 'xai', 'github-models',
+  'cloudflare-workers-ai', 'openrouter', 'groq', 'cohere', 'cerebras', 'ollama',
+]);
+
+// Brand icon for a preset id: { mark, color, logo }. `logo` is a bundled SVG
+// path when we have the official mark, else null (render the monogram).
 export function providerBrand(id) {
-  if (PROVIDER_BRANDS[id]) return PROVIDER_BRANDS[id];
-  const ch = String(id || '?').replace(/[^a-z0-9]/gi, '').charAt(0).toUpperCase() || '?';
-  return { mark: ch, color: '#64748b' };
+  const base = PROVIDER_BRANDS[id] || {
+    mark: String(id || '?').replace(/[^a-z0-9]/gi, '').charAt(0).toUpperCase() || '?',
+    color: '#64748b',
+  };
+  return { ...base, logo: PROVIDER_LOGO_IDS.has(id) ? `assets/providers/${id}.svg` : null };
 }
 
 function cleanBaseUrl(value) {

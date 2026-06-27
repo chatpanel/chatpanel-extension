@@ -134,22 +134,25 @@ select {
 }
 .combo-empty { padding: 10px 9px; color: var(--muted); font-size: 12px; }
 
-/* Provider monogram "logos" in the picker. */
+/* Provider brand icons in the picker: a bundled logo on a white tile, or a
+   colored monogram fallback. */
 .combo-item.has-logo { flex-direction: row; align-items: center; gap: 9px; }
 .combo-item .combo-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
-.combo-item .combo-logo {
-  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 6px;
-  display: grid; place-items: center; overflow: hidden;
-  background: var(--logo-bg, #64748b);
-  color: #fff; font-size: 10px; font-weight: 700; line-height: 1; letter-spacing: .02em;
+.combo-logo, .combo-lead {
+  flex: 0 0 auto; border-radius: 6px; overflow: hidden;
+  display: grid; place-items: center;
+  font-weight: 700; line-height: 1; letter-spacing: .02em;
 }
-/* Lead monogram shown inside the field for the committed provider. */
+/* Monogram variant (no logo). */
+.combo-logo:not(.is-img), .combo-lead:not(.is-img) { background: var(--logo-bg, #64748b); color: #fff; }
+/* Logo variant: white tile, contained image. */
+.combo-logo.is-img, .combo-lead.is-img { background: #fff; }
+.combo-logo img, .combo-lead img { width: 72%; height: 72%; object-fit: contain; display: block; }
+.combo-item .combo-logo { width: 22px; height: 22px; font-size: 10px; }
+/* Lead chip shown inside the field for the committed provider. */
 .combo-lead {
   position: absolute; top: 50%; left: 8px; transform: translateY(-50%);
-  width: 20px; height: 20px; border-radius: 5px; z-index: 2; pointer-events: none;
-  display: grid; place-items: center; overflow: hidden;
-  background: var(--logo-bg, #64748b);
-  color: #fff; font-size: 9.5px; font-weight: 700; line-height: 1; letter-spacing: .02em;
+  width: 20px; height: 20px; z-index: 2; pointer-events: none; font-size: 9.5px;
 }
 .combo-lead.hidden { display: none; }
 .combo input.combo-has-lead { padding-left: 36px; }
