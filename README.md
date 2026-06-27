@@ -37,11 +37,20 @@ For development, **Load unpacked** the [`extension/`](extension/) folder directl
 |------|------------|
 | [`extension/`](extension/) | The MV3 extension (side-panel UI) |
 | [`tools/`](tools/) | Build scripts |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | How the pieces fit together |
 
 ## License
 
-Source-available under the **Functional Source License (FSL-1.1-MIT)** — see
-[`LICENSE`](LICENSE). Read it, fork it, run it, contribute back; you just can't
-repackage or resell ChatPanel (or a derivative) as a competing product. Two years
-after each release, that version becomes MIT. The Bridge is MIT today.
+**Source-available**, under the [**PolyForm Shield License 1.0.0**](LICENSE).
+You may read, audit, run, and modify the code for your own use — you just may not
+use it to provide a product or service that **competes** with ChatPanel. The
+[local bridge](https://github.com/chatpanel/chatpanel-bridge) is under the same
+license. This is *not* an OSI "open source" license; the source is published for
+transparency and trust, not for re-packaging or resale.
+
+## Trademarks & brand
+
+The name **“ChatPanel”**, the logo, and the icons/brand assets are **trademarks of
+ChatPanel and are not licensed** under the terms above. The Shield license covers
+the code only. Don't ship a fork (modified or not) under the ChatPanel name or
+marks, or upload it to the Chrome Web Store / any extension marketplace using our
+brand — that's trademark infringement and we'll enforce it.
