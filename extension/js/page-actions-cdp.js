@@ -14,7 +14,7 @@
 // (trusted clicks + typed text). We locate an element's viewport centre via
 // scripting, then dispatch trusted mouse/keyboard at those coordinates.
 
-import { flashHighlight } from './page-actions.js';
+import { flashHighlight, showCursor } from './page-actions.js';
 import { api } from './browser-api.js';
 
 const CDP_VERSION = '1.3';
@@ -205,6 +205,7 @@ export async function cdpKeyChord(tabId, def, modifiers = 0) {
 export async function cdpClickAt(tabId, x, y) {
   await ensureAttached(tabId);
   try {
+    await showCursor(tabId, x, y); // glide the agent cursor to the click point
     await trustedClick(tabId, Math.round(x), Math.round(y));
     return { ok: true, clickedAt: { x: Math.round(x), y: Math.round(y) } };
   } finally {

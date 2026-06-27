@@ -595,8 +595,11 @@ function renderAgentMenu() {
     }
     item.onclick = () => {
       if (!usable) {
+        // A locked pick is a high-intent moment — go straight to the pricing page
+        // (carrying this install's id) so the user can choose a plan and buy. The
+        // keyless poll in subscribe() flips this device to Pro on return.
         closeMenus();
-        return upsell('agents', '✨ Free uses 1 model + 1 agent — Pro unlocks all. Pick yours in Settings.');
+        return startSubscribe('pro');
       }
       state.conv.agentId = target.id;
       state.settings.activeAgentId = target.id;

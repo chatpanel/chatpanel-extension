@@ -32,8 +32,11 @@ function injectError(e) {
 // the user can SEE which fields were filled / clicked (synthetic AND CDP modes).
 // --------------------------------------------------------------------------
 
-// Injected: draw a fading highlight box over each selector's element.
+// Injected: draw a fading highlight box over each selector's element. Returns
+// the centre {x,y} of the first visible match so the caller can also glide the
+// agent cursor there (see showCursor).
 function flashInPage(selectors) {
+  let center = null;
   for (const sel of selectors || []) {
     let el;
     try {
@@ -44,6 +47,7 @@ function flashInPage(selectors) {
     if (!el) continue;
     const r = el.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) continue;
+    if (!center) center = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
     const box = document.createElement('div');
     box.style.cssText =
       `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;` +
@@ -56,6 +60,49 @@ function flashInPage(selectors) {
     }, 600);
     setTimeout(() => box.remove(), 1100);
   }
+  return center;
+}
+
+// Injected: show a fake "agent cursor" — an arrow pointer that glides to (x,y)
+// in viewport coords and pulses a click ripple — so the user can SEE where the
+// agent is acting. The cursor is a singleton that's reused and re-fades on each
+// call. Self-contained (serialized into the page); does not depend on the host
+// page's real mouse, which CDP/synthetic events never move.
+function cursorInPage(x, y) {
+  const ID = '__chatpanel_agent_cursor__';
+  let cur = document.getElementById(ID);
+  if (!cur) {
+    cur = document.createElement('div');
+    cur.id = ID;
+    cur.style.cssText =
+      'position:fixed;left:0;top:0;width:22px;height:22px;margin:-3px 0 0 -3px;' +
+      'z-index:2147483647;pointer-events:none;opacity:0;' +
+      'transition:transform .42s cubic-bezier(.22,.61,.36,1),opacity .3s ease;' +
+      'filter:drop-shadow(0 1px 2px rgba(0,0,0,.45))';
+    cur.innerHTML =
+      '<svg viewBox="0 0 24 24" width="22" height="22" xmlns="http://www.w3.org/2000/svg">' +
+      '<path d="M5 2.5l13.5 7-5.8 1.6L9 18.5z" fill="#fff" stroke="#1a1d24" ' +
+      'stroke-width="1.6" stroke-linejoin="round"/></svg>';
+    document.documentElement.appendChild(cur);
+  }
+  clearTimeout(cur._hideT);
+  cur.style.opacity = '1';
+  cur.style.transform = `translate(${x}px, ${y}px)`;
+  // Click ripple at the target point.
+  const ring = document.createElement('div');
+  ring.style.cssText =
+    `position:fixed;left:${x}px;top:${y}px;width:16px;height:16px;margin:-8px 0 0 -8px;` +
+    'z-index:2147483646;pointer-events:none;border-radius:50%;' +
+    'border:2px solid #7c8cf8;background:rgba(124,140,248,.28);' +
+    'transition:transform .5s ease,opacity .5s ease;opacity:1';
+  document.documentElement.appendChild(ring);
+  // Ripple after the glide so it reads as "moved, then clicked".
+  setTimeout(() => {
+    ring.style.transform = 'scale(2.6)';
+    ring.style.opacity = '0';
+  }, 380);
+  setTimeout(() => ring.remove(), 950);
+  cur._hideT = setTimeout(() => { cur.style.opacity = '0'; }, 1600);
 }
 
 // Viewport size in CSS pixels — the coordinate space the model should use for
@@ -155,6 +202,7 @@ function clickAtPointInPage(x, y) {
 }
 export async function clickAtSynthetic(tabId, x, y) {
   try {
+    await showCursor(tabId, x, y);
     const [inj] = await api.scripting.executeScript({
       target: { tabId },
       func: clickAtPointInPage,
@@ -166,13 +214,30 @@ export async function clickAtSynthetic(tabId, x, y) {
   }
 }
 
-// Flash a highlight over the given selectors. Best-effort, never throws — a
-// missing/blocked page just means no highlight.
+// Glide the agent cursor to a viewport point. Best-effort, never throws.
+export async function showCursor(tabId, x, y) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+  try {
+    await api.scripting.executeScript({
+      target: { tabId },
+      func: cursorInPage,
+      args: [Math.round(x), Math.round(y)],
+    });
+  } catch {
+    /* page not scriptable — skip the cursor */
+  }
+}
+
+// Flash a highlight over the given selectors AND glide the agent cursor to the
+// first match. Best-effort, never throws — a missing/blocked page just means no
+// highlight.
 export async function flashHighlight(tabId, selectors) {
   const list = (selectors || []).filter(Boolean);
   if (!list.length) return;
   try {
-    await api.scripting.executeScript({ target: { tabId }, func: flashInPage, args: [list] });
+    const [inj] = await api.scripting.executeScript({ target: { tabId }, func: flashInPage, args: [list] });
+    const c = inj?.result;
+    if (c) await showCursor(tabId, c.x, c.y);
   } catch {
     /* page not scriptable — skip the highlight */
   }
@@ -579,6 +644,8 @@ function clickByTextInPage(text, role) {
   }
   if (!best) return { ok: false, error: `no ${role === 'any' ? 'element' : role} matching "${text}"` };
   best.scrollIntoView({ block: 'center' });
+  const cr = best.getBoundingClientRect();
+  const center = { x: Math.round(cr.left + cr.width / 2), y: Math.round(cr.top + cr.height / 2) };
   const matched = (best.innerText || best.value || best.getAttribute('aria-label') || '').trim().slice(0, 80);
   const o = { bubbles: true, cancelable: true, view: window };
   for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
@@ -589,7 +656,7 @@ function clickByTextInPage(text, role) {
     }
   }
   best.click();
-  return { ok: true, matched };
+  return { ok: true, matched, center };
 }
 
 export async function clickByText(tabId, text, role = 'any') {
@@ -602,6 +669,7 @@ export async function clickByText(tabId, text, role = 'any') {
     });
     const r = inj?.result;
     if (!r?.ok) throw new Error(r?.error || 'no match');
+    if (r.center) await showCursor(tabId, r.center.x, r.center.y);
     return r;
   } catch (e) {
     if (e.upsell) throw e;

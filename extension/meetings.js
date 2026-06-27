@@ -8,7 +8,7 @@ import {
   deleteMeeting, meetingToMarkdown, meetingToText, persistMeeting, PLATFORMS, getMeetingTopics, saveMeetingTopics,
 } from './js/store-meetings.js';
 import { getSettings, getTarget } from './js/store.js';
-import { getLicense, can, UPGRADE_URL } from './js/license.js';
+import { getLicense, can, subscribe } from './js/license.js';
 import { streamChat } from './js/providers.js';
 import { buildIndex, bm25Search, buildGraph, tokenize } from './js/meeting-index.js';
 import { drawGraph } from './js/graph-view.js';
@@ -758,9 +758,13 @@ function showProGate() {
         <div class="progate-ic">🗓✨</div>
         <h2>Meetings is a Pro feature</h2>
         <p>The live meeting scribe and this dashboard — transcripts, AI summaries, action items, search and the relationship graph — are part of ChatPanel Pro.</p>
-        <a class="btn primary" id="m-upgrade" href="${UPGRADE_URL}" target="_blank" rel="noopener">✨ Upgrade to Pro</a>
+        <button class="btn primary" id="m-upgrade">✨ Upgrade to Pro</button>
       </div>
     </div>`;
+  // Open the pricing page carrying this install's id (so checkout seats THIS
+  // device) and poll; reload to reveal the dashboard the moment Pro activates.
+  const up = document.getElementById('m-upgrade');
+  if (up) up.onclick = () => subscribe('pro', { onActivated: () => location.reload() });
 }
 
 async function boot() {
