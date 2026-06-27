@@ -95,6 +95,81 @@ const HISTORY_PAGE_SIZE = 25;
 // their own loop), the 🕹️ Act-on-page opt-in, and a readable tab. The user's
 // "High-reliability page control" setting selects the backend per turn: CDP
 // trusted events (js/page-actions-cdp.js) when on, synthetic events otherwise.
+// --- Page-action confirmation gate -------------------------------------------
+// Browser-action tools (fill/click/type/keys) are a privileged sink: the model
+// that calls them is fed page content, meeting transcripts and tool results — any
+// of which can carry an injected instruction ("now click Pay"). So we pause for an
+// explicit user confirmation before a state-CHANGING action, unless the user has
+// trusted the site for this session or turned the gate off. Read-only tools
+// (inspect/screenshot/scroll) never prompt, so the agent can still see & plan.
+const trustedActionOrigins = new Set(); // origins the user OK'd this panel session
+const READONLY_PAGE_TOOLS = new Set(['inspect_page', 'screenshot', 'marked_screenshot', 'scroll', 'read_canvas']);
+const pageActionNeedsConfirm = (name) => !READONLY_PAGE_TOOLS.has(name);
+const originOf = (url) => { try { return new URL(url).origin; } catch { return ''; } };
+
+function describePageAction(name, input = {}, host = 'this page') {
+  const clip = (s, n = 60) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) + '…' : s; };
+  switch (name) {
+    case 'fill_form': { const n = Array.isArray(input.fields) ? input.fields.length : 0; return `Fill ${n || ''} field${n === 1 ? '' : 's'} (and possibly submit a form) on ${host}`; }
+    case 'fill_combobox': return `Set a dropdown / combobox on ${host}`;
+    case 'click_element':
+    case 'click_by_text': return `Click “${clip(input.text || input.selector || 'an element')}” on ${host}`;
+    case 'click_mark': return `Click marked element #${input.mark ?? '?'} on ${host}`;
+    case 'click_at': return `Click at (${Math.round(input.x)}, ${Math.round(input.y)}) on ${host}`;
+    case 'type_text': return `Type “${clip(input.text)}” on ${host}`;
+    case 'press_key': return `Press ${clip(input.key, 24)} on ${host}`;
+    case 'draw_path': return `Draw / drag on ${host}`;
+    case 'structured_insert': return `Insert content into the editor on ${host}`;
+    default: return `Run “${name}” on ${host}`;
+  }
+}
+
+// Inline confirmation card → resolves 'allow' | 'site' | 'deny'. Inline styles
+// (CSP allows style 'unsafe-inline'); CSS-var fallbacks keep it themed-or-not.
+function confirmPageAction(detail) {
+  return new Promise((resolve) => {
+    const ov = document.createElement('div');
+    ov.className = 'cp-confirm-ov';
+    ov.setAttribute('role', 'alertdialog');
+    ov.setAttribute('aria-label', 'Confirm page action');
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;display:flex;align-items:flex-end;justify-content:center;background:rgba(0,0,0,.38);padding:12px';
+    const card = document.createElement('div');
+    card.style.cssText = 'width:100%;max-width:480px;background:var(--panel,#1b1d22);color:var(--fg,#e8e8ea);border:1px solid var(--border,#33363d);border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.4);padding:14px 16px;font:13px/1.45 system-ui,-apple-system,sans-serif';
+    const title = document.createElement('div');
+    title.textContent = '🖋 Allow this page action?';
+    title.style.cssText = 'font-weight:600;margin-bottom:6px';
+    const body = document.createElement('div');
+    body.textContent = detail;
+    body.style.cssText = 'opacity:.92;margin-bottom:4px;word-break:break-word';
+    const why = document.createElement('div');
+    why.textContent = 'Requested by the AI based on page / tool content — review before allowing.';
+    why.style.cssText = 'opacity:.6;font-size:11px;margin-bottom:12px';
+    const rowEl = document.createElement('div');
+    rowEl.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end';
+    let settled = false;
+    const done = (v) => { if (settled) return; settled = true; document.removeEventListener('keydown', onKey, true); ov.remove(); resolve(v); };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done('deny'); }
+      else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); done('allow'); }
+    };
+    const mk = (label, val, primary) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.style.cssText = `cursor:pointer;border-radius:8px;padding:7px 12px;font:inherit;font-weight:600;${primary ? 'background:var(--accent,#4f7cff);color:#fff;border:1px solid transparent' : 'background:transparent;color:inherit;border:1px solid var(--border,#33363d)'}`;
+      b.onclick = () => done(val);
+      return b;
+    };
+    const denyBtn = mk('Decline', 'deny', false);
+    rowEl.append(denyBtn, mk('Allow for this site', 'site', false), mk('Allow', 'allow', true));
+    card.append(title, body, why, rowEl);
+    ov.append(card);
+    ov.addEventListener('mousedown', (e) => { if (e.target === ov) done('deny'); });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(ov);
+    denyBtn.focus(); // safe default
+  });
+}
+
 async function pageToolProvider(resolvedAgent) {
   if (!state.settings.ui?.pageActions) return null; // feature off — stay silent
   // API agents run the in-extension tool loop; bridge/CLI agents (Claude Code,
@@ -134,7 +209,22 @@ async function pageToolProvider(resolvedAgent) {
     console.info('[chatpanel] structured-insert (', candidate.id, ') is a Pro feature — not offered');
   }
 
-  return { specs, execute: makePageToolExecutor(state.activeTab.id, { cdp, adapter }), system };
+  const baseExecute = makePageToolExecutor(state.activeTab.id, { cdp, adapter });
+  const pageOrigin = originOf(state.activeTab.url || '');
+  const guardedExecute = async (name, input, meta) => {
+    const confirmOn = state.settings.ui?.pageActionConfirm !== false; // default ON
+    if (confirmOn && pageActionNeedsConfirm(name) && !trustedActionOrigins.has(pageOrigin)) {
+      const host = pageOrigin ? pageOrigin.replace(/^https?:\/\//, '') : 'this page';
+      const decision = await confirmPageAction(describePageAction(name, input, host));
+      if (decision === 'deny') {
+        toast('🖋 Action declined');
+        return JSON.stringify({ error: 'The user DECLINED this page action. Do not retry it — stop and ask the user how to proceed.' });
+      }
+      if (decision === 'site' && pageOrigin) trustedActionOrigins.add(pageOrigin);
+    }
+    return baseExecute(name, input, meta);
+  };
+  return { specs, execute: guardedExecute, system };
 }
 
 // Build the full toolset for a turn: page-action tools + any configured MCP

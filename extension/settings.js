@@ -1610,6 +1610,7 @@ function renderPrefs() {
   ac.disabled = !pro;
   $('pref-autocomplete-row').classList.toggle('locked', !pro);
   $('pref-pageact-cdp').checked = !!settings.ui.pageActionsCdp;
+  $('pref-pageact-confirm').checked = settings.ui.pageActionConfirm !== false; // default ON
   // Meetings tab — live scribe behavior.
   $('pref-live-notes').value = String(settings.ui.liveNotesIntervalMin ?? 2);
   $('pref-meeting-window').value = String(settings.ui.meetingWindowMin ?? 0);
@@ -1865,6 +1866,11 @@ function wire() {
   // there's nothing to request — just persist the choice.
   $('pref-pageact-cdp').onchange = async (e) => {
     settings.ui.pageActionsCdp = e.currentTarget.checked;
+    await saveSettings(settings);
+  };
+  // Confirm-before-page-actions gate (default on). Persist the choice.
+  $('pref-pageact-confirm').onchange = async (e) => {
+    settings.ui.pageActionConfirm = e.currentTarget.checked;
     await saveSettings(settings);
   };
 

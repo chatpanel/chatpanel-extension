@@ -303,6 +303,18 @@
                 </p>
               </div>
               <div class="pref-item">
+                <label class="check" id="pref-pageact-confirm-row">
+                  <input type="checkbox" id="pref-pageact-confirm" />
+                  <span>Confirm before page actions</span>
+                </label>
+                <p class="muted tiny">
+                  When 🕹️ Act on page is on, ask for your OK before the agent fills a form,
+                  clicks, or types — so a web page, meeting transcript, or connected tool can’t
+                  quietly steer it into acting for you. Pick <em>Allow for this site</em> to stop
+                  being asked on a site you trust. <strong>On by default.</strong>
+                </p>
+              </div>
+              <div class="pref-item">
                 <label class="check" id="pref-pageact-cdp-row">
                   <input type="checkbox" id="pref-pageact-cdp" />
                   <span>High-reliability page control</span>
@@ -316,9 +328,12 @@
                 </p>
                 <p class="muted tiny">
                   <strong>Heads up:</strong> acting on the page is best-effort automation
-                  driven by an AI model — it can pick the wrong field or misread a layout.
-                  <strong>Review before you submit anything that matters.</strong> ChatPanel
-                  only clicks and types when you ask it to.
+                  driven by an AI model — it can pick the wrong field or misread a layout, and
+                  content it reads (web pages, meeting transcripts, connected tools) can try to
+                  influence it. Keep <em>Confirm before page actions</em> on for anything that
+                  matters and <strong>review each action before you allow it</strong> —
+                  especially on banking, email, or work accounts. You stay in control: ChatPanel
+                  only acts when you turn this on and ask.
                 </p>
               </div>
             </div>
