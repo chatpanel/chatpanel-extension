@@ -88,6 +88,17 @@ export class McpClient {
         signal,
       });
     } catch (e) {
+      // An AbortError means OUR timeout fired — the bridge WAS reachable, but the
+      // server didn't finish starting in time. Don't mislead the user into
+      // thinking the bridge is down; point at the real culprits instead.
+      if (e?.name === 'AbortError' || signal?.aborted) {
+        throw new Error(
+          'The MCP server didn’t respond in time. The ChatPanel Bridge is running, but the server never finished starting. ' +
+          'For an npx/uvx package this is usually the registry: add `--registry https://registry.npmjs.org` (npx) or ' +
+          '`--default-index <pypi-simple-url>` (uvx) in Arguments before the package name, or set `npm_config_registry` in Env vars. ' +
+          'Otherwise check that the command + args run in a terminal.',
+        );
+      }
       throw new Error(`Can't reach the ChatPanel Bridge for local MCP (${e.message}). Start it with \`npx @chatpanel/bridge\`.`);
     }
     if (message.id == null) return null; // notification → 202, no body

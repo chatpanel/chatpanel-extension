@@ -1041,7 +1041,10 @@ function parseEnvPairs(str) {
     if (i <= 0) continue;
     const k = pair.slice(0, i).trim();
     const v = pair.slice(i + 1).trim();
-    if (k) env[k] = v;
+    // Drop empty values: "KEY=" passes an empty-string env var to the server,
+    // which breaks tools that validate config (e.g. an empty MCP_LOG_LEVEL). A
+    // blank value almost always means "didn't fill it in", so treat it as unset.
+    if (k && v) env[k] = v;
   }
   return env;
 }
