@@ -41,10 +41,16 @@
             <summary>Using local Ollama? Fix the <code>403 Forbidden</code> first</summary>
             <p>
               By default Ollama refuses requests from a browser extension, so
-              ChatPanel gets <code>403 Forbidden</code>. Start it so it accepts the
-              extension's origin:
+              ChatPanel gets <code>403 Forbidden</code>. Start it so it accepts
+              extension origins:
             </p>
-            <pre><code>OLLAMA_ORIGINS="*" ollama serve</code></pre>
+            <pre><code>OLLAMA_ORIGINS="chrome-extension://*" ollama serve</code></pre>
+            <p class="muted tiny">
+              This allows browser extensions only — safer than <code>"*"</code>, which would
+              let <em>any</em> website you visit reach your local Ollama. To lock it down
+              further, use this extension's exact id from <code>chrome://extensions</code>:
+              <code>OLLAMA_ORIGINS="chrome-extension://&lt;id&gt;"</code>.
+            </p>
             <p>
               Keep that terminal running, then set Base URL
               <code>http://localhost:11434/v1</code> and click <strong>↻ Load

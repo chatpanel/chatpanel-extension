@@ -852,7 +852,7 @@ async function reachableFetch(url, opts, agent, base) {
     const isOllama = /11434|ollama/i.test(where);
     const isLocal = /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(where);
     let hint;
-    if (isOllama) hint = ' Is Ollama running? Start it with  OLLAMA_ORIGINS="*" ollama serve';
+    if (isOllama) hint = ' Is Ollama running? Start it with  OLLAMA_ORIGINS="chrome-extension://*" ollama serve';
     else if (isLocal) hint = ' Is the local server running, and is the Base URL correct?';
     else hint = ' Check the Base URL and your connection.';
     throw new Error(`${agent?.name || 'Endpoint'}: couldn't reach ${where}.${hint}`);
@@ -866,7 +866,7 @@ async function reachableFetch(url, opts, agent, base) {
 function openAiError(agent, base, status, body) {
   const isOllama = /11434|ollama/i.test(base);
   if (isOllama && status === 403) {
-    return `${agent.name}: Ollama refused the browser (HTTP 403). Restart it so it accepts the extension:  OLLAMA_ORIGINS="*" ollama serve`;
+    return `${agent.name}: Ollama refused the browser (HTTP 403). Restart it so it accepts the extension:  OLLAMA_ORIGINS="chrome-extension://*" ollama serve`;
   }
   if (isOllama && status === 404 && /not found|no such model|model/i.test(body)) {
     const model = agent.model || '<model>';
