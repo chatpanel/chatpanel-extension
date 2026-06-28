@@ -1803,15 +1803,20 @@ function renderFlow(t, withModel) {
   const esc = (s) => escapeHtml(String(s == null ? '' : s));
   const cards = [];
   cards.push(flowCard(1, 'Your prompt', `<div class="flow-text">${esc(t.input)}</div>`));
-  const chips = (t.detected || []).length
-    ? t.detected.map((d) => `<span class="flow-chip">${esc(d.value)}<em>${esc(d.type)}</em></span>`).join('')
-    : '<span class="muted sm">No AI-detected entities (patterns + dictionary still apply).</span>';
-  cards.push(flowCard(2, 'Detected', chips));
-  cards.push(flowCard(3, 'Model sees', `<div class="flow-text">${esc(t.modelSees)}</div>`, 'flow-model'));
-  const maps = (t.spans || []).length
-    ? t.spans.map((s) => `<div class="flow-map"><code>${esc(s.token)}</code> → <b>${esc(s.value)}</b>${s.kind === 'alias' ? ' <em>(pseudonym)</em>' : ''}</div>`).join('')
-    : '<span class="muted sm">Nothing replaced.</span>';
-  cards.push(flowCard(4, 'Tools receive', `<div class="muted sm">Local search &amp; MCP tools get the real values:</div>${maps}`, 'flow-tools'));
+  if (t.skipped) {
+    cards.push(flowCard(2, 'Redaction', '<span class="muted sm">Skipped — “Redact for: Remote only” and this is a <b>local</b> model, so nothing is redacted (faster; the model gets the real text).</span>', 'flow-tools'));
+    cards.push(flowCard(3, 'Model sees', `<div class="flow-text">${esc(t.modelSees)}</div>`, 'flow-model'));
+  } else {
+    const chips = (t.detected || []).length
+      ? t.detected.map((d) => `<span class="flow-chip">${esc(d.value)}<em>${esc(d.type)}</em></span>`).join('')
+      : '<span class="muted sm">No AI-detected entities (patterns + dictionary still apply).</span>';
+    cards.push(flowCard(2, 'Detected', chips));
+    cards.push(flowCard(3, 'Model sees', `<div class="flow-text">${esc(t.modelSees)}</div>`, 'flow-model'));
+    const maps = (t.spans || []).length
+      ? t.spans.map((s) => `<div class="flow-map"><code>${esc(s.token)}</code> → <b>${esc(s.value)}</b>${s.kind === 'alias' ? ' <em>(pseudonym)</em>' : ''}</div>`).join('')
+      : '<span class="muted sm">Nothing replaced.</span>';
+    cards.push(flowCard(4, 'Tools receive', `<div class="muted sm">Local search &amp; MCP tools get the real values:</div>${maps}`, 'flow-tools'));
+  }
   // Actual tool calls the model made this run (real args in, re-redacted result out).
   (t.toolTrace || []).forEach((tt) => {
     const body = tt.error
@@ -1928,7 +1933,9 @@ async function runFlow() {
     if (status) {
       status.textContent = t.error
         ? `model: ✕ ${t.error}`
-        : `${t.spans.length} replaced · ${armed} tool${armed === 1 ? '' : 's'} armed${narrowed} · ${tc} call${tc === 1 ? '' : 's'} made`;
+        : t.skipped
+          ? `redaction skipped (local model · remote-only) · ${armed} tool${armed === 1 ? '' : 's'} armed · ${tc} call${tc === 1 ? '' : 's'} made`
+          : `${t.spans.length} replaced · ${armed} tool${armed === 1 ? '' : 's'} armed${narrowed} · ${tc} call${tc === 1 ? '' : 's'} made`;
     }
   } catch (e) {
     if (status) status.textContent = `✕ ${(e && e.message) || 'run failed'}`;

@@ -816,16 +816,26 @@ export async function traceFlow(settings, targetId, prompt, { tools, signal } = 
   const cfg = (settings && settings.ui && settings.ui.piiRedaction) || {};
   const tier = cfg.mode === 'model' ? 'full' : 'basic';
   const text = String(prompt || '');
-  const detected = cfg.mode === 'model'
-    ? await detectForChat(text, { ...cfg, detection: { ...(cfg.detection || {}), timeoutMs: Math.max(Number(cfg.detection && cfg.detection.timeoutMs) || 0, 30000) } }, settings, signal, { strict: true })
-    : [];
-  const vault = createVault();
-  const modelSees = redactText(text, vault, { tier, entities: detected, dictionary: cfg.dictionary || [] });
-  const spans = [
-    ...[...vault.byToken].map(([token, value]) => ({ token, value, kind: 'redact' })),
-    ...[...vault.aliases].map(([alias, value]) => ({ token: alias, value, kind: 'alias' })),
-  ];
   const target = resolveTarget(getTarget(settings, targetId), settings);
+  // Honor "Redact for: Remote only" — a LOCAL model keeps data on-device, so skip
+  // detection + redaction entirely (faster; the model sees the real text), exactly
+  // like a real turn does. Also skip when redaction is off.
+  const redactionOn = cfg.mode === 'deterministic' || cfg.mode === 'model';
+  const skipped = !redactionOn || (cfg.applyTo === 'remote' && isLocalAgent(target));
+  const vault = createVault();
+  let detected = [];
+  let modelSees = text;
+  let spans = [];
+  if (!skipped) {
+    detected = cfg.mode === 'model'
+      ? await detectForChat(text, { ...cfg, detection: { ...(cfg.detection || {}), timeoutMs: Math.max(Number(cfg.detection && cfg.detection.timeoutMs) || 0, 30000) } }, settings, signal, { strict: true })
+      : [];
+    modelSees = redactText(text, vault, { tier, entities: detected, dictionary: cfg.dictionary || [] });
+    spans = [
+      ...[...vault.byToken].map(([token, value]) => ({ token, value, kind: 'redact' })),
+      ...[...vault.aliases].map(([alias, value]) => ({ token: alias, value, kind: 'alias' })),
+    ];
+  }
   // Wrap the toolset so each call is TRACED and redaction is applied exactly like a
   // real turn: restore the model's token args before the tool runs, then re-redact
   // the result before it goes back to the model.
@@ -837,12 +847,12 @@ export async function traceFlow(settings, targetId, prompt, { tools, signal } = 
     tracedTools = {
       ...tools,
       execute: async (name, input, meta) => {
-        const realArgs = restoreDeep(input, vault);
+        const realArgs = skipped ? input : restoreDeep(input, vault);
         const row = { name, modelArgs: input, realArgs, result: '', modelResult: '', error: null };
         let out;
         try {
           const raw = await base(name, realArgs, meta);
-          out = redactResult(raw, ctx);
+          out = skipped ? raw : redactResult(raw, ctx);
           row.result = stepResultText(raw);
           row.modelResult = stepResultText(out);
         } catch (e) {
@@ -869,7 +879,7 @@ export async function traceFlow(settings, targetId, prompt, { tools, signal } = 
     } catch (e) { error = (e && e.message) || 'model call failed'; }
   }
   const youSee = restoreText(modelRaw, vault);
-  return { input: text, detected, modelSees, spans, toolTrace, modelRaw, youSee, error };
+  return { input: text, detected, modelSees, spans, toolTrace, modelRaw, youSee, error, skipped };
 }
 
 // Public entry. When `redaction` ({ vault, cfg, isPro, entities }) is enabled, it
