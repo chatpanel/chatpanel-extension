@@ -737,22 +737,38 @@ async function detectForChat(sample, cfg, settings, signal, { strict = false } =
   // (Claude Code / Codex) often only *append* a custom system prompt, so the inline
   // copy makes them far likelier to emit the JSON we parse.
   const prompt = `${EXTRACT_SYS}\n\nText to analyze:\n"""\n${capped}\n"""\n\nRespond with ONLY the JSON object.`;
+  const timeoutMs = det.timeoutMs || (target.kind === 'bridge' ? 20000 : 4000);
+  // On OpenAI-compatible endpoints, force JSON mode (response_format) so even small
+  // local models (phi4-mini, gemma) emit valid JSON instead of prose. Bridge CLIs
+  // don't support it. EXTRACT_SYS mentions "JSON", satisfying servers that require it.
+  const ask = (jsonMode) => withTimeout(dispatchStream({
+    agent: {
+      ...target, systemPrompt: EXTRACT_SYS, temperature: 0,
+      maxTokens: det.maxTokens || 256, model: det.model || target.model,
+      ...(jsonMode ? { extraBody: { ...(target.extraBody || {}), response_format: { type: 'json_object' } } } : {}),
+    },
+    messages: [{ role: 'user', content: prompt }],
+    settings, signal,
+  }), timeoutMs, signal);
   let text = '';
   try {
-    const out = await withTimeout(dispatchStream({
-      agent: { ...target, systemPrompt: EXTRACT_SYS, temperature: 0, maxTokens: det.maxTokens || 256, model: det.model || target.model },
-      messages: [{ role: 'user', content: prompt }],
-      settings, signal,
-    }), det.timeoutMs || (target.kind === 'bridge' ? 20000 : 4000), signal);
+    let out;
+    if (target.kind !== 'bridge') {
+      // JSON mode first; if the server rejects response_format, retry without it.
+      try { out = await ask(true); }
+      catch (e) { if (/abort|timeout/i.test((e && e.message) || '')) throw e; out = await ask(false); }
+    } else {
+      out = await ask(false);
+    }
     text = typeof out === 'string' ? out : (out && out.text) || '';
   } catch (e) { if (strict) throw e; return []; }
   const parsed = parseJsonLoose(text);
   if (!parsed) {
-    // Distinguish "replied but not JSON" (common with CLI agents) from "empty" so the
-    // Test button can say something useful instead of a misleading "no entities".
+    // Distinguish "replied but not JSON" from "empty" so the Test button can say
+    // something useful instead of a misleading "no entities".
     if (strict) {
       throw new Error(text.trim()
-        ? 'the model replied but not as JSON — CLI agents (Claude Code / Codex) tend to add prose; a local NER service or a small local LLM is more reliable for detection'
+        ? 'the model replied but not as JSON. Try a model that supports JSON mode (response_format), or use a local NER service'
         : 'the model returned an empty response');
     }
     return [];
