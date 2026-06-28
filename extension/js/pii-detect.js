@@ -25,7 +25,7 @@ function cacheKey(text, det) {
   return `${s.length}:${h}`;
 }
 
-function withTimeout(promise, ms, signal) {
+export function withTimeout(promise, ms, signal) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('detect timeout')), Math.max(200, ms || 1500));
     const onAbort = () => { clearTimeout(timer); reject(new Error('aborted')); };
@@ -91,7 +91,7 @@ export function normalizeEntities(data, types) {
   return out;
 }
 
-function parseJsonLoose(s) {
+export function parseJsonLoose(s) {
   if (!s) return null;
   const a = String(s).indexOf('{');
   const b = String(s).lastIndexOf('}');
@@ -99,7 +99,7 @@ function parseJsonLoose(s) {
   try { return JSON.parse(String(s).slice(a, b + 1)); } catch { return null; }
 }
 
-const EXTRACT_SYS = 'You extract sensitive entities from text for redaction. '
+export const EXTRACT_SYS = 'You extract sensitive entities from text for redaction. '
   + 'Return ONLY JSON: {"entities":[{"value":"<verbatim text>","type":"PERSON|ORG|LOCATION|ID|EMAIL|PHONE|OTHER"}]}. '
   + 'Copy each value exactly as it appears. Include people, organizations, locations, and account/ID numbers. No commentary, no code fences.';
 
@@ -135,21 +135,22 @@ async function detectViaOpenAI(text, det, signal, fetchImpl) {
 }
 
 // Returns [{value, type}] spans for `text`, or [] (fail-open) on any error/timeout.
-export async function detectEntities(text, cfg, { signal, fetchImpl = globalThis.fetch } = {}) {
+export async function detectEntities(text, cfg, { signal, fetchImpl = globalThis.fetch, strict = false } = {}) {
   const det = cfg?.detection;
   if (!det || !det.backend || det.backend === 'off' || !det.url || typeof fetchImpl !== 'function') return [];
   const capped = String(text || '').slice(0, det.maxChars || 8000);
   if (capped.trim().length < 8) return [];
   const key = cacheKey(capped, det);
-  if (cache.has(key)) return cache.get(key);
+  if (!strict && cache.has(key)) return cache.get(key);
   const run = det.backend === 'endpoint' ? detectViaEndpoint : detectViaOpenAI;
   let ents = [];
   try {
     ents = await withTimeout(run(capped, det, signal, fetchImpl), det.timeoutMs || 1500, signal);
-  } catch {
-    ents = []; // fail open — deterministic redaction still applies
+  } catch (e) {
+    if (strict) throw e; // surface errors to the Test button
+    ents = []; // otherwise fail open — deterministic redaction still applies
   }
   if (cache.size >= CACHE_MAX) cache.clear();
-  cache.set(key, ents);
+  if (!strict) cache.set(key, ents);
   return ents;
 }

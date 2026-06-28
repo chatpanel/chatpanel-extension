@@ -245,20 +245,42 @@
               <option value="model">On — + AI detection (Pro)</option>
             </select>
           </div>
+          <div class="row"><label>Redact for</label>
+            <select id="priv-applyto">
+              <option value="all">All chat models</option>
+              <option value="remote">Remote models only (skip local)</option>
+            </select>
+          </div>
+          <p class="muted" style="margin:2px 0 0">A local model (a <code>localhost</code> endpoint — Ollama / llama.cpp)
+            keeps your data on-device, so <strong>Remote only</strong> skips redaction for it and redacts just for cloud
+            models &amp; CLI agents.</p>
           <div id="priv-detection" class="hidden">
             <div class="row"><label>Detector</label>
               <select id="priv-det-backend">
                 <option value="off">Off</option>
                 <option value="endpoint">Local NER service (spaCy / Presidio)</option>
-                <option value="openai">Local LLM (OpenAI-compatible)</option>
+                <option value="openai">Local LLM by URL (OpenAI-compatible)</option>
+                <option value="agent">A configured API / Agent…</option>
               </select>
             </div>
-            <div class="row"><label>Detector URL</label><input id="priv-det-url"
+            <div class="row" id="priv-det-target-row"><label>API / Agent</label>
+              <select id="priv-det-target"></select>
+            </div>
+            <div class="row" id="priv-det-tmodel-row"><label>Model</label>
+              <select id="priv-det-tmodel"></select>
+            </div>
+            <div class="row" id="priv-det-url-row"><label>Detector URL</label><input id="priv-det-url"
                 placeholder="http://127.0.0.1:9009/ner  ·  or LLM base http://127.0.0.1:8080" /></div>
             <div class="row" id="priv-det-model-row"><label>Detector model</label><input id="priv-det-model"
                 placeholder="LLM backend only — e.g. gemma-4-26b" /></div>
             <div class="row"><label>Timeout (ms)</label><input id="priv-det-timeout" type="number" min="200" max="10000"
                 placeholder="1500" /></div>
+            <div class="row"><label></label>
+              <button type="button" id="priv-det-test" class="btn">Test detector</button>
+              <span id="priv-det-test-out" class="sub" style="margin-left:8px"></span>
+            </div>
+            <p class="muted" id="priv-det-agent-note">The detector reads your text to find names, so pick a
+              <strong>local</strong> model — that text reaches the detector. A cloud API/agent would receive it too.</p>
             <p class="muted" style="margin:8px 0 2px">Redact these detected types <span class="sub">(emails &amp; phones
                 always redact)</span>:</p>
             <label class="check"><input type="checkbox" id="priv-det-person" /> People (names)</label>

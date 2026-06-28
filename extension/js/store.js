@@ -168,6 +168,9 @@ export function defaultSettings() {
       piiRedaction: {
         mode: 'off',
         tier: 'basic',
+        // Redact for: 'all' chat models | 'remote' only (skip localhost models, which
+        // keep data on-device, so redaction is optional there).
+        applyTo: 'all',
         scope: { chat: true, context: true, history: true, toolResults: true },
         sources: { self: true, participants: true, contacts: false },
         // How tools receive redacted values. Local tools (history/meeting/page) always
@@ -179,11 +182,12 @@ export function defaultSettings() {
         // Phase 2: configurable LOCAL entity detector (auto-redact names/orgs/IDs
         // with no dictionary). backend 'off' | 'endpoint' (spaCy/Presidio/any
         // {text}->entities service) | 'openai' (a local OpenAI-compatible LLM,
-        // e.g. llama.cpp / Ollama). Latency-guarded (cache + timeout + fail-open).
-        // `types` lets the user choose which detected categories to redact, so e.g.
-        // turning off `location` keeps city names readable for geo questions.
+        // e.g. llama.cpp / Ollama) | 'agent' (a CONFIGURED API/agent: endpoint via its
+        // connection, bridge CLI via dispatchStream). Latency-guarded (cache + timeout
+        // + fail-open). `types` lets the user choose which detected categories to
+        // redact, so e.g. turning off `location` keeps city names readable for geo Qs.
         detection: {
-          backend: 'off', url: '', model: '', timeoutMs: 1500, maxChars: 8000,
+          backend: 'off', url: '', model: '', targetId: '', timeoutMs: 1500, maxChars: 8000,
           types: { person: true, org: true, location: true, number: true },
         },
       },
@@ -334,9 +338,13 @@ let _settingsCache = null;
 // keep serving a stale object. Drop the cache whenever settings change in
 // storage so the next getSettings() re-reads — otherwise an edit in Settings
 // (e.g. swapping the Ollama model) wouldn't take effect until a full reload.
-chrome.storage?.onChanged?.addListener((changes, area) => {
-  if (area === 'local' && changes[K_SETTINGS]) _settingsCache = null;
-});
+// Guard `chrome` so this module is import-safe outside the extension (Node tests,
+// SSR): the listener only matters in a real extension context anyway.
+if (typeof chrome !== 'undefined') {
+  chrome.storage?.onChanged?.addListener((changes, area) => {
+    if (area === 'local' && changes[K_SETTINGS]) _settingsCache = null;
+  });
+}
 
 export async function getSettings() {
   if (_settingsCache) return _settingsCache;

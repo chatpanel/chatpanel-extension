@@ -71,6 +71,24 @@ const okJson = (body) => async () => ({ ok: true, json: async () => body });
   assert.deepEqual(await detectEntities('some text with names here', { detection: { backend: 'endpoint', url: 'http://x/y' } }, { fetchImpl: non200 }), []);
 }
 
+// --- strict mode (Test button): errors propagate instead of failing open ---
+{
+  clearDetectCache();
+  const boom = async () => { throw new Error('connrefused'); };
+  await assert.rejects(
+    detectEntities('some text with names here', { detection: { backend: 'endpoint', url: 'http://x/y' } }, { fetchImpl: boom, strict: true }),
+    /connrefused/,
+  );
+  // strict also bypasses the cache so a re-run always re-tests
+  clearDetectCache();
+  let calls = 0;
+  const ok = async () => { calls++; return { ok: true, json: async () => ({ entities: [{ value: 'Jordan Blake', type: 'PERSON' }] }) }; };
+  const det = { detection: { backend: 'endpoint', url: 'http://x/y' } };
+  assert.deepEqual(await detectEntities('redact Jordan Blake please', det, { fetchImpl: ok, strict: true }), [{ value: 'Jordan Blake', type: 'PERSON' }]);
+  await detectEntities('redact Jordan Blake please', det, { fetchImpl: ok, strict: true });
+  assert.equal(calls, 2, 'strict bypasses the cache (re-runs each time)');
+}
+
 // --- timeout: a slow detector fails open ---
 {
   clearDetectCache();

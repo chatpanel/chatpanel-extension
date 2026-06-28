@@ -6,7 +6,7 @@
 //             plus the bridge connection itself.
 import { getSettings, saveSettings, uid, exportDataArchive, importAllData, resetSkillsToDefaults } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
-import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand } from './js/providers.js';
+import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, runDetectorTest } from './js/providers.js';
 import {
   applyOAuthPreset,
   connectOAuthEndpoint,
@@ -1690,6 +1690,7 @@ function renderPrefs() {
   $('priv-scope-history').checked = psc.history !== false;
   $('priv-scope-tools').checked = psc.toolResults !== false;
   $('priv-tooldata').value = pii.toolData === 'redactRemote' ? 'redactRemote' : 'real';
+  $('priv-applyto').value = pii.applyTo === 'remote' ? 'remote' : 'all';
   $('priv-dictionary').value = piiDictToText(pii.dictionary || []);
   // Gate the Pro controls: Free = deterministic secrets on chat only. Pro unlocks
   // the full (name/org) tier, the extra scopes, and an unlimited dictionary.
@@ -1716,8 +1717,83 @@ function renderPrefs() {
   $('priv-det-org').checked = dt.org !== false;
   $('priv-det-location').checked = dt.location !== false;
   $('priv-det-number').checked = dt.number !== false;
-  $('priv-detection').classList.toggle('hidden', $('priv-mode').value !== 'model');
-  $('priv-det-model-row').classList.toggle('hidden', $('priv-det-backend').value !== 'openai');
+  const showDet = $('priv-mode').value === 'model';
+  $('priv-detection').classList.toggle('hidden', !showDet);
+  populateDetTargets(det.targetId);
+  if (showDet && $('priv-det-backend').value === 'agent') populateDetModels(det.targetId, det.model);
+  updateDetVis();
+}
+
+// Privacy → detector: the 'agent' backend reuses a CONFIGURED API/agent + a model
+// from it (so you don't re-type a URL, and can point detection at a model you trust).
+function populateDetTargets(selectedId) {
+  const sel = $('priv-det-target');
+  if (!sel) return;
+  const targets = skillTargets();
+  sel.innerHTML = targets.length ? '' : '<option value="">No APIs / agents configured</option>';
+  for (const t of targets) {
+    const o = document.createElement('option');
+    o.value = t.id; o.textContent = t.name;
+    if (t.id === selectedId) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+
+async function populateDetModels(targetId, selectedModel) {
+  const sel = $('priv-det-tmodel');
+  if (!sel) return;
+  const opt = (m) => {
+    const o = document.createElement('option');
+    o.value = m; o.textContent = m || 'Default model';
+    if (m === (selectedModel || '')) o.selected = true;
+    return o;
+  };
+  sel.innerHTML = '';
+  sel.appendChild(opt(''));                      // "Default model"
+  if (selectedModel) sel.appendChild(opt(selectedModel)); // keep current until the list loads
+  const ep = (settings.endpoints || []).find((e) => e.id === targetId);
+  const ag = (settings.agents || []).find((a) => a.id === targetId);
+  try {
+    let ids = [];
+    if (ep) ids = (await listModelOptions(ep) || []).map((m) => (typeof m === 'string' ? m : m.id)).filter(Boolean);
+    else if (ag) ids = (await listBridgeModels(ag, settings) || []).map((m) => (typeof m === 'string' ? m : (m.id || m.name))).filter(Boolean);
+    if (ids.length) {
+      sel.innerHTML = '';
+      sel.appendChild(opt(''));
+      for (const id of ids) sel.appendChild(opt(id));
+      if (selectedModel && !ids.includes(selectedModel)) sel.appendChild(opt(selectedModel));
+    }
+  } catch { /* leave the default + current model option */ }
+}
+
+function updateDetVis() {
+  const b = $('priv-det-backend').value;
+  $('priv-det-url-row').classList.toggle('hidden', !(b === 'endpoint' || b === 'openai'));
+  $('priv-det-model-row').classList.toggle('hidden', b !== 'openai');
+  $('priv-det-target-row').classList.toggle('hidden', b !== 'agent');
+  $('priv-det-tmodel-row').classList.toggle('hidden', b !== 'agent');
+  const note = $('priv-det-agent-note');
+  if (note) note.classList.toggle('hidden', b !== 'agent');
+}
+
+// Test the configured detector against a fixed sample so the user can confirm it's
+// reachable and actually extracting entities (mirrors the API/agent Test buttons).
+async function testDetector() {
+  const out = $('priv-det-test-out');
+  if (out) out.textContent = 'Testing…';
+  await savePrefs(); // persist the current detector config first
+  const sample = 'Email Jordan Blake at jordan.blake@example.com about the Austin → Dallas trip; call +1 415 555 0142.';
+  try {
+    const ents = await runDetectorTest(settings, sample);
+    if (!ents || !ents.length) {
+      if (out) out.textContent = '⚠ No entities detected — check the URL/model and that the service is running.';
+      return;
+    }
+    const shown = ents.slice(0, 8).map((e) => `${e.value} (${e.type})`).join(', ');
+    if (out) out.textContent = `✓ ${ents.length} found: ${shown}${ents.length > 8 ? '…' : ''}`;
+  } catch (e) {
+    if (out) out.textContent = `✕ ${(e && e.message) || 'detection failed'}`;
+  }
 }
 
 async function renderStorageHealth() {
@@ -1751,12 +1827,14 @@ async function savePrefs() {
       toolResults: $('priv-scope-tools').checked,
     },
     toolData: $('priv-tooldata').value,
+    applyTo: $('priv-applyto').value,
     dictionary: piiTextToDict($('priv-dictionary').value),
     detection: {
       ...(settings.ui.piiRedaction?.detection || {}),
       backend: $('priv-det-backend').value,
       url: $('priv-det-url').value.trim(),
-      model: $('priv-det-model').value.trim(),
+      targetId: $('priv-det-target').value,
+      model: ($('priv-det-backend').value === 'agent' ? $('priv-det-tmodel').value : $('priv-det-model').value).trim(),
       timeoutMs: Number($('priv-det-timeout').value) || 1500,
       types: {
         person: $('priv-det-person').checked,
@@ -2036,9 +2114,13 @@ function wire() {
   $('priv-scope-history').onchange = savePrefs;
   $('priv-scope-tools').onchange = savePrefs;
   $('priv-tooldata').onchange = savePrefs;
+  $('priv-applyto').onchange = savePrefs;
   $('priv-dictionary').onchange = savePrefs;
   $('priv-det-backend').onchange = () => { savePrefs(); renderPrefs(); };
   $('priv-det-url').onchange = savePrefs;
+  $('priv-det-target').onchange = () => { populateDetModels($('priv-det-target').value, ''); savePrefs(); };
+  $('priv-det-tmodel').onchange = savePrefs;
+  $('priv-det-test').onclick = testDetector;
   $('priv-det-model').onchange = savePrefs;
   $('priv-det-timeout').onchange = savePrefs;
   $('priv-det-person').onchange = savePrefs;

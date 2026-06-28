@@ -15,8 +15,9 @@ import { createAdaptiveToolPolicy, resultText } from './adaptive-tool-policy.js'
 import {
   redactionEnabled, redactionFromSettings, redactOutbound, redactResult, restoreDeep, makeStreamRestorer, restore,
 } from './pii-pipeline.js';
-import { detectEntities } from './pii-detect.js';
+import { detectEntities, normalizeEntities, EXTRACT_SYS, parseJsonLoose, withTimeout } from './pii-detect.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
+import { getTarget, resolveTarget } from './store.js';
 import { authHeadersForEndpoint } from './oauth.js';
 import { mergeExtraBody, sanitizeExtraHeaders } from './request-options.js';
 // Safety cap on the agent tool-use loop: a turn may call tools at most this many
@@ -697,6 +698,51 @@ async function dispatchStream({ agent, messages, settings, signal, onDelta, onEv
   return streamOpenAI(agent, messages, opts);
 }
 
+// True when the chat model runs on THIS machine (a localhost OpenAI-compatible
+// endpoint — Ollama / llama.cpp / LM Studio). Cloud APIs and bridge CLIs (which
+// proxy to the cloud) count as remote. Powers the "redact for remote models only"
+// option: a local model never sends your data off-device, so redaction is optional.
+function isLocalAgent(agent) {
+  if (!agent || agent.kind === 'bridge' || agent.kind === 'anthropic') return false;
+  return /\/\/(localhost|127(?:\.\d+){3}|0\.0\.0\.0|\[?::1\]?|host\.docker\.internal)(?::\d+)?(?:[/?#]|$)/i
+    .test(String(agent.baseUrl || ''));
+}
+
+// Run the configured detector over `sample` → [{value,type}]. 'endpoint'/'openai'
+// hit a URL directly (pii-detect.js). 'agent' reuses a CONFIGURED API/agent: an
+// endpoint is detected via its OpenAI-compatible connection; a bridge CLI is driven
+// through dispatchStream. All paths fail open (return []) so a slow/broken detector
+// never blocks the chat.
+async function detectForChat(sample, cfg, settings, signal, { strict = false } = {}) {
+  const det = (cfg && cfg.detection) || {};
+  if (det.backend !== 'agent') return detectEntities(sample, cfg, { signal, strict });
+  // A configured API/agent: drive it through the SAME transport as chat — correct
+  // base URL / auth / headers for endpoints, the CLI for bridge agents — with a
+  // strict JSON-extraction prompt, then parse the entities out of its reply.
+  const target = resolveTarget(getTarget(settings, det.targetId), settings);
+  if (!target) { if (strict) throw new Error('No API / agent selected for the detector'); return []; }
+  const capped = String(sample || '').slice(0, det.maxChars || 8000);
+  if (capped.trim().length < 8) return [];
+  try {
+    const out = await withTimeout(dispatchStream({
+      agent: { ...target, systemPrompt: EXTRACT_SYS, temperature: 0, maxTokens: det.maxTokens || 256, model: det.model || target.model },
+      messages: [{ role: 'user', content: capped }],
+      settings, signal,
+    }), det.timeoutMs || (target.kind === 'bridge' ? 8000 : 4000), signal);
+    return normalizeEntities(parseJsonLoose(typeof out === 'string' ? out : (out && out.text) || ''), det.types);
+  } catch (e) { if (strict) throw e; return []; }
+}
+
+// Settings-page helper: run the detector once over a sample → its spans (or throw).
+// Powers the Privacy → "Test detector" button.
+export async function runDetectorTest(settings, sample) {
+  const base = (settings && settings.ui && settings.ui.piiRedaction) || {};
+  // strict = surface errors so the button can show them; generous timeout so a cold
+  // local model / CLI isn't misreported as "no entities".
+  const cfg = { ...base, detection: { ...(base.detection || {}), timeoutMs: Math.max(Number(base.detection && base.detection.timeoutMs) || 0, 15000) } };
+  return detectForChat(String(sample || ''), cfg, settings, undefined, { strict: true });
+}
+
 // Public entry. When `redaction` ({ vault, cfg, isPro, entities }) is enabled, it
 // redacts everything outbound into the vault, restores the streamed reply, and
 // round-trips tool calls — restoring the model's token args before LOCAL execution
@@ -707,6 +753,9 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
   // autocomplete…). A caller that omits `redaction` still gets the user's
   // configured redaction; pass an explicit object (or null) only to override.
   if (redaction === undefined) redaction = redactionFromSettings(settings);
+  // "Redact for remote models only": a local model keeps data on-device, so skip
+  // redaction entirely for it (the user chose not to pay the redaction cost locally).
+  if (redaction && redaction.cfg && redaction.cfg.applyTo === 'remote' && isLocalAgent(agent)) redaction = null;
   if (!redaction || !redaction.vault || !redactionEnabled(redaction.cfg)) {
     return dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools });
   }
@@ -720,7 +769,7 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
   if (redaction.detect && cfg.mode === 'model') {
     try {
       const sample = (messages || []).map((m) => m.content || '').join('\n');
-      const found = await detectEntities(sample, cfg, { signal });
+      const found = await detectForChat(sample, cfg, settings, signal);
       if (found.length) {
         activeEntities = [...entities, ...found];
         activeCfg = { ...cfg, tier: 'full' };
