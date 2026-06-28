@@ -64,6 +64,13 @@ body {
 .card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .muted { color: var(--muted); font-size: 13px; margin: 4px 0 16px; max-width: 64ch; }
 .muted code, .tip code { font-family: var(--mono); font-size: .9em; background: rgba(127,127,127,.14); padding: 1.5px 5px; border-radius: 5px; }
+.muted.sm { font-size: 11.5px; margin: 4px 0 8px; line-height: 1.45; }
+/* Privacy tab — two-pane layout so the page isn't one long scroll. */
+.priv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; align-items: start; margin-top: 6px; }
+.priv-col { min-width: 0; }
+.priv-h { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); font-weight: 700; opacity: .9; }
+.priv-col > .priv-h:first-child { margin-top: 0; }
+@media (max-width: 760px) { .priv-grid { grid-template-columns: 1fr; } }
 
 /* Fields — label ABOVE control ------------------------------------------- */
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 9px; margin: 13px 0; }

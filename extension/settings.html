@@ -228,98 +228,96 @@
           <div class="card-head">
             <h2>Privacy <span class="sub">— redact PII before it reaches a model</span></h2>
           </div>
-          <p class="muted">
-            Reversible redaction replaces sensitive values with opaque placeholders
-            (e.g. <code>[[EMAIL_1]]</code>) before anything reaches a model, then
-            restores them in the reply you see. <strong>Deterministic</strong>
-            catches structured secrets — emails, phones, cards, keys, IPs — plus
-            your dictionary. <strong>Model detection</strong> (Pro) also
-            auto-catches names, orgs &amp; locations
-            (<code>[[PERSON_1]]</code>, <code>[[LOCATION_1]]</code>) — no dictionary
-            needed.
-          </p>
-          <div class="row"><label>Redaction</label>
-            <select id="priv-mode">
-              <option value="off">Off</option>
-              <option value="deterministic">On — patterns + dictionary</option>
-              <option value="model">On — + AI detection (Pro)</option>
-            </select>
-          </div>
-          <div class="row"><label>Redact for</label>
-            <select id="priv-applyto">
-              <option value="all">All chat models</option>
-              <option value="remote">Remote models only (skip local)</option>
-            </select>
-          </div>
-          <p class="muted" style="margin:2px 0 0">A local model (a <code>localhost</code> endpoint — Ollama / llama.cpp)
-            keeps your data on-device, so <strong>Remote only</strong> skips redaction for it and redacts just for cloud
-            models &amp; CLI agents.</p>
-          <div id="priv-detection" class="hidden">
-            <div class="row"><label>Detector</label>
-              <select id="priv-det-backend">
-                <option value="off">Off</option>
-                <option value="endpoint">Local NER service (spaCy / Presidio)</option>
-                <option value="agent">A configured API / Agent…</option>
-              </select>
+          <p class="muted">Sensitive values are replaced before anything reaches a model, then restored in the reply you
+            see. <strong>Patterns</strong> catch structured secrets (emails, phones, cards, keys, IPs) + your dictionary;
+            <strong>AI detection</strong> (Pro) adds names, orgs &amp; locations.</p>
+          <div class="priv-grid">
+            <div class="priv-col">
+              <h3 class="priv-h">Redaction</h3>
+              <div class="row"><label>Mode</label>
+                <select id="priv-mode">
+                  <option value="off">Off</option>
+                  <option value="deterministic">On — patterns + dictionary</option>
+                  <option value="model">On — + AI detection (Pro)</option>
+                </select>
+              </div>
+              <div class="row"><label>Redact for</label>
+                <select id="priv-applyto">
+                  <option value="all">All chat models</option>
+                  <option value="remote">Remote models only (skip local)</option>
+                </select>
+              </div>
+              <p class="muted sm">A <code>localhost</code> model keeps data on-device, so <strong>Remote only</strong>
+                skips redaction for it and redacts just for cloud models &amp; CLI agents.</p>
+              <div id="priv-detection" class="hidden">
+                <h3 class="priv-h">Detection</h3>
+                <div class="row"><label>Detector</label>
+                  <select id="priv-det-backend">
+                    <option value="off">Off</option>
+                    <option value="endpoint">Local NER service (spaCy / Presidio)</option>
+                    <option value="agent">A configured API / Agent…</option>
+                  </select>
+                </div>
+                <div class="row" id="priv-det-target-row"><label>API / Agent</label>
+                  <input id="priv-det-target" placeholder="Search APIs / agents" autocomplete="off" />
+                </div>
+                <div class="row" id="priv-det-tmodel-row"><label>Model</label>
+                  <input id="priv-det-tmodel" placeholder="Search or type a model id" autocomplete="off" />
+                </div>
+                <div class="row" id="priv-det-url-row"><label>Detector URL</label><input id="priv-det-url"
+                    placeholder="http://127.0.0.1:9009/ner" /></div>
+                <div class="row"><label>Timeout (ms)</label><input id="priv-det-timeout" type="number" min="200"
+                    max="10000" placeholder="1500" /></div>
+                <p class="muted sm">Redact these types <span class="sub">(emails &amp; phones always redact)</span>:</p>
+                <label class="check"><input type="checkbox" id="priv-det-person" /> People (names)</label>
+                <label class="check"><input type="checkbox" id="priv-det-org" /> Organizations</label>
+                <label class="check"><input type="checkbox" id="priv-det-location" /> Locations (cities, places)</label>
+                <label class="check"><input type="checkbox" id="priv-det-number" /> Numbers &amp; IDs</label>
+                <p class="muted sm" id="priv-det-agent-note">Detection runs on <strong>every message</strong> — keep it
+                  <strong>fast &amp; local</strong> (a NER service or local LLM). Your text reaches the detector, so a cloud
+                  API/agent would see it; CLI agents are slow &amp; unreliable here. NER contract: POST
+                  <code>{"text"}</code> → <code>{"entities":[{value,type}]}</code>.</p>
+              </div>
+              <h3 class="priv-h">Dictionary</h3>
+              <div class="field">
+                <label class="sub"><code>=&gt; LABEL</code> redacts reversibly (<code>John =&gt; PERSON</code> → model sees
+                  <code>[[PERSON_1]]</code>, you still see "John"). <code>-&gt; alias</code> pseudonymizes permanently
+                  (<code>John -&gt; Alex</code> → both see "Alex"). A plain term or <code>/regex/flags</code> also works.</label>
+                <textarea id="priv-dictionary" rows="5"
+                  placeholder="John => PERSON&#10;Acme Corp -> Globex&#10;/EMP-\d+/ => TICKET"></textarea>
+              </div>
             </div>
-            <div class="row" id="priv-det-target-row"><label>API / Agent</label>
-              <input id="priv-det-target" placeholder="Search APIs / agents" autocomplete="off" />
+            <div class="priv-col">
+              <h3 class="priv-h">Scope</h3>
+              <p class="muted sm" style="margin-bottom:2px">Apply to:</p>
+              <label class="check"><input type="checkbox" id="priv-scope-chat" /> Chat messages</label>
+              <label class="check"><input type="checkbox" id="priv-scope-context" /> Page &amp; meeting context</label>
+              <label class="check"><input type="checkbox" id="priv-scope-history" /> History search results</label>
+              <label class="check"><input type="checkbox" id="priv-scope-tools" /> Tool results</label>
+              <div class="row" style="margin-top:8px"><label>Tools receive</label>
+                <select id="priv-tooldata">
+                  <option value="real">Real values — search &amp; actions work</option>
+                  <option value="redactRemote">Redact remote (MCP) tools</option>
+                </select>
+              </div>
+              <p class="muted sm">Local history/meeting/page tools always get real values; <strong>Real values</strong>
+                also lets MCP tools resolve them (the value reaches that MCP server). <strong>Redact remote</strong> keeps
+                PII off third-party MCP servers.</p>
+              <div id="priv-test" class="field hidden">
+                <h3 class="priv-h">Test</h3>
+                <label class="sub">Paste text to see exactly what the model would receive.</label>
+                <textarea id="priv-det-test-input" rows="3"
+                  placeholder="My name is Jordan Blake, I live in Austin. Email jordan@example.com, phone 234-444-4455."></textarea>
+                <div class="row" style="margin-top:6px"><label></label>
+                  <button type="button" id="priv-det-test" class="btn">Test redaction</button>
+                </div>
+                <p class="muted sm" id="priv-det-test-out" style="margin:4px 0 0"></p>
+              </div>
             </div>
-            <div class="row" id="priv-det-tmodel-row"><label>Model</label>
-              <input id="priv-det-tmodel" placeholder="Search or type a model id" autocomplete="off" />
-            </div>
-            <div class="row" id="priv-det-url-row"><label>Detector URL</label><input id="priv-det-url"
-                placeholder="http://127.0.0.1:9009/ner" /></div>
-            <div class="row"><label>Timeout (ms)</label><input id="priv-det-timeout" type="number" min="200" max="10000"
-                placeholder="1500" /></div>
-            <p class="muted" id="priv-det-agent-note">Detection runs on <strong>every message</strong>, so it needs to be
-              <strong>fast and local</strong> — a NER service or a configured local LLM (e.g. Ollama) is ideal, and your
-              text stays on your machine. CLI agents (Claude Code / Codex) are slow to cold-start and tend to reply with
-              prose instead of JSON, so they're not recommended as detectors.</p>
-            <p class="muted" style="margin:8px 0 2px">Redact these detected types <span class="sub">(emails &amp; phones
-                always redact)</span>:</p>
-            <label class="check"><input type="checkbox" id="priv-det-person" /> People (names)</label>
-            <label class="check"><input type="checkbox" id="priv-det-org" /> Organizations</label>
-            <label class="check"><input type="checkbox" id="priv-det-location" /> Locations (cities, places)</label>
-            <label class="check"><input type="checkbox" id="priv-det-number" /> Numbers &amp; IDs</label>
-            <p class="muted">Runs locally — text reaches the detector but never the final agent; if it's slow or down,
-              redaction falls back to deterministic only. A NER service should accept <code>{ "text": "…" }</code> and return
-              <code>{ "entities": [{ "value", "type" }] }</code> (spaCy <code>{ "ents": [{ "text", "label" }] }</code> is also
-              accepted).</p>
           </div>
-          <p class="muted" style="margin-bottom:4px">Apply to:</p>
-          <label class="check"><input type="checkbox" id="priv-scope-chat" /> Chat messages</label>
-          <label class="check"><input type="checkbox" id="priv-scope-context" /> Page &amp; meeting context</label>
-          <label class="check"><input type="checkbox" id="priv-scope-history" /> History search results</label>
-          <label class="check"><input type="checkbox" id="priv-scope-tools" /> Tool results</label>
-          <div class="row" style="margin-top:8px"><label>Tools receive</label>
-            <select id="priv-tooldata">
-              <option value="real">Real values — search &amp; actions work</option>
-              <option value="redactRemote">Redact remote (MCP) tools</option>
-            </select>
-          </div>
-          <p class="muted">Local history/meeting/page tools always get real values. <strong>Real values</strong> also lets MCP tools resolve them (e.g. a maps lookup for "Austin → Dallas" works) — at the cost of that value reaching the MCP server. <strong>Redact remote</strong> keeps PII off third-party MCP servers (remote lookups of redacted entities won't resolve).</p>
-          <div class="field" style="margin-top:10px">
-            <label>Custom dictionary <span class="sub">— one per line. <code>=> LABEL</code> redacts reversibly
-                (<code>John => PERSON</code> → model sees <code>[[PERSON_1]]</code>, you still see "John").
-                <code>-> alias</code> pseudonymizes permanently (<code>John -> Alex</code> → you and the model both see
-                "Alex", never reversed). A plain term or <code>/regex/flags</code> also works.</span></label>
-            <textarea id="priv-dictionary" rows="6"
-              placeholder="John => PERSON&#10;Acme Corp -> Globex&#10;/EMP-\d+/ => TICKET"></textarea>
-          </div>
-          <div id="priv-test" class="field" style="margin-top:10px">
-            <label>Test redaction <span class="sub">— paste text to see exactly what the model would receive</span></label>
-            <textarea id="priv-det-test-input" rows="2"
-              placeholder="My name is Jordan Blake, I live in Austin. Email jordan@example.com, phone 234-444-4455."></textarea>
-            <div class="row" style="margin-top:6px"><label></label>
-              <button type="button" id="priv-det-test" class="btn">Test redaction</button>
-            </div>
-            <p class="muted" id="priv-det-test-out" style="margin:4px 0 0"></p>
-          </div>
-          <p class="muted" id="priv-pro-note">⭐ <strong>Pro</strong> unlocks name/org redaction,
-            page/meeting/history/tool-result scope, an unlimited dictionary, and local-model detection. Free covers secrets
-            (emails, keys, cards, phones) in chat.</p>
-          <p class="muted">Configurable per-stage detection &amp; render-back models are coming next.</p>
+          <p class="muted sm" id="priv-pro-note">⭐ <strong>Pro</strong> unlocks name/org redaction, page/meeting/history /
+            tool-result scope, an unlimited dictionary, and local-model detection. Free covers secrets (emails, keys,
+            cards, phones) in chat.</p>
         </div>
       </section>
 
