@@ -723,14 +723,31 @@ async function detectForChat(sample, cfg, settings, signal, { strict = false } =
   if (!target) { if (strict) throw new Error('No API / agent selected for the detector'); return []; }
   const capped = String(sample || '').slice(0, det.maxChars || 8000);
   if (capped.trim().length < 8) return [];
+  // The instruction goes in BOTH the system prompt and the user turn: agentic CLIs
+  // (Claude Code / Codex) often only *append* a custom system prompt, so the inline
+  // copy makes them far likelier to emit the JSON we parse.
+  const prompt = `${EXTRACT_SYS}\n\nText to analyze:\n"""\n${capped}\n"""\n\nRespond with ONLY the JSON object.`;
+  let text = '';
   try {
     const out = await withTimeout(dispatchStream({
       agent: { ...target, systemPrompt: EXTRACT_SYS, temperature: 0, maxTokens: det.maxTokens || 256, model: det.model || target.model },
-      messages: [{ role: 'user', content: capped }],
+      messages: [{ role: 'user', content: prompt }],
       settings, signal,
-    }), det.timeoutMs || (target.kind === 'bridge' ? 8000 : 4000), signal);
-    return normalizeEntities(parseJsonLoose(typeof out === 'string' ? out : (out && out.text) || ''), det.types);
+    }), det.timeoutMs || (target.kind === 'bridge' ? 20000 : 4000), signal);
+    text = typeof out === 'string' ? out : (out && out.text) || '';
   } catch (e) { if (strict) throw e; return []; }
+  const parsed = parseJsonLoose(text);
+  if (!parsed) {
+    // Distinguish "replied but not JSON" (common with CLI agents) from "empty" so the
+    // Test button can say something useful instead of a misleading "no entities".
+    if (strict) {
+      throw new Error(text.trim()
+        ? 'the model replied but not as JSON — CLI agents (Claude Code / Codex) tend to add prose; a local NER service or a small local LLM is more reliable for detection'
+        : 'the model returned an empty response');
+    }
+    return [];
+  }
+  return normalizeEntities(parsed, det.types);
 }
 
 // Settings-page helper: run the detector once over a sample → its spans (or throw).
@@ -739,7 +756,7 @@ export async function runDetectorTest(settings, sample) {
   const base = (settings && settings.ui && settings.ui.piiRedaction) || {};
   // strict = surface errors so the button can show them; generous timeout so a cold
   // local model / CLI isn't misreported as "no entities".
-  const cfg = { ...base, detection: { ...(base.detection || {}), timeoutMs: Math.max(Number(base.detection && base.detection.timeoutMs) || 0, 15000) } };
+  const cfg = { ...base, detection: { ...(base.detection || {}), timeoutMs: Math.max(Number(base.detection && base.detection.timeoutMs) || 0, 30000) } };
   return detectForChat(String(sample || ''), cfg, settings, undefined, { strict: true });
 }
 

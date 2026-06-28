@@ -264,10 +264,10 @@
               </select>
             </div>
             <div class="row" id="priv-det-target-row"><label>API / Agent</label>
-              <select id="priv-det-target"></select>
+              <input id="priv-det-target" placeholder="Search APIs / agents" autocomplete="off" />
             </div>
             <div class="row" id="priv-det-tmodel-row"><label>Model</label>
-              <select id="priv-det-tmodel"></select>
+              <input id="priv-det-tmodel" placeholder="Search or type a model id" autocomplete="off" />
             </div>
             <div class="row" id="priv-det-url-row"><label>Detector URL</label><input id="priv-det-url"
                 placeholder="http://127.0.0.1:9009/ner  ·  or LLM base http://127.0.0.1:8080" /></div>
@@ -284,8 +284,10 @@
               <button type="button" id="priv-det-test" class="btn">Test detector</button>
             </div>
             <p class="muted" id="priv-det-test-out" style="margin:4px 0 0"></p>
-            <p class="muted" id="priv-det-agent-note">The detector reads your text to find names, so pick a
-              <strong>local</strong> model — that text reaches the detector. A cloud API/agent would receive it too.</p>
+            <p class="muted" id="priv-det-agent-note">Detection runs on <strong>every message</strong>, so it needs to be
+              <strong>fast and local</strong> — a NER service or a small local LLM (e.g. Ollama) is ideal, and your text
+              stays on your machine. CLI agents (Claude Code / Codex) are slow to cold-start and tend to reply with prose
+              instead of JSON, so they're not recommended as detectors.</p>
             <p class="muted" style="margin:8px 0 2px">Redact these detected types <span class="sub">(emails &amp; phones
                 always redact)</span>:</p>
             <label class="check"><input type="checkbox" id="priv-det-person" /> People (names)</label>

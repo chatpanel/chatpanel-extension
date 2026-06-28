@@ -1726,44 +1726,38 @@ function renderPrefs() {
 
 // Privacy → detector: the 'agent' backend reuses a CONFIGURED API/agent + a model
 // from it (so you don't re-type a URL, and can point detection at a model you trust).
+// Map the searchable target field (shows the friendly name) back to a target id.
+function detTargetId() {
+  const name = (($('priv-det-target') && $('priv-det-target').value) || '').trim();
+  const t = skillTargets().find((x) => x.name === name);
+  return t ? t.id : '';
+}
+
 function populateDetTargets(selectedId) {
-  const sel = $('priv-det-target');
-  if (!sel) return;
+  const input = $('priv-det-target');
+  if (!input) return;
   const targets = skillTargets();
-  sel.innerHTML = targets.length ? '' : '<option value="">No APIs / agents configured</option>';
-  for (const t of targets) {
-    const o = document.createElement('option');
-    o.value = t.id; o.textContent = t.name;
-    if (t.id === selectedId) o.selected = true;
-    sel.appendChild(o);
-  }
+  const sel = targets.find((t) => t.id === selectedId);
+  wireCombobox(input, targets.map((t) => t.name), sel ? sel.name : (input.value || ''),
+    targets.length ? 'Search APIs / agents' : 'No APIs / agents configured');
 }
 
 async function populateDetModels(targetId, selectedModel) {
-  const sel = $('priv-det-tmodel');
-  if (!sel) return;
-  const opt = (m) => {
-    const o = document.createElement('option');
-    o.value = m; o.textContent = m || 'Default model';
-    if (m === (selectedModel || '')) o.selected = true;
-    return o;
-  };
-  sel.innerHTML = '';
-  sel.appendChild(opt(''));                      // "Default model"
-  if (selectedModel) sel.appendChild(opt(selectedModel)); // keep current until the list loads
+  const input = $('priv-det-tmodel');
+  if (!input) return;
+  // Searchable, like every other model picker. Show the current value immediately,
+  // then enrich with the target's model list once it loads (empty = target default).
+  wireCombobox(input, selectedModel ? [selectedModel] : [], selectedModel || input.value || '', 'Search or type a model id');
   const ep = (settings.endpoints || []).find((e) => e.id === targetId);
   const ag = (settings.agents || []).find((a) => a.id === targetId);
   try {
     let ids = [];
     if (ep) ids = (await listModelOptions(ep) || []).map((m) => (typeof m === 'string' ? m : m.id)).filter(Boolean);
     else if (ag) ids = (await listBridgeModels(ag, settings) || []).map((m) => (typeof m === 'string' ? m : (m.id || m.name))).filter(Boolean);
-    if (ids.length) {
-      sel.innerHTML = '';
-      sel.appendChild(opt(''));
-      for (const id of ids) sel.appendChild(opt(id));
-      if (selectedModel && !ids.includes(selectedModel)) sel.appendChild(opt(selectedModel));
-    }
-  } catch { /* leave the default + current model option */ }
+    const cur = input.value || selectedModel || '';
+    if (cur && !ids.includes(cur)) ids = [cur, ...ids];
+    wireCombobox(input, ids, cur, ids.length ? 'Search or type a model id' : 'Type a model id');
+  } catch { /* keep the current value */ }
 }
 
 function updateDetVis() {
@@ -1834,7 +1828,7 @@ async function savePrefs() {
       ...(settings.ui.piiRedaction?.detection || {}),
       backend: $('priv-det-backend').value,
       url: $('priv-det-url').value.trim(),
-      targetId: $('priv-det-target').value,
+      targetId: detTargetId(),
       model: ($('priv-det-backend').value === 'agent' ? $('priv-det-tmodel').value : $('priv-det-model').value).trim(),
       timeoutMs: Number($('priv-det-timeout').value) || 1500,
       types: {
@@ -2119,7 +2113,7 @@ function wire() {
   $('priv-dictionary').onchange = savePrefs;
   $('priv-det-backend').onchange = () => { savePrefs(); renderPrefs(); };
   $('priv-det-url').onchange = savePrefs;
-  $('priv-det-target').onchange = () => { populateDetModels($('priv-det-target').value, ''); savePrefs(); };
+  $('priv-det-target').onchange = () => { populateDetModels(detTargetId(), ''); savePrefs(); };
   $('priv-det-tmodel').onchange = savePrefs;
   $('priv-det-test').onclick = testDetector;
   $('priv-det-model').onchange = savePrefs;
