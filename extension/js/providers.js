@@ -812,7 +812,7 @@ export async function previewRedaction(settings, sample) {
 // a chosen chat model, capturing every stage for the flow visual — what's detected,
 // what the model SEES (redacted), its raw reply, and what YOU see (restored). Tools
 // (local + MCP) would receive the real `spans` values; the flow shows that statically.
-export async function traceFlow(settings, targetId, prompt, { signal } = {}) {
+export async function traceFlow(settings, targetId, prompt, { tools, signal } = {}) {
   const cfg = (settings && settings.ui && settings.ui.piiRedaction) || {};
   const tier = cfg.mode === 'model' ? 'full' : 'basic';
   const text = String(prompt || '');
@@ -826,6 +826,34 @@ export async function traceFlow(settings, targetId, prompt, { signal } = {}) {
     ...[...vault.aliases].map(([alias, value]) => ({ token: alias, value, kind: 'alias' })),
   ];
   const target = resolveTarget(getTarget(settings, targetId), settings);
+  // Wrap the toolset so each call is TRACED and redaction is applied exactly like a
+  // real turn: restore the model's token args before the tool runs, then re-redact
+  // the result before it goes back to the model.
+  const toolTrace = [];
+  let tracedTools;
+  if (tools && typeof tools.execute === 'function') {
+    const base = tools.execute.bind(tools);
+    const ctx = { vault, cfg: { ...cfg, tier }, isPro: true, entities: detected };
+    tracedTools = {
+      ...tools,
+      execute: async (name, input, meta) => {
+        const realArgs = restoreDeep(input, vault);
+        const row = { name, modelArgs: input, realArgs, result: '', modelResult: '', error: null };
+        let out;
+        try {
+          const raw = await base(name, realArgs, meta);
+          out = redactResult(raw, ctx);
+          row.result = stepResultText(raw);
+          row.modelResult = stepResultText(out);
+        } catch (e) {
+          row.error = (e && e.message) || 'tool error';
+          out = `Tool error: ${row.error}`;
+        }
+        toolTrace.push(row);
+        return out;
+      },
+    };
+  }
   let modelRaw = '';
   let error = null;
   if (!target) {
@@ -833,15 +861,15 @@ export async function traceFlow(settings, targetId, prompt, { signal } = {}) {
   } else {
     try {
       const out = await dispatchStream({
-        agent: { ...target, systemPrompt: target.systemPrompt || '' },
+        agent: { ...target, systemPrompt: combineSystemPrompt(target.systemPrompt, tracedTools && tracedTools.system) },
         messages: [{ role: 'user', content: modelSees }],
-        settings, signal,
+        settings, signal, tools: tracedTools,
       });
       modelRaw = typeof out === 'string' ? out : (out && out.text) || '';
     } catch (e) { error = (e && e.message) || 'model call failed'; }
   }
   const youSee = restoreText(modelRaw, vault);
-  return { input: text, detected, modelSees, spans, modelRaw, youSee, error };
+  return { input: text, detected, modelSees, spans, toolTrace, modelRaw, youSee, error };
 }
 
 // Public entry. When `redaction` ({ vault, cfg, isPro, entities }) is enabled, it

@@ -7,6 +7,9 @@
 import { getSettings, saveSettings, uid, exportDataArchive, importAllData, resetSkillsToDefaults } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
 import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, previewRedaction, traceFlow } from './js/providers.js';
+import { buildToolset } from './js/toolset.js';
+import { getMcpProviders } from './js/mcp-manager.js';
+import { historyToolProvider } from './js/history-rag.js';
 import {
   applyOAuthPreset,
   connectOAuthEndpoint,
@@ -1791,7 +1794,8 @@ function populateFlowModel() {
 }
 
 function flowCard(n, title, bodyHtml, cls = '') {
-  return `<div class="flow-card ${cls}"><div class="flow-card-h"><span class="flow-n">${n}</span>${escapeHtml(title)}</div><div class="flow-card-b">${bodyHtml}</div></div>`;
+  const badge = n ? `<span class="flow-n">${escapeHtml(String(n))}</span>` : '';
+  return `<div class="flow-card ${cls}"><div class="flow-card-h">${badge}${escapeHtml(title)}</div><div class="flow-card-b">${bodyHtml}</div></div>`;
 }
 
 function renderFlow(t, withModel) {
@@ -1807,6 +1811,15 @@ function renderFlow(t, withModel) {
     ? t.spans.map((s) => `<div class="flow-map"><code>${esc(s.token)}</code> → <b>${esc(s.value)}</b>${s.kind === 'alias' ? ' <em>(pseudonym)</em>' : ''}</div>`).join('')
     : '<span class="muted sm">Nothing replaced.</span>';
   cards.push(flowCard(4, 'Tools receive', `<div class="muted sm">Local search &amp; MCP tools get the real values:</div>${maps}`, 'flow-tools'));
+  // Actual tool calls the model made this run (real args in, re-redacted result out).
+  (t.toolTrace || []).forEach((tt) => {
+    const body = tt.error
+      ? `<span class="flow-err">✕ ${esc(tt.error)}</span>`
+      : `<div class="flow-map">args → tool: <code>${esc(JSON.stringify(tt.realArgs))}</code></div>`
+        + '<div class="muted sm" style="margin-top:5px">result → model:</div>'
+        + `<div class="flow-text">${esc(tt.modelResult) || '<span class="muted sm">(empty)</span>'}</div>`;
+    cards.push(flowCard('', `🔧 ${tt.name}`, body, 'flow-tools'));
+  });
   if (withModel) {
     const reply = t.error
       ? `<span class="flow-err">✕ ${esc(t.error)}</span>`
@@ -1833,15 +1846,42 @@ async function previewFlow() {
   }
 }
 
+// Build the same toolset a real turn exposes — local history tools + every enabled
+// MCP server — so the flow test actually lets the model call tools.
+async function buildHarnessTools() {
+  const providers = [];
+  if (settings.ui?.historyTools !== false) {
+    providers.push(historyToolProvider({ includeMeetings: true, explicit: false }));
+  }
+  const usable = (settings.mcpServers || []).filter((s) => s && s.enabled !== false && (s.url || s.command));
+  if (usable.length) {
+    let bridgeOk = false;
+    try { const h = await checkBridge(settings.bridgeUrl); bridgeOk = !!(h && h.ok); } catch { /* bridge down */ }
+    try {
+      const mcps = await getMcpProviders(usable, { bridgeUrl: settings.bridgeUrl, bridgeAvailable: bridgeOk, onError: () => {} });
+      providers.push(...mcps);
+    } catch { /* MCP unavailable — run without it */ }
+  }
+  return buildToolset(providers);
+}
+
 async function runFlow() {
   const status = $('priv-flow-status');
-  if (status) status.textContent = 'Running…';
+  if (status) status.textContent = 'Loading tools…';
   await savePrefs();
   const sample = (($('priv-flow-input') && $('priv-flow-input').value) || '').trim() || FLOW_SAMPLE;
   try {
-    const t = await traceFlow(settings, flowTargetId(), sample);
+    const tools = await buildHarnessTools();
+    const toolCount = (tools && tools.specs && tools.specs.length) || 0;
+    if (status) status.textContent = `Running with ${toolCount} tool${toolCount === 1 ? '' : 's'}…`;
+    const t = await traceFlow(settings, flowTargetId(), sample, { tools });
     renderFlow(t, true);
-    if (status) status.textContent = t.error ? `model: ✕ ${t.error}` : `${t.spans.length} replaced · model replied`;
+    const tc = (t.toolTrace || []).length;
+    if (status) {
+      status.textContent = t.error
+        ? `model: ✕ ${t.error}`
+        : `${t.spans.length} replaced · ${toolCount} tool${toolCount === 1 ? '' : 's'} available · ${tc} call${tc === 1 ? '' : 's'} made`;
+    }
   } catch (e) {
     if (status) status.textContent = `✕ ${(e && e.message) || 'run failed'}`;
   }
