@@ -20,6 +20,14 @@
 
 const TOKEN_RE = /\[\[([A-Z][A-Z0-9]*)_(\d+)\]\]/g;
 
+// Bracket-TOLERANT match of the same token. Smaller models routinely drop or mangle
+// the [[ ]] when echoing a placeholder into tool-call JSON — e.g. they emit "ORG_1"
+// or "[ORG_1]" instead of "[[ORG_1]]" — which the strict TOKEN_RE misses, leaving
+// the tool to search the literal "ORG_1" (and get nothing). We match 0–2 brackets
+// on each side and reconstruct the canonical token to look up; only ACTUAL vault
+// tokens are swapped, so a coincidental "ABC_1" that isn't ours is left untouched.
+const TOLERANT_TOKEN_RE = /\[{0,2}([A-Z][A-Z0-9]*_\d+)\]{0,2}/g;
+
 // A vault is the per-conversation mapping between placeholders and originals. Keep
 // one per conversation so PERSON_1 means the same entity across turns.
 export function createVault() {
@@ -168,7 +176,10 @@ export function redactText(text, vault, {
 // Swap placeholders back to their originals. Unknown tokens are left untouched.
 export function restoreText(text, vault) {
   if (text == null || !vault) return text;
-  return String(text).replace(TOKEN_RE, (m) => (vault.byToken.has(m) ? vault.byToken.get(m) : m));
+  return String(text).replace(TOLERANT_TOKEN_RE, (m, inner) => {
+    const canonical = `[[${inner}]]`;
+    return vault.byToken.has(canonical) ? vault.byToken.get(canonical) : m;
+  });
 }
 
 // Restore for LOCAL use only — e.g. tool-call args that hit on-device history /

@@ -66,6 +66,7 @@ import {
 } from './js/history-context.js';
 import {
   MCP_TURN_MODES,
+  DEFAULT_AUTO_TOOL_CAP,
   cancelledToolResult,
   normalizeMcpTurnMode,
   shouldExposeMcpForTurn,
@@ -289,11 +290,15 @@ async function toolsetFor(
     providers.push(...mcps);
   }
   let toolset = buildToolset(providers);
-  // Cap tools per turn so dozens of enabled MCP tools don't bloat the prompt / slow
-  // the model. Local page/history tools are always kept; remote MCP tools beyond the
-  // cap are dropped by lexical relevance to this turn's message. 0 = no limit.
-  const maxTools = Number(state.settings?.ui?.maxToolsPerTurn) || 0;
-  if (toolset && maxTools) toolset = narrowToolset(toolset, userText, { cap: maxTools, keep: isLocalToolSpec });
+  // Cap MCP tools per turn so dozens of enabled servers don't bloat the prompt /
+  // slow the model. Local page/history tools are always kept; remote MCP tools
+  // beyond the cap are dropped by lexical relevance to this turn's message.
+  //   AUTO → narrow to the top-K relevant by default (the point of "auto").
+  //   ON   → arm everything, unless the user set an explicit ui.maxToolsPerTurn.
+  // A user-set ui.maxToolsPerTurn always wins.
+  const userCap = Number(state.settings?.ui?.maxToolsPerTurn) || 0;
+  const cap = userCap || (turnMcpMode === MCP_TURN_MODES.AUTO ? DEFAULT_AUTO_TOOL_CAP : 0);
+  if (toolset && cap) toolset = narrowToolset(toolset, userText, { cap, keep: isLocalToolSpec });
   const systemSkillRun =
     turnMcpMode === MCP_TURN_MODES.ON && skillRun
       ? { ...skillRun, mcp: { mode: 'default', serverIds: [] } }
@@ -2090,9 +2095,9 @@ function renderMcpToolsBtn() {
   if (!btn) return;
   const mode = mcpToolsMode();
   const titles = {
-    [MCP_TURN_MODES.AUTO]: 'MCP tools: Auto — only skills configured for MCP can use them',
+    [MCP_TURN_MODES.AUTO]: `MCP tools: Auto — arm only the ${DEFAULT_AUTO_TOOL_CAP} most relevant tools per message (faster)`,
     [MCP_TURN_MODES.OFF]: 'MCP tools: Off — never expose MCP tools for chat turns',
-    [MCP_TURN_MODES.ON]: 'MCP tools: On — expose enabled MCP servers for chat turns',
+    [MCP_TURN_MODES.ON]: 'MCP tools: On — expose all enabled MCP tools for chat turns',
   };
   btn.dataset.mode = mode;
   btn.classList.toggle('active', mode === MCP_TURN_MODES.ON);

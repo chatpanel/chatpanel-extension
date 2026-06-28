@@ -12,6 +12,9 @@
   "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "icons": "node tools/make-icons.mjs",
+    "sync:pii": "node tools/sync-pii.mjs",
+    "test:pii-sync": "node tools/sync-pii.mjs --check",
+    "prepackage": "node tools/sync-pii.mjs",
     "package": "node tools/package-extension.mjs",
     "test": "node tools/run-tests.mjs",
     "test:all": "node tools/run-tests.mjs",
@@ -52,5 +55,8 @@
     "test:mcp-registry": "node tools/test-mcp-registry.mjs",
     "test:mcp-discovery": "node tools/test-mcp-discovery.mjs",
     "test:mcp-config-import": "node tools/test-mcp-config-import.mjs"
+  },
+  "devDependencies": {
+    "@chatpanel/pii": "file:../chatpanel-pii"
   }
 }

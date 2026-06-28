@@ -22,6 +22,7 @@
           <button class="tab" data-tab="meetings"><span class="tab-ico">🗓</span> Meetings</button>
           <button class="tab" data-tab="history"><span class="tab-ico">💬</span> History</button>
           <button class="tab" data-tab="privacy"><span class="tab-ico">🛡</span> Privacy</button>
+          <button class="tab" data-tab="gateway"><span class="tab-ico">🔐</span> Gateway</button>
           <button class="tab" data-tab="license"><span class="tab-ico">✦</span> Account</button>
         </aside>
         <main class="content">
@@ -327,6 +328,156 @@
           <p class="muted sm" id="priv-pro-note">⭐ <strong>Pro</strong> unlocks name/org redaction, page/meeting/history /
             tool-result scope, an unlimited dictionary, and local-model detection. Free covers secrets (emails, keys,
             cards, phones) in chat.</p>
+        </div>
+      </section>
+
+      <!-- GATEWAY -->
+      <section class="panel hidden" data-panel="gateway">
+        <div class="card">
+          <div class="card-head">
+            <h2>Privacy Gateway <span class="sub">— PII redaction for tools outside the extension</span></h2>
+          </div>
+          <p class="muted">The <strong>ChatPanel Gateway</strong> is a small local process that puts the same
+            redaction in the middle of two CLI agents: point OpenCode / Pi at it and it drives
+            <strong>Codex</strong> or <strong>Claude Code</strong> behind your subscription login (via the bridge),
+            redacting on the way out and restoring in the reply. Configure that gateway from here.</p>
+
+          <div class="row"><label>Gateway URL</label>
+            <input id="gw-url" type="text" placeholder="http://127.0.0.1:4320" />
+            <button type="button" id="gw-check" class="btn">Check</button>
+          </div>
+          <p class="status" id="gw-status">Not connected.</p>
+          <p class="muted sm">Not running yet? Install it with
+            <code>curl -fsSL https://dl.chatpanel.net/gateway/install.sh | bash</code>
+            (or <code>npm i -g @chatpanel/gateway</code> then <code>chatpanel-gateway --install</code>) — it starts at
+            login. Needs the bridge running.</p>
+
+          <div id="gw-config" class="hidden">
+            <div class="gw-flow">
+              <div class="gw-flow-box"><b>CLIENTS</b><span class="muted sm">OpenCode · Pi · aider<br>→ <code>:4320/v1</code></span></div>
+              <div class="gw-flow-arrow">⟶</div>
+              <div class="gw-flow-box gw-flow-mid"><b>CHATPANEL GATEWAY</b><span class="muted sm">redact → route → restore</span></div>
+              <div class="gw-flow-arrow">⟶</div>
+              <div class="gw-flow-box"><b>DESTINATIONS</b><span class="muted sm" id="gw-flow-dests">your APIs &amp; agents</span></div>
+            </div>
+            <div class="priv-grid">
+              <div class="priv-col">
+                <h3 class="priv-h">Redaction</h3>
+                <div class="row"><label>Tier</label>
+                  <select id="gw-tier">
+                    <option value="basic">Patterns (emails, phones, cards, keys, IPs)</option>
+                    <option value="full">+ Names / orgs / locations (Pro)</option>
+                  </select>
+                </div>
+                <label class="check"><input type="checkbox" id="gw-redact-system" /> Redact the system prompt too</label>
+                <div class="row"><label>Detector</label>
+                  <select id="gw-det-backend">
+                    <option value="off">Bundled spaCy NER (automatic)</option>
+                    <option value="endpoint">Custom NER service (URL)</option>
+                    <option value="openai">A model — local LLM (OpenAI-compatible)</option>
+                  </select>
+                </div>
+                <div class="row" id="gw-det-url-row"><label>Detector URL</label>
+                  <input id="gw-det-url" placeholder="NER → …:9009/ner · LLM → …:11434/v1 (NOT the gateway's :4320)" /></div>
+                <div class="row" id="gw-det-model-row"><label>Model</label>
+                  <input id="gw-det-model" placeholder="e.g. llama3.2 / qwen2.5 (LLM detector)" /></div>
+                <div class="row" id="gw-det-key-row"><label>API key</label>
+                  <input id="gw-det-key" type="password" placeholder="optional — only if the detector needs one" /></div>
+                <p class="muted sm">⚠️ The detector sees the <strong>raw</strong> text to find entities — keep it
+                  <strong>local</strong> (bundled NER, a local NER service, or a local LLM). Don't point it at a cloud
+                  model, or your text reaches that provider.</p>
+                <div class="row" style="margin-top:4px">
+                  <button type="button" id="gw-ner-check" class="btn">Check NER health</button>
+                </div>
+                <p class="status" id="gw-ner-status">—</p>
+
+                <h3 class="priv-h">Dictionary</h3>
+                <div class="field">
+                  <label class="sub"><code>=&gt; LABEL</code> redacts reversibly; <code>-&gt; alias</code> pseudonymizes
+                    permanently; a plain term or <code>/regex/flags</code> also works.</label>
+                  <textarea id="gw-dictionary" rows="4"
+                    placeholder="Acme Corp => ORG&#10;Project Atlas -> Project Nimbus&#10;/EMP-\d+/ => TICKET"></textarea>
+                </div>
+
+                <h3 class="priv-h">Tools (auto mode)</h3>
+                <div class="row"><label>Tools receive</label>
+                  <select id="gw-tools-data">
+                    <option value="real">Real values — search &amp; actions work</option>
+                    <option value="redactRemote">Redact remote (MCP) tools</option>
+                  </select>
+                </div>
+                <p class="muted sm">A client's tool runs on the <strong>real</strong> value (so lookups work) — or, for
+                  <strong>remote MCP tools</strong>, keep the redacted token so PII never reaches that third-party server.</p>
+                <label class="check"><input type="checkbox" id="gw-tools-narrow" /> Auto-narrow to the most relevant tools</label>
+                <p class="muted sm">When a client (OpenCode / Pi) sends many MCP tools, forward only the top-K most
+                  relevant to this message — faster, less confused model. Your core tools (bash/read/edit) are always kept.</p>
+                <div class="row" style="margin:4px 0"><label>Max MCP tools / turn</label>
+                  <input id="gw-tools-cap" type="number" min="1" max="64" placeholder="8" style="width:5em" /></div>
+                <details>
+                  <summary class="muted sm">Advanced: narrow ALL tools (not just MCP)</summary>
+                  <label class="check" style="margin-top:6px"><input type="checkbox" id="gw-tools-narrowall" />
+                    Also narrow non-MCP tools — only if your client has no essential core tools</label>
+                </details>
+
+                <h3 class="priv-h">Pro</h3>
+                <div class="row">
+                  <button type="button" id="gw-pro-activate" class="btn">Activate with my ChatPanel Pro</button>
+                  <span class="status" id="gw-pro-status"></span>
+                </div>
+                <p class="muted sm">Free = deterministic redaction + a daily cap. Pro (your existing subscription)
+                  unlocks names/orgs + unlimited — nothing to paste.</p>
+                <details>
+                  <summary class="muted sm">Advanced: paste a token manually</summary>
+                  <div class="row" style="margin-top:6px"><label>Entitlement token</label>
+                    <input id="gw-pro-token" type="password" placeholder="leave blank to use your subscription" /></div>
+                </details>
+                <div class="row"><label>Free cap / day</label>
+                  <input id="gw-free-cap" type="number" min="0" max="100000" placeholder="25" /></div>
+
+                <h3 class="priv-h">Monitoring</h3>
+                <label class="check"><input type="checkbox" id="gw-log" /> Log requests (counts only, no values)</label>
+                <p class="muted sm" id="gw-monitor">—</p>
+                <div class="row" style="margin:4px 0">
+                  <button type="button" id="gw-logs-refresh" class="btn">Recent requests ↻</button>
+                </div>
+                <div id="gw-logs" class="muted sm"></div>
+                <details style="margin-top:8px">
+                  <summary class="muted sm">Advanced: allow a browser app</summary>
+                  <p class="muted sm" style="margin-top:6px">Local CLI tools (OpenCode / Pi) need nothing here — they
+                    just work. Only add a web origin if a <strong>browser app</strong> should call the gateway.</p>
+                  <textarea id="gw-origins" rows="2" placeholder="https://app.example.com"></textarea>
+                </details>
+              </div>
+
+              <div class="priv-col">
+                <h3 class="priv-h">Destinations <span class="sub">— your APIs &amp; agents</span></h3>
+                <p class="muted sm">Pick which configured <strong>APIs</strong> (API tab) and <strong>agents</strong>
+                  (Agents tab) the gateway routes to. Clients select one by its model name via <code>/v1/models</code>.</p>
+                <div class="row" style="margin-bottom:6px">
+                  <button type="button" id="gw-dest-all" class="btn">Select all</button>
+                  <button type="button" id="gw-dest-none" class="btn">Clear</button>
+                </div>
+                <div id="gw-dests"></div>
+              </div>
+            </div>
+            <div class="row" style="margin-top:8px">
+              <button type="button" id="gw-save" class="btn primary">Save to gateway</button>
+              <span class="status" id="gw-save-status"></span>
+            </div>
+
+            <h3 class="priv-h" style="margin-top:14px">Test a prompt <span class="sub">— see the redaction flow end-to-end</span></h3>
+            <p class="muted sm">Sends through the gateway with the same engine + config above: what's detected, what the
+              destination model/agent sees (redacted), and the restored reply you get back.</p>
+            <textarea id="gw-test-input" rows="2" style="width:100%;box-sizing:border-box"
+              placeholder="My name is John, email john@adams.com — who is the president with my name?"></textarea>
+            <div class="row" style="margin-top:6px">
+              <select id="gw-test-model" style="flex:1 1 220px"></select>
+              <button type="button" id="gw-test-run" class="btn primary">Run ▶</button>
+              <button type="button" id="gw-test-preview" class="btn">Preview redaction only</button>
+              <span class="status" id="gw-test-status"></span>
+            </div>
+            <div id="gw-test-out" class="flow-track"></div>
+          </div>
         </div>
       </section>
 

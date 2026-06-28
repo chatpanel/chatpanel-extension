@@ -14,7 +14,9 @@ import { getEntitlementToken } from './license.js';
 import { createAdaptiveToolPolicy, resultText } from './adaptive-tool-policy.js';
 import {
   redactionEnabled, redactionFromSettings, redactOutbound, redactResult, restoreDeep, makeStreamRestorer, restore,
+  redactOpts, gatedScope,
 } from './pii-pipeline.js';
+import { makeToolHarness, placeholderToolNote } from './tool-harness.js';
 import { detectEntities, normalizeEntities, EXTRACT_SYS, parseJsonLoose, withTimeout } from './pii-detect.js';
 import { createVault, redactText, restoreText } from './pii-redact.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
@@ -27,6 +29,13 @@ import { mergeExtraBody, sanitizeExtraHeaders } from './request-options.js';
 // shape) — each click/type/Enter is a step, so these add up fast.
 const MAX_TOOL_STEPS = Number(globalThis.CHATPANEL_MAX_TOOL_STEPS) || 60;
 const MAX_IDENTICAL_TOOL_CALLS = Number(globalThis.CHATPANEL_MAX_IDENTICAL_TOOL_CALLS) || 3;
+// GLOBAL stall breaker: the per-tool guard above blocks a SINGLE repeated call, but
+// a weak model can keep cycling blocked calls across several tools (history_search,
+// discover_tools, …) with the same garbage input, never making progress. After this
+// many consecutive rounds where EVERY tool call was blocked, we stop offering tools
+// so the model is forced to answer with what it has, instead of looping to the step
+// limit. Strong models rarely hit this; weak ones are capped early.
+const MAX_STALLED_ROUNDS = Number(globalThis.CHATPANEL_MAX_STALLED_ROUNDS) || 2;
 
 // Observation/read tools are MEANT to be repeated (read → act → read again, with
 // the SAME empty input) — re-reading after an action is correct, not a loop. They
@@ -80,6 +89,13 @@ const INPUT_PROGRESS_TOOLS = new Set([
   'press_key', 'type_text', 'click_at', 'click_mark', 'draw_path', 'click_element', 'click_by_text',
 ]);
 
+// A tool whose repetition signals a LOOP (search/query/fetch tools), vs one that's
+// meant to repeat (observations, scrolling, typing). Only loopable tools form the
+// round signature, so a legit re-read/scroll never looks like a stalled loop.
+function isLoopableTool(name) {
+  return !OBSERVATION_TOOLS.has(name) && !INPUT_PROGRESS_TOOLS.has(name) && name !== 'scroll';
+}
+
 // Some tools are meant to be called repeatedly. Treat such a call as progress —
 // clearing its repeat count — as long as it isn't a no-op. For scroll, "more page
 // below" (atBottom === false) is progress; once atBottom is true the repeat guard
@@ -105,14 +121,36 @@ function toolMadeProgress(name, result) {
 
 export function createToolLoopGuard({
   maxIdenticalCalls = MAX_IDENTICAL_TOOL_CALLS,
+  maxStalledRounds = MAX_STALLED_ROUNDS,
 } = {}) {
   const counts = new Map();
+  let stalledRounds = 0;
+  let lastSignature = null;
 
   return {
     // No nuclear per-turn kill switch — one looping tool must not disable the rest.
     // The MAX_TOOL_STEPS budget is the overall backstop.
     get disabled() {
       return false;
+    },
+    // After each tool round, note progress. A round makes NO progress when either
+    // every call was blocked OR the round's call-set is byte-identical to the
+    // previous round's (the model re-firing the exact same tools+args — a loop, even
+    // before the per-tool block threshold trips). Enough no-progress rounds in a row
+    // → `stalled`, and the caller stops offering tools so the model must answer.
+    noteRound(blockedCount, total, signature = '') {
+      const allBlocked = total > 0 && blockedCount >= total;
+      const repeatRound = !!signature && signature === lastSignature;
+      lastSignature = signature;
+      // An EXACT-repeat round (same loopable tools+args as last round) is a
+      // definitive loop — bail fast (2 strikes at once → stalls on the 2nd identical
+      // round). All-blocked-but-varying is softer (needs maxStalledRounds rounds).
+      if (repeatRound) stalledRounds += 2;
+      else if (allBlocked) stalledRounds += 1;
+      else stalledRounds = 0;
+    },
+    get stalled() {
+      return stalledRounds >= maxStalledRounds;
     },
     // Clear a call's repeat count when it actually made progress — lets an
     // inherently-repetitive tool (scroll-to-bottom) keep going, while a genuinely
@@ -278,7 +316,7 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
   // One model turn = one streamed completion. Loops only when the model asks to
   // call tools; without tools it runs exactly once (unchanged single-shot path).
   for (let step = 0; step < (tools ? MAX_TOOL_STEPS : 1); step++) {
-    const activeToolSpecs = loopGuard.disabled ? undefined : adaptivePolicy.filterOpenAITools(toolSpecs);
+    const activeToolSpecs = (loopGuard.disabled || loopGuard.stalled) ? undefined : adaptivePolicy.filterOpenAITools(toolSpecs);
     const doFetch = () => {
       const body = mergeExtraBody({
         model: agent.model || 'gpt-4o-mini',
@@ -353,10 +391,12 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
         function: { name: c.name, arguments: c.args },
       })),
     });
+    let blockedThisRound = 0;
     for (const c of wanted) {
       const input = safeJson(c.args);
       onEvent?.({ type: 'tool', name: c.name, phase: 'start', callId: c.id, input });
       const guard = loopGuard.check(c.name, input);
+      if (guard.blocked) blockedThisRound += 1;
       const result = guard.blocked
         ? guard.result
         : await tools.execute(c.name, input, { callId: c.id });
@@ -377,6 +417,8 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
         );
       }
     }
+    const sig = wanted.filter((c) => isLoopableTool(c.name)).map((c) => stableToolCallKey(c.name, safeJson(c.args))).sort().join('|');
+    loopGuard.noteRound(blockedThisRound, wanted.length, sig);
   }
   onEvent?.({ type: 'finish', reason: 'tool-step-limit' });
   return full + (full ? '\n\n' : '') + '_(Reached the action limit for one turn — say "continue" to keep going.)_';
@@ -410,7 +452,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
   let full = '';
 
   for (let step = 0; step < (tools ? MAX_TOOL_STEPS : 1); step++) {
-    const activeToolSpecs = loopGuard.disabled ? undefined : adaptivePolicy.filterAnthropicTools(toolSpecs);
+    const activeToolSpecs = (loopGuard.disabled || loopGuard.stalled) ? undefined : adaptivePolicy.filterAnthropicTools(toolSpecs);
     const body = mergeExtraBody({
       model: agent.model || 'claude-opus-4-8',
       max_tokens: agent.maxTokens || 4096,
@@ -483,10 +525,12 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
         ),
     });
     const results = [];
+    let blockedThisRound = 0;
     for (const b of toolUses) {
       const input = safeJson(b.json);
       onEvent?.({ type: 'tool', name: b.name, phase: 'start', callId: b.id, input });
       const guard = loopGuard.check(b.name, input);
+      if (guard.blocked) blockedThisRound += 1;
       const result = guard.blocked
         ? guard.result
         : await tools.execute(b.name, input, { callId: b.id });
@@ -506,6 +550,8 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
       }
       results.push({ type: 'tool_result', tool_use_id: b.id, content });
     }
+    const sig = toolUses.filter((b) => isLoopableTool(b.name)).map((b) => stableToolCallKey(b.name, safeJson(b.json))).sort().join('|');
+    loopGuard.noteRound(blockedThisRound, toolUses.length, sig);
     msgs.push({ role: 'user', content: results });
   }
   onEvent?.({ type: 'finish', reason: 'tool-step-limit' });
@@ -808,6 +854,16 @@ export async function previewRedaction(settings, sample) {
   return { redacted, spans, detector };
 }
 
+// Minimum wall-clock the LOCAL entity detector (NER / model) gets before we fall
+// open. A fast detector returns in well under a second, so this is just a CEILING
+// — it never adds latency in the common case. But a slow/cold detector that needs
+// several seconds (e.g. first call while a model loads) MUST be allowed to finish:
+// if it times out, the turn silently falls back to dictionary/deterministic-only
+// redaction, which produces PERMANENT pseudonyms the reply-restorer can't undo.
+// The Settings "Test a prompt" harness AND the real chat turn use this same value,
+// so they detect+tokenize+restore identically.
+const DETECT_TIMEOUT_MS = 30000;
+
 // Settings-page helper: run a prompt END-TO-END through the privacy pipeline against
 // a chosen chat model, capturing every stage for the flow visual — what's detected,
 // what the model SEES (redacted), its raw reply, and what YOU see (restored). Tools
@@ -828,7 +884,7 @@ export async function traceFlow(settings, targetId, prompt, { tools, signal } = 
   let spans = [];
   if (!skipped) {
     detected = cfg.mode === 'model'
-      ? await detectForChat(text, { ...cfg, detection: { ...(cfg.detection || {}), timeoutMs: Math.max(Number(cfg.detection && cfg.detection.timeoutMs) || 0, 30000) } }, settings, signal, { strict: true })
+      ? await detectForChat(text, { ...cfg, detection: { ...(cfg.detection || {}), timeoutMs: Math.max(Number(cfg.detection && cfg.detection.timeoutMs) || 0, DETECT_TIMEOUT_MS) } }, settings, signal, { strict: true })
       : [];
     modelSees = redactText(text, vault, { tier, entities: detected, dictionary: cfg.dictionary || [] });
     spans = [
@@ -843,16 +899,26 @@ export async function traceFlow(settings, targetId, prompt, { tools, signal } = 
   let tracedTools;
   if (tools && typeof tools.execute === 'function') {
     const base = tools.execute.bind(tools);
-    const ctx = { vault, cfg: { ...cfg, tier }, isPro: true, entities: detected };
+    // THE shared tool harness — identical to the real chat turn (and the gateway),
+    // so the preview shows EXACTLY what production does. `skipped` (local model /
+    // redaction off) → no vault → pass-through, but tools still ran.
+    const tcfg = { ...cfg, tier };
+    const harness = makeToolHarness({
+      vault: skipped ? null : vault,
+      toolData: cfg.toolData,
+      redactOpts: redactOpts(tcfg, true, detected),
+      redactResults: gatedScope(tcfg, true).toolResults,
+    });
     tracedTools = {
       ...tools,
       execute: async (name, input, meta) => {
-        const realArgs = skipped ? input : restoreDeep(input, vault);
-        const row = { name, modelArgs: input, realArgs, result: '', modelResult: '', error: null };
+        const realArgs = harness.toTool(name, input);
+        const redactedToTool = harness.enabled && cfg.toolData === 'redactRemote' && harness.isRemoteTool(name);
+        const row = { name, modelArgs: input, realArgs, redactedToTool, result: '', modelResult: '', error: null };
         let out;
         try {
           const raw = await base(name, realArgs, meta);
-          out = skipped ? raw : redactResult(raw, ctx);
+          out = harness.toModelResult(name, raw);
           row.result = stepResultText(raw);
           row.modelResult = stepResultText(out);
         } catch (e) {
@@ -870,8 +936,9 @@ export async function traceFlow(settings, targetId, prompt, { tools, signal } = 
     error = 'Pick a model to run the full flow.';
   } else {
     try {
+      const toolNote = (tracedTools && !skipped) ? placeholderToolNote({ toolData: cfg.toolData }) : '';
       const out = await dispatchStream({
-        agent: { ...target, systemPrompt: combineSystemPrompt(target.systemPrompt, tracedTools && tracedTools.system) },
+        agent: { ...target, systemPrompt: combineSystemPrompt(target.systemPrompt, tracedTools && tracedTools.system, toolNote) },
         messages: [{ role: 'user', content: modelSees }],
         settings, signal, tools: tracedTools,
       });
@@ -908,7 +975,11 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
   if (redaction.detect && cfg.mode === 'model') {
     try {
       const sample = (messages || []).map((m) => m.content || '').join('\n');
-      const found = await detectForChat(sample, cfg, settings, signal);
+      // Same detection budget as the Settings "Test a prompt" harness, so the real
+      // chat detects+tokenizes (reversible [[TYPE_n]] → restored) instead of timing
+      // out and falling back to dictionary pseudonyms (permanent, unrestored).
+      const detectCfg = { ...cfg, detection: { ...(cfg.detection || {}), timeoutMs: Math.max(Number(cfg.detection && cfg.detection.timeoutMs) || 0, DETECT_TIMEOUT_MS) } };
+      const found = await detectForChat(sample, detectCfg, settings, signal);
       if (found.length) {
         activeEntities = [...entities, ...found];
         activeCfg = { ...cfg, tier: 'full' };
@@ -920,8 +991,19 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
     } catch { /* fail open */ }
   }
   const ctx = { vault, cfg: activeCfg, isPro: effIsPro, entities: activeEntities };
+  // THE shared tool harness — same one the gateway uses. Owns ② tool args and
+  // ③ result re-redaction so this path can't drift from the others.
+  const harness = makeToolHarness({
+    vault, toolData: activeCfg.toolData,
+    redactOpts: redactOpts(activeCfg, effIsPro, activeEntities),
+    redactResults: gatedScope(activeCfg, effIsPro).toolResults,
+  });
   const red = redactOutbound({ messages, system: agent.systemPrompt, vault, cfg: activeCfg, isPro: effIsPro, entities: activeEntities });
-  const safeAgent = { ...agent, systemPrompt: red.system };
+  // When tools are armed, tell the model placeholders are auto-restored for tools —
+  // so privacy-aware models (Codex/Claude) USE them instead of refusing the lookup.
+  // Appended AFTER redaction so it isn't itself redacted.
+  const systemPrompt = tools ? combineSystemPrompt(red.system, placeholderToolNote({ toolData: activeCfg.toolData })) : red.system;
+  const safeAgent = { ...agent, systemPrompt };
   const restorer = makeStreamRestorer(vault);
   const rawOnDelta = onDelta;
   const wrappedOnDelta = rawOnDelta ? (d) => rawOnDelta(restorer.push(d)) : rawOnDelta;
@@ -935,18 +1017,10 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
     const base = tools.execute.bind(tools);
     safeTools = {
       ...tools,
-      // Local tools (history/meeting/page) ALWAYS get the REAL values — they run
-      // on-device and search/retrieval must work (e.g. Wikipedia for "Gandhi" needs
-      // "Gandhi", not a placeholder). Remote MCP tools get real values too BY DEFAULT
-      // for the same reason — unless the user chose "redact remote tools" (Privacy →
-      // Tools receive), which keeps PII off third-party MCP servers at the cost of
-      // remote lookups on redacted entities. The model is always blinded; results are
-      // re-redacted before going back to it.
-      execute: async (name, input, meta) => {
-        const keepRedacted = activeCfg.toolData === 'redactRemote' && String(name || '').startsWith('mcp_');
-        const toolInput = keepRedacted ? input : restoreDeep(input, vault);
-        return redactResult(await base(name, toolInput, meta), ctx);
-      },
+      // ② tool gets real values (or the redacted token for remote MCP under
+      // "redact remote"); ③ the result is re-redacted before the model sees it.
+      execute: async (name, input, meta) =>
+        harness.toModelResult(name, await base(name, harness.toTool(name, input), meta)),
     };
   }
   const full = await dispatchStream({

@@ -68,13 +68,13 @@ function gatedDictionary(cfg, isPro) {
   return isPro ? d : d.slice(0, FREE_DICT_LIMIT);
 }
 
-function gatedScope(cfg, isPro) {
+export function gatedScope(cfg, isPro) {
   const s = cfg?.scope || {};
   if (isPro) return s;
   return { chat: s.chat !== false, context: false, history: false, toolResults: false };
 }
 
-function redactOpts(cfg, isPro, entities) {
+export function redactOpts(cfg, isPro, entities) {
   return {
     tier: effectiveTier(cfg, isPro),
     entities: entities || [],

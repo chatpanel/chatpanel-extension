@@ -362,3 +362,20 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .feature-list li { font-size: 12.5px; padding: 3.5px 0; color: var(--text); }
 .feature-list li.locked { color: var(--muted); }
 .feature-list li.has { color: var(--ok); }
+
+/* ── Gateway tab: 3-way flow + compact destinations ───────────────────────── */
+.gw-flow { display:flex; align-items:stretch; gap:6px; margin:10px 0 14px; flex-wrap:wrap; }
+.gw-flow-box { flex:1 1 0; min-width:130px; display:flex; flex-direction:column; gap:3px;
+  padding:10px 12px; border:1px solid #262b36; border-radius:10px; background:#171a22; text-align:center; }
+.gw-flow-box b { font-size:11px; letter-spacing:.04em; color:#e8eaed; }
+.gw-flow-mid { background:linear-gradient(135deg,#818cf8,#c084fc); border:none; }
+.gw-flow-mid b, .gw-flow-mid .muted { color:#0b0d12 !important; }
+.gw-flow-arrow { display:flex; align-items:center; color:#9aa1ac; font-size:16px; }
+.gw-dest { display:flex; align-items:center; gap:8px; padding:6px 9px; border:1px solid #262b36;
+  border-radius:8px; margin-bottom:4px; cursor:pointer; }
+.gw-dest:hover { border-color:#3a4150; }
+.gw-dest.off { opacity:.5; cursor:not-allowed; }
+.gw-dest .name { font-weight:600; color:#e8eaed; }
+.gw-dest .chip { font-size:11px; color:#9aa1ac; background:#10131a; border:1px solid #262b36;
+  border-radius:6px; padding:1px 6px; margin-left:4px; }
+.gw-dest .spacer { flex:1; }

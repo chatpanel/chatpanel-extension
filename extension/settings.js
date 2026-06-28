@@ -36,8 +36,12 @@ import { filterComboboxOptions, normalizeComboboxOptions } from './js/combobox.j
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth } from './js/storage-health.js';
+import { checkGateway, getGatewayConfig, getGatewayLogs, setGatewayConfig, normalizeGatewayUrl, parseDictionary, stringifyDictionary } from './js/gateway.js';
+import { createVault, redactText } from './js/pii-redact.js';
+import { detectEntities } from './js/pii-detect.js';
 import {
   getLicense,
+  getEntitlementToken,
   can,
   isPro,
   deactivate,
@@ -93,6 +97,8 @@ async function init() {
   renderSkills();
   renderPrefs();
   renderLicense();
+  wireGateway();
+  renderGateway();
   refreshBridgeState();
   loadMcpRegistry({ reset: true });
 }
@@ -805,6 +811,420 @@ function addEndpoint() {
 function renderBridge() {
   $('bridge-url').value = settings.bridgeUrl || '';
   renderBridgeAgents();
+}
+
+// --------------------------------------------------------------------------
+// Gateway — the ChatPanel Privacy Gateway, configured over its localhost API.
+// The extension stores only the URL; the gateway owns the rest of its config.
+// --------------------------------------------------------------------------
+let gatewayState = { ok: false };
+let gatewayDests = []; // working copy of cfg.destinations for the editor
+
+// Render the destinations list (model → agent/API routing). Each row edits the
+// matching entry in gatewayDests in place.
+// True when an endpoint's baseUrl points at the gateway itself (same host:port) —
+// exposing it would make the gateway forward to itself forever.
+function pointsAtGateway(baseUrl, gwUrl) {
+  try {
+    if (!gwUrl) return false;
+    const norm = (s) => { const u = new URL(/^https?:\/\//.test(s) ? s : `http://${s}`); return `${u.hostname.replace(/^\[|\]$/g, '')}:${u.port || (u.protocol === 'https:' ? '443' : '80')}`; };
+    return norm(baseUrl) === norm(gwUrl);
+  } catch { return false; }
+}
+
+// The destinations ARE the user's already-configured APIs (API tab) + agents
+// (Agents tab) — each a checkbox to expose it through the gateway. No re-typing.
+// Every destination the gateway COULD route to — configured APIs (not the gateway
+// itself) + bridge agents. Used by "Select all".
+function availableDestinations() {
+  const gwUrl = normalizeGatewayUrl($('gw-url').value || settings.gatewayUrl || '');
+  const out = [];
+  for (const ep of (settings.endpoints || []).filter((e) => e && !e.builtin && e.baseUrl)) {
+    if (pointsAtGateway(ep.baseUrl, gwUrl)) continue;
+    out.push({
+      id: ep.name || ep.model || ep.id, type: 'api', baseUrl: ep.baseUrl,
+      protocol: ep.kind === 'anthropic' ? 'anthropic' : 'openai',
+      models: [ep.model].filter(Boolean),
+      ...(ep.apiKey ? { apiKey: ep.apiKey } : {}),
+    });
+  }
+  const agentIds = (bridgeState && bridgeState.agents && bridgeState.agents.length) ? bridgeState.agents.map((a) => a.id) : ['codex', 'claude', 'opencode', 'pi'];
+  for (const a of agentIds) out.push({ id: a, type: 'agent', agent: a, models: [a] });
+  return out;
+}
+
+function renderDestinations() {
+  const host = $('gw-dests');
+  if (!host) return;
+  host.innerHTML = '';
+  const gwUrl = normalizeGatewayUrl($('gw-url').value || settings.gatewayUrl || '');
+
+  const isEnabled = (id) => gatewayDests.some((d) => d.id === id);
+  const flowCount = () => { const el = $('gw-flow-dests'); if (el) el.textContent = gatewayDests.length ? `${gatewayDests.length} enabled` : 'your APIs & agents'; };
+  const toggle = (dest, on) => { gatewayDests = gatewayDests.filter((d) => d.id !== dest.id); if (on) gatewayDests.push(dest); flowCount(); };
+  const checkRow = (icon, name, models, dest, { disabled = false, note = '' } = {}) => {
+    const wrap = document.createElement('label');
+    wrap.className = 'gw-dest' + (disabled ? ' off' : '');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = isEnabled(dest.id); cb.disabled = disabled;
+    cb.onchange = () => toggle(dest, cb.checked);
+    wrap.appendChild(cb);
+    const nm = document.createElement('span'); nm.className = 'name'; nm.textContent = `${icon} ${name}`;
+    wrap.appendChild(nm);
+    for (const m of (models || []).slice(0, 4)) { const c = document.createElement('span'); c.className = 'chip'; c.textContent = m; wrap.appendChild(c); }
+    const sp = document.createElement('span'); sp.className = 'spacer'; wrap.appendChild(sp);
+    if (note) { const n = document.createElement('span'); n.className = 'muted sm'; n.textContent = note; wrap.appendChild(n); }
+    host.appendChild(wrap);
+  };
+  const head = (text) => { const p = document.createElement('p'); p.className = 'muted sm'; p.style.margin = '8px 0 2px'; p.textContent = text; host.appendChild(p); };
+
+  // APIs (from the API tab)
+  head('APIs (from your API tab):');
+  const apis = (settings.endpoints || []).filter((e) => e && !e.builtin && e.baseUrl);
+  if (!apis.length) { const e = document.createElement('p'); e.className = 'muted sm'; e.textContent = '— none configured —'; host.appendChild(e); }
+  for (const ep of apis) {
+    const isGw = pointsAtGateway(ep.baseUrl, gwUrl);
+    const dest = {
+      id: ep.name || ep.model || ep.id,
+      type: 'api',
+      baseUrl: ep.baseUrl,
+      protocol: ep.kind === 'anthropic' ? 'anthropic' : 'openai',
+      models: [ep.model].filter(Boolean),
+      ...(ep.apiKey ? { apiKey: ep.apiKey } : {}),
+    };
+    checkRow('🌐', ep.name || ep.model || ep.id, dest.models, dest,
+      { disabled: isGw, note: isGw ? '(this is the gateway — can’t forward to itself)' : '' });
+  }
+
+  // Agents (via the bridge / your login)
+  head('Agents (via the bridge · your login):');
+  const agentIds = (bridgeState && bridgeState.agents && bridgeState.agents.length)
+    ? bridgeState.agents.map((a) => a.id)
+    : ['codex', 'claude', 'opencode', 'pi'];
+  for (const a of agentIds) {
+    checkRow('🤖', a, [a], { id: a, type: 'agent', agent: a, models: [a] });
+  }
+  flowCount();
+  populateTestModels();
+}
+
+function renderGateway() {
+  $('gw-url').value = settings.gatewayUrl || '';
+  if (settings.gatewayUrl) refreshGateway();
+}
+
+// Build the detector dropdown: bundled NER, custom NER, each configured LOCAL
+// model (cloud ones are flagged — the detector sees raw text), then manual LLM.
+function populateDetectorOptions() {
+  const sel = $('gw-det-backend');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '';
+  const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); };
+  opt('off', 'Bundled spaCy NER (automatic)');
+  opt('endpoint', 'Custom NER service (URL)');
+  for (const ep of (settings.endpoints || []).filter((e) => e && !e.builtin && e.baseUrl)) {
+    const local = /127\.0\.0\.1|localhost|::1/.test(ep.baseUrl);
+    opt(`cfg:${ep.id}`, `${local ? '🟢 local' : '⚠ cloud'} — ${ep.name || ep.model || ep.id}`);
+  }
+  opt('openai', 'Other local LLM (URL + model)');
+  if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+
+function setGwDetectorRows() {
+  const b = $('gw-det-backend').value;
+  const manual = b === 'endpoint' || b === 'openai'; // configured (cfg:*) needs no fields
+  $('gw-det-url-row').classList.toggle('hidden', !manual);
+  $('gw-det-model-row').classList.toggle('hidden', b !== 'openai');
+  $('gw-det-key-row').classList.toggle('hidden', !manual);
+}
+
+function fillGatewayForm(cfg) {
+  gatewayDests = Array.isArray(cfg.destinations) ? cfg.destinations.map((d) => ({ ...d, models: [...(d.models || [])] })) : [];
+  renderDestinations();
+  $('gw-tier').value = cfg.redaction?.tier === 'full' ? 'full' : 'basic';
+  $('gw-redact-system').checked = cfg.redaction?.redactSystem !== false;
+  populateDetectorOptions();
+  const det = cfg.redaction?.detection || { backend: 'off' };
+  let detSel = det.backend || 'off';
+  // If the saved detector matches a configured API (same baseUrl + model), select it.
+  if (det.backend === 'openai' && det.url) {
+    const ep = (settings.endpoints || []).find((e) => e.baseUrl === det.url && (!det.model || e.model === det.model));
+    if (ep) detSel = `cfg:${ep.id}`;
+  }
+  $('gw-det-backend').value = [...$('gw-det-backend').options].some((o) => o.value === detSel) ? detSel : 'off';
+  $('gw-det-url').value = det.url || '';
+  $('gw-det-model').value = det.model || '';
+  $('gw-det-key').value = ''; // write-only; the gateway never echoes the key back
+  $('gw-dictionary').value = stringifyDictionary(cfg.redaction?.dictionary);
+  $('gw-origins').value = (cfg.allowedOrigins || []).join('\n');
+  $('gw-pro-token').value = ''; // write-only; never echoed back from the gateway
+  $('gw-free-cap').value = cfg.pro?.free?.maxRequestsPerDay ?? 25;
+  $('gw-log').checked = !!cfg.logRequests;
+  $('gw-tools-data').value = cfg.tools?.toolData === 'redactRemote' ? 'redactRemote' : 'real';
+  $('gw-tools-narrow').checked = cfg.tools?.autoNarrow !== false;
+  $('gw-tools-cap').value = cfg.tools?.maxPerTurn ?? 8;
+  $('gw-tools-narrowall').checked = !!cfg.tools?.narrowAll;
+  setGwDetectorRows();
+}
+
+// Recent request summaries (counts only) from the gateway's /logs.
+async function refreshGatewayLogs() {
+  const host = $('gw-logs');
+  if (!host) return;
+  const url = normalizeGatewayUrl($('gw-url').value);
+  if (!url) { host.textContent = ''; return; }
+  const entries = await getGatewayLogs(url);
+  if (!entries.length) { host.innerHTML = '<span class="muted sm">No requests yet (enable "Log requests", then send one).</span>'; return; }
+  host.innerHTML = entries.slice(0, 12).map((e) => {
+    const time = new Date(e.t).toLocaleTimeString();
+    const dest = e.dest ? `${escapeHtml(e.dest)}${e.type ? ` (${e.type})` : ''}` : '—';
+    return `<div class="flow-map"><code>${time}</code> ${escapeHtml(e.model || '?')} → <b>${dest}</b> · redacted ${e.redacted || 0}</div>`;
+  }).join('');
+}
+
+function renderGatewayMonitor(s) {
+  const el = $('gw-monitor');
+  if (!el) return;
+  if (!s || !s.ok) { el.textContent = '—'; return; }
+  const u = s.usage || {};
+  const used = s.pro?.unlocked ? 'unlimited (Pro)' : `${u.used || 0} / ${u.cap || 0} today`;
+  el.innerHTML = `Requests: <strong>${used}</strong> · NER: ${s.ner?.ready ? 'on' : 'off'} · uptime ${Math.floor((s.uptimeSeconds || 0) / 60)}m`;
+}
+
+async function refreshGateway() {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const status = $('gw-status');
+  if (!url) { status.textContent = 'Enter the gateway URL.'; status.className = 'status'; return; }
+  status.textContent = 'Checking…'; status.className = 'status';
+  gatewayState = await checkGateway(url);
+  if (!gatewayState.ok) {
+    status.textContent = `✕ Not reachable: ${gatewayState.error || 'no response'}`;
+    status.className = 'status err';
+    $('gw-config').classList.add('hidden');
+    return;
+  }
+  status.innerHTML = `✓ Connected — v${gatewayState.version} · backend: <strong>${gatewayState.backend}</strong> · ${gatewayState.pro?.unlocked ? 'Pro' : 'Free'}`;
+  status.className = 'status ok';
+  try {
+    fillGatewayForm(await getGatewayConfig(url));
+    $('gw-config').classList.remove('hidden');
+    renderGatewayMonitor(gatewayState);
+    renderNerStatus(gatewayState.ner);
+  } catch (e) {
+    status.textContent = `✓ Connected, but config load failed: ${e.message}`;
+  }
+}
+
+// Render the bundled-NER health (from GET /status → ner) into the settings screen.
+function renderNerStatus(ner) {
+  const el = $('gw-ner-status');
+  if (!el) return;
+  if (!ner || !ner.autostart) { el.className = 'status'; el.textContent = 'NER: autostart off (deterministic-only detection).'; return; }
+  if (ner.ready) {
+    el.className = 'status ok';
+    el.textContent = `NER: ✓ ready${ner.model ? ` · model ${ner.model}` : ''}${ner.url ? ` · ${ner.url}` : ''}`;
+  } else if (ner.configured) {
+    el.className = 'status';
+    el.textContent = 'NER: ⏳ starting… (first run installs spaCy — can take a minute). Click Check again.';
+  } else {
+    el.className = 'status err';
+    el.textContent = 'NER: ✕ not running — falling back to deterministic redaction.';
+  }
+}
+
+// Re-probe just the NER health (the gateway live-checks GET /health on the detector).
+async function checkNer() {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const el = $('gw-ner-status');
+  if (!url || !el) return;
+  el.className = 'status'; el.textContent = 'NER: checking…';
+  const s = await checkGateway(url);
+  renderNerStatus(s.ok ? s.ner : null);
+}
+
+// Resolve the detector selection → a detection config the gateway understands.
+function collectDetection() {
+  const det = $('gw-det-backend').value;
+  if (det === 'off') return { backend: 'off' };
+  if (det.startsWith('cfg:')) {
+    const ep = (settings.endpoints || []).find((e) => e.id === det.slice(4));
+    if (!ep) return { backend: 'off' };
+    return { backend: 'openai', url: ep.baseUrl, ...(ep.model ? { model: ep.model } : {}), ...(ep.apiKey ? { apiKey: ep.apiKey } : {}) };
+  }
+  return {
+    backend: det,
+    url: $('gw-det-url').value.trim(),
+    ...(det === 'openai' && $('gw-det-model').value.trim() ? { model: $('gw-det-model').value.trim() } : {}),
+    ...($('gw-det-key').value.trim() ? { apiKey: $('gw-det-key').value.trim() } : {}),
+  };
+}
+
+function collectGatewayPatch() {
+  const patch = {
+    destinations: gatewayDests
+      .filter((d) => d && d.id && (d.type === 'agent' || d.type === 'api'))
+      .map((d) => ({ ...d, models: (d.models || []).filter(Boolean) })),
+    redaction: {
+      tier: $('gw-tier').value,
+      redactSystem: $('gw-redact-system').checked,
+      dictionary: parseDictionary($('gw-dictionary').value),
+      detection: collectDetection(),
+    },
+    allowedOrigins: $('gw-origins').value.split('\n').map((s) => s.trim()).filter(Boolean),
+    logRequests: $('gw-log').checked,
+    tools: {
+      toolData: $('gw-tools-data').value,
+      autoNarrow: $('gw-tools-narrow').checked,
+      maxPerTurn: Number($('gw-tools-cap').value) || 8,
+      narrowAll: $('gw-tools-narrowall').checked,
+    },
+    pro: { free: { maxRequestsPerDay: Number($('gw-free-cap').value) || 0 } },
+  };
+  const token = $('gw-pro-token').value.trim();
+  if (token) patch.pro.entitlementToken = token;
+  return patch;
+}
+
+async function saveGateway() {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const st = $('gw-save-status');
+  if (!url) return;
+  st.textContent = 'Saving…'; st.className = 'status';
+  try {
+    fillGatewayForm(await setGatewayConfig(url, collectGatewayPatch()));
+    st.textContent = '✓ Saved to gateway'; st.className = 'status ok';
+    gatewayState = await checkGateway(url);
+    renderGatewayMonitor(gatewayState);
+  } catch (e) {
+    st.textContent = `✕ ${e.message}`; st.className = 'status err';
+  }
+}
+
+// Push THIS device's ChatPanel Pro entitlement token to the gateway, so it
+// inherits the same subscription that unlocks Pro in the extension/bridge — no
+// copy-paste. The gateway verifies the token offline (ECDSA) and unlocks.
+async function activateGatewayPro() {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const st = $('gw-pro-status');
+  if (!url) { st.textContent = 'Connect to the gateway first.'; st.className = 'status'; return; }
+  if (!isPro(license)) {
+    st.textContent = 'You’re on Free. Activate ChatPanel Pro in the Account tab, then click here.';
+    st.className = 'status';
+    return;
+  }
+  const token = await getEntitlementToken();
+  if (!token) {
+    st.textContent = 'No active entitlement on this device — reactivate Pro in the Account tab.';
+    st.className = 'status err';
+    return;
+  }
+  st.textContent = 'Activating…'; st.className = 'status';
+  try {
+    fillGatewayForm(await setGatewayConfig(url, { pro: { entitlementToken: token } }));
+    gatewayState = await checkGateway(url);
+    renderGatewayMonitor(gatewayState);
+    const ok = gatewayState.ok && gatewayState.pro && gatewayState.pro.unlocked;
+    st.textContent = ok ? '✓ Pro active on the gateway — full tier, unlimited.' : 'Saved, but not unlocked (token may be expired — reactivate Pro).';
+    st.className = ok ? 'status ok' : 'status err';
+  } catch (e) {
+    st.textContent = `✕ ${e.message}`; st.className = 'status err';
+  }
+}
+
+// Populate the test model picker from the enabled destinations' models.
+function populateTestModels() {
+  const sel = $('gw-test-model');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '';
+  const models = [...new Set(gatewayDests.flatMap((d) => (d.models && d.models.length ? d.models : [d.id])))];
+  if (!models.length) { const o = document.createElement('option'); o.value = ''; o.textContent = '(enable a destination first)'; sel.appendChild(o); return; }
+  for (const m of models) { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); }
+  if (models.includes(cur)) sel.value = cur;
+}
+
+// Preview the redaction LOCALLY with the same engine + config the gateway uses.
+async function gatewayPreview(prompt) {
+  const tier = $('gw-tier').value;
+  const dictionary = parseDictionary($('gw-dictionary').value);
+  let detection = collectDetection();
+  if (detection.backend === 'off') detection = { backend: 'endpoint', url: 'http://127.0.0.1:9009/ner', timeoutMs: 4000 }; // bundled NER
+  let detected = [];
+  if (tier === 'full' && detection.backend !== 'off') {
+    try { detected = await detectEntities(prompt, { detection }); } catch { detected = []; }
+  }
+  const vault = createVault();
+  const redacted = redactText(prompt, vault, { tier, entities: detected, dictionary });
+  const spans = [...(vault.byToken || new Map())].map(([token, value]) => ({ token, value }));
+  return { detected, redacted, spans };
+}
+
+const GW_TEST_SAMPLE = 'My name is John, email john@adams.com — who is the famous president with my name?';
+
+function renderGatewayFlow({ input, detected, redacted, spans, reply, error }, withModel) {
+  const esc = (s) => escapeHtml(String(s == null ? '' : s));
+  const cards = [];
+  cards.push(flowCard(1, 'Your prompt', `<div class="flow-text">${esc(input)}</div>`));
+  const chips = (detected || []).length
+    ? detected.map((d) => `<span class="flow-chip">${esc(d.value)}<em>${esc(d.type)}</em></span>`).join('')
+    : '<span class="muted sm">No AI-detected entities (patterns + dictionary still apply).</span>';
+  cards.push(flowCard(2, 'Detected', chips));
+  cards.push(flowCard(3, 'Model / agent sees', `<div class="flow-text">${esc(redacted)}</div>`, 'flow-model'));
+  const maps = (spans || []).length
+    ? spans.map((s) => `<div class="flow-map"><code>${esc(s.token)}</code> → <b>${esc(s.value)}</b></div>`).join('')
+    : '<span class="muted sm">Nothing replaced.</span>';
+  cards.push(flowCard(4, 'Restored from', maps, 'flow-tools'));
+  if (withModel) {
+    const r = error ? `<span class="flow-err">✕ ${esc(error)}</span>` : `<div class="flow-text">${esc(reply) || '<span class="muted sm">(empty)</span>'}</div>`;
+    cards.push(flowCard(5, 'You see (restored)', r, 'flow-you'));
+  }
+  $('gw-test-out').innerHTML = cards.join('<div class="flow-arrow">→</div>');
+}
+
+async function runGatewayTest(withModel) {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const prompt = $('gw-test-input').value.trim() || GW_TEST_SAMPLE;
+  const model = $('gw-test-model').value;
+  const st = $('gw-test-status');
+  if (!url) { st.textContent = 'Connect to the gateway first.'; st.className = 'status'; return; }
+  st.textContent = 'Redacting…'; st.className = 'status';
+  let prev;
+  try { prev = await gatewayPreview(prompt); } catch (e) { st.textContent = `✕ preview: ${e.message}`; st.className = 'status err'; return; }
+  renderGatewayFlow({ input: prompt, ...prev }, false);
+  if (!withModel) { st.textContent = '✓ preview'; st.className = 'status ok'; return; }
+  if (!model) { st.textContent = 'Pick a model (enable a destination).'; st.className = 'status'; return; }
+  st.textContent = `Running through the gateway → ${model}…`;
+  try {
+    const res = await fetch(`${url}/v1/chat/completions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }),
+    });
+    const j = await res.json().catch(() => null);
+    const reply = j?.choices?.[0]?.message?.content;
+    renderGatewayFlow({ input: prompt, ...prev, reply, error: reply ? '' : (j?.error?.message || j?.error || `HTTP ${res.status}`) }, true);
+    st.textContent = reply ? '✓ done' : '✕ no reply'; st.className = reply ? 'status ok' : 'status err';
+  } catch (e) {
+    renderGatewayFlow({ input: prompt, ...prev, error: e.message }, true);
+    st.textContent = `✕ ${e.message}`; st.className = 'status err';
+  }
+}
+
+function wireGateway() {
+  $('gw-check').onclick = async () => {
+    settings.gatewayUrl = normalizeGatewayUrl($('gw-url').value);
+    await saveSettings(settings);
+    refreshGateway();
+  };
+  $('gw-det-backend').onchange = setGwDetectorRows;
+  $('gw-save').onclick = saveGateway;
+  $('gw-pro-activate').onclick = activateGatewayPro;
+  $('gw-dest-all').onclick = () => { gatewayDests = availableDestinations(); renderDestinations(); };
+  $('gw-dest-none').onclick = () => { gatewayDests = []; renderDestinations(); };
+  $('gw-test-run').onclick = () => runGatewayTest(true);
+  $('gw-test-preview').onclick = () => runGatewayTest(false);
+  $('gw-logs-refresh').onclick = refreshGatewayLogs;
+  $('gw-ner-check').onclick = checkNer;
 }
 
 async function refreshBridgeState() {
@@ -1817,7 +2237,11 @@ function renderFlow(t, withModel) {
     const maps = (t.spans || []).length
       ? t.spans.map((s) => `<div class="flow-map"><code>${esc(s.token)}</code> → <b>${esc(s.value)}</b>${s.kind === 'alias' ? ' <em>(pseudonym)</em>' : ''}</div>`).join('')
       : '<span class="muted sm">Nothing replaced.</span>';
-    cards.push(flowCard(4, 'Tools receive', `<div class="muted sm">Local search &amp; MCP tools get the real values:</div>${maps}`, 'flow-tools'));
+    const redactRemote = ($('priv-tooldata') && $('priv-tooldata').value) === 'redactRemote';
+    const toolsHdr = redactRemote
+      ? 'Local history/meeting/page tools get the real values; remote MCP tools keep the <b>redacted</b> token (PII stays off third-party servers):'
+      : 'Local search &amp; MCP tools get the real values:';
+    cards.push(flowCard(4, 'Tools receive', `<div class="muted sm">${toolsHdr}</div>${maps}`, 'flow-tools'));
   }
   // Actual tool calls the model made this run (real args in, re-redacted result out).
   (t.toolTrace || []).forEach((tt) => {
@@ -1866,6 +2290,10 @@ function renderFlowTools() {
   const first = box.dataset.rendered !== '1';
   const servers = (settings.mcpServers || []).filter((s) => s && s.enabled !== false && (s.url || s.command));
   const items = [];
+  // Auto (default): arm ALL enabled servers and let the ranker pick the relevant
+  // few — mirrors the chat's AUTO mode, so "no manual picks" still runs tools.
+  const autoOn = first ? true : prev.has('auto');
+  items.push(`<label class="check" title="Arm every enabled tool and automatically narrow to the most relevant for your message (like chat AUTO mode)"><input type="checkbox" data-flow-tool="auto"${autoOn ? ' checked' : ''} /> <strong>Auto</strong> — pick relevant</label>`);
   const histOn = first ? settings.ui?.historyTools !== false : prev.has('history');
   items.push(`<label class="check"><input type="checkbox" data-flow-tool="history"${histOn ? ' checked' : ''} /> History</label>`);
   for (const s of servers) {
@@ -1880,12 +2308,14 @@ function renderFlowTools() {
 // Build the harness toolset from ONLY the armed servers (the checkboxes).
 async function buildHarnessTools() {
   const picks = new Set([...document.querySelectorAll('#priv-flow-tools input:checked')].map((c) => c.dataset.flowTool));
+  const auto = picks.has('auto'); // arm everything; runFlow narrows to the relevant few
   const providers = [];
-  if (picks.has('history') && settings.ui?.historyTools !== false) {
+  if ((auto || picks.has('history')) && settings.ui?.historyTools !== false) {
     providers.push(historyToolProvider({ includeMeetings: true, explicit: false }));
   }
   const want = new Set([...picks].filter((p) => p.startsWith('mcp:')).map((p) => p.slice(4)));
-  const usable = (settings.mcpServers || []).filter((s) => s && s.enabled !== false && (s.url || s.command) && want.has(mcpKey(s)));
+  const enabled = (settings.mcpServers || []).filter((s) => s && s.enabled !== false && (s.url || s.command));
+  const usable = auto ? enabled : enabled.filter((s) => want.has(mcpKey(s)));
   if (usable.length) {
     let bridgeOk = false;
     try { const h = await checkBridge(settings.bridgeUrl); bridgeOk = !!(h && h.ok); } catch { /* bridge down */ }
