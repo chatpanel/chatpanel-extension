@@ -1725,6 +1725,7 @@ function renderPrefs() {
   // detection" modes — show it whenever redaction is on.
   $('priv-flow').classList.toggle('hidden', $('priv-mode').value === 'off');
   populateFlowModel();
+  renderFlowTools();
   populateDetTargets(det.targetId);
   if (showDet && $('priv-det-backend').value === 'agent') populateDetModels(det.targetId, det.model);
   updateDetVis();
@@ -1846,14 +1847,38 @@ async function previewFlow() {
   }
 }
 
-// Build the same toolset a real turn exposes — local history tools + every enabled
-// MCP server — so the flow test actually lets the model call tools.
+function mcpKey(s) { return s.id || s.name || s.url || s.command || ''; }
+
+// Per-server tool selector (History + each enabled MCP server). MCP is OFF by
+// default — arming every server is what bloats the prompt and slows the model.
+// Re-renders preserve the user's current picks.
+function renderFlowTools() {
+  const box = $('priv-flow-tools');
+  if (!box) return;
+  const prev = new Set([...box.querySelectorAll('input:checked')].map((c) => c.dataset.flowTool));
+  const first = box.dataset.rendered !== '1';
+  const servers = (settings.mcpServers || []).filter((s) => s && s.enabled !== false && (s.url || s.command));
+  const items = [];
+  const histOn = first ? settings.ui?.historyTools !== false : prev.has('history');
+  items.push(`<label class="check"><input type="checkbox" data-flow-tool="history"${histOn ? ' checked' : ''} /> History</label>`);
+  for (const s of servers) {
+    const key = `mcp:${mcpKey(s)}`;
+    items.push(`<label class="check"><input type="checkbox" data-flow-tool="${escapeHtml(key)}"${prev.has(key) ? ' checked' : ''} /> ${escapeHtml(s.name || s.url || s.command)}</label>`);
+  }
+  if (!servers.length) items.push('<span class="muted sm">No MCP servers enabled (Settings → MCP).</span>');
+  box.innerHTML = items.join('');
+  box.dataset.rendered = '1';
+}
+
+// Build the harness toolset from ONLY the armed servers (the checkboxes).
 async function buildHarnessTools() {
+  const picks = new Set([...document.querySelectorAll('#priv-flow-tools input:checked')].map((c) => c.dataset.flowTool));
   const providers = [];
-  if (settings.ui?.historyTools !== false) {
+  if (picks.has('history') && settings.ui?.historyTools !== false) {
     providers.push(historyToolProvider({ includeMeetings: true, explicit: false }));
   }
-  const usable = (settings.mcpServers || []).filter((s) => s && s.enabled !== false && (s.url || s.command));
+  const want = new Set([...picks].filter((p) => p.startsWith('mcp:')).map((p) => p.slice(4)));
+  const usable = (settings.mcpServers || []).filter((s) => s && s.enabled !== false && (s.url || s.command) && want.has(mcpKey(s)));
   if (usable.length) {
     let bridgeOk = false;
     try { const h = await checkBridge(settings.bridgeUrl); bridgeOk = !!(h && h.ok); } catch { /* bridge down */ }
@@ -1865,22 +1890,45 @@ async function buildHarnessTools() {
   return buildToolset(providers);
 }
 
+// Auto-narrow armed tools to the few most relevant to the prompt — so naming a tool
+// ("use wiki search") surfaces it without flooding the model with all of them. Pure
+// lexical match (no extra model call): prompt words vs each tool's name + description.
+function narrowToolset(toolset, prompt, k = 16) {
+  if (!toolset || !toolset.specs || toolset.specs.length <= k) return toolset;
+  const q = String(prompt || '').toLowerCase();
+  const words = [...new Set(q.split(/[^a-z0-9]+/).filter((w) => w.length > 2))];
+  const score = (s) => {
+    const hay = `${s.name || ''} ${s.description || ''}`.toLowerCase();
+    let n = 0;
+    for (const w of words) if (hay.includes(w)) n += 1;
+    for (const part of String(s.name || '').toLowerCase().split(/[^a-z0-9]+/)) {
+      if (part.length > 2 && q.includes(part)) n += 2; // tool name explicitly in the prompt
+    }
+    return n;
+  };
+  const ranked = [...toolset.specs].map((s) => ({ s, n: score(s) })).sort((a, b) => b.n - a.n);
+  return { ...toolset, specs: ranked.slice(0, k).map((x) => x.s) };
+}
+
 async function runFlow() {
   const status = $('priv-flow-status');
   if (status) status.textContent = 'Loading tools…';
   await savePrefs();
   const sample = (($('priv-flow-input') && $('priv-flow-input').value) || '').trim() || FLOW_SAMPLE;
   try {
-    const tools = await buildHarnessTools();
-    const toolCount = (tools && tools.specs && tools.specs.length) || 0;
-    if (status) status.textContent = `Running with ${toolCount} tool${toolCount === 1 ? '' : 's'}…`;
+    const full = await buildHarnessTools();
+    const available = (full && full.specs && full.specs.length) || 0;
+    const tools = narrowToolset(full, sample);
+    const armed = (tools && tools.specs && tools.specs.length) || 0;
+    if (status) status.textContent = `Running with ${armed} tool${armed === 1 ? '' : 's'}…`;
     const t = await traceFlow(settings, flowTargetId(), sample, { tools });
     renderFlow(t, true);
     const tc = (t.toolTrace || []).length;
+    const narrowed = armed < available ? ` (narrowed from ${available})` : '';
     if (status) {
       status.textContent = t.error
         ? `model: ✕ ${t.error}`
-        : `${t.spans.length} replaced · ${toolCount} tool${toolCount === 1 ? '' : 's'} available · ${tc} call${tc === 1 ? '' : 's'} made`;
+        : `${t.spans.length} replaced · ${armed} tool${armed === 1 ? '' : 's'} armed${narrowed} · ${tc} call${tc === 1 ? '' : 's'} made`;
     }
   } catch (e) {
     if (status) status.textContent = `✕ ${(e && e.message) || 'run failed'}`;

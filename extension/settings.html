@@ -312,7 +312,10 @@
               redact vs pseudonymize and re-run to compare.</p>
             <textarea id="priv-flow-input" rows="2"
               placeholder="My name is John. I live in Austin. Who is the famous president with my name?"></textarea>
-            <div class="row" style="margin-top:6px">
+            <p class="muted sm" style="margin:8px 0 3px">Tools to arm <span class="sub">— fewer = faster; MCP is off by
+              default (arming every server bloats the prompt and slows the model)</span></p>
+            <div id="priv-flow-tools" class="flow-tools-pick"></div>
+            <div class="row" style="margin-top:8px">
               <input id="priv-flow-model" placeholder="Model to run (a configured API / agent)" autocomplete="off"
                 style="flex:1 1 200px" />
               <button type="button" id="priv-flow-run" class="btn primary">Run ▶</button>

@@ -90,6 +90,8 @@ body {
 .flow-map { font-family: var(--mono); font-size: 11px; margin: 3px 0; overflow-wrap: anywhere; }
 .flow-map em { font-style: normal; color: var(--accent); }
 .flow-err { color: #f87171; }
+.flow-tools-pick { display: flex; flex-wrap: wrap; gap: 2px 16px; }
+.flow-tools-pick .check { margin: 0; }
 
 /* Fields — label ABOVE control ------------------------------------------- */
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 9px; margin: 13px 0; }
