@@ -239,9 +239,22 @@ async function toolsetFor(
   const providers = [];
   const page = await pageToolProvider(resolvedAgent);
   if (page) providers.push(page);
+  // History tools: read-only, locally-executed search over the user's own chats
+  // and (Pro) meetings. Exposed on EVERY turn by default so the agent can search
+  // whenever IT decides — including follow-up turns — not just the turn where
+  // /history was typed. "Always on" stays per-turn safe: the bridge creates and
+  // tears down the MCP session per /chat (and API models run the tool loop
+  // in-extension), so this is never a persistent server, just specs armed on each
+  // turn's ephemeral session. The user can disable via ui.historyTools.
+  // history.enabled (/history or the auto-history setting) no longer gates
+  // availability — it only flips `explicit`, which adds a stronger "use these
+  // tools now" directive.
   const history = historyRag || skillRun?.history || null;
-  if (resolvedAgent && history?.enabled) {
-    providers.push(historyToolProvider({ includeMeetings: !!history.includeMeetings }));
+  if (resolvedAgent && state.settings?.ui?.historyTools !== false) {
+    providers.push(historyToolProvider({
+      includeMeetings: can(state.license, 'liveMeetings'),
+      explicit: !!history?.enabled,
+    }));
   }
 
   // MCP servers — Free uses the first FREE_LIMITS.mcpServers by list position

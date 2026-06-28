@@ -153,6 +153,12 @@ export function defaultSettings() {
       // Local RAG context for normal chat turns. Off by default for privacy;
       // users can enable chats, meetings, or both from the composer.
       historyContextMode: 'off',
+      // Expose the read-only history tools (history_search, history_list_meetings,
+      // history_get_meeting, …) to the agent on every turn, so it can look up past
+      // chats/meetings on demand instead of only when /history is typed. On by
+      // default; the agent only calls them when a question refers to prior work,
+      // and meeting access still requires Pro. Set false to never offer them.
+      historyTools: true,
     },
   };
 }

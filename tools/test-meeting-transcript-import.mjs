@@ -73,7 +73,7 @@ const plainText = parseTranscriptText(`--- Meeting Transcript (Zoom) ---
 
 AL - Alice Lee (Host)
 BO - Bob Olson
-WC - S - Platform - Eng - Robin Fox
+RF - S - Platform - Eng - Robin Fox
 `, 'plain.txt', { now: 1710000000000 });
 
 assert.equal(plainText.segments.length, 1);
@@ -81,7 +81,7 @@ assert.equal(plainText.segments[0].speaker, 'Alice');
 assert.equal(plainText.chat.length, 1);
 assert.match(plainText.chat[0].text, /https:\/\/example\.com\/plain/);
 assert.equal(plainText.participants.length, 3);
-assert.deepEqual(plainText.participants[2], { initials: 'WC', name: 'Robin Fox', role: 'Platform - Eng' });
+assert.deepEqual(plainText.participants[2], { initials: 'RF', name: 'Robin Fox', role: 'Platform - Eng' });
 
 const zoomExportWithMeetingSections = parseTranscriptText(`--- Meeting Transcript ---
 
@@ -89,22 +89,22 @@ const zoomExportWithMeetingSections = parseTranscriptText(`--- Meeting Transcrip
 
 --- Meeting Chat Transcript ---
 
-[8:43:06 AM] Chris Doyle [Platform Eng] to Everyone: https://example.com/galaxy is the only Rollout doc I found.
+[8:43:06 AM] Chris Doyle [Platform Eng] to Everyone: https://example.com/design-doc is the only design doc I found.
 [8:52:33 AM] Mira [Infra Team, EU] to Everyone: Nina ParkOmar Vale
 [9:00:17 AM] Sam Carter [Team Alpha] to Everyone: Made @Jordan Blake host - dropping. Thanks all
 You to Everyone ntd
 
 --- Meeting Participants ---
 
-SV( - Alex Rivera (Eng) (Me)
-MM - Sam Carter [Team Alpha] (Host)
-WS - Taylor Reed (Platform Eng)
-PG[S( - Chris Doyle [Platform Eng] (He/Him)
-DK - Riley Quinn
-J[ - Mira [Infra Team, EU]
-AC[C - Pat Morgan [Team Beta]
-KB - Jordan Blake (Platform Eng)
-MM[B( - Lee Hunter [TEAM GAMMA] (he/him)
+AR( - Alex Rivera (Eng) (Me)
+SC - Sam Carter [Team Alpha] (Host)
+TR - Taylor Reed (Platform Eng)
+CD[S( - Chris Doyle [Platform Eng] (He/Him)
+RQ - Riley Quinn
+M[ - Mira [Infra Team, EU]
+PM[C - Pat Morgan [Team Beta]
+JB - Jordan Blake (Platform Eng)
+LH[B( - Lee Hunter [TEAM GAMMA] (he/him)
 `, 'zoom.txt', { now: 1710000000000 });
 
 assert.equal(zoomExportWithMeetingSections.chat.length, 4);
@@ -144,16 +144,16 @@ assert.equal(zoomExportWithMeetingSections.participants.some((p) => /You to Ever
 
 const legacyImportedRecord = {
   chat: [
-    { t: 1, sender: 'Chris Doyle [Platform Eng]', receiver: 'Everyone', text: 'https://example.com/galaxy' },
+    { t: 1, sender: 'Chris Doyle [Platform Eng]', receiver: 'Everyone', text: 'https://example.com/design-doc' },
     { t: 2, sender: 'You', receiver: 'Everyone', text: 'ntd' },
-    { t: 3, sender: 'Chat', receiver: 'Everyone', text: 'SV( - Alex Rivera (Eng) (Me)' },
-    { t: 4, sender: 'Chat', receiver: 'Everyone', text: 'MM - Sam Carter [Team Alpha] (Host)' },
-    { t: 5, sender: 'Chat', receiver: 'Everyone', text: 'WS - Taylor Reed (Platform Eng)' },
+    { t: 3, sender: 'Chat', receiver: 'Everyone', text: 'AR( - Alex Rivera (Eng) (Me)' },
+    { t: 4, sender: 'Chat', receiver: 'Everyone', text: 'SC - Sam Carter [Team Alpha] (Host)' },
+    { t: 5, sender: 'Chat', receiver: 'Everyone', text: 'TR - Taylor Reed (Platform Eng)' },
   ],
   participants: [],
 };
 assert.equal(repairTranscriptParticipants(legacyImportedRecord), true);
-assert.deepEqual(legacyImportedRecord.chat.map((c) => c.text), ['https://example.com/galaxy', 'ntd']);
+assert.deepEqual(legacyImportedRecord.chat.map((c) => c.text), ['https://example.com/design-doc', 'ntd']);
 assert.deepEqual(legacyImportedRecord.participants.map((p) => p.name), ['Alex Rivera', 'Sam Carter', 'Taylor Reed']);
 
 const legacyImportedToday = {

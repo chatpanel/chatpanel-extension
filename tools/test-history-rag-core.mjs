@@ -134,7 +134,7 @@ assert.ok(
 );
 
 const repeatedMeetingA = Array.from({ length: 80 }, (_, i) => `Jordan weekly one on one Rollout ${i}.`).join(' ');
-const repeatedMeetingB = Array.from({ length: 4 }, (_, i) => `Jordan weekly one on one GPU ${i}.`).join(' ');
+const repeatedMeetingB = Array.from({ length: 4 }, (_, i) => `Jordan weekly one on one Cache ${i}.`).join(' ');
 const diverse = searchHistorySources(
   [
     { id: 'meeting:long-a', type: 'meeting', title: 'Jordan weekly 1', date: 1710000600000, text: repeatedMeetingA },

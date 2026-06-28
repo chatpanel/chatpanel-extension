@@ -106,6 +106,42 @@ function termsInText(terms, text) {
   return hits;
 }
 
+// How hard a query term found in a chunk's TITLE / PARTICIPANTS counts.
+const TITLE_TERM_W = 16;
+const PEOPLE_TERM_W = 12;
+
+// Rarity weight for a query term, read from the BM25 idf map. Rare terms — the
+// distinctive subject of a query (names, specific nouns) — dominate; ubiquitous
+// filler ("out", "the", a name that recurs in every meeting) is damped toward
+// zero. Floor keeps a real-but-common term meaningful; cap stops any single term
+// from dwarfing multi-term title coverage.
+function termWeight(term, idf) {
+  const v = idf?.get(term);
+  if (v == null) return 1.5; // not in the indexed corpus at all → treat as distinctive
+  if (v <= 0.15) return 0.15; // present in nearly every doc → filler
+  return Math.min(v, 3);
+}
+
+// Reward a chunk whose TITLE or PARTICIPANTS cover the query's distinctive terms.
+// This is what makes a query like "alex jordan sync notes" surface the
+// "Alex / Jordan 1:1" meeting (both names in the title + people) as #1 instead of
+// burying it under long transcripts that merely repeat common words. People
+// aren't in the BM25 doc text, so this is the only place participant matches are
+// scored. Skipped for content-field search (there the caller explicitly wants
+// body text, not titles).
+function subjectBoost(chunk, qTerms, idf, field) {
+  if (!chunk || field === 'content' || !qTerms?.length) return 0;
+  const title = String(chunk.title || '').toLowerCase();
+  const people = Array.isArray(chunk.meta?.people) ? chunk.meta.people.join(' ').toLowerCase() : '';
+  let score = 0;
+  for (const t of qTerms) {
+    const w = termWeight(t, idf);
+    if (title.includes(t)) score += w * TITLE_TERM_W;
+    if (people && people.includes(t)) score += w * PEOPLE_TERM_W;
+  }
+  return score;
+}
+
 function meetingIntentBoost(chunk, profile, field) {
   if (!chunk || chunk.type !== 'meeting' || field === 'content') return 0;
   const terms = profile?.terms || [];
@@ -171,7 +207,8 @@ export function searchHistorySources(sources, query, options = {}) {
   const qLower = q.toLowerCase();
   const qTerms = tokenize(qLower);
   const profile = queryProfile(q);
-  const ranked = bm25Search(buildIndex(docs), q)
+  const idx = buildIndex(docs);
+  const ranked = bm25Search(idx, q)
     .map((r) => {
       const chunk = byId.get(r.id);
       let score = r.score;
@@ -179,8 +216,11 @@ export function searchHistorySources(sources, query, options = {}) {
       if (field !== 'content') {
         if (titleLower === qLower) score += 80;
         else if (titleLower.includes(qLower)) score += 50;
-        for (const t of qTerms) if (titleLower.includes(t)) score += 8;
       }
+      // IDF-weighted title/participant coverage — the dominant signal so a meeting
+      // whose title + people match the query's distinctive terms wins over long
+      // transcripts that only repeat common words.
+      score += subjectBoost(chunk, qTerms, idx.idf, field);
       score += meetingIntentBoost(chunk, profile, field);
       return { ...chunk, score };
     });

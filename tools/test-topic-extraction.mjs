@@ -66,7 +66,7 @@ const insightNotes = [
 ].join('\n');
 assert.deepEqual(insightTopicItemsFromNotes(insightNotes, 5), ['redis cache', 'api gateway authentication']);
 assert.deepEqual(
-  insightTopicItemsFromNotes('## Topics\nObject storage; disaster recovery, cache warming\nlease mechanism', 5),
+  insightTopicItemsFromNotes('## Topics\nObject storage; disaster recovery, Cache Warming\nlease mechanism', 5),
   ['object storage', 'disaster recovery', 'cache warming', 'lease mechanism'],
 );
 assert.deepEqual(
@@ -74,7 +74,7 @@ assert.deepEqual(
     '## Topics',
     '- Object storage lifecycle: The team discussed lifecycle policy cleanup and retention risk.',
     '- Disaster recovery: The group reviewed failover expectations for the storage service.',
-    '- cache warming dashboard: The team connected alert routing to the health dashboard work.',
+    '- Cache Warming dashboard: The team connected alert routing to the health dashboard work.',
   ].join('\n'), 5),
   ['object storage lifecycle', 'disaster recovery', 'cache warming dashboard'],
 );
@@ -127,7 +127,7 @@ assert.ok(noisyFallbackTopics.includes('object storage'));
 assert.ok(noisyFallbackTopics.includes('api gateway'));
 assert.ok(noisyFallbackTopics.includes('lifecycle policy'));
 const awkwardFallbackTopics = fallbackTopicItems(
-  'The discussion covered object storage disaster recovery and cache warming delivery. cache warming delivery remains in scope. Different docs should add more details. Yeah I think lease mechanism.',
+  'The discussion covered object storage disaster recovery and Cache Warming delivery. Cache Warming delivery remains in scope. Different docs should add more details. Yeah I think lease mechanism.',
   12,
 );
 for (const bad of ['discussion covered', 'covered object', 'delivery remains', 'different docs', 'docs should', 'should add', 'more details', 'yeah think', 'think lease', 'storage disaster', 'recovery interview', 'training lease', 'object storage disaster', 'storage disaster recovery']) {
@@ -176,7 +176,7 @@ const insightFallbackDisplay = topicDisplayForMeetingSource(
   null,
   [
     '## Summary',
-    'The team discussed object storage disaster recovery and cache warming delivery.',
+    'The team discussed object storage disaster recovery and Cache Warming delivery.',
     '',
     '## Topics',
     '',

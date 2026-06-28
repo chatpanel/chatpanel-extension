@@ -32,11 +32,11 @@ assert.equal(speakerCountOfMeeting(rec), 1);
 
 const variants = {
   participants: [
-    { initials: 'SV', name: 'Alex Rivera', role: 'Eng · Me' },
-    { initials: 'WC', name: 'S', role: 'Platform - Eng · Robin Fox' },
-    { initials: 'YD', name: 'Priya Nair', role: '' },
-    { initials: 'NWS', name: 'Casey Lin', role: 'Platform Eng · Host' },
-    { initials: 'WS', name: 'Taylor Reed', role: 'Platform Eng' },
+    { initials: 'AR', name: 'Alex Rivera', role: 'Eng · Me' },
+    { initials: 'RF', name: 'S', role: 'Platform - Eng · Robin Fox' },
+    { initials: 'PN', name: 'Priya Nair', role: '' },
+    { initials: 'CL', name: 'Casey Lin', role: 'Platform Eng · Host' },
+    { initials: 'TR', name: 'Taylor Reed', role: 'Platform Eng' },
   ],
   segments: [
     { speaker: 'Alex Rivera (Eng)', text: 'status' },
