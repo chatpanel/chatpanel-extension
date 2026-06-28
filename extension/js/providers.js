@@ -363,7 +363,7 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
       adaptivePolicy.recordResult(c.name, result);
       if (!guard.blocked && toolMadeProgress(c.name, result)) loopGuard.reset(guard.key);
       const _image = result && typeof result === 'object' ? result.image : undefined;
-      onEvent?.({ type: 'tool', name: c.name, phase: 'done', callId: c.id, image: _image, status: toolStatus(result) });
+      onEvent?.({ type: 'tool', name: c.name, phase: 'done', callId: c.id, image: _image, status: toolStatus(result), result: stepResultText(result) });
       const text = typeof result === 'string' ? result : (result?.text ?? '');
       msgs.push({ role: 'tool', tool_call_id: c.id, content: text });
       // OpenAI tool messages can't carry images — feed any screenshot back as a
@@ -493,7 +493,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
       adaptivePolicy.recordResult(b.name, result);
       if (!guard.blocked && toolMadeProgress(b.name, result)) loopGuard.reset(guard.key);
       const _image = result && typeof result === 'object' ? result.image : undefined;
-      onEvent?.({ type: 'tool', name: b.name, phase: 'done', callId: b.id, image: _image, status: toolStatus(result) });
+      onEvent?.({ type: 'tool', name: b.name, phase: 'done', callId: b.id, image: _image, status: toolStatus(result), result: stepResultText(result) });
       const text = typeof result === 'string' ? result : (result?.text ?? '');
       // Anthropic tool_result content may be a string OR blocks — attach the
       // screenshot as an image block so the model can see the page directly.
@@ -533,7 +533,7 @@ async function relayBridgeTool(base, ev, tools, onEvent, loopGuard = createToolL
     result = JSON.stringify({ error: String(e?.message || e) });
   }
   const image = result && typeof result === 'object' ? result.image : undefined;
-  onEvent?.({ type: 'tool', name: ev.name, phase: 'done', callId: ev.id, image, status: toolStatus(result) });
+  onEvent?.({ type: 'tool', name: ev.name, phase: 'done', callId: ev.id, image, status: toolStatus(result), result: stepResultText(result) });
   await fetch(`${base}/tool-result`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -699,6 +699,15 @@ async function dispatchStream({ agent, messages, settings, signal, onDelta, onEv
   return streamOpenAI(agent, messages, opts);
 }
 
+// A short, display-safe slice of a tool result for the Actions log — the model still
+// receives the FULL result; this is only what the user sees in the UI.
+function stepResultText(result) {
+  const t = resultText(result);
+  if (!t) return '';
+  const s = String(t);
+  return s.length > 4000 ? `${s.slice(0, 4000)}…` : s;
+}
+
 // True when the chat model runs on THIS machine (a localhost OpenAI-compatible
 // endpoint — Ollama / llama.cpp / LM Studio). Cloud APIs and bridge CLIs (which
 // proxy to the cloud) count as remote. Powers the "redact for remote models only"
@@ -821,7 +830,9 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
   const rawOnDelta = onDelta;
   const wrappedOnDelta = rawOnDelta ? (d) => rawOnDelta(restorer.push(d)) : rawOnDelta;
   const wrappedOnEvent = onEvent
-    ? (ev) => onEvent(ev && ev.input ? { ...ev, input: restoreDeep(ev.input, vault) } : ev)
+    ? (ev) => onEvent(ev && (ev.input != null || ev.result != null)
+        ? { ...ev, input: restoreDeep(ev.input, vault), result: restoreDeep(ev.result, vault) }
+        : ev)
     : onEvent;
   let safeTools = tools;
   if (tools && typeof tools.execute === 'function') {

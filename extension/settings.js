@@ -1747,18 +1747,19 @@ function populateDetTargets(selectedId) {
 async function populateDetModels(targetId, selectedModel) {
   const input = $('priv-det-tmodel');
   if (!input) return;
-  // Searchable, like every other model picker. Show the current value immediately,
-  // then enrich with the target's model list once it loads (empty = target default).
-  wireCombobox(input, selectedModel ? [selectedModel] : [], selectedModel || input.value || '', 'Search or type a model id');
+  // `selectedModel` is authoritative — empty CLEARS the field. So switching the
+  // target drops the previous target's model instead of carrying it over (don't
+  // fall back to the stale input.value).
+  const want = selectedModel || '';
+  wireCombobox(input, want ? [want] : [], want, 'Search or type a model id');
   const ep = (settings.endpoints || []).find((e) => e.id === targetId);
   const ag = (settings.agents || []).find((a) => a.id === targetId);
   try {
     let ids = [];
     if (ep) ids = (await listModelOptions(ep) || []).map((m) => (typeof m === 'string' ? m : m.id)).filter(Boolean);
     else if (ag) ids = (await listBridgeModels(ag, settings) || []).map((m) => (typeof m === 'string' ? m : (m.id || m.name))).filter(Boolean);
-    const cur = input.value || selectedModel || '';
-    if (cur && !ids.includes(cur)) ids = [cur, ...ids];
-    wireCombobox(input, ids, cur, ids.length ? 'Search or type a model id' : 'Type a model id');
+    if (want && !ids.includes(want)) ids = [want, ...ids];
+    wireCombobox(input, ids, want, ids.length ? 'Search or type a model id' : 'Type a model id');
   } catch { /* keep the current value */ }
 }
 

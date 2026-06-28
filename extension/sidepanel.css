@@ -287,6 +287,13 @@ body.rail-collapsed { --rail-w: 0px; }
 .bubble .step-arg-key { color: var(--accent); font-family: inherit; }
 .bubble .step-arg-val { color: var(--text-dim); }
 .bubble .step-status { color: var(--text-dim); opacity: .8; font-size: 11px; }
+.bubble .step-result { margin: 0 0 5px; }
+.bubble .step-result > summary { cursor: pointer; color: var(--text-dim); font-size: 11px; list-style: none; padding: 2px 0; opacity: .85; }
+.bubble .step-result > summary::-webkit-details-marker { display: none; }
+.bubble .step-result > summary::before { content: '▸ result'; }
+.bubble .step-result[open] > summary { font-size: 0; }
+.bubble .step-result[open] > summary::before { content: '▾ result'; font-size: 11px; }
+.bubble .step-result pre { margin: 4px 0 0; padding: 6px 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-dim); font-family: var(--mono); font-size: 11px; line-height: 1.45; background: rgba(0,0,0,.12); border-left: 2px solid rgba(124,140,248,.35); border-radius: 6px; }
 .bubble .step-status.bad { color: #e0607a; opacity: 1; }
 .bubble .step-shot { max-width: 260px; max-height: 170px; border-radius: 6px; border: 1px solid var(--border); margin: 2px 0 4px; }
 

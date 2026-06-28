@@ -855,7 +855,10 @@ function renderSteps(m) {
         ? `<img class="step-shot" src="${escapeAttr(s.image)}" alt="screenshot" />`
         : '';
       const badge = s.status ? ` <span class="step-status ${/error|fail|blocked|CDP failed/i.test(s.status) ? 'bad' : ''}">${escapeAttr(s.status)}</span>` : '';
-      return `${stepHeader(s, badge, stepControls(s))}${stepArgs(s)}${shot}`;
+      const result = s.result
+        ? `<details class="step-result"><summary>result</summary><pre>${escapeAttr(String(s.result).slice(0, 4000))}</pre></details>`
+        : '';
+      return `${stepHeader(s, badge, stepControls(s))}${stepArgs(s)}${shot}${result}`;
     })
     .join('');
   return `<details class="agent-steps"${open}><summary>🔧 Actions (${m.steps.length})</summary><div class="steps-body">${items}</div></details>`;
@@ -1345,7 +1348,8 @@ async function runStream(agent, assistant, conv) {
             : assistant.steps[assistant.steps.length - 1];
           if (ev.image) step.image = ev.image;
           if (ev.status) step.status = ev.status;
-          if (ev.image || ev.status) {
+          if (ev.result) step.result = ev.result;
+          if (ev.image || ev.status || ev.result) {
             if (!raf) raf = requestAnimationFrame(flush);
           }
         }
