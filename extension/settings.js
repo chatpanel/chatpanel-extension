@@ -1782,7 +1782,8 @@ async function testDetector() {
   const out = $('priv-det-test-out');
   if (out) out.textContent = 'Testing…';
   await savePrefs(); // persist the current detector config first
-  const sample = 'Email Jordan Blake at jordan.blake@example.com about the Austin → Dallas trip; call +1 415 555 0142.';
+  const typed = ($('priv-det-test-input') && $('priv-det-test-input').value || '').trim();
+  const sample = typed || 'Email Jordan Blake at jordan.blake@example.com about the Austin → Dallas trip; call +1 415 555 0142.';
   try {
     const ents = await runDetectorTest(settings, sample);
     if (!ents || !ents.length) {

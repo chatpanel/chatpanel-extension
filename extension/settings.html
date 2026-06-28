@@ -275,10 +275,15 @@
                 placeholder="LLM backend only — e.g. gemma-4-26b" /></div>
             <div class="row"><label>Timeout (ms)</label><input id="priv-det-timeout" type="number" min="200" max="10000"
                 placeholder="1500" /></div>
+            <div class="field" style="margin-top:6px">
+              <label>Test text <span class="sub">— optional; defaults to a built-in sample</span></label>
+              <textarea id="priv-det-test-input" rows="2"
+                placeholder="Type text with names / emails / numbers to test the detector…"></textarea>
+            </div>
             <div class="row"><label></label>
               <button type="button" id="priv-det-test" class="btn">Test detector</button>
-              <span id="priv-det-test-out" class="sub" style="margin-left:8px"></span>
             </div>
+            <p class="muted" id="priv-det-test-out" style="margin:4px 0 0"></p>
             <p class="muted" id="priv-det-agent-note">The detector reads your text to find names, so pick a
               <strong>local</strong> model — that text reaches the detector. A cloud API/agent would receive it too.</p>
             <p class="muted" style="margin:8px 0 2px">Redact these detected types <span class="sub">(emails &amp; phones
