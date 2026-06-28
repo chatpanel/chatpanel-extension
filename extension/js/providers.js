@@ -16,7 +16,7 @@ import {
   redactionEnabled, redactionFromSettings, redactOutbound, redactResult, restoreDeep, makeStreamRestorer, restore,
 } from './pii-pipeline.js';
 import { detectEntities, normalizeEntities, EXTRACT_SYS, parseJsonLoose, withTimeout } from './pii-detect.js';
-import { createVault, redactText } from './pii-redact.js';
+import { createVault, redactText, restoreText } from './pii-redact.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
 import { getTarget, resolveTarget } from './store.js';
 import { authHeadersForEndpoint } from './oauth.js';
@@ -806,6 +806,42 @@ export async function previewRedaction(settings, sample) {
     ...[...vault.aliases].map(([alias, value]) => ({ token: alias, value, kind: 'alias' })),
   ];
   return { redacted, spans, detector };
+}
+
+// Settings-page helper: run a prompt END-TO-END through the privacy pipeline against
+// a chosen chat model, capturing every stage for the flow visual — what's detected,
+// what the model SEES (redacted), its raw reply, and what YOU see (restored). Tools
+// (local + MCP) would receive the real `spans` values; the flow shows that statically.
+export async function traceFlow(settings, targetId, prompt, { signal } = {}) {
+  const cfg = (settings && settings.ui && settings.ui.piiRedaction) || {};
+  const tier = cfg.mode === 'model' ? 'full' : 'basic';
+  const text = String(prompt || '');
+  const detected = cfg.mode === 'model'
+    ? await detectForChat(text, { ...cfg, detection: { ...(cfg.detection || {}), timeoutMs: Math.max(Number(cfg.detection && cfg.detection.timeoutMs) || 0, 30000) } }, settings, signal, { strict: true })
+    : [];
+  const vault = createVault();
+  const modelSees = redactText(text, vault, { tier, entities: detected, dictionary: cfg.dictionary || [] });
+  const spans = [
+    ...[...vault.byToken].map(([token, value]) => ({ token, value, kind: 'redact' })),
+    ...[...vault.aliases].map(([alias, value]) => ({ token: alias, value, kind: 'alias' })),
+  ];
+  const target = resolveTarget(getTarget(settings, targetId), settings);
+  let modelRaw = '';
+  let error = null;
+  if (!target) {
+    error = 'Pick a model to run the full flow.';
+  } else {
+    try {
+      const out = await dispatchStream({
+        agent: { ...target, systemPrompt: target.systemPrompt || '' },
+        messages: [{ role: 'user', content: modelSees }],
+        settings, signal,
+      });
+      modelRaw = typeof out === 'string' ? out : (out && out.text) || '';
+    } catch (e) { error = (e && e.message) || 'model call failed'; }
+  }
+  const youSee = restoreText(modelRaw, vault);
+  return { input: text, detected, modelSees, spans, modelRaw, youSee, error };
 }
 
 // Public entry. When `redaction` ({ vault, cfg, isPro, entities }) is enabled, it

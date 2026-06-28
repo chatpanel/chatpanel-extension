@@ -6,7 +6,7 @@
 //             plus the bridge connection itself.
 import { getSettings, saveSettings, uid, exportDataArchive, importAllData, resetSkillsToDefaults } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
-import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, previewRedaction } from './js/providers.js';
+import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, previewRedaction, traceFlow } from './js/providers.js';
 import {
   applyOAuthPreset,
   connectOAuthEndpoint,
@@ -1718,9 +1718,10 @@ function renderPrefs() {
   $('priv-det-number').checked = dt.number !== false;
   const showDet = $('priv-mode').value === 'model';
   $('priv-detection').classList.toggle('hidden', !showDet);
-  // The redaction tester works in BOTH "patterns + dictionary" and "AI detection"
-  // modes — show it whenever redaction is on.
-  $('priv-test').classList.toggle('hidden', $('priv-mode').value === 'off');
+  // The end-to-end flow tester works in BOTH "patterns + dictionary" and "AI
+  // detection" modes — show it whenever redaction is on.
+  $('priv-flow').classList.toggle('hidden', $('priv-mode').value === 'off');
+  populateFlowModel();
   populateDetTargets(det.targetId);
   if (showDet && $('priv-det-backend').value === 'agent') populateDetModels(det.targetId, det.model);
   updateDetVis();
@@ -1772,25 +1773,77 @@ function updateDetVis() {
   if (note) note.classList.toggle('hidden', b === 'off');
 }
 
-// Test the configured detector against a fixed sample so the user can confirm it's
-// reachable and actually extracting entities (mirrors the API/agent Test buttons).
-async function testDetector() {
-  const out = $('priv-det-test-out');
-  if (out) out.textContent = 'Testing…';
-  await savePrefs(); // persist the current config first
-  const typed = (($('priv-det-test-input') && $('priv-det-test-input').value) || '').trim();
-  const sample = typed || 'My name is Jordan Blake, I live in Austin. Email jordan@example.com, phone 234-444-4455.';
+// Privacy → "Test end-to-end": run one prompt through the whole pipeline and show it
+// as a left→right flow (prompt → detected → model sees → tools receive → reply → you
+// see), so the user can compare entity toggles / redact-vs-pseudonymize choices.
+function flowTargetId() {
+  const name = (($('priv-flow-model') && $('priv-flow-model').value) || '').trim();
+  const t = skillTargets().find((x) => x.name === name);
+  return t ? t.id : '';
+}
+
+function populateFlowModel() {
+  const input = $('priv-flow-model');
+  if (!input) return;
+  const targets = skillTargets();
+  wireCombobox(input, targets.map((t) => t.name), input.value || (targets[0] && targets[0].name) || '',
+    targets.length ? 'Model to run (a configured API / agent)' : 'No APIs / agents configured');
+}
+
+function flowCard(n, title, bodyHtml, cls = '') {
+  return `<div class="flow-card ${cls}"><div class="flow-card-h"><span class="flow-n">${n}</span>${escapeHtml(title)}</div><div class="flow-card-b">${bodyHtml}</div></div>`;
+}
+
+function renderFlow(t, withModel) {
+  const esc = (s) => escapeHtml(String(s == null ? '' : s));
+  const cards = [];
+  cards.push(flowCard(1, 'Your prompt', `<div class="flow-text">${esc(t.input)}</div>`));
+  const chips = (t.detected || []).length
+    ? t.detected.map((d) => `<span class="flow-chip">${esc(d.value)}<em>${esc(d.type)}</em></span>`).join('')
+    : '<span class="muted sm">No AI-detected entities (patterns + dictionary still apply).</span>';
+  cards.push(flowCard(2, 'Detected', chips));
+  cards.push(flowCard(3, 'Model sees', `<div class="flow-text">${esc(t.modelSees)}</div>`, 'flow-model'));
+  const maps = (t.spans || []).length
+    ? t.spans.map((s) => `<div class="flow-map"><code>${esc(s.token)}</code> → <b>${esc(s.value)}</b>${s.kind === 'alias' ? ' <em>(pseudonym)</em>' : ''}</div>`).join('')
+    : '<span class="muted sm">Nothing replaced.</span>';
+  cards.push(flowCard(4, 'Tools receive', `<div class="muted sm">Local search &amp; MCP tools get the real values:</div>${maps}`, 'flow-tools'));
+  if (withModel) {
+    const reply = t.error
+      ? `<span class="flow-err">✕ ${esc(t.error)}</span>`
+      : `<div class="flow-text">${esc(t.modelRaw) || '<span class="muted sm">(empty)</span>'}</div>`;
+    cards.push(flowCard(5, 'Model reply', reply, 'flow-model'));
+    cards.push(flowCard(6, 'You see', `<div class="flow-text">${esc(t.youSee) || (t.error ? '—' : '<span class="muted sm">(empty)</span>')}</div>`, 'flow-you'));
+  }
+  $('priv-flow-out').innerHTML = cards.join('<div class="flow-arrow">→</div>');
+}
+
+const FLOW_SAMPLE = 'My name is John. I live in Austin. Email john@adams.com, phone 234-444-4455. Who is the famous president with my name?';
+
+async function previewFlow() {
+  const status = $('priv-flow-status');
+  if (status) status.textContent = 'Redacting…';
+  await savePrefs();
+  const sample = (($('priv-flow-input') && $('priv-flow-input').value) || '').trim() || FLOW_SAMPLE;
   try {
     const { redacted, spans, detector } = await previewRedaction(settings, sample);
-    if (!spans.length && redacted === sample) {
-      if (out) out.textContent = '⚠ Nothing matched. In “patterns + dictionary” mode only secrets (emails, phones, cards, keys) + your dictionary rules are caught — turn on AI detection for names / orgs / locations.';
-      return;
-    }
-    const list = spans.map((s) => `${s.value} → ${s.token}${s.kind === 'alias' ? ' (alias)' : ''}`).join(', ');
-    const dn = detector.length ? ` · detector found ${detector.length}` : '';
-    if (out) out.textContent = `✓ ${spans.length} replaced${dn}: ${list}  ·  Model sees: ${redacted}`;
+    renderFlow({ input: sample, detected: detector, modelSees: redacted, spans }, false);
+    if (status) status.textContent = `${spans.length} replaced · model not called (preview)`;
   } catch (e) {
-    if (out) out.textContent = `✕ ${(e && e.message) || 'detection failed'}`;
+    if (status) status.textContent = `✕ ${(e && e.message) || 'redaction failed'}`;
+  }
+}
+
+async function runFlow() {
+  const status = $('priv-flow-status');
+  if (status) status.textContent = 'Running…';
+  await savePrefs();
+  const sample = (($('priv-flow-input') && $('priv-flow-input').value) || '').trim() || FLOW_SAMPLE;
+  try {
+    const t = await traceFlow(settings, flowTargetId(), sample);
+    renderFlow(t, true);
+    if (status) status.textContent = t.error ? `model: ✕ ${t.error}` : `${t.spans.length} replaced · model replied`;
+  } catch (e) {
+    if (status) status.textContent = `✕ ${(e && e.message) || 'run failed'}`;
   }
 }
 
@@ -2118,7 +2171,8 @@ function wire() {
   $('priv-det-url').onchange = savePrefs;
   $('priv-det-target').onchange = () => { populateDetModels(detTargetId(), ''); savePrefs(); };
   $('priv-det-tmodel').onchange = savePrefs;
-  $('priv-det-test').onclick = testDetector;
+  $('priv-flow-run').onclick = runFlow;
+  $('priv-flow-preview').onclick = previewFlow;
   $('priv-det-timeout').onchange = savePrefs;
   $('priv-det-person').onchange = savePrefs;
   $('priv-det-org').onchange = savePrefs;

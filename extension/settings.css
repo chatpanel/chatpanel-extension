@@ -71,6 +71,25 @@ body {
 .priv-h { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); font-weight: 700; opacity: .9; }
 .priv-col > .priv-h:first-child { margin-top: 0; }
 @media (max-width: 760px) { .priv-grid { grid-template-columns: 1fr; } }
+/* End-to-end flow visual: horizontally-scrolling cards with arrows between them. */
+.priv-flow { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
+.priv-flow textarea { width: 100%; box-sizing: border-box; }
+.flow-track { display: flex; align-items: stretch; gap: 8px; overflow-x: auto; padding: 12px 2px 6px; }
+.flow-track:empty { display: none; }
+.flow-card { flex: 0 0 210px; min-width: 210px; max-width: 240px; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; background: rgba(124,140,248,.06); overflow: hidden; }
+.flow-card-h { display: flex; align-items: center; gap: 6px; padding: 6px 9px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border-bottom: 1px solid var(--border); }
+.flow-n { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 10px; flex: 0 0 auto; }
+.flow-card-b { padding: 8px 9px; font-size: 12px; line-height: 1.5; overflow-y: auto; max-height: 260px; }
+.flow-card.flow-model { background: rgba(245,158,11,.09); }
+.flow-card.flow-you { background: rgba(34,197,94,.10); }
+.flow-card.flow-tools { background: rgba(56,189,248,.08); }
+.flow-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.flow-arrow { align-self: center; color: var(--muted); font-size: 18px; flex: 0 0 auto; }
+.flow-chip { display: inline-flex; align-items: center; gap: 4px; margin: 0 4px 4px 0; padding: 2px 7px; border-radius: 999px; background: rgba(124,140,248,.16); font-size: 11px; }
+.flow-chip em { font-style: normal; opacity: .7; font-size: 9.5px; text-transform: uppercase; }
+.flow-map { font-family: var(--mono); font-size: 11px; margin: 3px 0; overflow-wrap: anywhere; }
+.flow-map em { font-style: normal; color: var(--accent); }
+.flow-err { color: #f87171; }
 
 /* Fields — label ABOVE control ------------------------------------------- */
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 9px; margin: 13px 0; }

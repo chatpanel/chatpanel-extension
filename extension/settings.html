@@ -303,17 +303,23 @@
               <p class="muted sm">Local history/meeting/page tools always get real values; <strong>Real values</strong>
                 also lets MCP tools resolve them (the value reaches that MCP server). <strong>Redact remote</strong> keeps
                 PII off third-party MCP servers.</p>
-              <div id="priv-test" class="field hidden">
-                <h3 class="priv-h">Test</h3>
-                <label class="sub">Paste text to see exactly what the model would receive.</label>
-                <textarea id="priv-det-test-input" rows="3"
-                  placeholder="My name is Jordan Blake, I live in Austin. Email jordan@example.com, phone 234-444-4455."></textarea>
-                <div class="row" style="margin-top:6px"><label></label>
-                  <button type="button" id="priv-det-test" class="btn">Test redaction</button>
-                </div>
-                <p class="muted sm" id="priv-det-test-out" style="margin:4px 0 0"></p>
-              </div>
             </div>
+          </div>
+          <div id="priv-flow" class="priv-flow hidden">
+            <h3 class="priv-h">Test end-to-end</h3>
+            <p class="muted sm">Paste a prompt, pick a model, and Run to see the whole flow left → right: what's
+              detected, what the model sees, what tools receive, the model's reply, and what you see. Tweak entities /
+              redact vs pseudonymize and re-run to compare.</p>
+            <textarea id="priv-flow-input" rows="2"
+              placeholder="My name is John. I live in Austin. Who is the famous president with my name?"></textarea>
+            <div class="row" style="margin-top:6px">
+              <input id="priv-flow-model" placeholder="Model to run (a configured API / agent)" autocomplete="off"
+                style="flex:1 1 200px" />
+              <button type="button" id="priv-flow-run" class="btn primary">Run ▶</button>
+              <button type="button" id="priv-flow-preview" class="btn">Preview redaction only</button>
+            </div>
+            <p class="muted sm" id="priv-flow-status" style="margin:6px 0 0"></p>
+            <div id="priv-flow-out" class="flow-track"></div>
           </div>
           <p class="muted sm" id="priv-pro-note">⭐ <strong>Pro</strong> unlocks name/org redaction, page/meeting/history /
             tool-result scope, an unlimited dictionary, and local-model detection. Free covers secrets (emails, keys,
