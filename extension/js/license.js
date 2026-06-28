@@ -94,7 +94,7 @@ export const PRO_FEATURES = {
   unlimitedAgents: 'Unlimited custom agents',
   customSkills: 'Create & edit your own skills',
   advancedAgent: 'Per-agent system prompts & working directories',
-  structuredInsert: 'Native diagram insert for canvas apps (Excalidraw) — no pixel-drawing',
+  structuredInsert: 'Clean diagrams on Excalidraw, draw.io & tldraw — shapes placed as data, not pixel-drawn',
   exportChats: 'Export conversations as Markdown',
   liveMeetings: 'Live meeting scribe — capture & summarize Zoom, Google Meet, Teams & Webex',
   watch: 'Watch a page & act on changes — the agent reacts as the page updates',

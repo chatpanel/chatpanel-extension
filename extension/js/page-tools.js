@@ -28,11 +28,17 @@ import {
 // but the hard rule overriding everything is step 4/6: judge "done" from the
 // SCREENSHOT, never from your plan, and never fabricate a result.
 export const PAGE_AUTOMATION_SYSTEM =
-  'PREFER the ChatPanel browser tools provided here (inspect_page, screenshot, read_canvas, ' +
-  'structured_insert, click_element, click_by_text, fill_form, scroll, …) to see and act on this ' +
-  'page — they are purpose-built for this tab and connected to it, so use them FIRST. Only if they ' +
-  'are genuinely unavailable or failing should you fall back to any other/native browser tool you ' +
-  'may have.\n' +
+  'USE ONLY the ChatPanel browser tools provided here (inspect_page, screenshot, read_canvas, ' +
+  'structured_insert, click_element, click_by_text, click_at, type_text, press_key, fill_form, ' +
+  'scroll, …) to see and act on this page — they are the ONLY tools connected to the user’s real, ' +
+  'logged-in browser tab.\n' +
+  'CRITICAL: do NOT use any built-in / in-app / native browser, computer-use, or an MCP like ' +
+  '`agent.browsers` / a node REPL to drive the page. Those open a SEPARATE browser that is NOT wired ' +
+  'to the user’s Chrome — they will report no tabs (`agent.browsers.list()` → `[]`, "Browser is not ' +
+  'available"). If you EVER see an empty browser list or "no browser available", that means you reached ' +
+  'for the WRONG browser: do NOT stop — immediately switch to the ChatPanel tools above (start with ' +
+  'inspect_page or screenshot), which ARE connected to this tab. Never conclude the page can’t be ' +
+  'controlled just because a non-ChatPanel browser came back empty.\n' +
   'You drive the current browser tab to complete the user’s request. Work from a PLAN and the ' +
   'tools’ TEXT results — you do NOT get a screenshot after every action. Take a screenshot only ' +
   'when you genuinely need to SEE the page, and ONCE at the end to validate. This keeps you fast ' +
@@ -47,6 +53,12 @@ export const PAGE_AUTOMATION_SYSTEM =
   '(city/airport); click_element/click_by_text for buttons. On a structured app (e.g. Excalidraw) ' +
   'PREFER structured_insert — one data call, exact coordinates, no pixel-dragging. Each tool returns ' +
   'a TEXT result telling you what landed; proceed on that without a screenshot.\n' +
+  '3a) COMMIT cell edits in spreadsheets (Google Sheets, Excel online): after type_text into a cell you ' +
+  'MUST commit it with press_key Enter (or Tab) — typing alone leaves the cell in EDIT mode and the ' +
+  'value/formula is NOT applied. Typing a formula ("=…") opens a formula-autocomplete popup that can ' +
+  'SWALLOW the first Enter, so if the cell is still in edit mode press Enter ONCE MORE (repeated Enter ' +
+  'is allowed and expected here — it is not a loop). A committed cell shows the COMPUTED value, not the ' +
+  'raw "=…" text. Do not give up after a single Enter; press again, then validate.\n' +
   '4) VALIDATE — at the END, and EARLY on any failure. When the checklist is complete, take ONE ' +
   'screenshot and check every item against what is on screen. A tool replying "ok"/"verified" means ' +
   'the action LANDED — the end screenshot (or a tool’s verified:true) is your proof the GOAL is met. ' +

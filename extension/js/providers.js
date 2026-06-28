@@ -63,17 +63,38 @@ function blockedToolResult(name, message, extra = {}) {
   });
 }
 
-// Some tools are meant to be called repeatedly (e.g. scrolling to the bottom of
-// a long page). Treat such a call as progress — clearing its repeat count — as
-// long as it isn't a no-op. For scroll, "more page below" (atBottom === false) is
-// progress; once atBottom is true the repeat guard is allowed to bite again.
+// Tools whose whole job is to deliver ONE discrete physical input — a keystroke,
+// a click, a stroke. Pressing Enter/Tab to commit a cell and then again for the
+// next one, or clicking the same spot twice, is NORMAL use, not a stuck loop: the
+// input is identical by nature. So a SUCCESSFUL application counts as progress and
+// clears the repeat count, leaving MAX_TOOL_STEPS as the overall backstop. A
+// FAILING call (ok:false — unknown key, nothing at point, …) does NOT reset, so a
+// genuinely stuck call still trips the guard.
+const INPUT_PROGRESS_TOOLS = new Set([
+  'press_key', 'type_text', 'click_at', 'click_mark', 'draw_path', 'click_element', 'click_by_text',
+]);
+
+// Some tools are meant to be called repeatedly. Treat such a call as progress —
+// clearing its repeat count — as long as it isn't a no-op. For scroll, "more page
+// below" (atBottom === false) is progress; once atBottom is true the repeat guard
+// is allowed to bite again. For discrete-input tools, any successful application
+// (ok === true) is progress (see INPUT_PROGRESS_TOOLS above).
 function toolMadeProgress(name, result) {
-  if (name !== 'scroll') return false;
-  try {
-    return JSON.parse(resultText(result))?.atBottom === false;
-  } catch {
-    return false;
+  if (name === 'scroll') {
+    try {
+      return JSON.parse(resultText(result))?.atBottom === false;
+    } catch {
+      return false;
+    }
   }
+  if (INPUT_PROGRESS_TOOLS.has(name)) {
+    try {
+      return JSON.parse(resultText(result))?.ok === true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 export function createToolLoopGuard({
