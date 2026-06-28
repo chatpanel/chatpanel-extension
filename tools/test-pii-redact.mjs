@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 import {
-  createVault, redactText, restoreText, hasToken, vaultToJSON, vaultFromJSON,
+  createVault, redactText, restoreText, restoreWithAliases, hasToken, vaultToJSON, vaultFromJSON,
 } from '../extension/js/pii-redact.js';
 
 // --- basic deterministic tier: emails / phones / ip / ssn / key / card ---
@@ -94,6 +94,17 @@ import {
   assert.equal(red, 'Alex from [[COMPANY_1]], badge EID');
   // restore brings back only the reversible one; the aliases are permanent
   assert.equal(restoreText(red, v), 'Alex from Acme, badge EID');
+}
+
+// --- pseudonymize: reversible for LOCAL tool args (search), permanent for the reply ---
+{
+  const v = createVault();
+  const red = redactText('search John', v, { tier: 'basic', dictionary: [{ value: 'John', alias: 'Alex' }] });
+  assert.equal(red, 'search Alex', 'model sees the alias');
+  assert.equal(restoreText(red, v), 'search Alex', 'reply keeps the alias (permanent)');
+  assert.equal(restoreWithAliases(red, v), 'search John', 'local tool args map the alias back to the real value');
+  const v2 = vaultFromJSON(vaultToJSON(v));
+  assert.equal(restoreWithAliases('Alex', v2), 'John', 'alias map survives serialize/deserialize');
 }
 
 // --- a broken user regex must not throw ---

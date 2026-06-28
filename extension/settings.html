@@ -275,6 +275,13 @@
           <label class="check"><input type="checkbox" id="priv-scope-context" /> Page &amp; meeting context</label>
           <label class="check"><input type="checkbox" id="priv-scope-history" /> History search results</label>
           <label class="check"><input type="checkbox" id="priv-scope-tools" /> Tool results</label>
+          <div class="row" style="margin-top:8px"><label>Tools receive</label>
+            <select id="priv-tooldata">
+              <option value="real">Real values — search &amp; actions work</option>
+              <option value="redactRemote">Redact remote (MCP) tools</option>
+            </select>
+          </div>
+          <p class="muted">Local history/meeting/page tools always get real values. <strong>Real values</strong> also lets MCP tools resolve them (e.g. a maps lookup for "Austin → Dallas" works) — at the cost of that value reaching the MCP server. <strong>Redact remote</strong> keeps PII off third-party MCP servers (remote lookups of redacted entities won't resolve).</p>
           <div class="field" style="margin-top:10px">
             <label>Custom dictionary <span class="sub">— one per line. <code>=> LABEL</code> redacts reversibly
                 (<code>John => PERSON</code> → model sees <code>[[PERSON_1]]</code>, you still see "John").

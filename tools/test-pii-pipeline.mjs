@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createVault } from '../extension/js/pii-redact.js';
 import {
   redactionEnabled, effectiveTier, redactOutbound, redactToolResult, makeStreamRestorer, restore,
-  redactionFromSettings, setPiiEntitlement, redactOnce,
+  redactionFromSettings, setPiiEntitlement, redactOnce, restoreDeep,
 } from '../extension/js/pii-pipeline.js';
 
 // --- enable + Pro gating of the entity tier ---
@@ -143,6 +143,19 @@ const entities = [{ value: 'Alex Rivera', type: 'PERSON' }];
   assert.match(text, /\[\[PHONE_1\]\]/, 'redactOnce redacts a phone in a bare string');
   assert.equal(restore(text, vault), 'call me at 832-394-2334', 'redactOnce output restores');
   assert.deepEqual(redactOnce('x', { ui: { piiRedaction: { mode: 'off' } } }), { text: 'x', vault: null }, 'disabled -> passthrough');
+}
+
+// --- restoreDeep (tool args) undoes BOTH tokens and pseudonyms → local search hits real data ---
+{
+  const vault = createVault();
+  redactOutbound({
+    messages: [{ role: 'user', content: 'John at john@example.com' }],
+    vault,
+    cfg: { mode: 'deterministic', tier: 'basic', dictionary: [{ value: 'John', alias: 'Robin' }] },
+    isPro: true,
+  });
+  // the model would call a local history/meeting tool using the alias it saw
+  assert.equal(restoreDeep({ query: 'Robin' }, vault).query, 'John', 'pseudonym maps back for local tool args');
 }
 
 console.log('pii pipeline tests passed');

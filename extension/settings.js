@@ -1689,6 +1689,7 @@ function renderPrefs() {
   $('priv-scope-context').checked = psc.context !== false;
   $('priv-scope-history').checked = psc.history !== false;
   $('priv-scope-tools').checked = psc.toolResults !== false;
+  $('priv-tooldata').value = pii.toolData === 'redactRemote' ? 'redactRemote' : 'real';
   $('priv-dictionary').value = piiDictToText(pii.dictionary || []);
   // Gate the Pro controls: Free = deterministic secrets on chat only. Pro unlocks
   // the full (name/org) tier, the extra scopes, and an unlimited dictionary.
@@ -1749,6 +1750,7 @@ async function savePrefs() {
       history: $('priv-scope-history').checked,
       toolResults: $('priv-scope-tools').checked,
     },
+    toolData: $('priv-tooldata').value,
     dictionary: piiTextToDict($('priv-dictionary').value),
     detection: {
       ...(settings.ui.piiRedaction?.detection || {}),
@@ -2033,6 +2035,7 @@ function wire() {
   $('priv-scope-context').onchange = savePrefs;
   $('priv-scope-history').onchange = savePrefs;
   $('priv-scope-tools').onchange = savePrefs;
+  $('priv-tooldata').onchange = savePrefs;
   $('priv-dictionary').onchange = savePrefs;
   $('priv-det-backend').onchange = () => { savePrefs(); renderPrefs(); };
   $('priv-det-url').onchange = savePrefs;

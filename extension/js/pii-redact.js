@@ -23,11 +23,17 @@ const TOKEN_RE = /\[\[([A-Z][A-Z0-9]*)_(\d+)\]\]/g;
 // A vault is the per-conversation mapping between placeholders and originals. Keep
 // one per conversation so PERSON_1 means the same entity across turns.
 export function createVault() {
-  return { byToken: new Map(), byValue: new Map(), counts: new Map() };
+  // `aliases` maps a pseudonym (e.g. "Alex") back to the real value (e.g. "Suresh")
+  // so LOCAL tool calls (history/meeting search) can run on real data. The reply
+  // restorer ignores it — pseudonyms stay permanent in the user's view.
+  return { byToken: new Map(), byValue: new Map(), counts: new Map(), aliases: new Map() };
 }
 
 export function vaultToJSON(vault) {
-  return { entries: [...(vault?.byToken || new Map())].map(([token, value]) => ({ token, value })) };
+  return {
+    entries: [...(vault?.byToken || new Map())].map(([token, value]) => ({ token, value })),
+    aliases: [...(vault?.aliases || new Map())].map(([alias, value]) => ({ alias, value })),
+  };
 }
 
 export function vaultFromJSON(data) {
@@ -38,6 +44,7 @@ export function vaultFromJSON(data) {
     vault.byValue.set(value, token);
     if (m) vault.counts.set(m[1], Math.max(vault.counts.get(m[1]) || 0, Number(m[2])));
   }
+  for (const { alias, value } of data?.aliases || []) vault.aliases.set(alias, value);
   return vault;
 }
 
@@ -128,7 +135,10 @@ export function redactText(text, vault, {
         : (d.value ? new RegExp(`(?<![\\w])${escapeRegex(d.value)}(?![\\w])`, 'gi') : null);
       if (!re) continue;
       if (d.alias != null && d.alias !== '') {
-        out = out.replace(re, () => d.alias); // pseudonymize — not vaulted, not restored
+        out = out.replace(re, () => d.alias); // pseudonymize: model + reply see the alias…
+        // …but record alias→original so LOCAL tool args (history/meeting search) map
+        // back to the real value. Local lookups must hit real data; only the model is blinded.
+        if (d.value) v.aliases.set(d.alias, d.value);
       } else {
         out = out.replace(re, (m) => tokenFor(v, d.type || (d.pattern ? 'PII' : 'TERM'), d.pattern ? m : d.value));
       }
@@ -159,6 +169,20 @@ export function redactText(text, vault, {
 export function restoreText(text, vault) {
   if (text == null || !vault) return text;
   return String(text).replace(TOKEN_RE, (m) => (vault.byToken.has(m) ? vault.byToken.get(m) : m));
+}
+
+// Restore for LOCAL use only — e.g. tool-call args that hit on-device history /
+// meeting search. Undoes reversible tokens AND pseudonyms, so local lookups run on
+// the real values. NOT used for the user-facing reply (pseudonyms stay there).
+export function restoreWithAliases(text, vault) {
+  let out = restoreText(text, vault);
+  if (vault?.aliases?.size) {
+    for (const [alias, real] of vault.aliases) {
+      if (!alias) continue;
+      out = out.replace(new RegExp(`(?<![\\w])${escapeRegex(alias)}(?![\\w])`, 'g'), () => real);
+    }
+  }
+  return out;
 }
 
 // True if the text still contains any redaction placeholder (useful for streaming

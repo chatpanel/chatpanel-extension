@@ -745,7 +745,18 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
     const base = tools.execute.bind(tools);
     safeTools = {
       ...tools,
-      execute: async (name, input, meta) => redactResult(await base(name, restoreDeep(input, vault), meta), ctx),
+      // Local tools (history/meeting/page) ALWAYS get the REAL values — they run
+      // on-device and search/retrieval must work (e.g. Wikipedia for "Gandhi" needs
+      // "Gandhi", not a placeholder). Remote MCP tools get real values too BY DEFAULT
+      // for the same reason — unless the user chose "redact remote tools" (Privacy →
+      // Tools receive), which keeps PII off third-party MCP servers at the cost of
+      // remote lookups on redacted entities. The model is always blinded; results are
+      // re-redacted before going back to it.
+      execute: async (name, input, meta) => {
+        const keepRedacted = activeCfg.toolData === 'redactRemote' && String(name || '').startsWith('mcp_');
+        const toolInput = keepRedacted ? input : restoreDeep(input, vault);
+        return redactResult(await base(name, toolInput, meta), ctx);
+      },
     };
   }
   const full = await dispatchStream({

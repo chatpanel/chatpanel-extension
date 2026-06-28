@@ -170,6 +170,11 @@ export function defaultSettings() {
         tier: 'basic',
         scope: { chat: true, context: true, history: true, toolResults: true },
         sources: { self: true, participants: true, contacts: false },
+        // How tools receive redacted values. Local tools (history/meeting/page) always
+        // get the real value; this controls REMOTE MCP tools: 'real' = send real values
+        // (search/retrieval work, but the value reaches the MCP server) | 'redactRemote'
+        // = MCP tools get placeholders (PII stays off third-party servers).
+        toolData: 'real',
         dictionary: [],
         // Phase 2: configurable LOCAL entity detector (auto-redact names/orgs/IDs
         // with no dictionary). backend 'off' | 'endpoint' (spaCy/Presidio/any

@@ -13,7 +13,7 @@
 // adds no latency. The phase-2 model-detection pass simply contributes more
 // entities into the same vault, so nothing here changes when it lands.
 
-import { createVault, redactText, restoreText } from './pii-redact.js';
+import { createVault, redactText, restoreText, restoreWithAliases } from './pii-redact.js';
 
 export function redactionEnabled(cfg) {
   return !!(cfg && cfg.mode && cfg.mode !== 'off');
@@ -150,7 +150,9 @@ export function restore(text, vault) {
 // tools must run on the REAL values). Walks strings/arrays/objects.
 export function restoreDeep(value, vault) {
   if (!vault) return value;
-  if (typeof value === 'string') return restoreText(value, vault);
+  // restoreWithAliases (not restoreText): tool args run LOCALLY, so undo pseudonyms
+  // too — the on-device search must hit real data; only the model stays blinded.
+  if (typeof value === 'string') return restoreWithAliases(value, vault);
   if (Array.isArray(value)) return value.map((v) => restoreDeep(v, vault));
   if (value && typeof value === 'object') {
     const out = {};
