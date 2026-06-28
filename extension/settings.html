@@ -386,6 +386,11 @@
               </div>
               <label class="check"><input type="checkbox" id="pref-enter" /> Send message on Enter (Shift+Enter for newline)</label>
               <label class="check"><input type="checkbox" id="pref-stream" /> Stream responses as they arrive</label>
+              <div class="row"><label>Max tools per turn <span class="sub">— fewer = faster; many enabled MCP servers
+                  mean dozens of tools. Local page/history tools are always kept; only the most relevant remote tools are
+                  sent. 0 = no limit.</span></label>
+                <input type="number" id="pref-max-tools" min="0" max="200" placeholder="24" style="max-width:120px" />
+              </div>
               <div class="pref-item">
                 <label class="check">
                   <input type="checkbox" id="pref-topic-extract" />

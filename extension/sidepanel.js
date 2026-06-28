@@ -52,6 +52,7 @@ import { assistPrompt } from './js/assist.js';
 import { PAGE_TOOL_SPECS, makePageToolExecutor, PAGE_AUTOMATION_SYSTEM } from './js/page-tools.js';
 import { detectCanvasAdapter } from './js/canvas-adapters.js';
 import { buildToolset } from './js/toolset.js';
+import { narrowToolset, isLocalToolSpec } from './js/tool-select.js';
 import { getMcpProviders } from './js/mcp-manager.js';
 import { upsertMeetingChatAttachment } from './js/meeting-chat-context.js';
 import { historyToolProvider, inferHistoryScopeFromQuery, parseHistoryCommand, retrieveHistory } from './js/history-rag.js';
@@ -287,7 +288,12 @@ async function toolsetFor(
     });
     providers.push(...mcps);
   }
-  const toolset = buildToolset(providers);
+  let toolset = buildToolset(providers);
+  // Cap tools per turn so dozens of enabled MCP tools don't bloat the prompt / slow
+  // the model. Local page/history tools are always kept; remote MCP tools beyond the
+  // cap are dropped by lexical relevance to this turn's message. 0 = no limit.
+  const maxTools = Number(state.settings?.ui?.maxToolsPerTurn) || 0;
+  if (toolset && maxTools) toolset = narrowToolset(toolset, userText, { cap: maxTools, keep: isLocalToolSpec });
   const systemSkillRun =
     turnMcpMode === MCP_TURN_MODES.ON && skillRun
       ? { ...skillRun, mcp: { mode: 'default', serverIds: [] } }

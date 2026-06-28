@@ -159,6 +159,11 @@ export function defaultSettings() {
       // default; the agent only calls them when a question refers to prior work,
       // and meeting access still requires Pro. Set false to never offer them.
       historyTools: true,
+      // Cap how many tools are advertised to the model per turn — many enabled MCP
+      // servers can mean dozens of tools, which bloats the prompt and slows the model.
+      // Local page/history tools are always kept; remote MCP tools beyond the cap are
+      // dropped by lexical relevance to the message. 0 = no limit.
+      maxToolsPerTurn: 24,
       // Reversible PII redaction (Privacy tab). Strips sensitive values out of
       // everything sent to a model and reconstructs them when rendering the reply.
       // Off by default (opt-in). mode: 'off' | 'deterministic' | 'model'

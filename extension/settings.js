@@ -10,6 +10,7 @@ import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModel
 import { buildToolset } from './js/toolset.js';
 import { getMcpProviders } from './js/mcp-manager.js';
 import { historyToolProvider } from './js/history-rag.js';
+import { narrowToolset, isLocalToolSpec } from './js/tool-select.js';
 import {
   applyOAuthPreset,
   connectOAuthEndpoint,
@@ -1662,6 +1663,7 @@ function renderPrefs() {
   $('pref-theme').value = settings.ui.theme || 'system';
   $('pref-enter').checked = settings.ui.sendOnEnter !== false;
   $('pref-stream').checked = settings.ui.streamResponses !== false;
+  $('pref-max-tools').value = String(settings.ui.maxToolsPerTurn ?? 24);
   const topicCfg = settings.ui.topicExtraction || { enabled: true, targetId: '' };
   $('pref-topic-extract').checked = topicCfg.enabled !== false;
   const topicTarget = $('pref-topic-target');
@@ -1895,25 +1897,8 @@ async function buildHarnessTools() {
   return buildToolset(providers);
 }
 
-// Auto-narrow armed tools to the few most relevant to the prompt — so naming a tool
-// ("use wiki search") surfaces it without flooding the model with all of them. Pure
-// lexical match (no extra model call): prompt words vs each tool's name + description.
-function narrowToolset(toolset, prompt, k = 16) {
-  if (!toolset || !toolset.specs || toolset.specs.length <= k) return toolset;
-  const q = String(prompt || '').toLowerCase();
-  const words = [...new Set(q.split(/[^a-z0-9]+/).filter((w) => w.length > 2))];
-  const score = (s) => {
-    const hay = `${s.name || ''} ${s.description || ''}`.toLowerCase();
-    let n = 0;
-    for (const w of words) if (hay.includes(w)) n += 1;
-    for (const part of String(s.name || '').toLowerCase().split(/[^a-z0-9]+/)) {
-      if (part.length > 2 && q.includes(part)) n += 2; // tool name explicitly in the prompt
-    }
-    return n;
-  };
-  const ranked = [...toolset.specs].map((s) => ({ s, n: score(s) })).sort((a, b) => b.n - a.n);
-  return { ...toolset, specs: ranked.slice(0, k).map((x) => x.s) };
-}
+// (Tool relevance ranking + narrowing live in ./js/tool-select.js — shared with the
+// production chat path so the harness behaves exactly like a real turn.)
 
 async function runFlow() {
   const status = $('priv-flow-status');
@@ -1923,7 +1908,7 @@ async function runFlow() {
   try {
     const full = await buildHarnessTools();
     const available = (full && full.specs && full.specs.length) || 0;
-    const tools = narrowToolset(full, sample);
+    const tools = narrowToolset(full, sample, { cap: Number(settings.ui?.maxToolsPerTurn) || 16, keep: isLocalToolSpec });
     const armed = (tools && tools.specs && tools.specs.length) || 0;
     if (status) status.textContent = `Running with ${armed} tool${armed === 1 ? '' : 's'}…`;
     const t = await traceFlow(settings, flowTargetId(), sample, { tools });
@@ -1954,6 +1939,7 @@ async function savePrefs() {
   settings.ui.theme = $('pref-theme').value;
   settings.ui.sendOnEnter = $('pref-enter').checked;
   settings.ui.streamResponses = $('pref-stream').checked;
+  settings.ui.maxToolsPerTurn = Math.max(0, Number($('pref-max-tools').value) || 0);
   settings.ui.topicExtraction = {
     enabled: $('pref-topic-extract').checked,
     targetId: $('pref-topic-target').value,
@@ -2250,6 +2236,7 @@ function wire() {
   $('pref-theme').onchange = savePrefs;
   $('pref-enter').onchange = savePrefs;
   $('pref-stream').onchange = savePrefs;
+  $('pref-max-tools').onchange = savePrefs;
   $('pref-topic-extract').onchange = savePrefs;
   $('pref-topic-target').onchange = savePrefs;
   $('pref-live-notes').onchange = savePrefs;
