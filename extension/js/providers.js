@@ -798,7 +798,13 @@ export async function previewRedaction(settings, sample) {
   const detector = base.mode === 'model' ? await runDetectorTest(settings, text) : []; // strict — surfaces errors
   const vault = createVault();
   const redacted = redactText(text, vault, { tier, entities: detector, dictionary: base.dictionary || [] });
-  const spans = [...vault.byToken].map(([token, value]) => ({ token, value }));
+  // Report the WHOLE pipeline: reversible redactions (value → [[TOKEN]]) AND
+  // pseudonyms (value → alias). Pseudonyms aren't tokenized, so they live in
+  // vault.aliases (alias → original) — without these the preview misses them.
+  const spans = [
+    ...[...vault.byToken].map(([token, value]) => ({ token, value, kind: 'redact' })),
+    ...[...vault.aliases].map(([alias, value]) => ({ token: alias, value, kind: 'alias' })),
+  ];
   return { redacted, spans, detector };
 }
 

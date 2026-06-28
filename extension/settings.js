@@ -1782,13 +1782,13 @@ async function testDetector() {
   const sample = typed || 'My name is Jordan Blake, I live in Austin. Email jordan@example.com, phone 234-444-4455.';
   try {
     const { redacted, spans, detector } = await previewRedaction(settings, sample);
-    if (!spans.length) {
-      if (out) out.textContent = '⚠ Nothing was redacted. In “patterns + dictionary” mode only secrets (emails, phones, cards, keys) + your dictionary are caught — turn on AI detection for names / orgs / locations.';
+    if (!spans.length && redacted === sample) {
+      if (out) out.textContent = '⚠ Nothing matched. In “patterns + dictionary” mode only secrets (emails, phones, cards, keys) + your dictionary rules are caught — turn on AI detection for names / orgs / locations.';
       return;
     }
-    const list = spans.map((s) => `${s.value} → ${s.token}`).join(', ');
-    const dn = detector.length ? ` · detector added ${detector.length}` : '';
-    if (out) out.textContent = `✓ ${spans.length} redacted${dn}: ${list}  ·  Model sees: ${redacted}`;
+    const list = spans.map((s) => `${s.value} → ${s.token}${s.kind === 'alias' ? ' (alias)' : ''}`).join(', ');
+    const dn = detector.length ? ` · detector found ${detector.length}` : '';
+    if (out) out.textContent = `✓ ${spans.length} replaced${dn}: ${list}  ·  Model sees: ${redacted}`;
   } catch (e) {
     if (out) out.textContent = `✕ ${(e && e.message) || 'detection failed'}`;
   }
