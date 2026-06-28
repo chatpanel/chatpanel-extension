@@ -16,6 +16,7 @@ import {
   redactionEnabled, redactionFromSettings, redactOutbound, redactResult, restoreDeep, makeStreamRestorer, restore,
 } from './pii-pipeline.js';
 import { detectEntities, normalizeEntities, EXTRACT_SYS, parseJsonLoose, withTimeout } from './pii-detect.js';
+import { createVault, redactText } from './pii-redact.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
 import { getTarget, resolveTarget } from './store.js';
 import { authHeadersForEndpoint } from './oauth.js';
@@ -758,6 +759,22 @@ export async function runDetectorTest(settings, sample) {
   // local model / CLI isn't misreported as "no entities".
   const cfg = { ...base, detection: { ...(base.detection || {}), timeoutMs: Math.max(Number(base.detection && base.detection.timeoutMs) || 0, 30000) } };
   return detectForChat(String(sample || ''), cfg, settings, undefined, { strict: true });
+}
+
+// Settings-page helper: preview the FULL outbound redaction of a sample — the
+// configured detector (names/orgs/locations) PLUS the always-on deterministic layer
+// (emails, phones, cards, keys, IPs) PLUS the user dictionary — so the Test button
+// shows exactly what the model would see, not just the detector's raw output. (A
+// spaCy NER won't emit EMAIL/PHONE, but those are still redacted here.)
+export async function previewRedaction(settings, sample) {
+  const base = (settings && settings.ui && settings.ui.piiRedaction) || {};
+  const text = String(sample || '');
+  const tier = base.mode === 'model' ? 'full' : 'basic';
+  const detector = base.mode === 'model' ? await runDetectorTest(settings, text) : []; // strict — surfaces errors
+  const vault = createVault();
+  const redacted = redactText(text, vault, { tier, entities: detector, dictionary: base.dictionary || [] });
+  const spans = [...vault.byToken].map(([token, value]) => ({ token, value }));
+  return { redacted, spans, detector };
 }
 
 // Public entry. When `redaction` ({ vault, cfg, isPro, entities }) is enabled, it

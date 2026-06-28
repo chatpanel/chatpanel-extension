@@ -259,7 +259,6 @@
               <select id="priv-det-backend">
                 <option value="off">Off</option>
                 <option value="endpoint">Local NER service (spaCy / Presidio)</option>
-                <option value="openai">Local LLM by URL (OpenAI-compatible)</option>
                 <option value="agent">A configured API / Agent…</option>
               </select>
             </div>
@@ -270,24 +269,13 @@
               <input id="priv-det-tmodel" placeholder="Search or type a model id" autocomplete="off" />
             </div>
             <div class="row" id="priv-det-url-row"><label>Detector URL</label><input id="priv-det-url"
-                placeholder="http://127.0.0.1:9009/ner  ·  or LLM base http://127.0.0.1:8080" /></div>
-            <div class="row" id="priv-det-model-row"><label>Detector model</label><input id="priv-det-model"
-                placeholder="LLM backend only — e.g. gemma-4-26b" /></div>
+                placeholder="http://127.0.0.1:9009/ner" /></div>
             <div class="row"><label>Timeout (ms)</label><input id="priv-det-timeout" type="number" min="200" max="10000"
                 placeholder="1500" /></div>
-            <div class="field" style="margin-top:6px">
-              <label>Test text <span class="sub">— optional; defaults to a built-in sample</span></label>
-              <textarea id="priv-det-test-input" rows="2"
-                placeholder="Type text with names / emails / numbers to test the detector…"></textarea>
-            </div>
-            <div class="row"><label></label>
-              <button type="button" id="priv-det-test" class="btn">Test detector</button>
-            </div>
-            <p class="muted" id="priv-det-test-out" style="margin:4px 0 0"></p>
             <p class="muted" id="priv-det-agent-note">Detection runs on <strong>every message</strong>, so it needs to be
-              <strong>fast and local</strong> — a NER service or a small local LLM (e.g. Ollama) is ideal, and your text
-              stays on your machine. CLI agents (Claude Code / Codex) are slow to cold-start and tend to reply with prose
-              instead of JSON, so they're not recommended as detectors.</p>
+              <strong>fast and local</strong> — a NER service or a configured local LLM (e.g. Ollama) is ideal, and your
+              text stays on your machine. CLI agents (Claude Code / Codex) are slow to cold-start and tend to reply with
+              prose instead of JSON, so they're not recommended as detectors.</p>
             <p class="muted" style="margin:8px 0 2px">Redact these detected types <span class="sub">(emails &amp; phones
                 always redact)</span>:</p>
             <label class="check"><input type="checkbox" id="priv-det-person" /> People (names)</label>
@@ -318,6 +306,15 @@
                 "Alex", never reversed). A plain term or <code>/regex/flags</code> also works.</span></label>
             <textarea id="priv-dictionary" rows="6"
               placeholder="John => PERSON&#10;Acme Corp -> Globex&#10;/EMP-\d+/ => TICKET"></textarea>
+          </div>
+          <div id="priv-test" class="field" style="margin-top:10px">
+            <label>Test redaction <span class="sub">— paste text to see exactly what the model would receive</span></label>
+            <textarea id="priv-det-test-input" rows="2"
+              placeholder="My name is Jordan Blake, I live in Austin. Email jordan@example.com, phone 234-444-4455."></textarea>
+            <div class="row" style="margin-top:6px"><label></label>
+              <button type="button" id="priv-det-test" class="btn">Test redaction</button>
+            </div>
+            <p class="muted" id="priv-det-test-out" style="margin:4px 0 0"></p>
           </div>
           <p class="muted" id="priv-pro-note">⭐ <strong>Pro</strong> unlocks name/org redaction,
             page/meeting/history/tool-result scope, an unlimited dictionary, and local-model detection. Free covers secrets

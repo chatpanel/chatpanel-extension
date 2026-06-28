@@ -6,7 +6,7 @@
 //             plus the bridge connection itself.
 import { getSettings, saveSettings, uid, exportDataArchive, importAllData, resetSkillsToDefaults } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
-import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, runDetectorTest } from './js/providers.js';
+import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, previewRedaction } from './js/providers.js';
 import {
   applyOAuthPreset,
   connectOAuthEndpoint,
@@ -1710,7 +1710,6 @@ function renderPrefs() {
   const det = pii.detection || {};
   $('priv-det-backend').value = det.backend || 'off';
   $('priv-det-url').value = det.url || '';
-  $('priv-det-model').value = det.model || '';
   $('priv-det-timeout').value = String(det.timeoutMs || 1500);
   const dt = det.types || {};
   $('priv-det-person').checked = dt.person !== false;
@@ -1719,6 +1718,9 @@ function renderPrefs() {
   $('priv-det-number').checked = dt.number !== false;
   const showDet = $('priv-mode').value === 'model';
   $('priv-detection').classList.toggle('hidden', !showDet);
+  // The redaction tester works in BOTH "patterns + dictionary" and "AI detection"
+  // modes — show it whenever redaction is on.
+  $('priv-test').classList.toggle('hidden', $('priv-mode').value === 'off');
   populateDetTargets(det.targetId);
   if (showDet && $('priv-det-backend').value === 'agent') populateDetModels(det.targetId, det.model);
   updateDetVis();
@@ -1762,12 +1764,11 @@ async function populateDetModels(targetId, selectedModel) {
 
 function updateDetVis() {
   const b = $('priv-det-backend').value;
-  $('priv-det-url-row').classList.toggle('hidden', !(b === 'endpoint' || b === 'openai'));
-  $('priv-det-model-row').classList.toggle('hidden', b !== 'openai');
+  $('priv-det-url-row').classList.toggle('hidden', b !== 'endpoint');
   $('priv-det-target-row').classList.toggle('hidden', b !== 'agent');
   $('priv-det-tmodel-row').classList.toggle('hidden', b !== 'agent');
   const note = $('priv-det-agent-note');
-  if (note) note.classList.toggle('hidden', b !== 'agent');
+  if (note) note.classList.toggle('hidden', b === 'off');
 }
 
 // Test the configured detector against a fixed sample so the user can confirm it's
@@ -1775,17 +1776,18 @@ function updateDetVis() {
 async function testDetector() {
   const out = $('priv-det-test-out');
   if (out) out.textContent = 'Testing…';
-  await savePrefs(); // persist the current detector config first
-  const typed = ($('priv-det-test-input') && $('priv-det-test-input').value || '').trim();
-  const sample = typed || 'Email Jordan Blake at jordan.blake@example.com about the Austin → Dallas trip; call +1 415 555 0142.';
+  await savePrefs(); // persist the current config first
+  const typed = (($('priv-det-test-input') && $('priv-det-test-input').value) || '').trim();
+  const sample = typed || 'My name is Jordan Blake, I live in Austin. Email jordan@example.com, phone 234-444-4455.';
   try {
-    const ents = await runDetectorTest(settings, sample);
-    if (!ents || !ents.length) {
-      if (out) out.textContent = '⚠ No entities detected — check the URL/model and that the service is running.';
+    const { redacted, spans, detector } = await previewRedaction(settings, sample);
+    if (!spans.length) {
+      if (out) out.textContent = '⚠ Nothing was redacted. In “patterns + dictionary” mode only secrets (emails, phones, cards, keys) + your dictionary are caught — turn on AI detection for names / orgs / locations.';
       return;
     }
-    const shown = ents.slice(0, 8).map((e) => `${e.value} (${e.type})`).join(', ');
-    if (out) out.textContent = `✓ ${ents.length} found: ${shown}${ents.length > 8 ? '…' : ''}`;
+    const list = spans.map((s) => `${s.value} → ${s.token}`).join(', ');
+    const dn = detector.length ? ` · detector added ${detector.length}` : '';
+    if (out) out.textContent = `✓ ${spans.length} redacted${dn}: ${list}  ·  Model sees: ${redacted}`;
   } catch (e) {
     if (out) out.textContent = `✕ ${(e && e.message) || 'detection failed'}`;
   }
@@ -1829,7 +1831,7 @@ async function savePrefs() {
       backend: $('priv-det-backend').value,
       url: $('priv-det-url').value.trim(),
       targetId: detTargetId(),
-      model: ($('priv-det-backend').value === 'agent' ? $('priv-det-tmodel').value : $('priv-det-model').value).trim(),
+      model: ($('priv-det-backend').value === 'agent' ? $('priv-det-tmodel').value : '').trim(),
       timeoutMs: Number($('priv-det-timeout').value) || 1500,
       types: {
         person: $('priv-det-person').checked,
@@ -2116,7 +2118,6 @@ function wire() {
   $('priv-det-target').onchange = () => { populateDetModels(detTargetId(), ''); savePrefs(); };
   $('priv-det-tmodel').onchange = savePrefs;
   $('priv-det-test').onclick = testDetector;
-  $('priv-det-model').onchange = savePrefs;
   $('priv-det-timeout').onchange = savePrefs;
   $('priv-det-person').onchange = savePrefs;
   $('priv-det-org').onchange = savePrefs;
