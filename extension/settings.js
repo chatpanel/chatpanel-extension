@@ -1681,6 +1681,42 @@ function renderPrefs() {
   // Meetings tab — live scribe behavior.
   $('pref-live-notes').value = String(settings.ui.liveNotesIntervalMin ?? 2);
   $('pref-meeting-window').value = String(settings.ui.meetingWindowMin ?? 0);
+  // Privacy tab — reversible PII redaction.
+  const pii = settings.ui.piiRedaction || {};
+  $('priv-mode').value = pii.mode || 'off';
+  const psc = pii.scope || {};
+  $('priv-scope-chat').checked = psc.chat !== false;
+  $('priv-scope-context').checked = psc.context !== false;
+  $('priv-scope-history').checked = psc.history !== false;
+  $('priv-scope-tools').checked = psc.toolResults !== false;
+  $('priv-dictionary').value = piiDictToText(pii.dictionary || []);
+  // Gate the Pro controls: Free = deterministic secrets on chat only. Pro unlocks
+  // the full (name/org) tier, the extra scopes, and an unlimited dictionary.
+  const proPii = isPro(license);
+  for (const id of ['priv-scope-context', 'priv-scope-history', 'priv-scope-tools']) {
+    const el = $(id);
+    if (!el) continue;
+    el.disabled = !proPii;
+    if (!proPii) el.checked = false;
+  }
+  const proNote = $('priv-pro-note');
+  if (proNote) proNote.classList.toggle('hidden', proPii);
+  // Phase 2 — local-model detection (Pro). Gate the 'model' mode + its controls.
+  const modelOpt = $('priv-mode').querySelector('option[value="model"]');
+  if (modelOpt) modelOpt.disabled = !proPii;
+  if (!proPii && $('priv-mode').value === 'model') $('priv-mode').value = 'deterministic';
+  const det = pii.detection || {};
+  $('priv-det-backend').value = det.backend || 'off';
+  $('priv-det-url').value = det.url || '';
+  $('priv-det-model').value = det.model || '';
+  $('priv-det-timeout').value = String(det.timeoutMs || 1500);
+  const dt = det.types || {};
+  $('priv-det-person').checked = dt.person !== false;
+  $('priv-det-org').checked = dt.org !== false;
+  $('priv-det-location').checked = dt.location !== false;
+  $('priv-det-number').checked = dt.number !== false;
+  $('priv-detection').classList.toggle('hidden', $('priv-mode').value !== 'model');
+  $('priv-det-model-row').classList.toggle('hidden', $('priv-det-backend').value !== 'openai');
 }
 
 async function renderStorageHealth() {
@@ -1702,7 +1738,74 @@ async function savePrefs() {
   settings.ui.autocomplete = isPro(license) && $('pref-autocomplete').checked;
   settings.ui.liveNotesIntervalMin = Number($('pref-live-notes').value);
   settings.ui.meetingWindowMin = Number($('pref-meeting-window').value);
+  settings.ui.piiRedaction = {
+    ...(settings.ui.piiRedaction || {}),
+    mode: $('priv-mode').value,
+    // tier is derived from mode now (model = full/entity-aware); no separate control.
+    tier: $('priv-mode').value === 'model' ? 'full' : 'basic',
+    scope: {
+      chat: $('priv-scope-chat').checked,
+      context: $('priv-scope-context').checked,
+      history: $('priv-scope-history').checked,
+      toolResults: $('priv-scope-tools').checked,
+    },
+    dictionary: piiTextToDict($('priv-dictionary').value),
+    detection: {
+      ...(settings.ui.piiRedaction?.detection || {}),
+      backend: $('priv-det-backend').value,
+      url: $('priv-det-url').value.trim(),
+      model: $('priv-det-model').value.trim(),
+      timeoutMs: Number($('priv-det-timeout').value) || 1500,
+      types: {
+        person: $('priv-det-person').checked,
+        org: $('priv-det-org').checked,
+        location: $('priv-det-location').checked,
+        number: $('priv-det-number').checked,
+      },
+    },
+  };
   await saveSettings(settings);
+}
+
+// Privacy tab: serialize the custom redaction dictionary to/from the textarea.
+// One entry per line, with two operators:
+//   => LABEL   reversible redaction   John => PERSON  → model sees [[PERSON_1]], you see "John"
+//   -> alias   pseudonymize (permanent) John -> Alex  → you AND the model see "Alex" (never reversed)
+// Plain term (John) or /regex/flags also work → default placeholder [[TERM_1]].
+function piiDictToText(arr) {
+  return (arr || [])
+    .map((d) => {
+      if (!d) return '';
+      const body = d.pattern ? `/${d.pattern}/${d.flags || ''}` : (d.value || '');
+      if (!body) return '';
+      if (d.alias != null && d.alias !== '') return `${body} -> ${d.alias}`;
+      return d.type && d.type !== 'TERM' ? `${body} => ${d.type}` : body;
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+function piiTextToDict(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      let head = l;
+      let type = 'TERM';
+      let alias = null;
+      const lbl = l.lastIndexOf('=>');
+      const als = l.lastIndexOf('->');
+      if (lbl > 0 && lbl >= als) {
+        const label = l.slice(lbl + 2).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+        if (label) { head = l.slice(0, lbl).trim(); type = label; }
+      } else if (als > 0) {
+        const a = l.slice(als + 2).trim();
+        if (a) { head = l.slice(0, als).trim(); alias = a; }
+      }
+      const m = /^\/(.+)\/([a-z]*)$/.exec(head);
+      const base = m ? { pattern: m[1], flags: m[2] } : { value: head };
+      return alias != null ? { ...base, alias } : { ...base, type };
+    });
 }
 
 // --------------------------------------------------------------------------
@@ -1925,6 +2028,20 @@ function wire() {
   $('pref-topic-target').onchange = savePrefs;
   $('pref-live-notes').onchange = savePrefs;
   $('pref-meeting-window').onchange = savePrefs;
+  $('priv-mode').onchange = () => { savePrefs(); renderPrefs(); };
+  $('priv-scope-chat').onchange = savePrefs;
+  $('priv-scope-context').onchange = savePrefs;
+  $('priv-scope-history').onchange = savePrefs;
+  $('priv-scope-tools').onchange = savePrefs;
+  $('priv-dictionary').onchange = savePrefs;
+  $('priv-det-backend').onchange = () => { savePrefs(); renderPrefs(); };
+  $('priv-det-url').onchange = savePrefs;
+  $('priv-det-model').onchange = savePrefs;
+  $('priv-det-timeout').onchange = savePrefs;
+  $('priv-det-person').onchange = savePrefs;
+  $('priv-det-org').onchange = savePrefs;
+  $('priv-det-location').onchange = savePrefs;
+  $('priv-det-number').onchange = savePrefs;
   $('pref-autocomplete').onchange = () => {
     if (!isPro(license)) { upsell('Autocomplete is a Pro feature'); $('pref-autocomplete').checked = false; return; }
     savePrefs();

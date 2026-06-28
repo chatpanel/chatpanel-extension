@@ -12,6 +12,10 @@
 
 import { getEntitlementToken } from './license.js';
 import { createAdaptiveToolPolicy, resultText } from './adaptive-tool-policy.js';
+import {
+  redactionEnabled, redactionFromSettings, redactOutbound, redactResult, restoreDeep, makeStreamRestorer, restore,
+} from './pii-pipeline.js';
+import { detectEntities } from './pii-detect.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
 import { authHeadersForEndpoint } from './oauth.js';
 import { mergeExtraBody, sanitizeExtraHeaders } from './request-options.js';
@@ -676,7 +680,7 @@ export async function listBridgeModels(agent, settings) {
 // --------------------------------------------------------------------------
 // `agent` here is a RESOLVED target (see store.resolveTarget): a flat config
 // with kind 'bridge' | 'anthropic' | 'openai' and its connection fields inline.
-export async function streamChat({ agent, messages, settings, signal, onDelta, onEvent, tools }) {
+async function dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools }) {
   const opts = { settings, signal, onDelta, onEvent, tools };
   // Bridge CLIs (Claude Code / Codex …) run their OWN agentic loop. They can now
   // ALSO use our browser tools: the bridge hosts an MCP server with the specs we
@@ -691,6 +695,66 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
   }
   if (agent.kind === 'anthropic') return streamAnthropic(agent, messages, opts);
   return streamOpenAI(agent, messages, opts);
+}
+
+// Public entry. When `redaction` ({ vault, cfg, isPro, entities }) is enabled, it
+// redacts everything outbound into the vault, restores the streamed reply, and
+// round-trips tool calls — restoring the model's token args before LOCAL execution
+// and re-redacting the result before返回 to the model. One wrapper covers the
+// API and bridge backends because they all run through dispatchStream().
+export async function streamChat({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction }) {
+  // Default: cover EVERY model-bound call (chat, topic extraction, meeting scribe,
+  // autocomplete…). A caller that omits `redaction` still gets the user's
+  // configured redaction; pass an explicit object (or null) only to override.
+  if (redaction === undefined) redaction = redactionFromSettings(settings);
+  if (!redaction || !redaction.vault || !redactionEnabled(redaction.cfg)) {
+    return dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools });
+  }
+  const { vault, cfg, isPro = false, entities = [] } = redaction;
+  // Phase 2: when mode is 'model', run the configured LOCAL detector to find
+  // names/orgs/IDs, merge them in, and treat this as the full (entity) tier. Fails
+  // open (detector down/slow → deterministic redaction still applies).
+  let activeCfg = cfg;
+  let activeEntities = entities;
+  let effIsPro = isPro;
+  if (redaction.detect && cfg.mode === 'model') {
+    try {
+      const sample = (messages || []).map((m) => m.content || '').join('\n');
+      const found = await detectEntities(sample, cfg, { signal });
+      if (found.length) {
+        activeEntities = [...entities, ...found];
+        activeCfg = { ...cfg, tier: 'full' };
+        // Model detection is itself the Pro gate (UI-locked). Once it has run and
+        // found entities, redact them regardless of a possibly-stale isPro on the
+        // default (auxiliary-call) path — otherwise titles/topics/etc. would leak.
+        effIsPro = true;
+      }
+    } catch { /* fail open */ }
+  }
+  const ctx = { vault, cfg: activeCfg, isPro: effIsPro, entities: activeEntities };
+  const red = redactOutbound({ messages, system: agent.systemPrompt, vault, cfg: activeCfg, isPro: effIsPro, entities: activeEntities });
+  const safeAgent = { ...agent, systemPrompt: red.system };
+  const restorer = makeStreamRestorer(vault);
+  const rawOnDelta = onDelta;
+  const wrappedOnDelta = rawOnDelta ? (d) => rawOnDelta(restorer.push(d)) : rawOnDelta;
+  const wrappedOnEvent = onEvent
+    ? (ev) => onEvent(ev && ev.input ? { ...ev, input: restoreDeep(ev.input, vault) } : ev)
+    : onEvent;
+  let safeTools = tools;
+  if (tools && typeof tools.execute === 'function') {
+    const base = tools.execute.bind(tools);
+    safeTools = {
+      ...tools,
+      execute: async (name, input, meta) => redactResult(await base(name, restoreDeep(input, vault), meta), ctx),
+    };
+  }
+  const full = await dispatchStream({
+    agent: safeAgent, messages: red.messages, settings, signal,
+    onDelta: wrappedOnDelta, onEvent: wrappedOnEvent, tools: safeTools,
+  });
+  const tail = restorer.flush();
+  if (tail && rawOnDelta) rawOnDelta(tail);
+  return restore(typeof full === 'string' ? full : full ?? '', vault);
 }
 
 // Ask the Bridge whether a custom command resolves on this machine (PATH / a full

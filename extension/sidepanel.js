@@ -45,6 +45,8 @@ import {
 import { renderMarkdown } from './js/markdown.js';
 import { combineSystemPrompt, sourceCitationSystem } from './js/tool-hints.js';
 import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
+import { createVault } from './js/pii-redact.js';
+import { redactionEnabled, setPiiEntitlement, redactOnce, restore as restorePii, redactionFromSettings } from './js/pii-pipeline.js';
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
 import { assistPrompt } from './js/assist.js';
 import { PAGE_TOOL_SPECS, makePageToolExecutor, PAGE_AUTOMATION_SYSTEM } from './js/page-tools.js';
@@ -314,6 +316,14 @@ function runProfileForTurn(conv, assistant) {
   return { historyRag: null, skillRun: null, mcpMode: MCP_TURN_MODES.AUTO, userText: '', attachments: [] };
 }
 
+// One reversible PII-redaction vault per conversation, so a placeholder means the
+// same entity across turns (and survives chat switches mid-stream).
+function piiVaultFor(convId) {
+  let v = state.piiVaults.get(convId);
+  if (!v) { v = createVault(); state.piiVaults.set(convId, v); }
+  return v;
+}
+
 const state = {
   settings: null,
   license: null,
@@ -325,6 +335,7 @@ const state = {
   activeTab: null, // { id, title, url } of the tab the panel is looking at
   bridge: { ok: false, agents: [] },
   convCache: new Map(), // id -> live conv object (kept so streams survive switches)
+  piiVaults: new Map(), // convId -> reversible PII redaction vault (per conversation)
   streams: new Map(), // convId -> { controller, started, lastEvent }
   bubbles: new Map(), // messageId -> bubble element (active view only)
   toolCancels: new Map(), // provider call id -> { cancel, tool, convId, assistantId }
@@ -402,6 +413,7 @@ function markToolStep(callId, status) {
 async function init() {
   state.settings = await getSettings();
   state.license = await getLicense();
+  setPiiEntitlement(isPro(state.license));
   ensureUsableActiveAgent();
   state.usePage = state.settings.ui.autoAttachActiveTab !== false;
   applyTheme();
@@ -1301,12 +1313,17 @@ async function runStream(agent, assistant, conv) {
       systemWithSummary(resolved.systemPrompt, conv),
       sourceCitationSystem(),
     );
+    const piiCfg = state.settings?.ui?.piiRedaction;
+    const redaction = redactionEnabled(piiCfg)
+      ? { vault: piiVaultFor(conv.id), cfg: piiCfg, isPro: isPro(state.license), entities: [], detect: piiCfg?.mode === 'model' }
+      : null;
     await streamChat({
       agent: { ...resolved, systemPrompt },
       messages: messagesForModel(conv, assistant),
       settings: state.settings,
       signal: controller.signal,
       tools,
+      redaction,
       onDelta: (d) => {
         pending += d;
         assistant.content = pending; // keep the object current for switch-back
@@ -1636,6 +1653,7 @@ function updateComposerUI() {
   renderPageActBtn();
   renderMcpToolsBtn();
   renderHistoryContextBtn();
+  renderPrivacyBtn();
 }
 
 // Activity strip: latest tool/status for the active stream + elapsed seconds.
@@ -2155,6 +2173,123 @@ function renderHistoryContextMenu() {
     };
     menu.appendChild(item);
   }
+}
+
+// --- Privacy / PII redaction quick control (composer) -----------------------
+// Mirrors the full Privacy settings tab so you can flip redaction + detected
+// types without leaving the chat. Writes to the SAME ui.piiRedaction settings.
+function renderPrivacyBtn() {
+  const btn = $('btn-privacy');
+  if (!btn) return;
+  const mode = state.settings.ui?.piiRedaction?.mode || 'off';
+  const active = mode !== 'off';
+  btn.classList.toggle('active', active);
+  btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  const label = active ? (mode === 'model' ? 'Privacy: redaction on + model detection' : 'Privacy: redaction on') : 'Privacy: redaction off';
+  btn.title = `${label} (click to change)`;
+  btn.setAttribute('aria-label', label);
+}
+
+async function setPiiMode(mode) {
+  if (mode === 'model' && !isPro(state.license)) {
+    upsell('piiRedaction', '✨ Local-model PII detection is a Pro feature.');
+    return;
+  }
+  const cur = state.settings.ui?.piiRedaction || {};
+  state.settings = await updateSettings({ ui: { piiRedaction: { ...cur, mode } } });
+  renderPrivacyBtn();
+  renderPrivacyMenu();
+  toast(`🛡 Redaction: ${mode === 'off' ? 'off' : mode === 'model' ? 'on + model' : 'on'}`, 1500);
+}
+
+async function togglePiiType(key) {
+  const cur = state.settings.ui?.piiRedaction || {};
+  const det = cur.detection || {};
+  const wasOn = det.types?.[key] !== false;
+  const types = { ...(det.types || {}), [key]: !wasOn };
+  state.settings = await updateSettings({ ui: { piiRedaction: { ...cur, detection: { ...det, types } } } });
+  renderPrivacyMenu();
+}
+
+function renderPrivacyMenu() {
+  const menu = $('privacy-menu');
+  if (!menu) return;
+  const pii = state.settings.ui?.piiRedaction || {};
+  const mode = pii.mode || 'off';
+  const pro = isPro(state.license);
+  menu.innerHTML = '';
+  menu.appendChild(sectionLabel('Redaction'));
+  const modes = [
+    { mode: 'off', icon: '○', label: 'Off', sub: 'Send text to models unredacted.' },
+    { mode: 'deterministic', icon: '🛡', label: 'On — patterns + dictionary', sub: 'Emails, phones, cards, keys + your dictionary.' },
+    { mode: 'model', icon: '🧠', label: 'On — + model detection', sub: pro ? 'Also auto-detect names/orgs/etc. via your local detector.' : 'Pro: auto-detect names with a local model.', locked: !pro },
+  ];
+  for (const m of modes) {
+    const item = document.createElement('button');
+    item.className = `menu-item${m.locked ? ' locked' : ''}`;
+    const active = mode === m.mode;
+    item.innerHTML =
+      `<span class="pii-radio${active ? ' on' : ''}"></span>`
+      + '<span style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">'
+      + `<span>${escapeAttr(m.label)}</span>`
+      + `<span class="mi-sub">${escapeAttr(m.sub)}</span>`
+      + '</span>'
+      + `${m.locked ? '<span class="badge lock">Pro</span>' : ''}`;
+    item.onmousedown = (e) => { e.preventDefault(); setPiiMode(m.mode); };
+    menu.appendChild(item);
+  }
+  // Auto-detect categories. Shown whenever redaction is on — functional in Pro
+  // model mode, otherwise a LOCKED preview so Free sees exactly what Pro unlocks.
+  if (mode !== 'off') {
+    const functional = mode === 'model' && pro;
+    const header = sectionLabel('Auto-detect & redact');
+    if (!functional) {
+      const badge = document.createElement('span');
+      badge.className = 'badge lock';
+      badge.style.marginLeft = '6px';
+      badge.textContent = pro ? 'needs model mode' : 'Pro';
+      header.appendChild(badge);
+    }
+    menu.appendChild(header);
+    const types = pii.detection?.types || {};
+    const cats = [
+      { key: 'person', label: 'People (names)' },
+      { key: 'org', label: 'Organizations' },
+      { key: 'location', label: 'Locations (cities, places)' },
+      { key: 'number', label: 'Numbers & IDs' },
+    ];
+    for (const c of cats) {
+      const on = functional ? types[c.key] !== false : true; // preview shows all on
+      const item = document.createElement('button');
+      item.className = `menu-item toggle${functional ? '' : ' locked'}`;
+      item.innerHTML = `<span class="pii-box${on ? ' on' : ''}">✓</span><span style="flex:1;min-width:0">${escapeAttr(c.label)}</span>`;
+      item.onmousedown = (e) => {
+        e.preventDefault();
+        if (functional) togglePiiType(c.key);
+        else if (!pro) upsell('piiRedaction', '✨ Auto-detect names, orgs & locations is a Pro feature.');
+        else setPiiMode('model');
+      };
+      menu.appendChild(item);
+    }
+    const note = document.createElement('div');
+    note.className = 'menu-note';
+    note.textContent = functional
+      ? 'Emails & phones always redact.'
+      : pro ? 'Turn on “+ model detection” to auto-detect these.'
+        : 'Pro: auto-detect names/orgs/locations with a local model — no dictionary needed.';
+    menu.appendChild(note);
+  }
+  const more = document.createElement('button');
+  more.className = 'menu-item';
+  more.innerHTML = '<span>⚙</span><span style="flex:1;min-width:0">Privacy settings…</span>';
+  more.onmousedown = (e) => {
+    e.preventDefault();
+    closeMenus();
+    // Deep-link straight to the Privacy tab (settings.js honors the #hash on load);
+    // openOptionsPage() can't carry a hash, so it would land on the last tab.
+    chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#privacy') });
+  };
+  menu.appendChild(more);
 }
 
 async function cycleMcpToolsMode() {
@@ -3879,23 +4014,32 @@ async function requestAutocomplete(text, source) {
     if (source.kind === 'bridge') {
       // Fast path through the local bridge using the agent's fast model.
       const base = (state.settings.bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
+      // Redact the draft + page context before it crosses to the bridge/local model
+      // (this raw fetch bypasses streamChat's redaction), then restore the ghost text.
+      const ac = redactOnce(prompt, state.settings);
       const res = await fetch(`${base}/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent: source.engine, prompt, model: source.model, system: sys }),
+        body: JSON.stringify({ agent: source.engine, prompt: ac.text, model: source.model, system: sys }),
         signal: acController.signal,
       });
       if (!res.ok) return;
       out = (await res.json()).text || '';
+      if (ac.vault) out = restorePii(out, ac.vault);
     } else {
       // Honor an explicitly-chosen autocomplete model on the endpoint; otherwise
       // auto-pick the smallest available (e.g. a 0.5B model over the big chat one).
       const model = source.target.autocompleteModel || (await smallModelFor(source.target));
+      // Fast NER (endpoint) is cheap enough to run per-autocomplete; skip only the
+      // slow LLM detector here so keystroke latency stays low.
+      const acR = redactionFromSettings(state.settings);
+      if (acR) acR.detect = state.settings?.ui?.piiRedaction?.detection?.backend === 'endpoint';
       await streamChat({
         agent: { ...source.target, model, systemPrompt: sys, maxTokens: 16, temperature: 0.2 },
         messages: [{ role: 'user', content: prompt }],
         settings: state.settings,
         signal: acController.signal,
+        redaction: acR,
         onDelta: (d) => {
           out += d;
         },
@@ -3914,8 +4058,13 @@ async function requestAutocomplete(text, source) {
   }
   s = s.replace(/\n[\s\S]*$/, ''); // first line only
   if (!s.trim()) return;
-  // Join with a space unless the boundary already has one.
-  acSuggestion = (/\s$/.test(text) || /^\s/.test(s) ? '' : ' ') + s.trim();
+  // Honor the model's word-boundary signal: our few-shot prompt teaches it to emit
+  // a LEADING space for a new word (" div with flexbox") and none to continue the
+  // current word ("S" -> "an Francisco" = "San Francisco"). So insert a space only
+  // when the model asked for one and the text doesn't already end with whitespace —
+  // never fabricate one, which produced "from S an Francisco".
+  const sep = /\s$/.test(text) || !/^\s/.test(s) ? '' : ' ';
+  acSuggestion = sep + s.trim();
   renderGhost(text, acSuggestion);
 }
 
@@ -4136,6 +4285,16 @@ function wireEvents() {
       m.classList.remove('hidden');
     }
   };
+  $('btn-privacy').onclick = (e) => {
+    e.stopPropagation();
+    const m = $('privacy-menu');
+    const opening = m.classList.contains('hidden');
+    closeMenus();
+    if (opening) {
+      renderPrivacyMenu();
+      m.classList.remove('hidden');
+    }
+  };
   // "Act on page" arms page-action tools for API agents directly and for bridge
   // agents through the local MCP relay.
   $('btn-pageact').onclick = async (e) => {
@@ -4249,7 +4408,7 @@ function wireEvents() {
   };
 
   // Keep clicks inside an open menu (e.g. the URL input) from closing it.
-  ['agent-menu', 'attach-menu', 'skills-menu', 'history-context-menu', 'watch-menu'].forEach((id) =>
+  ['agent-menu', 'attach-menu', 'skills-menu', 'history-context-menu', 'privacy-menu', 'watch-menu'].forEach((id) =>
     $(id).addEventListener('click', (e) => e.stopPropagation()),
   );
   document.body.onclick = () => closeMenus();
@@ -4275,14 +4434,17 @@ function wireEvents() {
       renderAgentName();
       renderMcpToolsBtn();
       renderHistoryContextBtn();
+      renderPrivacyBtn();
       refreshBridge();
     }
     if (changes['chatpanel:license']) {
       state.license = await getLicense();
+      setPiiEntitlement(isPro(state.license));
       ensureUsableActiveAgent();
       renderUpgradeChip();
       renderAgentName();
       renderHistoryContextBtn();
+      renderPrivacyBtn();
     }
   });
 }

@@ -159,6 +159,29 @@ export function defaultSettings() {
       // default; the agent only calls them when a question refers to prior work,
       // and meeting access still requires Pro. Set false to never offer them.
       historyTools: true,
+      // Reversible PII redaction (Privacy tab). Strips sensitive values out of
+      // everything sent to a model and reconstructs them when rendering the reply.
+      // Off by default (opt-in). mode: 'off' | 'deterministic' | 'model'
+      // ('model' adds the configurable local-model detection pass — phase 2).
+      // tier: 'basic' (regex) | 'full' (entity-aware; Pro). dictionary entries are
+      // {value,type} (exact) or {pattern,flags,type} (regex).
+      piiRedaction: {
+        mode: 'off',
+        tier: 'basic',
+        scope: { chat: true, context: true, history: true, toolResults: true },
+        sources: { self: true, participants: true, contacts: false },
+        dictionary: [],
+        // Phase 2: configurable LOCAL entity detector (auto-redact names/orgs/IDs
+        // with no dictionary). backend 'off' | 'endpoint' (spaCy/Presidio/any
+        // {text}->entities service) | 'openai' (a local OpenAI-compatible LLM,
+        // e.g. llama.cpp / Ollama). Latency-guarded (cache + timeout + fail-open).
+        // `types` lets the user choose which detected categories to redact, so e.g.
+        // turning off `location` keeps city names readable for geo questions.
+        detection: {
+          backend: 'off', url: '', model: '', timeoutMs: 1500, maxChars: 8000,
+          types: { person: true, org: true, location: true, number: true },
+        },
+      },
     },
   };
 }

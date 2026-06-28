@@ -21,6 +21,7 @@
           <button class="tab" data-tab="skills"><span class="tab-ico">⚡</span> Skills</button>
           <button class="tab" data-tab="meetings"><span class="tab-ico">🗓</span> Meetings</button>
           <button class="tab" data-tab="history"><span class="tab-ico">💬</span> History</button>
+          <button class="tab" data-tab="privacy"><span class="tab-ico">🛡</span> Privacy</button>
           <button class="tab" data-tab="license"><span class="tab-ico">✦</span> Account</button>
         </aside>
         <main class="content">
@@ -218,6 +219,74 @@
             thread, related chats and a relationship graph. Everything stays on your
             device.
           </p>
+        </div>
+      </section>
+
+      <!-- PRIVACY -->
+      <section class="panel hidden" data-panel="privacy">
+        <div class="card">
+          <div class="card-head">
+            <h2>Privacy <span class="sub">— redact PII before it reaches a model</span></h2>
+          </div>
+          <p class="muted">
+            Reversible redaction replaces sensitive values with opaque placeholders
+            (e.g. <code>[[EMAIL_1]]</code>) before anything reaches a model, then
+            restores them in the reply you see. <strong>Deterministic</strong>
+            catches structured secrets — emails, phones, cards, keys, IPs — plus
+            your dictionary. <strong>Model detection</strong> (Pro) also
+            auto-catches names, orgs &amp; locations
+            (<code>[[PERSON_1]]</code>, <code>[[LOCATION_1]]</code>) — no dictionary
+            needed.
+          </p>
+          <div class="row"><label>Redaction</label>
+            <select id="priv-mode">
+              <option value="off">Off</option>
+              <option value="deterministic">On — patterns + dictionary</option>
+              <option value="model">On — + AI detection (Pro)</option>
+            </select>
+          </div>
+          <div id="priv-detection" class="hidden">
+            <div class="row"><label>Detector</label>
+              <select id="priv-det-backend">
+                <option value="off">Off</option>
+                <option value="endpoint">Local NER service (spaCy / Presidio)</option>
+                <option value="openai">Local LLM (OpenAI-compatible)</option>
+              </select>
+            </div>
+            <div class="row"><label>Detector URL</label><input id="priv-det-url"
+                placeholder="http://127.0.0.1:9009/ner  ·  or LLM base http://127.0.0.1:8080" /></div>
+            <div class="row" id="priv-det-model-row"><label>Detector model</label><input id="priv-det-model"
+                placeholder="LLM backend only — e.g. gemma-4-26b" /></div>
+            <div class="row"><label>Timeout (ms)</label><input id="priv-det-timeout" type="number" min="200" max="10000"
+                placeholder="1500" /></div>
+            <p class="muted" style="margin:8px 0 2px">Redact these detected types <span class="sub">(emails &amp; phones
+                always redact)</span>:</p>
+            <label class="check"><input type="checkbox" id="priv-det-person" /> People (names)</label>
+            <label class="check"><input type="checkbox" id="priv-det-org" /> Organizations</label>
+            <label class="check"><input type="checkbox" id="priv-det-location" /> Locations (cities, places)</label>
+            <label class="check"><input type="checkbox" id="priv-det-number" /> Numbers &amp; IDs</label>
+            <p class="muted">Runs locally — text reaches the detector but never the final agent; if it's slow or down,
+              redaction falls back to deterministic only. A NER service should accept <code>{ "text": "…" }</code> and return
+              <code>{ "entities": [{ "value", "type" }] }</code> (spaCy <code>{ "ents": [{ "text", "label" }] }</code> is also
+              accepted).</p>
+          </div>
+          <p class="muted" style="margin-bottom:4px">Apply to:</p>
+          <label class="check"><input type="checkbox" id="priv-scope-chat" /> Chat messages</label>
+          <label class="check"><input type="checkbox" id="priv-scope-context" /> Page &amp; meeting context</label>
+          <label class="check"><input type="checkbox" id="priv-scope-history" /> History search results</label>
+          <label class="check"><input type="checkbox" id="priv-scope-tools" /> Tool results</label>
+          <div class="field" style="margin-top:10px">
+            <label>Custom dictionary <span class="sub">— one per line. <code>=> LABEL</code> redacts reversibly
+                (<code>John => PERSON</code> → model sees <code>[[PERSON_1]]</code>, you still see "John").
+                <code>-> alias</code> pseudonymizes permanently (<code>John -> Alex</code> → you and the model both see
+                "Alex", never reversed). A plain term or <code>/regex/flags</code> also works.</span></label>
+            <textarea id="priv-dictionary" rows="6"
+              placeholder="John => PERSON&#10;Acme Corp -> Globex&#10;/EMP-\d+/ => TICKET"></textarea>
+          </div>
+          <p class="muted" id="priv-pro-note">⭐ <strong>Pro</strong> unlocks name/org redaction,
+            page/meeting/history/tool-result scope, an unlimited dictionary, and local-model detection. Free covers secrets
+            (emails, keys, cards, phones) in chat.</p>
+          <p class="muted">Configurable per-stage detection &amp; render-back models are coming next.</p>
         </div>
       </section>
 

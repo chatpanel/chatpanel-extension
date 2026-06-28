@@ -150,6 +150,18 @@ body.rail-collapsed { --rail-w: 0px; }
 .menu-item .badge.lock { background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; }
 .menu-section { font-size: 11px; color: var(--text-dim); padding: 8px 10px 4px; text-transform: uppercase; letter-spacing: .04em; }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+/* Privacy quick-menu: radio (mode), checkbox (types), small note */
+#privacy-menu { min-width: 256px; }
+.menu-note { font-size: 11px; color: var(--text-dim); padding: 2px 12px 6px; }
+.pii-radio { width: 15px; height: 15px; border-radius: 50%; border: 2px solid var(--border); flex: 0 0 auto; margin-top: 2px; }
+.pii-radio.on { border-color: var(--accent); box-shadow: inset 0 0 0 3px var(--accent); }
+.pii-box {
+  width: 17px; height: 17px; flex: 0 0 auto; border: 1.5px solid var(--border);
+  border-radius: 5px; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; line-height: 1; color: transparent;
+}
+.pii-box.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.menu-item.toggle { padding: 7px 12px; }
 .dot.on { background: #16a34a; } .dot.off { background: #9ca3af; }
 
 /* History drawer */
