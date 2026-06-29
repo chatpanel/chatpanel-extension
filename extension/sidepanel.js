@@ -437,6 +437,7 @@ async function init() {
   ensureUsableActiveAgent();
   state.usePage = state.settings.ui.autoAttachActiveTab !== false;
   applyTheme();
+  wireMarkdownLinks();
   await pruneEmptyConversations(); // clear stale empty "New chat" entries
   state.index = await getIndex();
 
@@ -4204,6 +4205,24 @@ function scrollToBottom() {
 function scrollToBottomNow() {
   stickToBottom = true;
   scrollToBottom();
+}
+
+// External markdown links carry their URL in data-href (no live href) so Chrome's
+// speculative preloading can't prerender the target — which would load that page's
+// scripts/fonts under the panel's strict CSP and flood the extension console.
+// Delegated so it covers every rendered bubble; left/middle-click open a new tab.
+function wireMarkdownLinks() {
+  if (document._mdLinksWired) return;
+  document._mdLinksWired = true;
+  const open = (e, active) => {
+    const a = e.target.closest?.('a.md-link[data-href]');
+    if (!a) return;
+    e.preventDefault();
+    const url = a.getAttribute('data-href');
+    if (url) chrome.tabs.create({ url, active });
+  };
+  document.addEventListener('click', (e) => open(e, true));
+  document.addEventListener('auxclick', (e) => { if (e.button === 1) open(e, false); });
 }
 
 // --------------------------------------------------------------------------
