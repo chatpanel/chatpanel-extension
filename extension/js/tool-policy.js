@@ -5,10 +5,12 @@ export const MCP_TURN_MODES = Object.freeze({
 });
 
 // In AUTO mode, arm only the top-K most-relevant remote (MCP) tools per turn — the
-// whole point of "auto" (fewer tools = faster, less confused model). Local
-// page/history tools are always kept and don't count. A user-set
+// whole point of "auto" (fewer tools = faster, less confused model). With the
+// server-diverse ranker this is ~2-3 tools per connected server, so the relevant
+// server's BEST tool always survives (e.g. wikipedia search/ask for a geography
+// question). Local page/history tools are always kept and don't count. A user-set
 // ui.maxToolsPerTurn overrides this; ON mode arms everything (no cap unless set).
-export const DEFAULT_AUTO_TOOL_CAP = 8;
+export const DEFAULT_AUTO_TOOL_CAP = 16;
 
 const MCP_TOOL_RE = /^mcp_.+?__.+/;
 
@@ -24,10 +26,11 @@ export function shouldIncludeMcpTools({ turnMcpMode = MCP_TURN_MODES.AUTO, skill
   if (mode === MCP_TURN_MODES.OFF) return false;
   if (mode === MCP_TURN_MODES.ON) return true;
   // AUTO: expose MCP tools — they're narrowed to the top-K most relevant per turn
-  // (see DEFAULT_AUTO_TOOL_CAP), so arming them broadly is cheap. A skill that
-  // configures MCP still forces it on regardless. (Previously AUTO armed MCP ONLY
-  // for skills, so plain chat turns got NO tools — the "auto mode passed nothing" bug.)
-  return true;
+  // (see DEFAULT_AUTO_TOOL_CAP), so arming them broadly is cheap. EXCEPTION: a
+  // running skill that explicitly set its MCP mode to 'none' opts out. (Previously
+  // AUTO armed MCP ONLY for skills, so plain chat turns got NO tools — the
+  // "auto mode passed nothing" bug.)
+  return skillRun?.mcp?.mode !== 'none';
 }
 
 const SELF_CONTAINED_TASK_RE =

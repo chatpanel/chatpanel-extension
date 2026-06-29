@@ -19,6 +19,11 @@ const STOP = new Set([
 const defName = (s) => (s && s.name) || '';
 const defDesc = (s) => (s && s.description) || '';
 
+// Names of GENERAL entry-point tools — preferred when a query doesn't pin a specific
+// tool. Matches the tool segment (after the server prefix): e.g. ...__wikipedia_search,
+// ...__ask_pipeworx, ...__get_summary, ...__search_wikipedia.
+const GENERAL_TOOL_RE = /(?:^|_)(search|ask|lookup|find|answer|summary|wiki)(?:_|$)/i;
+
 // Returns specs scored + sorted most-relevant first, as [{ s, i, n }] (i = original
 // index, n = score). Stable for ties (preserves original order).
 export function scoreToolSpecs(specs, query, { name = defName, description = defDesc } = {}) {
@@ -37,6 +42,12 @@ export function scoreToolSpecs(specs, query, { name = defName, description = def
     for (const part of names[i].split(/[^a-z0-9]+/)) {
       if (part.length > 2 && q.includes(part)) n += 2 + idf(part); // tool explicitly named
     }
+    // General-purpose ENTRY-POINT tools (search / ask / lookup / get-summary / answer)
+    // are the right default when the query doesn't keyword-match a specific tool —
+    // e.g. "which state is Seattle in" → a wikipedia SEARCH/ASK tool, not one of 20
+    // dataset-query tools. A small tie-breaker boost (below a real keyword match) so
+    // those generic tools win when nothing else distinguishes them.
+    if (GENERAL_TOOL_RE.test(names[i])) n += 1.5;
     return n;
   };
   return list.map((s, i) => ({ s, i, n: score(i) })).sort((a, b) => (b.n - a.n) || (a.i - b.i));
@@ -51,12 +62,41 @@ export function rankToolSpecs(specs, query, accessors) {
 // retaining everything that does (e.g. local page/history tools). `cap` therefore
 // bounds the NARROWABLE (MCP) tools; kept tools ride along free. Returns the list
 // unchanged when there's no cap or the narrowable set already fits.
+// The MCP server a tool belongs to: mcp_<server>__<tool> → "mcp_<server>". Tools
+// without that shape are their own "server" (never grouped together).
+function serverKey(n) {
+  const s = String(n || '');
+  const i = s.indexOf('__');
+  return i > 0 ? s.slice(0, i) : s;
+}
+
 export function narrowSpecs(specs, query, { cap = 0, keep, name = defName, description = defDesc } = {}) {
   const list = specs || [];
   if (!cap || cap < 1) return list;
   const kept = keep ? list.filter(keep) : [];
   const rest = keep ? list.filter((s) => !kept.includes(s)) : list;
   if (rest.length <= cap) return list;
-  const top = new Set(rankToolSpecs(rest, query, { name, description }).slice(0, cap));
-  return list.filter((s) => kept.includes(s) || top.has(s)); // preserve original order
+  // SERVER-DIVERSE selection: rank all narrowable tools, then pick ROUND-ROBIN across
+  // servers — each server's best tool first, then seconds, … up to `cap`. This keeps
+  // a relevant server (e.g. wikipedia) from being crowded out of the top-K by another
+  // server that happens to have many tools. Servers are visited best-first (the order
+  // their top-ranked tool appears in the global ranking).
+  const ranked = rankToolSpecs(rest, query, { name, description });
+  const queues = new Map(); // serverKey -> [tools] in rank order (insertion = best-first)
+  for (const s of ranked) {
+    const k = serverKey(name(s));
+    if (!queues.has(k)) queues.set(k, []);
+    queues.get(k).push(s);
+  }
+  const lanes = [...queues.values()];
+  const chosen = new Set();
+  for (let round = 0; chosen.size < cap; round++) {
+    let advanced = false;
+    for (const lane of lanes) {
+      if (chosen.size >= cap) break;
+      if (lane.length > round) { chosen.add(lane[round]); advanced = true; }
+    }
+    if (!advanced) break;
+  }
+  return list.filter((s) => kept.includes(s) || chosen.has(s)); // preserve original order
 }

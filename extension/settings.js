@@ -11,6 +11,7 @@ import { buildToolset } from './js/toolset.js';
 import { getMcpProviders } from './js/mcp-manager.js';
 import { historyToolProvider } from './js/history-rag.js';
 import { narrowToolset, isLocalToolSpec } from './js/tool-select.js';
+import { DEFAULT_AUTO_TOOL_CAP } from './js/tool-policy.js';
 import {
   applyOAuthPreset,
   connectOAuthEndpoint,
@@ -1134,6 +1135,7 @@ async function activateGatewayPro() {
 
 // Populate the test model picker from the enabled destinations' models.
 function populateTestModels() {
+  renderFlowTools('gw-test-tools'); // arm the same tool picker as the privacy test
   const sel = $('gw-test-model');
   if (!sel) return;
   const cur = sel.value;
@@ -1162,7 +1164,7 @@ async function gatewayPreview(prompt) {
 
 const GW_TEST_SAMPLE = 'My name is John, email john@adams.com — who is the famous president with my name?';
 
-function renderGatewayFlow({ input, detected, redacted, spans, reply, error }, withModel) {
+function renderGatewayFlow({ input, detected, redacted, spans, reply, error, toolEvents }, withModel) {
   const esc = (s) => escapeHtml(String(s == null ? '' : s));
   const cards = [];
   cards.push(flowCard(1, 'Your prompt', `<div class="flow-text">${esc(input)}</div>`));
@@ -1175,11 +1177,86 @@ function renderGatewayFlow({ input, detected, redacted, spans, reply, error }, w
     ? spans.map((s) => `<div class="flow-map"><code>${esc(s.token)}</code> → <b>${esc(s.value)}</b></div>`).join('')
     : '<span class="muted sm">Nothing replaced.</span>';
   cards.push(flowCard(4, 'Restored from', maps, 'flow-tools'));
+  // Tool round-trip the agent ran through the gateway (args restored to REAL values).
+  if (withModel && (toolEvents || []).length) {
+    const rows = toolEvents.map((t) => `<div class="flow-map">🔧 <code>${esc(t.name)}</code><div class="muted sm">args → tool: ${esc(JSON.stringify(t.args))}</div><div class="muted sm">result → ${esc((t.result || '').slice(0, 240))}</div></div>`).join('');
+    cards.push(flowCard(5, 'Tools run (real values)', rows, 'flow-tools'));
+  }
   if (withModel) {
     const r = error ? `<span class="flow-err">✕ ${esc(error)}</span>` : `<div class="flow-text">${esc(reply) || '<span class="muted sm">(empty)</span>'}</div>`;
-    cards.push(flowCard(5, 'You see (restored)', r, 'flow-you'));
+    cards.push(flowCard((toolEvents || []).length ? 6 : 5, 'You see (restored)', r, 'flow-you'));
   }
   $('gw-test-out').innerHTML = cards.join('<div class="flow-arrow">→</div>');
+}
+
+// Parse an OpenAI SSE stream → accumulated text + assembled tool_calls (by index).
+async function readOpenAIStream(res) {
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let content = '';
+  const tc = []; // index -> { id, type, function:{ name, arguments } }
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+      if (!line.startsWith('data:')) continue;
+      const p = line.slice(5).trim();
+      if (!p || p === '[DONE]') continue;
+      let j; try { j = JSON.parse(p); } catch { continue; }
+      const d = j.choices?.[0]?.delta;
+      if (!d) continue;
+      if (typeof d.content === 'string') content += d.content;
+      for (const t of d.tool_calls || []) {
+        const idx = t.index ?? 0;
+        tc[idx] = tc[idx] || { id: t.id, type: 'function', function: { name: '', arguments: '' } };
+        if (t.id) tc[idx].id = t.id;
+        if (t.function?.name) tc[idx].function.name = t.function.name;
+        if (t.function?.arguments) tc[idx].function.arguments += t.function.arguments;
+      }
+    }
+  }
+  return { content, toolCalls: tc.filter(Boolean) };
+}
+
+// Run the prompt through the gateway as a real OpenAI agentic client: stream, run
+// any tool calls IN-EXTENSION (the gateway restored their args to real values), feed
+// results back, and loop until the destination answers. This is what ChatPanel does
+// — so the gateway test now exercises the full harness, not just redaction.
+async function gatewayAgenticRun(url, model, prompt, toolset) {
+  const toolSpecs = (toolset?.specs || []).map((s) => ({ type: 'function', function: { name: s.name, description: s.description, parameters: s.parameters } }));
+  const toolsSent = toolSpecs.length;
+  // Send the MCP guidance (how/when to use the tools) as a system message, exactly
+  // like the real chat — the gateway adds the placeholder note on top. Without this
+  // the destination has tools but no usage guidance and may not call them.
+  const msgs = toolset?.system
+    ? [{ role: 'system', content: toolset.system }, { role: 'user', content: prompt }]
+    : [{ role: 'user', content: prompt }];
+  const toolEvents = [];
+  for (let step = 0; step < 6; step++) {
+    const res = await fetch(`${url}/v1/chat/completions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, messages: msgs, ...(toolSpecs.length ? { tools: toolSpecs } : {}), stream: true }),
+    });
+    if (!res.ok) return { reply: '', toolEvents, toolsSent, error: `HTTP ${res.status} — ${(await res.text().catch(() => '')).slice(0, 200)}` };
+    const { content, toolCalls } = await readOpenAIStream(res);
+    if (!toolCalls.length) return { reply: content, toolEvents, toolsSent, error: content ? '' : 'no reply' };
+    msgs.push({ role: 'assistant', content: content || null, tool_calls: toolCalls });
+    for (const t of toolCalls) {
+      let args = {}; try { args = JSON.parse(t.function.arguments || '{}'); } catch { /* keep {} */ }
+      let text;
+      try {
+        const result = toolset && typeof toolset.execute === 'function' ? await toolset.execute(t.function.name, args, { callId: t.id }) : 'no tools armed';
+        text = typeof result === 'string' ? result : (result?.text ?? JSON.stringify(result));
+      } catch (e) { text = `Tool error: ${e.message}`; }
+      toolEvents.push({ name: t.function.name, args, result: text });
+      msgs.push({ role: 'tool', tool_call_id: t.id, content: text });
+    }
+  }
+  return { reply: '(reached the tool-step limit)', toolEvents, toolsSent, error: '' };
 }
 
 async function runGatewayTest(withModel) {
@@ -1196,14 +1273,21 @@ async function runGatewayTest(withModel) {
   if (!model) { st.textContent = 'Pick a model (enable a destination).'; st.className = 'status'; return; }
   st.textContent = `Running through the gateway → ${model}…`;
   try {
-    const res = await fetch(`${url}/v1/chat/completions`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }),
-    });
-    const j = await res.json().catch(() => null);
-    const reply = j?.choices?.[0]?.message?.content;
-    renderGatewayFlow({ input: prompt, ...prev, reply, error: reply ? '' : (j?.error?.message || j?.error || `HTTP ${res.status}`) }, true);
-    st.textContent = reply ? '✓ done' : '✕ no reply'; st.className = reply ? 'status ok' : 'status err';
+    // Narrow to the relevant tools with the SAME shared ranker the privacy tab uses,
+    // so the destination gets a focused set (a weak model handed 63 tools flails and
+    // calls something irrelevant). Local tools are always kept.
+    const fullToolset = await buildHarnessTools('gw-test-tools');
+    const fullCount = (fullToolset && fullToolset.specs && fullToolset.specs.length) || 0;
+    const toolset = narrowToolset(fullToolset, prompt, { cap: Number(settings.ui?.maxToolsPerTurn) || DEFAULT_AUTO_TOOL_CAP, keep: isLocalToolSpec });
+    const { reply, toolEvents, toolsSent = 0, error } = await gatewayAgenticRun(url, model, prompt, toolset);
+    renderGatewayFlow({ input: prompt, ...prev, reply, toolEvents, error }, true);
+    const n = (toolEvents || []).length;
+    const narrowed = fullCount > toolsSent ? ` (narrowed from ${fullCount})` : '';
+    const armed = `${toolsSent} tool${toolsSent === 1 ? '' : 's'} armed${narrowed}`;
+    st.textContent = reply
+      ? `✓ done · ${armed}${n ? ` · ${n} call${n === 1 ? '' : 's'}` : ' · 0 calls'}`
+      : `✕ ${error || 'no reply'} · ${armed}`;
+    st.className = reply ? 'status ok' : 'status err';
   } catch (e) {
     renderGatewayFlow({ input: prompt, ...prev, error: e.message }, true);
     st.textContent = `✕ ${e.message}`; st.className = 'status err';
@@ -2283,8 +2367,8 @@ function mcpKey(s) { return s.id || s.name || s.url || s.command || ''; }
 // Per-server tool selector (History + each enabled MCP server). MCP is OFF by
 // default — arming every server is what bloats the prompt and slows the model.
 // Re-renders preserve the user's current picks.
-function renderFlowTools() {
-  const box = $('priv-flow-tools');
+function renderFlowTools(boxId = 'priv-flow-tools') {
+  const box = $(boxId);
   if (!box) return;
   const prev = new Set([...box.querySelectorAll('input:checked')].map((c) => c.dataset.flowTool));
   const first = box.dataset.rendered !== '1';
@@ -2306,8 +2390,8 @@ function renderFlowTools() {
 }
 
 // Build the harness toolset from ONLY the armed servers (the checkboxes).
-async function buildHarnessTools() {
-  const picks = new Set([...document.querySelectorAll('#priv-flow-tools input:checked')].map((c) => c.dataset.flowTool));
+async function buildHarnessTools(boxId = 'priv-flow-tools') {
+  const picks = new Set([...document.querySelectorAll(`#${boxId} input:checked`)].map((c) => c.dataset.flowTool));
   const auto = picks.has('auto'); // arm everything; runFlow narrows to the relevant few
   const providers = [];
   if ((auto || picks.has('history')) && settings.ui?.historyTools !== false) {
@@ -2338,7 +2422,9 @@ async function runFlow() {
   try {
     const full = await buildHarnessTools();
     const available = (full && full.specs && full.specs.length) || 0;
-    const tools = narrowToolset(full, sample, { cap: Number(settings.ui?.maxToolsPerTurn) || 16, keep: isLocalToolSpec });
+    // Same cap as the real chat (AUTO mode) — keep the armed set SMALL so weak
+    // models aren't overwhelmed by dozens of tools and actually call the right one.
+    const tools = narrowToolset(full, sample, { cap: Number(settings.ui?.maxToolsPerTurn) || DEFAULT_AUTO_TOOL_CAP, keep: isLocalToolSpec });
     const armed = (tools && tools.specs && tools.specs.length) || 0;
     if (status) status.textContent = `Running with ${armed} tool${armed === 1 ? '' : 's'}…`;
     const t = await traceFlow(settings, flowTargetId(), sample, { tools });

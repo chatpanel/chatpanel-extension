@@ -33,6 +33,25 @@ export function toolStatus(result) {
   return 'ok';
 }
 
+// The GENERIC MCP guidance + citation policy — identical for every server, so emit
+// it ONCE per turn (see buildToolset), not once per connected server. Previously
+// this rode inside every mcpInventorySystem() block, so N servers repeated it N
+// times and bloated the prompt by thousands of tokens.
+export function mcpSharedSystem() {
+  return [
+    'One or more MCP servers are connected in ChatPanel for this conversation (each listed below with its callable tools).',
+    'Use their MCP tools directly when the user asks for matching data or actions. Do not ask the user to configure or discover these tools if they are listed.',
+    'Do not call MCP tools when the attached page or provided context is enough to answer; summarize or analyze that context directly.',
+    'Prefer relevant MCP tools over web search for their domain. If an MCP tool fails, state the exact tool error first, then say whether you are falling back to another source.',
+    "Match the user's request domain to the tool's domain: Hacker News requests should use Hacker News tools, Confluence requests should use Confluence tools, and Jira requests should use Jira tools.",
+    'Do not retry the exact same failed tool call. Re-check the listed inputs, choose a better matching tool, or answer with the tool error.',
+    'When MCP or search results inform the answer, include inline citations and a bottom Sources section; do not wait for the user to ask for links.',
+    sourceCitationSystem(),
+  ].join('\n');
+}
+
+// Per-server block: ONLY the server-specific inventory (name + callable tool names
+// + a short guide). The generic rules/citation live once in mcpSharedSystem().
 export function mcpInventorySystem(serverName, specs = []) {
   if (!specs.length) return '';
   const title = String(serverName || 'MCP').trim() || 'MCP';
@@ -41,16 +60,8 @@ export function mcpInventorySystem(serverName, specs = []) {
   const moreNames = names.length > 80 ? `, and ${names.length - 80} more` : '';
   const useful = specs.slice(0, 18).map(toolLine).filter(Boolean).join('\n');
   return [
-    `MCP server "${title}" is connected in ChatPanel for this conversation.`,
-    'Use its MCP tools directly when the user asks for matching data or actions. Do not ask the user to configure or discover these tools if they are listed here.',
-    'Do not call MCP tools when the attached page or provided context is enough to answer; summarize or analyze that context directly.',
-    'Prefer relevant MCP tools over web search for their domain. If an MCP tool fails, state the exact tool error first, then say whether you are falling back to another source.',
-    "Match the user's request domain to the tool's domain: Hacker News requests should use Hacker News tools, Confluence requests should use Confluence tools, and Jira requests should use Jira tools.",
-    'Do not retry the exact same failed tool call. Re-check the listed inputs, choose a better matching tool, or answer with the tool error.',
-    'When MCP or search results inform the answer, include inline citations and a bottom Sources section; do not wait for the user to ask for links.',
-    sourceCitationSystem(),
-    `Callable MCP tool names: ${shownNames}${moreNames}.`,
-    useful ? `MCP tool guide:\n${useful}` : '',
+    `MCP server "${title}" — callable tools: ${shownNames}${moreNames}.`,
+    useful ? `Tool guide:\n${useful}` : '',
   ].filter(Boolean).join('\n');
 }
 

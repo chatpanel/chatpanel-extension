@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mcpProvider } from '../extension/js/mcp-client.js';
-import { combineSystemPrompt, sourceCitationSystem, toolStatus } from '../extension/js/tool-hints.js';
+import { combineSystemPrompt, sourceCitationSystem, mcpSharedSystem, toolStatus } from '../extension/js/tool-hints.js';
 
 test('mcpProvider exposes an inventory prompt with exact callable tool names', () => {
   const provider = mcpProvider({
@@ -17,16 +17,24 @@ test('mcpProvider exposes an inventory prompt with exact callable tool names', (
     async callTool() {},
   }, 'Movies');
 
-  assert.match(provider.system, /MCP server "Movies" is connected/);
+  // The PER-SERVER block carries only server-specific inventory (name + tools).
+  assert.match(provider.system, /MCP server "Movies"/);
   assert.match(provider.system, /mcp_movies__search_movies/);
   assert.match(provider.system, /query\*/);
-  assert.match(provider.system, /Prefer relevant MCP tools over web search/);
-  assert.match(provider.system, /Do not call MCP tools when the attached page or provided context is enough/);
-  assert.match(provider.system, /Match the user's request domain to the tool's domain/);
-  assert.match(provider.system, /Do not retry the exact same failed tool call/);
-  assert.match(provider.system, /Hacker News requests should use Hacker News tools/);
-  assert.match(provider.system, /<sup>\[1\]<\/sup>/, 'MCP prompt should require superscript citations for source-backed answers.');
-  assert.match(provider.system, /Sources/, 'MCP prompt should require a Sources section when MCP sources are used.');
+  // The generic rules / citation policy do NOT repeat per server (de-dup) — they
+  // live ONCE in mcpSharedSystem(), emitted by buildToolset.
+  assert.doesNotMatch(provider.system, /Prefer relevant MCP tools over web search/, 'generic rules must not repeat per server');
+});
+
+test('mcpSharedSystem holds the generic MCP rules + citation policy exactly once', () => {
+  const shared = mcpSharedSystem();
+  assert.match(shared, /Prefer relevant MCP tools over web search/);
+  assert.match(shared, /Do not call MCP tools when the attached page or provided context is enough/);
+  assert.match(shared, /Match the user's request domain to the tool's domain/);
+  assert.match(shared, /Do not retry the exact same failed tool call/);
+  assert.match(shared, /Hacker News requests should use Hacker News tools/);
+  assert.match(shared, /<sup>\[1\]<\/sup>/, 'shared block requires superscript citations.');
+  assert.match(shared, /Sources/, 'shared block requires a Sources section.');
 });
 
 test('mcpProvider returns corrective retry hints for invalid tool parameters', async () => {

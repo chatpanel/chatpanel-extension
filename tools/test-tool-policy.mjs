@@ -15,8 +15,9 @@ assert.equal(normalizeMcpTurnMode(MCP_TURN_MODES.OFF), MCP_TURN_MODES.OFF);
 
 assert.equal(
   shouldIncludeMcpTools({ turnMcpMode: MCP_TURN_MODES.AUTO }),
-  false,
-  'Auto should not expose all configured MCP servers for a plain chat turn.',
+  true,
+  'Auto EXPOSES MCP tools (so plain chat can use them) — they are narrowed to the top-K '
+  + 'relevant downstream (narrowToolset, DEFAULT_AUTO_TOOL_CAP), so this never floods the model.',
 );
 assert.equal(
   shouldIncludeMcpTools({ turnMcpMode: MCP_TURN_MODES.AUTO, skillRun: { mcp: { mode: 'none' } } }),

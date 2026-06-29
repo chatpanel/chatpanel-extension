@@ -26,19 +26,20 @@ assert.equal(isLocalToolSpec(spec('mcp_deepwiki__ask')), false);
   assert.equal(narrowToolset(ts, 'q', { cap: 5 }), ts);
 }
 
-// --- narrowToolset: caps to top-K by relevance, always keeps local tools, keeps order ---
+// --- narrowToolset: caps the MCP tools to top-K by relevance (locals are free and
+//     always kept), keeps order. `cap` bounds the NARROWABLE (MCP) set, not the total. ---
 {
   const specs = [
-    spec('history_search', 'search your chats'),    // local — always kept
-    spec('inspect_page', 'read the page'),          // local — always kept
+    spec('history_search', 'search your chats'),    // local — always kept, doesn't count toward cap
+    spec('inspect_page', 'read the page'),          // local — always kept, doesn't count toward cap
     spec('mcp_wiki__search', 'search wikipedia'),   // relevant
     spec('mcp_calc__add', 'add numbers'),           // irrelevant
     spec('mcp_weather__forecast', 'weather'),       // irrelevant
   ];
   const ts = { specs, execute: () => {}, system: '' };
-  const out = narrowToolset(ts, 'search wikipedia for a president', { cap: 3, keep: isLocalToolSpec });
+  const out = narrowToolset(ts, 'search wikipedia for a president', { cap: 1, keep: isLocalToolSpec });
   const names = out.specs.map((s) => s.name);
-  assert.equal(out.specs.length, 3, 'capped to 3');
+  assert.equal(out.specs.length, 3, 'cap 1 MCP tool + 2 local tools (locals are free) = 3');
   assert.ok(names.includes('history_search') && names.includes('inspect_page'), 'local tools kept');
   assert.ok(names.includes('mcp_wiki__search'), 'most-relevant MCP tool kept');
   assert.ok(!names.includes('mcp_calc__add'), 'irrelevant MCP tool dropped');
