@@ -290,7 +290,7 @@
                 <div class="row"><label>Detector</label>
                   <select id="priv-det-backend">
                     <option value="off">Off</option>
-                    <option value="endpoint">Local NER service (spaCy / Presidio)</option>
+                    <option value="endpoint">Custom PII service (URL)</option>
                     <option value="agent">A configured API / Agent…</option>
                   </select>
                 </div>
@@ -407,8 +407,8 @@
                 <label class="check"><input type="checkbox" id="gw-redact-system" /> Redact the system prompt too</label>
                 <div class="row"><label>Detector</label>
                   <select id="gw-det-backend">
-                    <option value="off">Bundled spaCy NER (automatic)</option>
-                    <option value="endpoint">Custom NER service (URL)</option>
+                    <option value="off">Bundled NER (in-process, automatic)</option>
+                    <option value="endpoint">Custom PII service (URL)</option>
                     <option value="openai">A model — local LLM (OpenAI-compatible)</option>
                   </select>
                 </div>

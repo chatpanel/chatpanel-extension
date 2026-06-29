@@ -925,7 +925,7 @@ function populateDetectorOptions() {
   sel.innerHTML = '';
   const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); };
   opt('off', 'Bundled NER (in-process, automatic)');
-  opt('endpoint', 'Custom NER service (URL)');
+  opt('endpoint', 'Custom PII service (URL)');
   for (const ep of (settings.endpoints || []).filter((e) => e && !e.builtin && e.baseUrl)) {
     const local = /127\.0\.0\.1|localhost|::1/.test(ep.baseUrl);
     opt(`cfg:${ep.id}`, `${local ? '🟢 local' : '⚠ cloud'} — ${ep.name || ep.model || ep.id}`);
