@@ -1035,10 +1035,21 @@ async function refreshGateway() {
   }
 }
 
-// Render the bundled-NER health (from GET /status → ner) into the settings screen.
+// Show the status of the ACTIVE detector. Only the bundled NER ('off') is described
+// from /status.ner; a chosen external detector (LLM / custom NER) is described from
+// the dropdown, so it's obvious detection is by THAT model, not the bundled NER.
 function renderNerStatus(ner) {
   const el = $('gw-ner-status');
   if (!el) return;
+  const selEl = $('gw-det-backend');
+  const sel = selEl ? selEl.value : 'off';
+  if (sel && sel !== 'off') {
+    const label = ((selEl.selectedOptions[0] && selEl.selectedOptions[0].textContent) || sel).trim();
+    const kind = sel === 'endpoint' ? 'custom NER service' : 'LLM detector';
+    el.className = 'status';
+    el.textContent = `Detector: ${label} — ${kind}. The bundled NER is not used. Click “Check NER health” to test it.`;
+    return;
+  }
   if (!ner || !ner.autostart) { el.className = 'status'; el.textContent = 'NER: autostart off (deterministic-only detection).'; return; }
   if (ner.ready) {
     el.className = 'status ok';
@@ -1052,11 +1063,28 @@ function renderNerStatus(ner) {
   }
 }
 
-// Re-probe just the NER health (the gateway live-checks GET /health on the detector).
+// Check the ACTIVE detector. For the bundled NER, probe the gateway's health. For a
+// chosen external detector (LLM / custom NER), actually RUN it on a sample in strict
+// mode so failures (404, timeout, bad model/key) surface instead of failing open.
 async function checkNer() {
   const url = normalizeGatewayUrl($('gw-url').value);
   const el = $('gw-ner-status');
   if (!url || !el) return;
+  const selEl = $('gw-det-backend');
+  const sel = selEl ? selEl.value : 'off';
+  if (sel && sel !== 'off') {
+    const label = ((selEl.selectedOptions[0] && selEl.selectedOptions[0].textContent) || sel).trim();
+    el.className = 'status'; el.textContent = `Testing ${label}…`;
+    try {
+      const ents = await detectEntities('Alex Rivera from Acme Corp in Geneva.', { detection: collectDetection() }, { strict: true });
+      el.className = 'status ok';
+      el.textContent = `Detector ✓ ${label} responded — ${ents.length} entit${ents.length === 1 ? 'y' : 'ies'} on the sample.`;
+    } catch (e) {
+      el.className = 'status err';
+      el.textContent = `Detector ✕ ${label}: ${e.message} — check URL/model/key, and raise Timeout if slow.`;
+    }
+    return;
+  }
   el.className = 'status'; el.textContent = 'NER: checking…';
   const s = await checkGateway(url);
   renderNerStatus(s.ok ? s.ner : null);
@@ -1424,7 +1452,7 @@ function wireGateway() {
     await saveSettings(settings);
     refreshGateway();
   };
-  $('gw-det-backend').onchange = setGwDetectorRows;
+  $('gw-det-backend').onchange = () => { setGwDetectorRows(); renderNerStatus(gatewayState && gatewayState.ner); };
   $('gw-det-url').oninput = setGwDetectorRows; // live cloud-warning for a manual URL
   $('gw-save').onclick = saveGateway;
   $('gw-pro-activate').onclick = activateGatewayPro;

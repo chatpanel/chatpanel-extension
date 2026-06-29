@@ -116,7 +116,13 @@ async function detectViaEndpoint(text, det, signal, fetchImpl) {
 
 async function detectViaOpenAI(text, det, signal, fetchImpl) {
   const base = String(det.url || '').replace(/\/$/, '');
-  const url = /\/chat\/completions$/.test(base) ? base : `${base}/v1/chat/completions`;
+  // Build the chat URL the SAME way the chat path does. An OpenAI-compatible baseUrl
+  // already ends in /v1 (Ollama, OpenRouter, NVIDIA, OpenAI…) → only add
+  // /chat/completions (appending /v1/chat/completions would 404 on /v1/v1/…). A bare
+  // host gets /v1/chat/completions; a full chat URL is used as-is.
+  const url = /\/chat\/completions$/.test(base) ? base
+    : /\/v\d+$/.test(base) ? `${base}/chat/completions`
+      : `${base}/v1/chat/completions`;
   const res = await fetchImpl(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(det.apiKey ? { Authorization: `Bearer ${det.apiKey}` } : {}) },
