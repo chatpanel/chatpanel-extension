@@ -444,15 +444,22 @@ async function init() {
   wireEvents();
   wireDrawerResize();
 
-  state.settings = await getSettings();
-  state.license = await getLicense();
+  // Load everything independent CONCURRENTLY — these are all local reads (getLicense
+  // verifies the entitlement OFFLINE, no network), so serializing them only added
+  // dead time to the cold first-run. The index must reflect the prune, so chain those.
+  const [settings, license, index] = await Promise.all([
+    getSettings(),
+    getLicense(),
+    pruneEmptyConversations().then(() => getIndex()), // clear stale empty chats, then index
+  ]);
+  state.settings = settings;
+  state.license = license;
+  state.index = index;
   setPiiEntitlement(isPro(state.license));
   ensureUsableActiveAgent();
   state.usePage = state.settings.ui.autoAttachActiveTab !== false;
   applyTheme();
   wireMarkdownLinks();
-  await pruneEmptyConversations(); // clear stale empty "New chat" entries
-  state.index = await getIndex();
 
   await startConversation();
   markComposerReady(); // settings + active conversation ready — Send/Enter can proceed
