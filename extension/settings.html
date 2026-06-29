@@ -418,6 +418,8 @@
                   <input id="gw-det-model" placeholder="e.g. llama3.2 / qwen2.5 (LLM detector)" /></div>
                 <div class="row" id="gw-det-key-row"><label>API key</label>
                   <input id="gw-det-key" type="password" placeholder="optional — only if the detector needs one" /></div>
+                <div class="row hidden" id="gw-det-timeout-row"><label>Timeout (ms)</label>
+                  <input id="gw-det-timeout" type="number" min="500" step="500" placeholder="LLM ~15000 · NER ~8000 — raise if a slow detector misses entities" /></div>
                 <p class="muted sm">The detector sees the <strong>raw</strong> text to find entities. <strong>Local</strong>
                   choices (🟢) keep it on your machine; a <strong>cloud</strong> one (⚠) sends the raw text to that provider.
                   The bundled in-process NER and a local LLM are the safe options.</p>

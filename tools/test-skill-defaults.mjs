@@ -49,6 +49,6 @@ assert.equal(
   'selected',
   'Explicit user MCP selections on custom skills should be preserved.',
 );
-assert.equal(storage.get('chatpanel:settings').version, 6, 'Skill default migration should be persisted.');
+assert.equal(storage.get('chatpanel:settings').version, 9, 'Skill default migration should be persisted (current schema version).');
 
 console.log('skill defaults tests passed');

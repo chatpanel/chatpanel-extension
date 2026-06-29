@@ -16,8 +16,8 @@ const freeRoot = slashCommandItems({
 });
 assert.deepEqual(
   freeRoot.map((item) => item.command),
-  ['history', 'history chats', 'history meetings'],
-  'Free users should discover built-in history commands even when custom skills are gated.',
+  ['search', 'history', 'history chats', 'history meetings'],
+  'Free users should discover built-in commands (search + history) even when custom skills are gated.',
 );
 assert.equal(
   freeRoot.find((item) => item.command === 'history meetings')?.locked,
@@ -37,9 +37,9 @@ const proRoot = slashCommandItems({
   canMeetings: true,
 });
 assert.deepEqual(
-  proRoot.map((item) => item.command).slice(0, 3),
-  ['history', 'history chats', 'history meetings'],
-  'Built-in history commands should appear before custom skills.',
+  proRoot.map((item) => item.command).slice(0, 4),
+  ['search', 'history', 'history chats', 'history meetings'],
+  'Built-in commands should appear before custom skills.',
 );
 assert.equal(
   proRoot.find((item) => item.command === 'history meetings')?.locked,

@@ -864,7 +864,7 @@ function renderDestinations() {
 
   const isEnabled = (id) => gatewayDests.some((d) => d.id === id);
   const flowCount = () => { const el = $('gw-flow-dests'); if (el) el.textContent = gatewayDests.length ? `${gatewayDests.length} enabled` : 'your APIs & agents'; };
-  const toggle = (dest, on) => { gatewayDests = gatewayDests.filter((d) => d.id !== dest.id); if (on) gatewayDests.push(dest); flowCount(); };
+  const toggle = (dest, on) => { gatewayDests = gatewayDests.filter((d) => d.id !== dest.id); if (on) gatewayDests.push(dest); flowCount(); autoSaveGateway(); };
   const checkRow = (icon, name, models, dest, { disabled = false, note = '' } = {}) => {
     const wrap = document.createElement('label');
     wrap.className = 'gw-dest' + (disabled ? ' off' : '');
@@ -940,6 +940,7 @@ function setGwDetectorRows() {
   $('gw-det-url-row').classList.toggle('hidden', !manual);
   $('gw-det-model-row').classList.toggle('hidden', b !== 'openai');
   $('gw-det-key-row').classList.toggle('hidden', !manual);
+  $('gw-det-timeout-row').classList.toggle('hidden', b === 'off'); // any active detector
   // Loud warning when the chosen detector is NOT on this machine — it receives the
   // raw, un-redacted text, so a cloud endpoint sends your PII to that provider.
   const isLocal = (u) => /127\.0\.0\.1|localhost|::1/.test(u || '');
@@ -971,6 +972,7 @@ function fillGatewayForm(cfg) {
   $('gw-det-backend').value = [...$('gw-det-backend').options].some((o) => o.value === detSel) ? detSel : 'off';
   $('gw-det-url').value = det.url || '';
   $('gw-det-model').value = det.model || '';
+  $('gw-det-timeout').value = det.timeoutMs ? String(det.timeoutMs) : '';
   $('gw-det-key').value = ''; // write-only; the gateway never echoes the key back
   $('gw-dictionary').value = stringifyDictionary(cfg.redaction?.dictionary);
   $('gw-origins').value = (cfg.allowedOrigins || []).join('\n');
@@ -1136,16 +1138,23 @@ async function selectNerModel(id) {
 function collectDetection() {
   const det = $('gw-det-backend').value;
   if (det === 'off') return { backend: 'off' };
+  // LLM detectors have first-token latency, so default a generous timeout (the
+  // preview honors this; the gateway server floors detection at 30s regardless).
+  // This mirrors the Privacy tab, where detection runs with a long timeout.
+  const isLLM = det === 'openai' || det.startsWith('cfg:');
+  const raw = Number($('gw-det-timeout').value);
+  const timeoutMs = raw > 0 ? raw : (isLLM ? 15000 : 8000);
   if (det.startsWith('cfg:')) {
     const ep = (settings.endpoints || []).find((e) => e.id === det.slice(4));
     if (!ep) return { backend: 'off' };
-    return { backend: 'openai', url: ep.baseUrl, ...(ep.model ? { model: ep.model } : {}), ...(ep.apiKey ? { apiKey: ep.apiKey } : {}) };
+    return { backend: 'openai', url: ep.baseUrl, ...(ep.model ? { model: ep.model } : {}), ...(ep.apiKey ? { apiKey: ep.apiKey } : {}), timeoutMs };
   }
   return {
     backend: det,
     url: $('gw-det-url').value.trim(),
     ...(det === 'openai' && $('gw-det-model').value.trim() ? { model: $('gw-det-model').value.trim() } : {}),
     ...($('gw-det-key').value.trim() ? { apiKey: $('gw-det-key').value.trim() } : {}),
+    timeoutMs,
   };
 }
 
@@ -1188,6 +1197,30 @@ async function saveGateway() {
   } catch (e) {
     st.textContent = `✕ ${e.message}`; st.className = 'status err';
   }
+}
+
+// Auto-save (debounced): the gateway owns its config, so we push edits to it on
+// change — no "did I click Save?" footgun. Unlike saveGateway() we DON'T re-fill the
+// form (that would fight the user mid-edit); the explicit button stays for a full
+// save+refresh. No-op until connected.
+let gwAutoSaveTimer = null;
+function autoSaveGateway() {
+  if (gwAutoSaveTimer) clearTimeout(gwAutoSaveTimer);
+  const st = $('gw-save-status');
+  if (st) { st.textContent = 'Saving…'; st.className = 'status'; }
+  gwAutoSaveTimer = setTimeout(async () => {
+    const url = normalizeGatewayUrl($('gw-url').value);
+    if (!url || !(gatewayState && gatewayState.ok)) {
+      if (st) { st.textContent = 'Connect to the gateway to save.'; st.className = 'status'; }
+      return;
+    }
+    try {
+      await setGatewayConfig(url, collectGatewayPatch());
+      if (st) { st.textContent = '✓ Saved automatically'; st.className = 'status ok'; }
+    } catch (e) {
+      if (st) { st.textContent = `✕ ${e.message}`; st.className = 'status err'; }
+    }
+  }, 700);
 }
 
 // Push THIS device's ChatPanel Pro entitlement token to the gateway, so it
@@ -1395,12 +1428,25 @@ function wireGateway() {
   $('gw-det-url').oninput = setGwDetectorRows; // live cloud-warning for a manual URL
   $('gw-save').onclick = saveGateway;
   $('gw-pro-activate').onclick = activateGatewayPro;
-  $('gw-dest-all').onclick = () => { gatewayDests = availableDestinations(); renderDestinations(); };
-  $('gw-dest-none').onclick = () => { gatewayDests = []; renderDestinations(); };
+  $('gw-dest-all').onclick = () => { gatewayDests = availableDestinations(); renderDestinations(); autoSaveGateway(); };
+  $('gw-dest-none').onclick = () => { gatewayDests = []; renderDestinations(); autoSaveGateway(); };
   $('gw-test-run').onclick = () => runGatewayTest(true);
   $('gw-test-preview').onclick = () => runGatewayTest(false);
   $('gw-logs-refresh').onclick = refreshGatewayLogs;
   $('gw-ner-check').onclick = checkNer;
+
+  // Auto-save every config field to the gateway on change (debounced) — so users
+  // never lose edits by forgetting "Save to gateway". The explicit button remains.
+  // (gw-url/test/pro-token are excluded: connection + write-only token aren't config.)
+  const AUTO = ['gw-tier', 'gw-redact-system', 'gw-det-backend', 'gw-det-url', 'gw-det-model',
+    'gw-det-key', 'gw-det-timeout', 'gw-dictionary', 'gw-origins', 'gw-log',
+    'gw-tools-data', 'gw-tools-narrow', 'gw-tools-cap', 'gw-tools-narrowall', 'gw-free-cap'];
+  for (const id of AUTO) {
+    const el = $(id);
+    if (!el) continue;
+    const evt = (el.tagName === 'SELECT' || el.type === 'checkbox') ? 'change' : 'input';
+    el.addEventListener(evt, autoSaveGateway);
+  }
 }
 
 async function refreshBridgeState() {
