@@ -27,7 +27,7 @@ export const uid = () =>
 // so it's safe to ship them as built-ins.
 export function defaultSettings() {
   return {
-    version: 8,
+    version: 9,
     bridgeUrl: 'http://127.0.0.1:4319',
     activeAgentId: 'claude-code',
     // MCP servers (Streamable HTTP) the in-extension agent loop can call as tools.
@@ -452,10 +452,11 @@ function mergeSettings(base, stored) {
       engines: base.ui.webSearch.engines.map((e) => ({ ...e })),
     };
   }
-  // v8: the web-search last-resort tab render is now opt-in (its rendered pages
-  // emit console warnings we can't silence). Reset installs that picked up the
-  // brief default-on so result pages stop opening tabs.
-  if ((!stored.version || stored.version < 8) && out.ui.webSearch) {
+  // v9: the web-search last-resort tab render is opt-in (its rendered pages emit
+  // console warnings we can't silence). Force it OFF again — earlier installs got
+  // it stuck on, so result pages kept opening tabs every search. The fallback code
+  // and the Tools → Web search toggle remain for anyone who wants to opt back in.
+  if ((!stored.version || stored.version < 9) && out.ui.webSearch) {
     out.ui.webSearch.tabFallback = false;
   }
   out.version = base.version;

@@ -345,6 +345,11 @@ body.rail-collapsed { --rail-w: 0px; }
 .msg.queued .bubble { opacity: .72; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* In-bubble working indicator (slow first token / thinking / running a tool) */
+.working { display: inline-flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 13px; }
+.working .spinner { width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+.working-txt { font-variant-numeric: tabular-nums; }
+
 /* Context bar */
 .context-bar { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--bg-soft); }
 .ctx-chip {

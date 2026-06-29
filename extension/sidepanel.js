@@ -731,7 +731,6 @@ function renderMessage(m) {
   bubble.className = 'bubble';
   if (m.role === 'assistant') {
     bubble.innerHTML = assistantBody(m);
-    if (m.pending && !m.content && !m.thinking && !m.steps?.length) bubble.classList.add('cursor-blink');
     enhanceCode(bubble);
     wireStepControls(bubble);
   } else {
@@ -789,7 +788,6 @@ function renderMessage(m) {
 function updateBubble(m) {
   const bubble = state.bubbles.get(m.id);
   if (!bubble) return;
-  bubble.classList.toggle('cursor-blink', !!m.pending && !m.content && !m.thinking && !m.steps?.length);
   bubble.innerHTML = assistantBody(m);
   enhanceCode(bubble);
   wireStepControls(bubble);
@@ -920,6 +918,13 @@ function assistantBody(m) {
     )}</div></details>`;
   }
   html += m.content ? renderMarkdown(m.content) : '';
+  // Nothing streamed yet → show a live "what's happening" line (spinner + phase +
+  // elapsed) instead of a lonely blinking cursor. The 1s activity timer keeps the
+  // phase/seconds fresh (see updatePendingBubble), so a slow first token, a long
+  // think, or a running tool all read as visible progress.
+  if (!html && m.pending) {
+    html = '<div class="working"><span class="spinner"></span><span class="working-txt">Working…</span></div>';
+  }
   return html;
 }
 
@@ -1746,6 +1751,18 @@ function renderActivity() {
     stopStream();
   };
   strip.append(label, stop);
+  updatePendingBubble(s, secs);
+}
+
+// Keep the in-bubble working indicator (spinner + phase + elapsed) live while the
+// assistant bubble is still empty — so a slow first token reads as visible progress
+// right where the user is looking, not just in the activity strip.
+function updatePendingBubble(s, secs) {
+  const conv = state.conv;
+  const m = conv?.messages?.[conv.messages.length - 1];
+  if (!m || m.role !== 'assistant' || !m.pending || m.content || m.thinking || m.steps?.length) return;
+  const txt = state.bubbles.get(m.id)?.querySelector('.working-txt');
+  if (txt) txt.textContent = `${s.lastEvent || 'Working'}… ${secs}s`;
 }
 
 let activityInterval = null;
