@@ -1030,7 +1030,7 @@ function renderNerStatus(ner) {
     el.textContent = `NER: ✓ ready${ner.model ? ` · model ${ner.model}` : ''}${ner.url ? ` · ${ner.url}` : ''}`;
   } else if (ner.configured) {
     el.className = 'status';
-    el.textContent = 'NER: ⏳ starting… (first run installs spaCy — can take a minute). Click Check again.';
+    el.textContent = 'NER: ⏳ starting… (first run downloads the model, ~100 MB — can take a minute). Click Check again.';
   } else {
     el.className = 'status err';
     el.textContent = 'NER: ✕ not running — falling back to deterministic redaction.';
@@ -1223,10 +1223,13 @@ function populateTestModels() {
 
 // Preview the redaction LOCALLY with the same engine + config the gateway uses.
 async function gatewayPreview(prompt) {
+  const url = normalizeGatewayUrl($('gw-url').value);
   const tier = $('gw-tier').value;
   const dictionary = parseDictionary($('gw-dictionary').value);
   let detection = collectDetection();
-  if (detection.backend === 'off') detection = { backend: 'endpoint', url: 'http://127.0.0.1:9009/ner', timeoutMs: 4000 }; // bundled NER
+  // When no external detector is configured, preview against the gateway's OWN
+  // in-process NER (served at <gateway>/ner) — not the long-gone bundled :9009.
+  if (detection.backend === 'off') detection = { backend: 'endpoint', url: `${url}/ner`, timeoutMs: 8000 }; // gateway in-process NER
   let detected = [];
   if (tier === 'full' && detection.backend !== 'off') {
     try { detected = await detectEntities(prompt, { detection }); } catch { detected = []; }
