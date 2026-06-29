@@ -457,6 +457,9 @@ body.rail-collapsed { --rail-w: 0px; }
   flex: 1; width: 100%; resize: none; max-height: 75vh; min-height: 46px;
   padding: 6px 6px 2px; border: none; border-radius: 0;
   background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 1.45;
+  /* autoGrow() sizes the box to fit, toggling overflow only past the cap — so no
+     scrollbar shows on Windows (classic scrollbars) while it still fits. */
+  overflow-y: hidden;
 }
 .input:focus { outline: none; }
 /* Inline VS Code-style ghost text: an overlay that mirrors the textarea's box

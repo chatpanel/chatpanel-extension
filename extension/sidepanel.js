@@ -1,6 +1,7 @@
 // ChatPanel side panel controller.
 import {
   getSettings,
+  defaultSettings,
   getTarget,
   resolveTarget,
   getIndex,
@@ -431,6 +432,18 @@ function markToolStep(callId, status) {
 // Boot
 // --------------------------------------------------------------------------
 async function init() {
+  // Make the panel interactive on the FIRST paint. On a fresh install the service
+  // worker cold-starts and the storage/license/index loads below can take a couple
+  // of seconds; if we wired the composer only after them, typing and Send did
+  // nothing until the panel was reopened (and the Web Store reviewer saw a "broken"
+  // UI). So seed synchronous default settings and attach all handlers up front —
+  // wireEvents() only attaches handlers (every state read is deferred), so it's safe
+  // before the data is loaded. send() awaits composerReadyPromise to bridge the gap.
+  state.settings = defaultSettings();
+  applyTheme();
+  wireEvents();
+  wireDrawerResize();
+
   state.settings = await getSettings();
   state.license = await getLicense();
   setPiiEntitlement(isPro(state.license));
@@ -442,8 +455,7 @@ async function init() {
   state.index = await getIndex();
 
   await startConversation();
-  wireEvents();
-  wireDrawerResize();
+  markComposerReady(); // settings + active conversation ready — Send/Enter can proceed
   refreshBridge();
   refreshActiveTab();
   renderUpgradeChip();
@@ -974,7 +986,20 @@ function renderSuggestions() {
 // Taken synchronously so a rapid double Enter/click can't fire two requests.
 const sendingLock = new Set();
 
+// First-paint readiness: the UI (composer handlers) is wired synchronously up front,
+// but a send needs the async init (settings, index, active conversation) to finish.
+// send() awaits this so a click/Enter during the cold first-run load WAITS and then
+// sends, instead of silently failing on not-yet-initialized state. Resolved at the
+// end of init().
+let composerReady = false;
+let resolveComposerReady;
+const composerReadyPromise = new Promise((r) => { resolveComposerReady = r; });
+function markComposerReady() { composerReady = true; resolveComposerReady(); }
+
 async function send() {
+  // If the user hits Send/Enter before the cold first-run init finishes, wait for it
+  // rather than throwing on an unset conversation/state (the fresh-install race).
+  if (!composerReady) await composerReadyPromise;
   const input = $('input');
   clearPromptSuggest();
   const raw = input.value.trim();
@@ -3895,12 +3920,16 @@ function autoGrow() {
   const i = $('input');
   if (state.composerH) {
     i.style.height = state.composerH + 'px';
+    i.style.overflowY = 'auto'; // manual height is fixed → allow scrolling inside it
     return;
   }
   i.style.height = 'auto';
   // Expand generously so a long prompt is visible without scrolling; only cap
-  // near the full panel height (it still scrolls past that, but rarely needed).
-  i.style.height = Math.min(i.scrollHeight, Math.round(window.innerHeight * 0.75)) + 'px';
+  // near the full panel height. Show the scrollbar ONLY past the cap, so a fitting
+  // box never shows one (matters on Windows, where scrollbars take layout space).
+  const cap = Math.round(window.innerHeight * 0.75);
+  i.style.height = Math.min(i.scrollHeight, cap) + 'px';
+  i.style.overflowY = i.scrollHeight > cap ? 'auto' : 'hidden';
 }
 
 function wireComposerResize() {
