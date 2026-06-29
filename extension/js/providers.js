@@ -638,15 +638,26 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
         dataUrl: a.dataUrl,
       }))
     : [];
+  // Antigravity (headless `agy -p`) can't reliably use our per-turn tools.
+  // It has no per-run MCP flag; it only connects to MCP servers through its
+  // long-lived background service, which does NOT synchronously pick up a config
+  // we write for a single headless run (verified: cold runs never connect before
+  // timing out). If we still advertised the tools — specs + the "callable tools:
+  // …" system inventory — the model would emit a call to a tool agy never
+  // registered → "invalid tool call (unknown_tool)". So withhold tools from agy:
+  // it answers from the attached page/context instead of calling into the void.
+  // (Tool-using / "Act on page" tasks work with Claude Code or Codex, whose CLIs
+  // accept an MCP config arg and connect synchronously within the run.)
+  const turnTools = bridgeAgent === 'antigravity' ? null : tools;
   const body = {
     agent: bridgeAgent,
-    system: combineSystemPrompt(agent.systemPrompt, tools?.system),
+    system: combineSystemPrompt(agent.systemPrompt, turnTools?.system),
     options,
     messages: toChatMessages(messages),
     ...(images.length ? { images } : {}),
     // Hand the CLI agent our turn tools. The bridge hosts an MCP server with
     // these specs and relays each call back to us (tools.execute) over the SSE.
-    ...(tools?.specs?.length ? { pageTools: { specs: tools.specs } } : {}),
+    ...(turnTools?.specs?.length ? { pageTools: { specs: turnTools.specs } } : {}),
   };
   let res;
   try {
