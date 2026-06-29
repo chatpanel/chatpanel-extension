@@ -413,14 +413,16 @@
                   </select>
                 </div>
                 <div class="row" id="gw-det-url-row"><label>Detector URL</label>
-                  <input id="gw-det-url" placeholder="NER → …:9009/ner · LLM → …:11434/v1 (NOT the gateway's :4320)" /></div>
+                  <input id="gw-det-url" placeholder="NER → …:8080/ner · local LLM → …:11434/v1 (NOT the gateway's :4320)" /></div>
                 <div class="row" id="gw-det-model-row"><label>Model</label>
                   <input id="gw-det-model" placeholder="e.g. llama3.2 / qwen2.5 (LLM detector)" /></div>
                 <div class="row" id="gw-det-key-row"><label>API key</label>
                   <input id="gw-det-key" type="password" placeholder="optional — only if the detector needs one" /></div>
-                <p class="muted sm">⚠️ The detector sees the <strong>raw</strong> text to find entities — keep it
-                  <strong>local</strong> (bundled NER, a local NER service, or a local LLM). Don't point it at a cloud
-                  model, or your text reaches that provider.</p>
+                <p class="muted sm">The detector sees the <strong>raw</strong> text to find entities. <strong>Local</strong>
+                  choices (🟢) keep it on your machine; a <strong>cloud</strong> one (⚠) sends the raw text to that provider.
+                  The bundled in-process NER and a local LLM are the safe options.</p>
+                <p class="status err hidden" id="gw-det-warn">⚠ This detector receives the raw, un-redacted text — it will
+                  leave your machine and reach that provider.</p>
                 <div class="row" style="margin-top:4px">
                   <button type="button" id="gw-ner-check" class="btn">Check NER health</button>
                 </div>

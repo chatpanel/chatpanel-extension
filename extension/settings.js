@@ -924,7 +924,7 @@ function populateDetectorOptions() {
   const cur = sel.value;
   sel.innerHTML = '';
   const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); };
-  opt('off', 'Bundled spaCy NER (automatic)');
+  opt('off', 'Bundled NER (in-process, automatic)');
   opt('endpoint', 'Custom NER service (URL)');
   for (const ep of (settings.endpoints || []).filter((e) => e && !e.builtin && e.baseUrl)) {
     const local = /127\.0\.0\.1|localhost|::1/.test(ep.baseUrl);
@@ -940,6 +940,19 @@ function setGwDetectorRows() {
   $('gw-det-url-row').classList.toggle('hidden', !manual);
   $('gw-det-model-row').classList.toggle('hidden', b !== 'openai');
   $('gw-det-key-row').classList.toggle('hidden', !manual);
+  // Loud warning when the chosen detector is NOT on this machine — it receives the
+  // raw, un-redacted text, so a cloud endpoint sends your PII to that provider.
+  const isLocal = (u) => /127\.0\.0\.1|localhost|::1/.test(u || '');
+  let cloud = false;
+  if (b.startsWith('cfg:')) {
+    const ep = (settings.endpoints || []).find((e) => e.id === b.slice(4));
+    cloud = !!(ep && ep.baseUrl && !isLocal(ep.baseUrl));
+  } else if (manual) {
+    cloud = !isLocal($('gw-det-url').value);
+    if (!$('gw-det-url').value.trim()) cloud = false; // nothing entered yet
+  }
+  const warn = $('gw-det-warn');
+  if (warn) warn.classList.toggle('hidden', !cloud);
 }
 
 function fillGatewayForm(cfg) {
@@ -1379,6 +1392,7 @@ function wireGateway() {
     refreshGateway();
   };
   $('gw-det-backend').onchange = setGwDetectorRows;
+  $('gw-det-url').oninput = setGwDetectorRows; // live cloud-warning for a manual URL
   $('gw-save').onclick = saveGateway;
   $('gw-pro-activate').onclick = activateGatewayPro;
   $('gw-dest-all').onclick = () => { gatewayDests = availableDestinations(); renderDestinations(); };
