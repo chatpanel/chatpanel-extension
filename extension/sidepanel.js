@@ -30,6 +30,7 @@ import {
   stopMeeting,
   getMeetingRecord,
 } from './js/context.js';
+import { captureSearch, webSearchOpts, webSearchToolProvider } from './js/web-search.js';
 import {
   meetingToText,
   meetingToMarkdown,
@@ -259,6 +260,14 @@ async function toolsetFor(
       includeMeetings: can(state.license, 'liveMeetings'),
       explicit: !!history?.enabled,
     }));
+  }
+
+  // Web search tool — exposed on EVERY turn (like history tools) so the model can
+  // decide to search on its own, e.g. a follow-up "how about microsoft?" fires a
+  // web_search without the user typing /search. Locally executed; no tab needed.
+  // Same provider reaches bridge CLIs (relayed) and the gateway. Off via settings.
+  if (resolvedAgent && state.settings.ui?.webSearch?.enabled !== false) {
+    providers.push(webSearchToolProvider(webSearchOpts(state.settings)));
   }
 
   // MCP servers — Free uses the first FREE_LIMITS.mcpServers by list position
@@ -530,6 +539,21 @@ function matchSlashSkill(text) {
   return skill ? { skill, args: m[2].trim() } : null;
 }
 
+// Detect an inline "/search <terms>" (or "/web <terms>") directive ANYWHERE in the
+// message — at the start or mid-prompt. The terms run to the end of that line.
+// Returns { query, cleaned } where `cleaned` is the message with the directive
+// stripped out (so the model sees the question, not the command), or null.
+function parseSearchCommand(text) {
+  const s = String(text || '');
+  const m = /(^|\s)\/(?:search|web)[ \t]+([^\n]+)/i.exec(s);
+  if (!m) return null;
+  const query = m[2].trim();
+  if (!query) return null;
+  // Drop the directive but keep its leading boundary char so surrounding text joins cleanly.
+  const cleaned = (s.slice(0, m.index) + (m[1] || '') + s.slice(m.index + m[0].length)).trim();
+  return { query, cleaned };
+}
+
 // --------------------------------------------------------------------------
 // Agents
 // --------------------------------------------------------------------------
@@ -679,7 +703,7 @@ function renderMessages() {
     empty.classList.add('hidden');
     for (const m of state.conv.messages) root.appendChild(renderMessage(m));
   }
-  scrollToBottom();
+  scrollToBottomNow();
 }
 
 function renderMessage(m) {
@@ -953,6 +977,11 @@ async function send() {
     toast('Type a question after /history');
     return;
   }
+  const searchCommand = parseSearchCommand(raw);
+  if (/^\/(?:search|web)\b/i.test(raw) && !searchCommand) {
+    toast('Type a query after /search');
+    return;
+  }
   const conv = state.conv; // capture: the user may switch chats while this streams
   // Guard BEFORE any await: a second fast Enter would otherwise slip through the
   // gap while we read the page, producing duplicate requests. `sendingLock` covers
@@ -969,13 +998,29 @@ async function send() {
     // Skills are Pro; on Free the command is sent as literal text with a nudge.
     let text = historyCommand ? historyCommand.query : raw;
     let skillRun = state.pendingSkillRun || null;
-    const sk = historyCommand ? null : matchSlashSkill(raw);
+    const sk = historyCommand || searchCommand ? null : matchSlashSkill(raw);
     if (sk && !skillsAllowed()) {
       upsell('customSkills');
     } else if (sk) {
       await applySkillPrep(sk.skill);
       skillRun = skillRunFromSkill(sk.skill, { includeMeetings: can(state.license, 'liveMeetings') });
       text = await substituteVars(sk.skill.prompt + (sk.args ? `\n\n${sk.args}` : ''), { args: sk.args });
+    }
+
+    // /search <query>: render each enabled engine's SERP + top results in
+    // background tabs (JS executes), extract, re-rank, and attach as context. The
+    // same query becomes the message, so the model answers it with the results in
+    // hand — no tool support required, so it works for every agent.
+    if (searchCommand) {
+      if (state.settings.ui?.webSearch?.enabled === false) {
+        toast('Web search is turned off in Settings');
+      } else {
+        toast('🔎 Searching the web…');
+        await addAttachment(() => captureSearch(searchCommand.query, webSearchOpts(state.settings)));
+      }
+      // Strip the directive from the sent message; if nothing else remains, the
+      // query itself becomes the question the model answers with the results.
+      text = searchCommand.cleaned || searchCommand.query;
     }
 
     const includeMeetingsForHistory = can(state.license, 'liveMeetings');
@@ -1134,7 +1179,7 @@ async function send() {
 
     $('empty').classList.add('hidden');
     $('messages').appendChild(renderMessage(userMsg));
-    scrollToBottom();
+    scrollToBottomNow();
     await saveConversation(conv);
     refreshHistory();
 
@@ -1149,7 +1194,7 @@ async function send() {
     const assistant = makeAssistant(agent);
     conv.messages.push(assistant);
     $('messages').appendChild(renderMessage(assistant));
-    scrollToBottom();
+    scrollToBottomNow();
     // runStream registers the stream synchronously, so releasing the lock in the
     // finally below safely hands off to the state.streams guard.
     runStream(agent, assistant, conv); // not awaited — keeps other chats usable
@@ -1653,7 +1698,7 @@ async function resendEdited(m, text) {
   const assistant = makeAssistant(agent);
   conv.messages.push(assistant);
   renderMessages();
-  scrollToBottom();
+  scrollToBottomNow();
   await saveConversation(conv);
   refreshHistory();
   runStream(agent, assistant, conv);
@@ -4107,10 +4152,41 @@ function acceptPromptSuggest() {
   input.selectionStart = input.selectionEnd = input.value.length;
 }
 
+// Stick-to-bottom latch. During streaming we only auto-scroll while the user is
+// AT the bottom. The moment they scroll up to read, the latch releases and we stop
+// yanking them down — until they scroll back to the bottom themselves. (The old
+// 200px "nearBottom" recheck per frame is what fought scroll-up: within 200px it
+// snapped back every token.)
+let stickToBottom = true;
+let lastScrollTop = 0;
 function scrollToBottom() {
   const m = $('messages');
-  const nearBottom = m.scrollHeight - m.scrollTop - m.clientHeight < 200;
-  if (nearBottom) m.scrollTop = m.scrollHeight;
+  if (!m) return;
+  if (!m._stickWired) {
+    m._stickWired = true;
+    lastScrollTop = m.scrollTop;
+    m.addEventListener('scroll', () => {
+      const top = m.scrollTop;
+      const distance = m.scrollHeight - top - m.clientHeight;
+      // Detect DIRECTION, not a threshold: ANY upward move (>2px) means the user is
+      // reading → release immediately, even a slight nudge. Re-engage only once they
+      // return to the very bottom. Our own scroll updates lastScrollTop below, so it
+      // never looks like a user up-scroll.
+      if (top < lastScrollTop - 2) stickToBottom = false;
+      else if (distance < 8) stickToBottom = true;
+      lastScrollTop = top;
+    }, { passive: true });
+  }
+  if (stickToBottom) {
+    m.scrollTop = m.scrollHeight;
+    lastScrollTop = m.scrollTop; // record our own position so it isn't read as a scroll-up
+  }
+}
+// Force to the bottom AND re-engage following — for fresh user actions (sending a
+// message, switching conversations) where the view should jump down regardless.
+function scrollToBottomNow() {
+  stickToBottom = true;
+  scrollToBottom();
 }
 
 // --------------------------------------------------------------------------

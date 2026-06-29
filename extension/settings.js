@@ -433,6 +433,7 @@ function endpointCard(ep) {
   q('.ep-oauth-project').value = ep.oauth?.projectId || '';
   q('.ep-temp').value = ep.temperature ?? '';
   q('.ep-maxtok').value = ep.maxTokens ?? '';
+  q('.ep-maxreq').value = ep.maxRequestsPerTurn ?? '';
   q('.ep-extra-body').value = prettyJson(ep.extraBody);
   q('.ep-extra-headers').value = prettyJson({ ...(selectedPreset?.defaultHeaders || {}), ...(ep.headers || {}) });
   q('.ep-system').value = ep.systemPrompt || '';
@@ -723,6 +724,7 @@ function endpointCard(ep) {
       autocompleteModel: q('.ep-acmodel').value.trim(),
       temperature: q('.ep-temp').value === '' ? undefined : Number(q('.ep-temp').value),
       maxTokens: q('.ep-maxtok').value === '' ? undefined : Number(q('.ep-maxtok').value),
+      maxRequestsPerTurn: q('.ep-maxreq').value === '' ? undefined : Math.max(0, Number(q('.ep-maxreq').value) || 0),
       systemPrompt: q('.ep-system').value,
     }));
     await saveSettings(settings);
@@ -2161,13 +2163,101 @@ async function resetSkills() {
 }
 
 // --------------------------------------------------------------------------
+// Web search engines (Tools tab) — editable mirror of settings.ui.webSearch.engines
+// --------------------------------------------------------------------------
+const DEFAULT_WS_ENGINES = [
+  { id: 'startpage', name: 'Startpage', url: 'https://www.startpage.com/sp/search?query=%s', enabled: true },
+  { id: 'mojeek', name: 'Mojeek', url: 'https://www.mojeek.com/search?q=%s', enabled: true },
+  { id: 'duckduckgo', name: 'DuckDuckGo', url: 'https://html.duckduckgo.com/html/?q=%s', enabled: false },
+  { id: 'bing', name: 'Bing', url: 'https://www.bing.com/search?q=%s', enabled: false },
+  { id: 'google', name: 'Google', url: 'https://www.google.com/search?q=%s', enabled: false },
+];
+let webSearchEngines = [];
+
+function renderWebSearchEngines() {
+  const root = $('websearch-engines');
+  if (!root) return;
+  root.innerHTML = '';
+  webSearchEngines.forEach((eng, i) => {
+    const row = document.createElement('div');
+    row.className = 'row ws-engine';
+    row.style.cssText = 'gap:6px;margin-top:6px;align-items:center';
+
+    const en = document.createElement('input');
+    en.type = 'checkbox';
+    en.className = 'ws-en';
+    en.checked = eng.enabled !== false;
+    en.title = 'Enable this engine';
+
+    const name = document.createElement('input');
+    name.className = 'ws-name';
+    name.placeholder = 'Name';
+    name.value = eng.name || '';
+    name.style.cssText = 'max-width:130px';
+
+    const url = document.createElement('input');
+    url.className = 'ws-url';
+    url.placeholder = 'https://…/search?q=%s';
+    url.value = eng.url || '';
+    url.style.flex = '1';
+
+    const del = document.createElement('button');
+    del.className = 'btn ws-del';
+    del.type = 'button';
+    del.textContent = '✕';
+    del.title = 'Remove engine';
+    del.onclick = () => {
+      webSearchEngines = collectWebSearchEngines(); // preserve unsaved edits in other rows
+      webSearchEngines.splice(i, 1);
+      renderWebSearchEngines();
+    };
+
+    row.append(en, name, url, del);
+    root.appendChild(row);
+  });
+}
+
+// Read the engine rows back out of the DOM (so edits survive add/remove and save).
+function collectWebSearchEngines() {
+  const root = $('websearch-engines');
+  if (!root) return webSearchEngines;
+  return [...root.querySelectorAll('.ws-engine')]
+    .map((row, i) => {
+      const name = row.querySelector('.ws-name').value.trim();
+      const url = row.querySelector('.ws-url').value.trim();
+      const enabled = row.querySelector('.ws-en').checked;
+      const prior = webSearchEngines[i] || {};
+      const id = prior.id || (name || 'engine').toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'engine';
+      return { id, name, url, enabled };
+    })
+    .filter((e) => e.name && e.url);
+}
+
+function addWebSearchEngine() {
+  webSearchEngines = collectWebSearchEngines();
+  webSearchEngines.push({ id: '', name: '', url: 'https://', enabled: true });
+  renderWebSearchEngines();
+}
+
+// --------------------------------------------------------------------------
 // Preferences
 // --------------------------------------------------------------------------
 function renderPrefs() {
   $('pref-theme').value = settings.ui.theme || 'system';
+  $('pref-language').value = settings.ui.language || '';
   $('pref-enter').checked = settings.ui.sendOnEnter !== false;
   $('pref-stream').checked = settings.ui.streamResponses !== false;
   $('pref-max-tools').value = String(settings.ui.maxToolsPerTurn ?? 24);
+  const ws = settings.ui.webSearch || {};
+  $('pref-websearch-enabled').checked = ws.enabled !== false;
+  $('pref-websearch-per').value = String(ws.perEngine ?? 5);
+  $('pref-websearch-pages').value = String(ws.maxPages ?? 5);
+  $('pref-websearch-tabfallback').checked = ws.tabFallback === true;
+  $('pref-websearch-reader').checked = ws.reader?.enabled === true;
+  $('pref-websearch-reader-url').value = ws.reader?.url || 'https://r.jina.ai/';
+  $('pref-websearch-reader-key').value = ws.reader?.key || '';
+  webSearchEngines = (Array.isArray(ws.engines) && ws.engines.length ? ws.engines : DEFAULT_WS_ENGINES).map((e) => ({ ...e }));
+  renderWebSearchEngines();
   const topicCfg = settings.ui.topicExtraction || { enabled: true, targetId: '' };
   $('pref-topic-extract').checked = topicCfg.enabled !== false;
   const topicTarget = $('pref-topic-target');
@@ -2453,9 +2543,24 @@ async function renderStorageHealth() {
 }
 async function savePrefs() {
   settings.ui.theme = $('pref-theme').value;
+  settings.ui.language = $('pref-language').value;
   settings.ui.sendOnEnter = $('pref-enter').checked;
   settings.ui.streamResponses = $('pref-stream').checked;
   settings.ui.maxToolsPerTurn = Math.max(0, Number($('pref-max-tools').value) || 0);
+  const clampN = (v, d) => Math.min(10, Math.max(1, Number(v) || d));
+  const engines = collectWebSearchEngines();
+  settings.ui.webSearch = {
+    enabled: $('pref-websearch-enabled').checked,
+    perEngine: clampN($('pref-websearch-per').value, 5),
+    maxPages: clampN($('pref-websearch-pages').value, 5),
+    tabFallback: $('pref-websearch-tabfallback').checked,
+    reader: {
+      enabled: $('pref-websearch-reader').checked,
+      url: ($('pref-websearch-reader-url').value || '').trim() || 'https://r.jina.ai/',
+      key: ($('pref-websearch-reader-key').value || '').trim(),
+    },
+    engines: engines.length ? engines : DEFAULT_WS_ENGINES.map((e) => ({ ...e })),
+  };
   settings.ui.topicExtraction = {
     enabled: $('pref-topic-extract').checked,
     targetId: $('pref-topic-target').value,
@@ -2729,6 +2834,7 @@ function wire() {
   $('add-endpoint').onclick = addEndpoint;
   $('add-agent').onclick = addBridgeAgent;
   $('add-mcp').onclick = addMcpServer;
+  $('add-websearch').onclick = addWebSearchEngine;
   $('import-mcp').onclick = () => {
     if (mcpAddLocked()) return upsell(`Free includes ${FREE_LIMITS.mcpServers} MCP server. Upgrade to Pro for unlimited.`);
     toggleMcpImport(true);

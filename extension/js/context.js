@@ -42,7 +42,7 @@ export async function getActiveTab() {
 }
 
 // Injected into the page to pull readable content. Must be fully self-contained.
-function extractReadable() {
+export function extractReadable() {
   const clone = document.cloneNode(true);
   clone
     .querySelectorAll('script,style,noscript,svg,iframe,canvas,template')
@@ -265,7 +265,23 @@ function isBlockedHost(hostname) {
   return false;
 }
 
-function assertFetchable(u) {
+// Strip resource-referencing tags from fetched HTML BEFORE handing it to
+// DOMParser. A DOMParser document is inert (no scripts run), BUT Chrome's preload
+// scanner still speculatively fetches <link rel=preload/stylesheet>, <img>, etc.
+// during parsing — and the panel's strict CSP then logs each as a blocked load,
+// flooding the extension console. Removing those tags up front keeps parsing
+// truly inert and the console clean, while <title>/<meta>/text are preserved.
+export function stripResourceTags(html) {
+  return String(html || '')
+    .replace(/<link\b[^>]*>/gi, '')
+    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+    .replace(/<img\b[^>]*>/gi, '')
+    .replace(/<source\b[^>]*>/gi, '')
+    .replace(/<iframe\b[\s\S]*?<\/iframe>/gi, '');
+}
+
+export function assertFetchable(u) {
   let parsed;
   try { parsed = new URL(u); } catch { throw new Error(`Invalid URL: ${u}`); }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -296,7 +312,7 @@ export async function captureUrl(rawUrl) {
   let title = url;
   let text = body;
   if (ct.includes('html')) {
-    const doc = new DOMParser().parseFromString(body, 'text/html');
+    const doc = new DOMParser().parseFromString(stripResourceTags(body), 'text/html');
     doc.querySelectorAll('script,style,noscript,svg,iframe,header,footer,nav,aside').forEach((el) =>
       el.remove(),
     );

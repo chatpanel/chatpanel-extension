@@ -28,6 +28,17 @@ import { mergeExtraBody, sanitizeExtraHeaders } from './request-options.js';
 // for real multi-step tasks (filling a table, a multi-field booking, drawing a
 // shape) — each click/type/Enter is a step, so these add up fast.
 const MAX_TOOL_STEPS = Number(globalThis.CHATPANEL_MAX_TOOL_STEPS) || 60;
+
+// Per-endpoint cap on model calls within ONE tool-using turn — a throttle for
+// rate-limited providers (e.g. a 429). 0/unset → unlimited (the MAX_TOOL_STEPS
+// backstop). On the final allowed call we withhold tools so the model must answer
+// with the information it has already gathered ("work with available information")
+// instead of emitting another tool call that can't run.
+function toolStepCap(agent, tools) {
+  if (!tools) return 1;
+  const n = Number(agent?.maxRequestsPerTurn) || 0;
+  return n > 0 ? Math.min(MAX_TOOL_STEPS, n) : MAX_TOOL_STEPS;
+}
 const MAX_IDENTICAL_TOOL_CALLS = Number(globalThis.CHATPANEL_MAX_IDENTICAL_TOOL_CALLS) || 3;
 // GLOBAL stall breaker: the per-tool guard above blocks a SINGLE repeated call, but
 // a weak model can keep cycling blocked calls across several tools (history_search,
@@ -315,8 +326,10 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
 
   // One model turn = one streamed completion. Loops only when the model asks to
   // call tools; without tools it runs exactly once (unchanged single-shot path).
-  for (let step = 0; step < (tools ? MAX_TOOL_STEPS : 1); step++) {
-    const activeToolSpecs = (loopGuard.disabled || loopGuard.stalled) ? undefined : adaptivePolicy.filterOpenAITools(toolSpecs);
+  const stepCap = toolStepCap(agent, tools);
+  for (let step = 0; step < stepCap; step++) {
+    const lastCall = step === stepCap - 1; // withhold tools → force a final answer
+    const activeToolSpecs = (loopGuard.disabled || loopGuard.stalled || lastCall) ? undefined : adaptivePolicy.filterOpenAITools(toolSpecs);
     const doFetch = () => {
       const body = mergeExtraBody({
         model: agent.model || 'gpt-4o-mini',
@@ -451,8 +464,10 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
   const msgs = toMultimodalMessages(messages, 'anthropic');
   let full = '';
 
-  for (let step = 0; step < (tools ? MAX_TOOL_STEPS : 1); step++) {
-    const activeToolSpecs = (loopGuard.disabled || loopGuard.stalled) ? undefined : adaptivePolicy.filterAnthropicTools(toolSpecs);
+  const stepCap = toolStepCap(agent, tools);
+  for (let step = 0; step < stepCap; step++) {
+    const lastCall = step === stepCap - 1; // withhold tools → force a final answer
+    const activeToolSpecs = (loopGuard.disabled || loopGuard.stalled || lastCall) ? undefined : adaptivePolicy.filterAnthropicTools(toolSpecs);
     const body = mergeExtraBody({
       model: agent.model || 'claude-opus-4-8',
       max_tokens: agent.maxTokens || 4096,
@@ -965,7 +980,36 @@ export async function traceFlow(settings, targetId, prompt, { tools, signal } = 
 // round-trips tool calls — restoring the model's token args before LOCAL execution
 // and re-redacting the result before返回 to the model. One wrapper covers the
 // API and bridge backends because they all run through dispatchStream().
+// Runtime context injected into EVERY model call (the single chokepoint below), so
+// current and future agents inherit it: today's date (models often assume an older
+// year) and the enforced response language from settings.
+function runtimeContextSystem(settings) {
+  const lines = [];
+  try {
+    const date = new Date().toLocaleDateString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    });
+    lines.push(
+      `Today's date is ${date}. Treat this as the current date — your training data may be ` +
+      `older, so do not assume an earlier year when reasoning about "now", recent events, or ` +
+      `time-sensitive facts.`,
+    );
+  } catch { /* Date unavailable — skip */ }
+  const lang = String(settings?.ui?.language || '').trim();
+  if (lang && !/^(auto|default)$/i.test(lang)) {
+    lines.push(
+      `Always respond in ${lang}, regardless of the language the user writes in, unless they ` +
+      `explicitly ask for a different language.`,
+    );
+  }
+  return lines.join('\n');
+}
+
 export async function streamChat({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction }) {
+  // ONE place every model-bound call passes through — augment the agent's system
+  // prompt with runtime context (date + enforced language) so all agents, present
+  // and future, inherit it without per-provider wiring.
+  agent = { ...agent, systemPrompt: combineSystemPrompt(agent?.systemPrompt, runtimeContextSystem(settings)) };
   // Default: cover EVERY model-bound call (chat, topic extraction, meeting scribe,
   // autocomplete…). A caller that omits `redaction` still gets the user's
   // configured redaction; pass an explicit object (or null) only to override.

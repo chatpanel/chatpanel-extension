@@ -17,7 +17,7 @@
         <aside class="sidenav" id="tabs">
           <button class="tab active" data-tab="api"><span class="tab-ico">🔌</span> API</button>
           <button class="tab" data-tab="agents"><span class="tab-ico">🤖</span> Agents</button>
-          <button class="tab" data-tab="mcp"><span class="tab-ico">🛠</span> MCP</button>
+          <button class="tab" data-tab="mcp"><span class="tab-ico">🛠</span> Tools</button>
           <button class="tab" data-tab="skills"><span class="tab-ico">⚡</span> Skills</button>
           <button class="tab" data-tab="meetings"><span class="tab-ico">🗓</span> Meetings</button>
           <button class="tab" data-tab="history"><span class="tab-ico">💬</span> History</button>
@@ -87,8 +87,43 @@
         </div>
       </section>
 
-      <!-- MCP (tool servers) -->
+      <!-- Tools: Web search + MCP servers -->
       <section class="panel hidden" data-panel="mcp">
+        <div class="card">
+          <div class="card-head">
+            <h2>Web search <span class="sub">— fetch live results as context for any model</span></h2>
+            <div class="card-actions">
+              <label class="check"><input type="checkbox" id="pref-websearch-enabled" /> Enabled</label>
+            </div>
+          </div>
+          <p class="muted">
+            Type <code>/search &lt;query&gt;</code> (anywhere in a message) to fetch web results and attach them as
+            context — no tabs open, works with every model/agent. Engines use a Chrome-style <code>%s</code>
+            (or <code>{q}</code>) query placeholder and must return server-rendered HTML to a fetch
+            (Google's main page doesn't, so it's off by default).
+          </p>
+          <div class="row" style="gap:18px;flex-wrap:wrap">
+            <div class="row" style="gap:6px"><label>Results per engine</label>
+              <input type="number" id="pref-websearch-per" min="1" max="10" placeholder="5" style="max-width:90px" />
+            </div>
+            <div class="row" style="gap:6px"><label>Pages to read &amp; rank</label>
+              <input type="number" id="pref-websearch-pages" min="1" max="10" placeholder="5" style="max-width:90px" />
+            </div>
+          </div>
+          <label class="check" style="margin-top:8px"><input type="checkbox" id="pref-websearch-tabfallback" /> Background-tab render as a last resort <span class="sub">— off by default. When on, a SERP or result page that can't be fetched is opened in a background tab so its JS runs, then read and closed. ⚠ A rendered page emits its own console warnings (font preloads, CSP) that can't be silenced. Leave off for a clean console; result pages then just use their snippet.</span></label>
+          <label class="check" style="margin-top:8px"><input type="checkbox" id="pref-websearch-reader" /> Use a reader service for page content <span class="sub">— fetches each result as LLM-ready Markdown instead of parsing site HTML. Off by default: anonymous Jina is blocked (401), so this needs an API key below or a self-hosted reader. ⚠ Sends each result URL to that service.</span></label>
+          <div class="row" style="gap:6px;margin-top:4px"><label>Reader URL</label>
+            <input type="text" id="pref-websearch-reader-url" placeholder="https://r.jina.ai/" style="flex:1" />
+          </div>
+          <div class="row" style="gap:6px;margin-top:4px"><label>Reader API key <span class="sub">— optional; sent as Bearer token</span></label>
+            <input type="password" id="pref-websearch-reader-key" placeholder="(none)" style="flex:1" />
+          </div>
+          <div id="websearch-engines"></div>
+          <div class="card-actions" style="margin-top:8px">
+            <button id="add-websearch" class="btn" type="button">+ Add engine</button>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-head">
             <h2>MCP tool servers <span class="sub">— external tools for your agents</span></h2>
@@ -537,6 +572,24 @@
                   <option value="dark">Dark</option>
                 </select>
               </div>
+              <div class="row">
+                <label>Response language <span class="sub">— enforced for every model</span></label>
+                <select id="pref-language">
+                  <option value="">Auto (match me)</option>
+                  <option value="English">English</option>
+                  <option value="Spanish">Spanish</option>
+                  <option value="French">French</option>
+                  <option value="German">German</option>
+                  <option value="Portuguese">Portuguese</option>
+                  <option value="Italian">Italian</option>
+                  <option value="Hindi">Hindi</option>
+                  <option value="Chinese (Simplified)">Chinese (Simplified)</option>
+                  <option value="Japanese">Japanese</option>
+                  <option value="Korean">Korean</option>
+                  <option value="Arabic">Arabic</option>
+                  <option value="Russian">Russian</option>
+                </select>
+              </div>
               <label class="check"><input type="checkbox" id="pref-enter" /> Send message on Enter (Shift+Enter for newline)</label>
               <label class="check"><input type="checkbox" id="pref-stream" /> Stream responses as they arrive</label>
               <div class="row"><label>Max tools per turn <span class="sub">— fewer = faster; many enabled MCP servers
@@ -732,6 +785,10 @@
             <div><label>Temp</label><input class="ep-temp" type="number" step="0.1" min="0" max="2" /></div>
             <div><label>Max tokens</label><input class="ep-maxtok" type="number" step="64" /></div>
           </div>
+          <div class="row half">
+            <div><label>Max requests/turn <span class="sub">— throttle tool loops; blank = no limit</span></label><input class="ep-maxreq" type="number" step="1" min="0" placeholder="∞" /></div>
+          </div>
+          <p class="muted tiny">Caps model calls in one tool-using turn. Useful for rate-limited providers (e.g. 429s). On the last allowed call the model answers with the info gathered so far instead of calling another tool.</p>
           <p class="muted tiny ep-maxtok-note hidden"></p>
         </div>
 

@@ -27,7 +27,7 @@ export const uid = () =>
 // so it's safe to ship them as built-ins.
 export function defaultSettings() {
   return {
-    version: 6,
+    version: 8,
     bridgeUrl: 'http://127.0.0.1:4319',
     activeAgentId: 'claude-code',
     // MCP servers (Streamable HTTP) the in-extension agent loop can call as tools.
@@ -126,6 +126,9 @@ export function defaultSettings() {
     skills: defaultSkills(),
     ui: {
       theme: 'system',
+      // Enforced response language for every model call (injected into the system
+      // prompt at the single streamChat chokepoint). '' = Auto (match the user).
+      language: '',
       sendOnEnter: true,
       autoAttachActiveTab: true,
       streamResponses: true,
@@ -159,6 +162,39 @@ export function defaultSettings() {
       // default; the agent only calls them when a question refers to prior work,
       // and meeting access still requires Pro. Set false to never offer them.
       historyTools: true,
+      // Built-in web search (context engineering). When the user types
+      // `/search <query>`, ChatPanel fetches each enabled engine's results
+      // (invisibly — no tab), pulls the top-N links + snippets, deep-fetches the
+      // top pages, re-ranks vs the query, and attaches the bundle as context — so
+      // it works for every model/agent without tool support. Engines use a
+      // Chrome-style `%s` (or `{q}`) placeholder. Defaults (Startpage, Mojeek)
+      // serve real results to a plain fetch; DuckDuckGo/Bing/Google return an
+      // anti-bot challenge to fetch and only work via the background-tab fallback,
+      // so they're off by default.
+      webSearch: {
+        enabled: true,
+        perEngine: 5, // top-N links taken from each engine's SERP
+        maxPages: 5, // how many result pages are actually deep-fetched + ranked
+        // Last-resort tab render: when BOTH the reader and a direct fetch fail for
+        // a SERP or a result page, open it in a background tab so its JS runs, read
+        // it, and close it. OPT-IN (default off): a rendered page emits its own
+        // console warnings (font preloads, CSP) that we can't silence without the
+        // declarativeNetRequest permission. Off → result pages never open a tab; a
+        // failed fetch just uses the SERP snippet.
+        tabFallback: false,
+        // Reader service: fetch result CONTENT as clean Markdown via a reader
+        // instead of parsing site HTML. OPT-IN (default off): anonymous Jina is
+        // blocked (401) so it needs an API key or a self-hosted reader. PRIVACY:
+        // each result URL is sent to this third party. Off → reliable local parse.
+        reader: { enabled: false, url: 'https://r.jina.ai/', key: '' },
+        engines: [
+          { id: 'startpage', name: 'Startpage', url: 'https://www.startpage.com/sp/search?query=%s', enabled: true },
+          { id: 'mojeek', name: 'Mojeek', url: 'https://www.mojeek.com/search?q=%s', enabled: true },
+          { id: 'duckduckgo', name: 'DuckDuckGo', url: 'https://html.duckduckgo.com/html/?q=%s', enabled: false },
+          { id: 'bing', name: 'Bing', url: 'https://www.bing.com/search?q=%s', enabled: false },
+          { id: 'google', name: 'Google', url: 'https://www.google.com/search?q=%s', enabled: false },
+        ],
+      },
       // Cap how many tools are advertised to the model per turn — many enabled MCP
       // servers can mean dozens of tools, which bloats the prompt and slows the model.
       // Local page/history tools are always kept; remote MCP tools beyond the cap are
@@ -406,6 +442,22 @@ function mergeSettings(base, stored) {
       : ags.find((a) => a.kind === 'bridge')?.id || null;
     out.freeEndpointId = eps.some((e) => e.id === active) ? active : eps[0]?.id || null;
   }
+  // v7: web-search defaults moved to fetch-friendly engines (Startpage/Mojeek);
+  // older installs persisted the now-bot-walled DuckDuckGo default, so refresh the
+  // engine list while keeping the user's enabled/count preferences.
+  if (!stored.version || stored.version < 7) {
+    out.ui.webSearch = {
+      ...base.ui.webSearch,
+      ...(out.ui.webSearch || {}),
+      engines: base.ui.webSearch.engines.map((e) => ({ ...e })),
+    };
+  }
+  // v8: the web-search last-resort tab render is now opt-in (its rendered pages
+  // emit console warnings we can't silence). Reset installs that picked up the
+  // brief default-on so result pages stop opening tabs.
+  if ((!stored.version || stored.version < 8) && out.ui.webSearch) {
+    out.ui.webSearch.tabFallback = false;
+  }
   out.version = base.version;
   return out;
 }
@@ -550,6 +602,7 @@ export function resolveTarget(target, settings) {
     systemPrompt: target.systemPrompt || '',
     temperature: target.temperature,
     maxTokens: target.maxTokens,
+    maxRequestsPerTurn: target.maxRequestsPerTurn ?? ep.maxRequestsPerTurn,
   };
 }
 

@@ -1,6 +1,12 @@
 const BUILTIN_COMMANDS = [
   {
     type: 'builtin',
+    command: 'search',
+    icon: '🔎',
+    description: 'Search the web and attach the results as context.',
+  },
+  {
+    type: 'builtin',
     command: 'history',
     icon: '🕘',
     description: 'Search prior chats. Pro includes meeting transcripts.',
