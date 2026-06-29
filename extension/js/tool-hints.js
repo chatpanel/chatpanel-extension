@@ -44,6 +44,8 @@ export function mcpSharedSystem() {
     'Do not call MCP tools when the attached page or provided context is enough to answer; summarize or analyze that context directly.',
     'Prefer relevant MCP tools over web search for their domain. If an MCP tool fails, state the exact tool error first, then say whether you are falling back to another source.',
     "Match the user's request domain to the tool's domain: Hacker News requests should use Hacker News tools, Confluence requests should use Confluence tools, and Jira requests should use Jira tools.",
+    'Form arguments precisely: pass ONLY the specific entity, identifier, or minimal distinctive keywords the tool needs — not the full sentence, greetings, pleasantries, or unrelated personal details from the conversation. For lookup-by-title/ID tools pass the exact canonical name or ID (e.g. title "Seattle", not "which state is Seattle in"); for search tools pass the fewest keywords that uniquely identify the target. Fill every required argument and follow each argument\'s schema description.',
+    "If you don't know the exact title or ID a lookup tool requires, first call the matching search/list tool to resolve it, then call the lookup — never guess identifiers.",
     'Do not retry the exact same failed tool call. Re-check the listed inputs, choose a better matching tool, or answer with the tool error.',
     'When MCP or search results inform the answer, include inline citations and a bottom Sources section; do not wait for the user to ask for links.',
     sourceCitationSystem(),
