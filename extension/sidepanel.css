@@ -451,6 +451,7 @@ body.rail-collapsed { --rail-w: 0px; }
 /* Anchor the composer menus near the left tool group they belong to. */
 #attach-menu { left: 8px; }
 #skills-menu { left: 8px; }
+#mcp-tools-menu { left: 8px; }
 #history-context-menu { left: 8px; }
 .input-wrap { position: relative; flex: 1; display: flex; }
 .input {

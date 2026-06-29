@@ -2402,23 +2402,48 @@ function renderPrivacyMenu() {
   menu.appendChild(more);
 }
 
-async function cycleMcpToolsMode() {
-  const mode = mcpToolsMode();
-  const next =
-    mode === MCP_TURN_MODES.AUTO
-      ? MCP_TURN_MODES.OFF
-      : mode === MCP_TURN_MODES.OFF
-        ? MCP_TURN_MODES.ON
-        : MCP_TURN_MODES.AUTO;
-  state.settings = await updateSettings({ ui: { mcpToolsMode: next } });
+async function setMcpToolsMode(mode) {
+  const normalized = normalizeMcpTurnMode(mode);
+  state.settings = await updateSettings({ ui: { mcpToolsMode: normalized } });
   renderMcpToolsBtn();
   const label =
-    next === MCP_TURN_MODES.AUTO
-      ? 'Auto: only MCP-enabled skills get MCP tools'
-      : next === MCP_TURN_MODES.OFF
-        ? 'MCP tools off for chat turns'
-        : 'MCP tools on for chat turns';
-  toast(`🔌 ${label}`, 1800);
+    normalized === MCP_TURN_MODES.AUTO ? 'Auto — most relevant tools only'
+      : normalized === MCP_TURN_MODES.OFF ? 'Off'
+        : 'On — all enabled tools';
+  toast(`🔌 MCP tools: ${label}`, 1600);
+}
+
+// A pick-a-mode menu (Off / Auto / On) anchored to the MCP button — same pattern as
+// the History context menu, so the three modes are discoverable with descriptions
+// instead of a blind click-to-cycle.
+function renderMcpToolsMenu() {
+  const menu = $('mcp-tools-menu');
+  if (!menu) return;
+  const current = mcpToolsMode();
+  const choices = [
+    { mode: MCP_TURN_MODES.OFF, icon: '○', label: 'Off', sub: 'Never expose MCP tools for chat turns.' },
+    { mode: MCP_TURN_MODES.AUTO, icon: '⚖️', label: 'Auto', sub: `Arm only the ${DEFAULT_AUTO_TOOL_CAP} most relevant tools each message (faster).` },
+    { mode: MCP_TURN_MODES.ON, icon: '🔌', label: 'On', sub: 'Expose all enabled MCP tools every message.' },
+  ];
+  menu.innerHTML = '';
+  menu.appendChild(sectionLabel('MCP tools'));
+  for (const choice of choices) {
+    const item = document.createElement('button');
+    item.className = 'menu-item';
+    const active = current === choice.mode;
+    item.innerHTML =
+      `<span>${choice.icon}</span>` +
+      `<span style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">` +
+      `<span>${active ? '✓ ' : ''}${escapeAttr(choice.label)}</span>` +
+      `<span class="mi-sub">${escapeAttr(choice.sub)}</span>` +
+      `</span>`;
+    item.onmousedown = (e) => {
+      e.preventDefault();
+      closeMenus();
+      setMcpToolsMode(choice.mode);
+    };
+    menu.appendChild(item);
+  }
 }
 
 function renderWatchMenu() {
@@ -4324,10 +4349,15 @@ function wireEvents() {
     }
   };
   $('btn-assist').onclick = improvePrompt;
-  $('btn-mcp').onclick = async (e) => {
+  $('btn-mcp').onclick = (e) => {
     e.stopPropagation();
+    const m = $('mcp-tools-menu');
+    const opening = m.classList.contains('hidden');
     closeMenus();
-    await cycleMcpToolsMode();
+    if (opening) {
+      renderMcpToolsMenu();
+      m.classList.remove('hidden');
+    }
   };
 
   wireComposerResize();
