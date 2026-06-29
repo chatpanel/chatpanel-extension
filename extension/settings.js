@@ -424,6 +424,7 @@ function endpointCard(ep) {
   const selectedPresetId = ep.providerPreset || providerPresetForEndpoint(ep)?.id || 'custom';
   const selectedPreset = providerPresetById(selectedPresetId);
   q('.ep-name').value = ep.name || '';
+  q('.ep-enabled').checked = ep.enabled !== false;
   populateProviderPresetSelect(q('.ep-provider'), selectedPresetId);
   q('.ep-kind').value = ep.kind || 'openai';
   q('.ep-baseurl').value = ep.baseUrl || '';
@@ -778,6 +779,12 @@ function endpointCard(ep) {
     await updateOAuthStatus();
   };
 
+  q('.ep-enabled').onchange = async () => {
+    ep.enabled = q('.ep-enabled').checked;
+    await saveSettings(settings);
+    setStatus(q('.ep-status'), ep.enabled ? 'Enabled' : 'Disabled — hidden from pickers, autocomplete & gateway', ep.enabled ? 'ok' : '');
+  };
+
   q('.ep-del').onclick = async () => {
     if ((settings.endpoints || []).length <= 1) {
       return setStatus(q('.ep-status'), 'Keep at least one endpoint', 'err');
@@ -842,7 +849,7 @@ function pointsAtGateway(baseUrl, gwUrl) {
 function availableDestinations() {
   const gwUrl = normalizeGatewayUrl($('gw-url').value || settings.gatewayUrl || '');
   const out = [];
-  for (const ep of (settings.endpoints || []).filter((e) => e && !e.builtin && e.baseUrl)) {
+  for (const ep of (settings.endpoints || []).filter((e) => e && !e.builtin && e.baseUrl && e.enabled !== false)) {
     if (pointsAtGateway(ep.baseUrl, gwUrl)) continue;
     out.push({
       id: ep.name || ep.model || ep.id, type: 'api', baseUrl: ep.baseUrl,
@@ -1567,6 +1574,7 @@ function bridgeAgentCard(agent) {
   const node = $('bridge-agent-tpl').content.firstElementChild.cloneNode(true);
   const q = (sel) => node.querySelector(sel);
   q('.ba-name').value = agent.name || '';
+  q('.ba-enabled').checked = agent.enabled !== false;
   q('.ba-kind').value = agent.bridgeAgent || 'claude';
   q('.ba-workdir').value = agent.workingDir || '';
   q('.ba-extraargs').value = agent.extraArgs || '';
@@ -1711,6 +1719,11 @@ function bridgeAgentCard(agent) {
     });
     await saveSettings(settings);
     setStatus(q('.ba-status'), '✓ Saved', 'ok');
+  };
+
+  q('.ba-enabled').onchange = async () => {
+    agent.enabled = q('.ba-enabled').checked;
+    await saveSettings(settings);
   };
 
   q('.ba-del').onclick = async () => {

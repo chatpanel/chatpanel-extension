@@ -585,6 +585,15 @@ function currentAgent() {
 // (default points elsewhere, or the user downgraded from Pro), repoint to the
 // free agent slot so chatting never targets a locked agent.
 function ensureUsableActiveAgent() {
+  // If the active target was disabled in Settings, move to the first enabled one so
+  // chat doesn't point at a hidden/disabled model (applies to all tiers).
+  const active = getTarget(state.settings, state.settings.activeAgentId);
+  if (active && active.enabled === false) {
+    const next =
+      (state.settings.endpoints || []).find((e) => e.enabled !== false)?.id ||
+      (state.settings.agents || []).find((a) => a.kind === 'bridge' && a.enabled !== false)?.id;
+    if (next) { state.settings.activeAgentId = next; updateSettings({ activeAgentId: next }); }
+  }
   if (isPro(state.license)) return;
   const cur = getTarget(state.settings, state.settings.activeAgentId);
   if (cur && canUseAgent(state.license, state.settings, cur)) return;
@@ -691,8 +700,9 @@ function renderAgentMenu() {
     menu.appendChild(item);
   };
 
-  const endpoints = s.endpoints || [];
-  const bridge = (s.agents || []).filter((a) => a.kind === 'bridge');
+  // Hide endpoints/agents the user has disabled in Settings (kept, not deleted).
+  const endpoints = (s.endpoints || []).filter((e) => e.enabled !== false);
+  const bridge = (s.agents || []).filter((a) => a.kind === 'bridge' && a.enabled !== false);
   if (endpoints.length) {
     menu.appendChild(sectionLabel('API'));
     endpoints.forEach((e) => addItem(e));
@@ -4049,8 +4059,10 @@ function autocompleteSource() {
   // even if the user set an "Autocomplete model" on one.
   // 1) Active agent if it's itself an API endpoint.
   if (active && active.kind !== 'bridge' && active.model) return { kind: 'api', target: active };
-  // 2) Any other configured API endpoint with a model.
+  // 2) Any other configured API endpoint with a model (skip disabled ones — this is
+  //    how "disable local models to test autocomplete" takes effect).
   for (const ep of state.settings.endpoints || []) {
+    if (ep.enabled === false) continue;
     const t = resolveTarget(ep, state.settings);
     if (t && t.kind !== 'bridge' && t.model) return { kind: 'api', target: t };
   }

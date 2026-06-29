@@ -218,6 +218,8 @@ select {
 .entity-head .status { flex: 0 0 auto; margin-left: auto; }
 .entity-head .status + button, .entity-head button { flex: 0 0 auto; }
 .entity-head .ep-name, .entity-head .ba-name, .entity-head .mcp-name, .entity-head .s-name { flex: 1 1 170px; font-weight: 600; }
+.entity-head .enabled-lbl { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.entity-head .enabled-lbl input { flex: 0 0 auto; width: auto; margin: 0; cursor: pointer; }
 .entity-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
 .fields { border-top: 1px dashed var(--border); padding-top: 10px; margin-top: 6px; }
 

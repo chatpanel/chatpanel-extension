@@ -741,6 +741,7 @@ npx @chatpanel/bridge</code></pre>
         <div class="entity">
           <div class="entity-head">
             <input class="ep-name" placeholder="Endpoint name (e.g. OpenAI)" />
+          <label class="enabled-lbl" title="Uncheck to temporarily disable this endpoint without deleting it (hidden from the model picker, autocomplete & gateway)"><input type="checkbox" class="ep-enabled" checked /> Enabled</label>
           <button class="btn danger ep-del">Delete</button>
         </div>
         <div class="endpoint-provider-grid">
@@ -880,6 +881,7 @@ npx @chatpanel/bridge</code></pre>
             <option value="custom">Custom — bring your own Agent ✨ Pro</option>
           </select>
           <span class="ba-avail status"></span>
+          <label class="enabled-lbl" title="Uncheck to temporarily disable this agent without deleting it (hidden from the model picker & gateway)"><input type="checkbox" class="ba-enabled" checked /> Enabled</label>
           <button class="btn danger ba-del">Delete</button>
         </div>
         <!-- Custom ("bring your own Agent") fields — shown only when kind = custom -->
