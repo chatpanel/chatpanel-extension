@@ -1538,8 +1538,10 @@ async function testBridge() {
   status.className = 'status';
   bridgeState = await checkBridge(url);
   if (!bridgeState.ok) {
-    status.textContent = `✕ Not reachable (${bridgeState.reason || 'no response'}). Start it with: npx @chatpanel/bridge`;
+    status.textContent = `✕ Not reachable (${bridgeState.reason || 'no response'}). Install or start the bridge — see the commands below.`;
     status.className = 'status err';
+    const help = $('bridge-install-help');
+    if (help) help.open = true; // reveal the macOS/Linux + Windows + npx commands
     renderBridgeAgents();
     return;
   }

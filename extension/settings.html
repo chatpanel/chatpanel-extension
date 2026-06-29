@@ -71,11 +71,22 @@
             <button id="add-agent" class="btn primary">+ Add agent</button>
           </div>
           <p class="muted">
-            Use the coding agents already installed on your machine. Start the
-            bridge with <code>npx @chatpanel/bridge</code>, then Test. They run
-            locally; <strong>Free includes one agent</strong> —
-            Pro unlocks Claude Code, Codex, Antigravity &amp; more together.
+            Use the coding agents already installed on your machine. Install &amp; start the
+            <strong>bridge</strong> (commands below), then Test. They run locally;
+            <strong>Free includes one agent</strong> — Pro unlocks Claude Code, Codex,
+            Antigravity &amp; more together.
           </p>
+          <details class="tip" id="bridge-install-help">
+            <summary>Install or start the bridge</summary>
+            <pre><code># macOS / Linux — one line, no Node needed
+curl -fsSL https://dl.chatpanel.net/bridge/install.sh | bash
+
+# Windows (PowerShell) — no Node needed
+irm https://dl.chatpanel.net/bridge/install.ps1 | iex
+
+# or, if you have Node, run it without installing
+npx @chatpanel/bridge</code></pre>
+          </details>
           <div class="row">
             <label>Bridge URL</label>
             <input id="bridge-url" type="text" placeholder="http://127.0.0.1:4319" />
