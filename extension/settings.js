@@ -37,7 +37,7 @@ import { filterComboboxOptions, normalizeComboboxOptions } from './js/combobox.j
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth } from './js/storage-health.js';
-import { checkGateway, getGatewayConfig, getGatewayLogs, setGatewayConfig, normalizeGatewayUrl, parseDictionary, stringifyDictionary } from './js/gateway.js';
+import { checkGateway, getGatewayConfig, getGatewayLogs, setGatewayConfig, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel } from './js/gateway.js';
 import { createVault, redactText } from './js/pii-redact.js';
 import { detectEntities } from './js/pii-detect.js';
 import {
@@ -1014,6 +1014,7 @@ async function refreshGateway() {
     $('gw-config').classList.remove('hidden');
     renderGatewayMonitor(gatewayState);
     renderNerStatus(gatewayState.ner);
+    refreshNerModels();
   } catch (e) {
     status.textContent = `✓ Connected, but config load failed: ${e.message}`;
   }
@@ -1044,6 +1045,78 @@ async function checkNer() {
   el.className = 'status'; el.textContent = 'NER: checking…';
   const s = await checkGateway(url);
   renderNerStatus(s.ok ? s.ner : null);
+}
+
+// Render the NER model catalog (GET /ner/models): each model with its size + an
+// In use / Use / Download button. Buttons are wired here (the list is dynamic).
+function renderNerModels(data) {
+  const host = $('gw-models');
+  if (!host) return;
+  const esc = (s) => escapeHtml(String(s == null ? '' : s));
+  const active = data?.active || null;
+  const dl = data?.progress || null;
+  const rows = (data?.available || []).map((m) => {
+    const isActive = m.id === active;
+    const downloading = dl && dl.model === m.id;
+    const meta = [esc(m.lang), m.approxMB ? `${m.approxMB} MB` : '', m.installed && !isActive ? 'installed' : '']
+      .filter(Boolean).join(' · ');
+    const label = downloading
+      ? `Downloading… ${dl.pct || 0}%`
+      : isActive ? 'In use' : (m.installed ? 'Use' : `Download${m.approxMB ? ` (${m.approxMB} MB)` : ''}`);
+    return `<div class="entity">
+      <div class="entity-head">
+        <strong style="flex:1 1 auto">${esc(m.label || m.id)}</strong>
+        <span class="status">${meta}</span>
+        <button type="button" class="btn ${isActive ? '' : 'primary'} gw-model-use" data-id="${esc(m.id)}" ${isActive || downloading ? 'disabled' : ''}>${label}</button>
+      </div>
+      <p class="muted sm" style="margin:0">${esc(m.note || '')}</p>
+    </div>`;
+  });
+  host.innerHTML = rows.join('') || '<p class="muted sm">No models available.</p>';
+  host.querySelectorAll('.gw-model-use').forEach((b) => { b.onclick = () => selectNerModel(b.dataset.id); });
+}
+
+// Fetch + render the model list. Returns the data (or null) so the poller can read
+// progress/active without re-fetching.
+async function refreshNerModels() {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const st = $('gw-models-status');
+  if (!url) return null;
+  try {
+    const data = await getNerModels(url);
+    renderNerModels(data);
+    if (st) {
+      if (data.progress) { st.className = 'status'; st.textContent = `Downloading ${data.progress.model} — ${data.progress.pct || 0}%…`; }
+      else { st.className = 'status'; st.textContent = ''; }
+    }
+    return data;
+  } catch (e) {
+    if (st) { st.className = 'status err'; st.textContent = `Models: ${e.message}`; }
+    return null;
+  }
+}
+
+// Switch to a model (the gateway downloads it first if needed). POST returns 202;
+// we poll the list until it's active + ready (downloads can take a minute or more).
+async function selectNerModel(id) {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const st = $('gw-models-status');
+  if (!url || !id) return;
+  st.className = 'status'; st.textContent = `Switching to ${id}…`;
+  try {
+    await setNerModel(url, id);
+  } catch (e) { st.className = 'status err'; st.textContent = `Switch failed: ${e.message}`; return; }
+  for (let i = 0; i < 300; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const data = await refreshNerModels();
+    if (data && data.active === id && data.state === 'ready') {
+      st.className = 'status ok'; st.textContent = `✓ Using ${id}`;
+      const s = await checkGateway(url);
+      if (s.ok) renderNerStatus(s.ner);
+      return;
+    }
+  }
+  st.className = 'status'; st.textContent = 'Still downloading… it will switch when ready.';
 }
 
 // Resolve the detector selection → a detection config the gateway understands.

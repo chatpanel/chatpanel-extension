@@ -43,6 +43,21 @@ export async function getGatewayConfig(baseUrl) {
   return jfetch(`${normalizeGatewayUrl(baseUrl)}/config`);
 }
 
+// NER model manager. List returns { active, state, progress, available:[{id,label,
+// lang,approxMB,note,installed}] }. Switching downloads the model if needed (the
+// gateway returns 202 and downloads in the background — poll the list for progress).
+export async function getNerModels(baseUrl) {
+  return jfetch(`${normalizeGatewayUrl(baseUrl)}/ner/models`);
+}
+
+export async function setNerModel(baseUrl, id) {
+  return jfetch(`${normalizeGatewayUrl(baseUrl)}/ner/models`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+}
+
 // Recent request summaries (counts only, no values) for the monitoring view.
 export async function getGatewayLogs(baseUrl) {
   try { return (await jfetch(`${normalizeGatewayUrl(baseUrl)}/logs`))?.entries || []; }

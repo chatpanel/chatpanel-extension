@@ -426,6 +426,13 @@
                 </div>
                 <p class="status" id="gw-ner-status">—</p>
 
+                <h3 class="priv-h">NER model</h3>
+                <p class="muted sm">The local detector that finds names, organizations and locations. It runs
+                  <strong>in-process</strong> — no Python, no extra port. Switching downloads the model once (stored
+                  under <code>~/.chatpanel/models</code>); a bigger model is more accurate but a larger download.</p>
+                <div id="gw-models"></div>
+                <p class="status" id="gw-models-status">—</p>
+
                 <h3 class="priv-h">Dictionary</h3>
                 <div class="field">
                   <label class="sub"><code>=&gt; LABEL</code> redacts reversibly; <code>-&gt; alias</code> pseudonymizes
