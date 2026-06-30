@@ -320,6 +320,7 @@ npx @chatpanel/bridge</code></pre>
                 <div class="row"><label>Detector</label>
                   <select id="priv-det-backend">
                     <option value="off">Off</option>
+                    <option value="bundled">Bundled NER (via gateway · in-process)</option>
                     <option value="endpoint">Custom PII service (URL)</option>
                     <option value="agent">A configured API / Agent…</option>
                   </select>
@@ -334,6 +335,21 @@ npx @chatpanel/bridge</code></pre>
                     placeholder="http://127.0.0.1:9009/ner" /></div>
                 <div class="row"><label>Timeout (ms)</label><input id="priv-det-timeout" type="number" min="200"
                     max="10000" placeholder="1500" /></div>
+                <div id="priv-ner-block" class="hidden">
+                  <p class="muted sm">Uses the <strong>ChatPanel Gateway's</strong> in-process NER (POST
+                    <code>&lt;gateway&gt;/ner</code>) — runs on your machine, no extra port. Set the gateway's URL on
+                    the <strong>Gateway</strong> tab; the default is <code>http://127.0.0.1:4320</code>.</p>
+                  <div class="row" style="margin-top:4px">
+                    <button type="button" id="priv-ner-check" class="btn">Check NER health</button>
+                  </div>
+                  <p class="status" id="priv-ner-status">—</p>
+                  <h3 class="priv-h">NER model</h3>
+                  <p class="muted sm">The local model that finds names, organizations and locations. Switching
+                    downloads it once (stored under <code>~/.chatpanel/models</code>); a bigger model is more accurate
+                    but a larger download. Shared with the Gateway tab — they use the same gateway.</p>
+                  <div id="priv-models"></div>
+                  <p class="status" id="priv-models-status">—</p>
+                </div>
                 <p class="muted sm">Redact these types <span class="sub">(emails &amp; phones always redact)</span>:</p>
                 <label class="check"><input type="checkbox" id="priv-det-person" /> People (names)</label>
                 <label class="check"><input type="checkbox" id="priv-det-org" /> Organizations</label>

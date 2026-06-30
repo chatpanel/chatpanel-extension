@@ -1160,10 +1160,25 @@ async function checkNer() {
   renderNerStatus(s.ok ? s.ner : null);
 }
 
+// The Privacy tab's "Bundled NER" reuses the SAME in-process NER the gateway runs
+// (POST {text}->{entities} at <gateway>/ner) and the SAME model catalog. Resolve
+// the gateway base the Privacy tab should talk to (the URL configured on the
+// Gateway tab, else the localhost default).
+function gatewayBaseUrl() {
+  const fromField = $('gw-url') ? $('gw-url').value : '';
+  return normalizeGatewayUrl(settings.gatewayUrl || fromField || 'http://127.0.0.1:4320');
+}
+function gatewayNerEndpoint() { return `${gatewayBaseUrl()}/ner`; }
+
+// NER-model UI is shared by both tabs; a context picks which DOM nodes + gateway
+// URL to use so the same render/refresh/select logic drives either one.
+const GW_NER = { url: () => normalizeGatewayUrl($('gw-url').value), models: 'gw-models', mstatus: 'gw-models-status', onHealth: (ner) => renderNerStatus(ner) };
+const PRIV_NER = { url: () => gatewayBaseUrl(), models: 'priv-models', mstatus: 'priv-models-status', onHealth: (ner) => renderPrivNerHealth(ner) };
+
 // Render the NER model catalog (GET /ner/models): each model with its size + an
 // In use / Use / Download button. Buttons are wired here (the list is dynamic).
-function renderNerModels(data) {
-  const host = $('gw-models');
+function renderNerModels(data, ctx = GW_NER) {
+  const host = $(ctx.models);
   if (!host) return;
   const esc = (s) => escapeHtml(String(s == null ? '' : s));
   const active = data?.active || null;
@@ -1186,18 +1201,18 @@ function renderNerModels(data) {
     </div>`;
   });
   host.innerHTML = rows.join('') || '<p class="muted sm">No models available.</p>';
-  host.querySelectorAll('.gw-model-use').forEach((b) => { b.onclick = () => selectNerModel(b.dataset.id); });
+  host.querySelectorAll('.gw-model-use').forEach((b) => { b.onclick = () => selectNerModel(b.dataset.id, ctx); });
 }
 
 // Fetch + render the model list. Returns the data (or null) so the poller can read
 // progress/active without re-fetching.
-async function refreshNerModels() {
-  const url = normalizeGatewayUrl($('gw-url').value);
-  const st = $('gw-models-status');
+async function refreshNerModels(ctx = GW_NER) {
+  const url = ctx.url();
+  const st = $(ctx.mstatus);
   if (!url) return null;
   try {
     const data = await getNerModels(url);
-    renderNerModels(data);
+    renderNerModels(data, ctx);
     if (st) {
       if (data.progress) { st.className = 'status'; st.textContent = `Downloading ${data.progress.model} — ${data.progress.pct || 0}%…`; }
       else { st.className = 'status'; st.textContent = ''; }
@@ -1211,9 +1226,9 @@ async function refreshNerModels() {
 
 // Switch to a model (the gateway downloads it first if needed). POST returns 202;
 // we poll the list until it's active + ready (downloads can take a minute or more).
-async function selectNerModel(id) {
-  const url = normalizeGatewayUrl($('gw-url').value);
-  const st = $('gw-models-status');
+async function selectNerModel(id, ctx = GW_NER) {
+  const url = ctx.url();
+  const st = $(ctx.mstatus);
   if (!url || !id) return;
   st.className = 'status'; st.textContent = `Switching to ${id}…`;
   try {
@@ -1221,15 +1236,34 @@ async function selectNerModel(id) {
   } catch (e) { st.className = 'status err'; st.textContent = `Switch failed: ${e.message}`; return; }
   for (let i = 0; i < 300; i++) {
     await new Promise((r) => setTimeout(r, 1000));
-    const data = await refreshNerModels();
+    const data = await refreshNerModels(ctx);
     if (data && data.active === id && data.state === 'ready') {
       st.className = 'status ok'; st.textContent = `✓ Using ${id}`;
       const s = await checkGateway(url);
-      if (s.ok) renderNerStatus(s.ner);
+      ctx.onHealth(s.ok ? s.ner : null);
       return;
     }
   }
   st.className = 'status'; st.textContent = 'Still downloading… it will switch when ready.';
+}
+
+// Privacy-tab NER health line (the "Bundled NER" detector === the gateway's NER).
+function renderPrivNerHealth(ner) {
+  const el = $('priv-ner-status');
+  if (!el) return;
+  if (!ner) { el.className = 'status err'; el.textContent = `NER: gateway not reachable at ${gatewayBaseUrl()} — start it (or set its URL on the Gateway tab).`; return; }
+  if (ner.ready) { el.className = 'status ok'; el.textContent = `NER: ✓ ready${ner.model ? ` · model ${ner.model}` : ''} · ${gatewayNerEndpoint()}`; return; }
+  if (ner.configured) { el.className = 'status'; el.textContent = 'NER: ⏳ starting… first run downloads the model (~100 MB). Check again shortly.'; return; }
+  el.className = 'status err'; el.textContent = 'NER: ✕ not running on the gateway.';
+}
+
+// "Check NER health" on the Privacy tab — probe the gateway and show its NER state.
+async function checkPrivNer() {
+  const el = $('priv-ner-status');
+  if (!el) return;
+  el.className = 'status'; el.textContent = 'NER: checking…';
+  const s = await checkGateway(gatewayBaseUrl());
+  renderPrivNerHealth(s.ok ? s.ner : null);
 }
 
 // Resolve the detector selection → a detection config the gateway understands.
@@ -2584,7 +2618,10 @@ function renderPrefs() {
   if (modelOpt) modelOpt.disabled = !proPii;
   if (!proPii && $('priv-mode').value === 'model') $('priv-mode').value = 'deterministic';
   const det = pii.detection || {};
-  $('priv-det-backend').value = det.backend || 'off';
+  // "Bundled NER" persists as an endpoint pointed at the gateway's /ner; the
+  // `bundled` flag distinguishes it from a hand-typed custom URL on reload.
+  const isBundled = det.backend === 'endpoint' && det.bundled === true;
+  $('priv-det-backend').value = isBundled ? 'bundled' : (det.backend || 'off');
   $('priv-det-url').value = det.url || '';
   $('priv-det-timeout').value = String(det.timeoutMs || 1500);
   const dt = det.types || {};
@@ -2646,8 +2683,13 @@ function updateDetVis() {
   $('priv-det-url-row').classList.toggle('hidden', b !== 'endpoint');
   $('priv-det-target-row').classList.toggle('hidden', b !== 'agent');
   $('priv-det-tmodel-row').classList.toggle('hidden', b !== 'agent');
+  const ner = $('priv-ner-block');
+  if (ner) ner.classList.toggle('hidden', b !== 'bundled');
+  // The "fast & local NER service / contract" note is for custom/agent detectors;
+  // bundled has its own explanation in the NER block.
   const note = $('priv-det-agent-note');
-  if (note) note.classList.toggle('hidden', b === 'off');
+  if (note) note.classList.toggle('hidden', b === 'off' || b === 'bundled');
+  if (b === 'bundled') { refreshNerModels(PRIV_NER); checkPrivNer(); }
 }
 
 // Privacy → "Test end-to-end": run one prompt through the whole pipeline and show it
@@ -2864,12 +2906,19 @@ async function savePrefs() {
     toolData: $('priv-tooldata').value,
     applyTo: $('priv-applyto').value,
     dictionary: piiTextToDict($('priv-dictionary').value),
-    detection: {
+    detection: (() => {
+      const pbk = $('priv-det-backend').value;
+      const isBundled = pbk === 'bundled';
+      return {
       ...(settings.ui.piiRedaction?.detection || {}),
-      backend: $('priv-det-backend').value,
-      url: $('priv-det-url').value.trim(),
+      // Bundled NER is an endpoint detector aimed at the gateway's in-process NER;
+      // persist it as such (+ a `bundled` marker) so the runtime detector needs no
+      // special case and reload still shows "Bundled NER".
+      backend: isBundled ? 'endpoint' : pbk,
+      bundled: isBundled,
+      url: isBundled ? gatewayNerEndpoint() : $('priv-det-url').value.trim(),
       targetId: detTargetId(),
-      model: ($('priv-det-backend').value === 'agent' ? $('priv-det-tmodel').value : '').trim(),
+      model: (pbk === 'agent' ? $('priv-det-tmodel').value : '').trim(),
       timeoutMs: Number($('priv-det-timeout').value) || 1500,
       types: {
         person: $('priv-det-person').checked,
@@ -2877,7 +2926,8 @@ async function savePrefs() {
         location: $('priv-det-location').checked,
         number: $('priv-det-number').checked,
       },
-    },
+      };
+    })(),
   };
   await saveSettings(settings);
 }
@@ -3157,6 +3207,7 @@ function wire() {
   $('priv-dictionary').onchange = savePrefs;
   $('priv-det-backend').onchange = () => { savePrefs(); renderPrefs(); };
   $('priv-det-url').onchange = savePrefs;
+  if ($('priv-ner-check')) $('priv-ner-check').onclick = checkPrivNer;
   $('priv-det-target').onchange = () => { populateDetModels(detTargetId(), ''); savePrefs(); };
   $('priv-det-tmodel').onchange = savePrefs;
   $('priv-flow-run').onclick = runFlow;
