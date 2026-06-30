@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createVault } from '../extension/js/pii-redact.js';
 import {
   redactionEnabled, effectiveTier, redactOutbound, redactToolResult, makeStreamRestorer, restore,
-  redactionFromSettings, setPiiEntitlement, redactOnce, restoreDeep,
+  redactionFromSettings, setPiiEntitlement, redactOnce, restoreDeep, FREE_DICT_LIMIT,
 } from '../extension/js/pii-pipeline.js';
 
 // --- enable + Pro gating of the entity tier ---
@@ -93,31 +93,39 @@ const entities = [{ value: 'Alex Rivera', type: 'PERSON' }];
 
 // --- Free gating: chat-only scope, dictionary cap (3), basic tier — even if cfg asks for more ---
 {
+  // Build exactly FREE_DICT_LIMIT in-cap dictionary terms + one OVER the cap, so the
+  // test tracks the real limit (imported) instead of hardcoding a number that drifts.
+  const capTerms = Array.from({ length: FREE_DICT_LIMIT }, (_, i) => `Capco${i}`);
+  const overTerm = 'Overflowinc'; // the (cap+1)th entry — must stay literal on Free
+  const dictTerms = [...capTerms, overTerm];
+  const firstTerm = capTerms[0];
   const cfg = {
     mode: 'deterministic', tier: 'full',
     scope: { chat: true, context: true, history: true, toolResults: true },
-    dictionary: [{ value: 'Acme' }, { value: 'Globex' }, { value: 'Initech' }, { value: 'Umbrella' }],
+    dictionary: dictTerms.map((value) => ({ value })),
   };
   const ents = [{ value: 'Alex Rivera', type: 'PERSON' }];
   const messages = () => [{
     role: 'user',
-    content: 'Acme Globex Initech Umbrella; Alex Rivera at alex@example.com',
-    attachments: [{ kind: 'page', text: 'Acme secret' }],
+    content: `${dictTerms.join(' ')}; Alex Rivera at alex@example.com`,
+    attachments: [{ kind: 'page', text: `${firstTerm} secret` }],
   }];
+  const overRe = new RegExp(`\\b${overTerm}\\b`);
+  const firstRe = new RegExp(`\\b${firstTerm}\\b`);
 
   const free = redactOutbound({ messages: messages(), vault: createVault(), cfg, isPro: false, entities: ents });
   assert.match(free.messages[0].content, /\[\[EMAIL_1\]\]/, 'free still redacts secrets');
   assert.match(free.messages[0].content, /Alex Rivera/, 'free does NOT redact names (basic tier)');
-  assert.match(free.messages[0].content, /\bUmbrella\b/, 'free caps the dictionary at 3 entries');
-  assert.doesNotMatch(free.messages[0].content, /\bAcme\b/, 'first dictionary entries still apply on free');
-  assert.equal(free.messages[0].attachments[0].text, 'Acme secret', 'free is chat-only: context not redacted');
-  assert.equal(redactToolResult('Acme alex@example.com', { vault: createVault(), cfg, isPro: false }),
-    'Acme alex@example.com', 'tool-result redaction is Pro-only');
+  assert.match(free.messages[0].content, overRe, `free caps the dictionary at FREE_DICT_LIMIT (${FREE_DICT_LIMIT}) entries`);
+  assert.doesNotMatch(free.messages[0].content, firstRe, 'first dictionary entries still apply on free');
+  assert.equal(free.messages[0].attachments[0].text, `${firstTerm} secret`, 'free is chat-only: context not redacted');
+  assert.equal(redactToolResult(`${firstTerm} alex@example.com`, { vault: createVault(), cfg, isPro: false }),
+    `${firstTerm} alex@example.com`, 'tool-result redaction is Pro-only');
 
   const pro = redactOutbound({ messages: messages(), vault: createVault(), cfg, isPro: true, entities: ents });
   assert.doesNotMatch(pro.messages[0].content, /Alex Rivera/, 'Pro redacts names');
-  assert.doesNotMatch(pro.messages[0].content, /\bUmbrella\b/, 'Pro: unlimited dictionary');
-  assert.doesNotMatch(pro.messages[0].attachments[0].text, /Acme secret/, 'Pro redacts context scope');
+  assert.doesNotMatch(pro.messages[0].content, overRe, 'Pro: unlimited dictionary (past the Free cap)');
+  assert.doesNotMatch(pro.messages[0].attachments[0].text, firstRe, 'Pro redacts context scope');
 }
 
 // --- default redaction path: covers auxiliary callers (topic extraction, scribe…) ---
