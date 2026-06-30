@@ -72,6 +72,42 @@ function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Apply many find/replace rules in a SINGLE left-to-right pass over the source.
+// Each rule is { re: <global RegExp>, repl: (match) => string }. Unlike running
+// rule[0].replace then rule[1].replace then …, text emitted by one rule is NEVER
+// re-scanned by a later rule — so substitutions can't cascade (e.g. a pseudonym
+// that happens to equal another entry's input). On a tie at the same position the
+// earlier rule wins (rules carry priority by their order in the array).
+function applyRulesOnce(text, rules) {
+  if (!rules || rules.length === 0) return text;
+  let out = '';
+  let pos = 0;
+  const n = text.length;
+  while (pos <= n) {
+    let best = null;
+    let bestRule = null;
+    for (const rule of rules) {
+      rule.re.lastIndex = pos;
+      const m = rule.re.exec(text);
+      if (m && (best === null || m.index < best.index)) {
+        best = m;
+        bestRule = rule;
+        if (m.index === pos) break; // nothing can start earlier than the cursor
+      }
+    }
+    if (!best) { out += text.slice(pos); break; }
+    out += text.slice(pos, best.index);
+    if (best[0].length === 0) { // pathological empty match — emit a char, advance
+      out += text[best.index] ?? '';
+      pos = best.index + 1;
+    } else {
+      out += bestRule.repl(best);
+      pos = best.index + best[0].length;
+    }
+  }
+  return out;
+}
+
 function luhnValid(digits) {
   let sum = 0;
   let alt = false;
@@ -135,25 +171,33 @@ export function redactText(text, vault, {
   //    An entry with `alias` PSEUDONYMIZES: permanent substitution (the model and
   //    the user's transcript both see the alias, never reversed). Otherwise it
   //    REDACTS to a reversible [[TYPE_n]] placeholder restored in the user's view.
+  //    All entries are applied in ONE pass (applyRulesOnce): an alias produced by
+  //    one entry must not be re-matched by a later entry, or substitutions cascade
+  //    (e.g. value 'Arnav'→alias 'John' then 'John' caught by a later 'John' rule).
+  const dictRules = [];
   for (const d of dictionary || []) {
     if (!d) continue;
+    let re;
     try {
-      const re = d.pattern
+      re = d.pattern
         ? new RegExp(d.pattern, d.flags && /g/.test(d.flags) ? d.flags : `${d.flags || ''}g`)
         : (d.value ? new RegExp(`(?<![\\w])${escapeRegex(d.value)}(?![\\w])`, 'gi') : null);
-      if (!re) continue;
-      if (d.alias != null && d.alias !== '') {
-        out = out.replace(re, () => d.alias); // pseudonymize: model + reply see the alias…
-        // …but record alias→original so LOCAL tool args (history/meeting search) map
-        // back to the real value. Local lookups must hit real data; only the model is blinded.
-        if (d.value) v.aliases.set(d.alias, d.value);
-      } else {
-        out = out.replace(re, (m) => tokenFor(v, d.type || (d.pattern ? 'PII' : 'TERM'), d.pattern ? m : d.value));
-      }
     } catch {
-      /* a bad user regex must never break redaction */
+      re = null; // a bad user regex must never break redaction
+    }
+    if (!re) continue;
+    if (d.alias != null && d.alias !== '') {
+      // pseudonymize: model + reply see the alias…
+      // …but record alias→original so LOCAL tool args (history/meeting search) map
+      // back to the real value. Local lookups must hit real data; only the model is blinded.
+      if (d.value) v.aliases.set(d.alias, d.value);
+      dictRules.push({ re, repl: () => d.alias });
+    } else {
+      const type = d.type || (d.pattern ? 'PII' : 'TERM');
+      dictRules.push({ re, repl: (m) => tokenFor(v, type, d.pattern ? m[0] : d.value) });
     }
   }
+  out = applyRulesOnce(out, dictRules);
 
   // 2) Known entities (full tier) — longest value first so "Alex Rivera" wins
   //    before a bare "Alex". Restores to the canonical entity value.
@@ -188,9 +232,15 @@ export function restoreText(text, vault) {
 export function restoreWithAliases(text, vault) {
   let out = restoreText(text, vault);
   if (vault?.aliases?.size) {
-    for (const [alias, real] of vault.aliases) {
-      if (!alias) continue;
-      out = out.replace(new RegExp(`(?<![\\w])${escapeRegex(alias)}(?![\\w])`, 'g'), () => real);
+    // ONE pass over every alias at once. Looping `replace` per alias re-scans the
+    // output and cascades when one alias's real value equals another alias (e.g.
+    // 'Twinkle'→'John' then 'John'→'Arnav'): the model's "Twinkle" would walk the
+    // chain to "Arnav". A single alternation replaces each span exactly once.
+    // Longest alias first so a multi-word pseudonym wins over its prefix.
+    const aliases = [...vault.aliases.keys()].filter(Boolean).sort((a, b) => b.length - a.length);
+    if (aliases.length) {
+      const re = new RegExp(`(?<![\\w])(?:${aliases.map(escapeRegex).join('|')})(?![\\w])`, 'g');
+      out = out.replace(re, (m) => (vault.aliases.has(m) ? vault.aliases.get(m) : m));
     }
   }
   return out;
