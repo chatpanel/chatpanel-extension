@@ -262,6 +262,10 @@ async function toolsetFor(
     providers.push(historyToolProvider({
       includeMeetings: can(state.license, 'liveMeetings'),
       explicit: !!history?.enabled,
+      // Expose meeting_live_transcript only while a meeting is actually capturing,
+      // so the model can pull fresh captions instead of reaching for a browser it
+      // doesn't have. Reads the in-memory record (newer than the persisted copy).
+      liveReader: (state.liveMeeting && can(state.license, 'liveMeetings')) ? getLiveMeetingRecord : null,
     }));
   }
 

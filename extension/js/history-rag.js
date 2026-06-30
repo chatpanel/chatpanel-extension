@@ -330,6 +330,22 @@ const HISTORY_GET_MEETING_SPEC = {
   },
 };
 
+const MEETING_LIVE_SPEC = {
+  name: 'meeting_live_transcript',
+  description:
+    'Return the FRESH transcript of the meeting being captured RIGHT NOW (an ongoing/live call). '
+    + 'This reads the real-time in-memory transcript, which is newer than history_get_meeting (that one reads a '
+    + 'persisted copy that lags). Use it to answer "what was just said" or to keep an up-to-date running summary of a '
+    + 'live meeting. You do NOT have any browser/tab access — this tool IS how you observe the live meeting; never try '
+    + 'to open, view, or list browser tabs. Call it again on a later turn to pick up new captions.',
+  parameters: {
+    type: 'object',
+    properties: {
+      sinceMinutes: { type: 'integer', minimum: 0, maximum: 720, description: 'Only the last N minutes of transcript (a delta) — use a small window to keep a running summary cheap. 0/omitted = the whole meeting so far.' },
+    },
+  },
+};
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Parse a since/before value into an absolute epoch ms. Accepts an explicit date
@@ -463,11 +479,16 @@ async function runListMeetings(input, { canReadMeetings, loadSources, loadMeetin
   return formatMeetingList(rows.slice(0, limit), { now });
 }
 
-function historySystem(includeMeetings, explicit = false) {
+function historySystem(includeMeetings, explicit = false, hasLive = false) {
   const base = [
     `These tools search the user's local chat history${includeMeetings ? ' and meeting history' : ''} — use them only when the question refers to past chats, meetings, or prior work; otherwise ignore them.`,
     'history_search ranks matches by keyword relevance across titles and body text.',
   ];
+  if (hasLive) {
+    base.push(
+      'A meeting is being captured live right now. To answer about the ONGOING call or keep a running summary, call meeting_live_transcript (optionally sinceMinutes for just the recent delta) — that tool IS your view of the live meeting. You have NO browser or tab access; never attempt to open, view, or list browser tabs/windows to watch the meeting. New transcript arrives as the call continues, so re-call the tool on later turns to pick up what was newly said.',
+    );
+  }
   if (includeMeetings) {
     base.push(
       'For "who/when/latest" questions about meetings (e.g. "my latest 1:1 with Alex", "meetings in the last 2 weeks"), prefer history_list_meetings with participant/since/before filters — it is deterministic — then history_get_meeting to read the chosen transcript.',
@@ -520,15 +541,30 @@ export function historyToolProvider({
   explicit = false,
   loadSources = loadHistorySources,
   loadMeetingIndex = getMeetingIndex,
+  // Reader for the FRESH in-memory live meeting record (sidepanel-only — it reads
+  // the capturing tab). When provided + Pro, exposes the meeting_live_transcript tool.
+  liveReader = null,
   now = Date.now(),
 } = {}) {
   const canReadMeetings = !!includeMeetings;
+  const hasLive = canReadMeetings && typeof liveReader === 'function';
   const specs = [HISTORY_SEARCH_SPEC, HISTORY_GET_SOURCE_SPEC, HISTORY_RELATED_SPEC];
   if (canReadMeetings) specs.push(HISTORY_LIST_MEETINGS_SPEC, HISTORY_GET_MEETING_SPEC);
+  if (hasLive) specs.push(MEETING_LIVE_SPEC);
   return {
     specs,
-    system: historySystem(canReadMeetings, explicit),
+    system: historySystem(canReadMeetings, explicit, hasLive),
     async execute(name, input = {}) {
+      if (name === 'meeting_live_transcript') {
+        if (!hasLive) return 'No live meeting is being captured right now.';
+        let rec = null;
+        try { rec = await liveReader(); } catch { rec = null; }
+        if (!rec) return 'No live meeting is being captured right now. Ask the user to keep the meeting tab open with live captioning turned on.';
+        const sinceMin = clampInt(input?.sinceMinutes, 0, 0, 720);
+        const sinceTs = sinceMin ? Date.now() - sinceMin * 60000 : 0;
+        const text = meetingToText(rec, { sinceTs });
+        return text || '(no transcript captured yet — is live captioning turned on?)';
+      }
       if (name === 'history_list_meetings') {
         return runListMeetings(input, { canReadMeetings, loadSources, loadMeetingIndex, now });
       }
