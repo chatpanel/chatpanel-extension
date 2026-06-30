@@ -177,6 +177,7 @@ async function select(id) {
   const d = store.get(id);
   if (!d) return;
   current = d; current.tab = current.tab || 'chat';
+  historyGraphFocus = null; // a fresh chat resets any topic-graph drill-down
   graphDrawToken += 1;
   const graphHost = $('h-biggraph');
   if (graphHost?._stop) graphHost._stop();
@@ -223,6 +224,7 @@ function renderDetail() {
     <div class="tabs">
       <button data-tab="chat" class="${tab === 'chat' ? 'active' : ''}" type="button">Conversation</button>
       <button data-tab="related" class="${tab === 'related' ? 'active' : ''}" type="button">Related</button>
+      <button data-tab="topic-graph" class="${tab === 'topic-graph' ? 'active' : ''}" type="button">Topic Graph</button>
     </div>
     <div id="h-tabbody"></div>`;
 
@@ -230,7 +232,9 @@ function renderDetail() {
   $('h-open').onclick = openInPanel;
   $('h-export').onclick = exportChat;
   $('h-delete').onclick = removeChat;
-  if (tab === 'related') renderRelated(); else renderThread();
+  if (tab === 'related') renderRelated();
+  else if (tab === 'topic-graph') renderHistoryTopicGraph();
+  else renderThread();
 }
 
 function renderThread() {
@@ -273,18 +277,39 @@ function renderRelated() {
   $('h-tabbody').innerHTML = `
     <div class="tiles">
       <div class="tile span"><h3>${topicTitle}</h3>${topicChips}${topicHint}</div>
-      <div class="tile span"><h3>🔗 Related chats</h3>${relatedList}</div>
-      <div class="tile span"><h3>🕸 Topic graph</h3><div class="graph-host" id="h-relgraph"></div></div>
+      <div class="tile span"><h3>🔗 Related chats</h3>${relatedList}<p class="muted tiny">See the <strong>Topic Graph</strong> tab to explore how these relate visually.</p></div>
     </div>`;
   $('h-tabbody').querySelectorAll('.chip[data-topic]').forEach((b) => (b.onclick = () => searchTopic(b.dataset.topic)));
   $('h-tabbody').querySelectorAll('.rel[data-id]').forEach((li) => (li.onclick = () => select(li.dataset.id)));
+}
 
-  const chats = [current, ...related.slice(0, 6).map((r) => store.get(r.id)).filter(Boolean)];
+// Dedicated per-chat Topic Graph (beside Related), mirroring the meeting one: it
+// centers on THIS chat's topics (+ attached-context terms) and shows how they tie to
+// other chats. Single-click a chat node to drill into it; double-click opens it.
+let historyGraphFocus = null;
+
+function renderHistoryTopicGraph() {
+  const focusId = (historyGraphFocus && store.get(historyGraphFocus)) ? historyGraphFocus : current.entry.id;
+  const focusD = store.get(focusId) || current;
+  const related = graph.relatedMeetings(focusId);
+  const chats = [focusD, ...related.slice(0, 6).map((r) => store.get(r.id)).filter(Boolean)];
   const { nodes, links } = topicGraph(chats, 'h-topic:');
-  if (nodes.some((n) => n.id === id)) nodes.find((n) => n.id === id).focus = true;
-  drawGraph($('h-relgraph'), nodes, links,
-    (nd) => searchTopic(nd.label),
-    (nd) => { if (nd.type === 'meeting') select(nd.id); else searchTopic(nd.label); });
+  const fn = nodes.find((n) => n.id === focusId); if (fn) fn.focus = true;
+  const topicN = nodes.filter((n) => n.type === 'person' || n.type === 'topic').length;
+  const drilled = focusId !== current.entry.id;
+  $('h-tabbody').innerHTML = `
+    <div class="graph-head">
+      <div><strong>Chat topic graph</strong> <span class="owner">— ${drilled ? `focused on “${esc(focusD.conv.title || 'Untitled')}” · ` : ''}${chats.length} chat${chats.length === 1 ? '' : 's'} · ${topicN} topic${topicN === 1 ? '' : 's'}. Single-click a chat to drill into it; double-click to open it.</span></div>
+      ${drilled ? `<button class="btn" id="h-graph-back" type="button">↩ Back to “${esc(current.conv.title || 'this chat')}”</button>` : ''}
+      <div class="legend"><span class="lg"><i class="sw meeting"></i> Chat</span><span class="lg"><i class="sw person"></i> Topic</span></div>
+    </div>
+    <div class="graph-host big" id="h-topicgraph"></div>`;
+  if (drilled) $('h-graph-back').onclick = () => { historyGraphFocus = null; renderHistoryTopicGraph(); };
+  drawGraph(
+    $('h-topicgraph'), nodes, links,
+    (nd) => { if (nd.type === 'meeting') { historyGraphFocus = nd.id; renderHistoryTopicGraph(); } else searchTopic(nd.label); }, // single → drill/filter
+    (nd) => { if (nd.type === 'meeting') select(nd.id); else searchTopic(nd.label); }, // double → open
+  );
 }
 
 // --- global graph ----------------------------------------------------------
