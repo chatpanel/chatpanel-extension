@@ -854,12 +854,27 @@ function titleFrom(text) {
   return clean.length > 48 ? clean.slice(0, 47) + '…' : clean;
 }
 
-// Export one conversation as Markdown (used by the history "export" button).
+// Export one conversation as Markdown (used by the history "export" button AND the
+// "Copy chat" header action). Includes each assistant turn's tool actions (name +
+// args + a trimmed result); skips non-chat rows (live summary / monitors / watch).
 export function conversationToMarkdown(conv) {
   const L = [`# ${conv.title}`, '', `_${new Date(conv.createdAt).toLocaleString()}_`, ''];
-  for (const m of conv.messages) {
-    if (m.role === 'user') L.push(`**You:** ${m.content}`, '');
-    else if (m.role === 'assistant') L.push(`**${m.agentName || 'Assistant'}:** ${m.content}`, '');
+  for (const m of conv.messages || []) {
+    if (m.role === 'user') {
+      L.push(`**You:** ${m.content || ''}`, '');
+    } else if (m.role === 'assistant') {
+      for (const s of m.steps || []) {
+        const args = s.input != null && Object.keys(s.input || {}).length ? ' `' + JSON.stringify(s.input) + '`' : '';
+        L.push(`- 🔧 **${s.tool || 'tool'}**${args}${s.status ? ` _(${s.status})_` : ''}`);
+        if (s.result) {
+          const r = String(s.result).trim();
+          L.push((r.length > 1500 ? `${r.slice(0, 1500)}…` : r).split('\n').map((x) => `  > ${x}`).join('\n'));
+        }
+      }
+      L.push(`**${m.agentName || 'Assistant'}:** ${m.content || ''}`, '');
+    } else {
+      continue; // not part of the chat transcript
+    }
     if (m.attachments?.length) {
       L.push(...m.attachments.map((a) => `> attached: ${a.title || a.url}`), '');
     }

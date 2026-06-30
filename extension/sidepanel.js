@@ -1005,6 +1005,28 @@ function wireStepControls(root) {
   });
 }
 
+async function copyChatAsMarkdown() {
+  const conv = state.conv;
+  if (!conv || !(conv.messages || []).some((m) => m.role === 'user' || m.role === 'assistant')) {
+    toast('Nothing to copy yet');
+    return;
+  }
+  const md = conversationToMarkdown(conv);
+  try {
+    await navigator.clipboard.writeText(md);
+    toast('Chat copied as Markdown');
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = md;
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { /* blocked */ }
+    ta.remove();
+    toast(ok ? 'Chat copied as Markdown' : 'Copy failed');
+  }
+}
+
 // Assistant bubble = an optional "Actions" log + streamed "thinking" + the answer.
 function assistantBody(m) {
   let html = '';
@@ -4936,6 +4958,7 @@ function wireEvents() {
   $('btn-send').onclick = send;
   $('btn-stop').onclick = stopStream;
   $('btn-new').onclick = () => startConversation();
+  $('btn-copy-chat').onclick = () => copyChatAsMarkdown();
   $('btn-settings').onclick = () => chrome.runtime.openOptionsPage();
   // The plan chip: Free → open the site pricing page (carrying this install's id)
   // and poll so Pro auto-activates on return; Pro/Team → open the Account tab to

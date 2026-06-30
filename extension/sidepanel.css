@@ -122,7 +122,10 @@ body.rail-collapsed { --rail-w: 0px; }
 }
 /* Free → an "Upgrade" call-to-action (indigo). Pro → a status badge (amber). */
 .chip.is-upgrade { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; }
-.chip.is-active { background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; cursor: default; }
+/* Pro status badge sits a touch smaller than the Upgrade CTA — it's just a label. */
+.chip.is-active { background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; cursor: default; padding: 3px 9px; font-size: 11px; }
+/* The settings gear reads a little bigger than the composer tool icons. */
+#btn-settings { font-size: 20px; }
 
 /* Dropdown menus */
 .menu {
