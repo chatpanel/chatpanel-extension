@@ -32,6 +32,7 @@ import {
   getMeetingRecord,
 } from './js/context.js';
 import { captureSearch, webSearchOpts, webSearchToolProvider } from './js/web-search.js';
+import { getSuggestions, FALLBACK_SUGGESTIONS } from './js/suggestions.js';
 import {
   meetingToText,
   meetingToMarkdown,
@@ -973,14 +974,9 @@ function enhanceCode(bubble) {
   });
 }
 
-function renderSuggestions() {
-  const box = $('empty-suggestions');
+// Render the clickable idea chips into the empty-state box.
+function paintSuggestions(box, ideas) {
   box.innerHTML = '';
-  const ideas = [
-    'Summarize this tab',
-    'What are the key points on this page?',
-    'Explain the code in this repo',
-  ];
   for (const idea of ideas) {
     const b = document.createElement('button');
     b.className = 'suggestion';
@@ -994,6 +990,31 @@ function renderSuggestions() {
     };
     box.appendChild(b);
   }
+}
+
+// Monotonic token so a slow per-site fetch can't overwrite a newer render.
+let suggestRun = 0;
+
+function renderSuggestions() {
+  const box = $('empty-suggestions');
+  if (!box) return;
+  // Universal fallbacks paint instantly — no model call, works offline.
+  paintSuggestions(box, FALLBACK_SUGGESTIONS);
+  // Opt-in: replace with page-specific ideas from a small model (metadata only).
+  if (!state.settings?.ui?.suggestions?.enabled) return;
+  const run = ++suggestRun;
+  (async () => {
+    try {
+      const tab = await getActiveTab();
+      const { items, source } = await getSuggestions({ tab, settings: state.settings });
+      // Only paint if this is still the latest request, the chat is still empty,
+      // and the user hasn't started typing.
+      if (run !== suggestRun || source === 'fallback' || !items?.length) return;
+      if (state.conv?.messages?.length || ($('input')?.value || '').trim()) return;
+      const live = $('empty-suggestions');
+      if (live) paintSuggestions(live, items);
+    } catch { /* keep the fallbacks already shown */ }
+  })();
 }
 
 // --------------------------------------------------------------------------
@@ -2511,16 +2532,26 @@ async function openMeetings() {
   if (!can(state.license, 'liveMeetings')) return upsell('liveMeetings'); // Pro — covers all entry points
   const d = $('meetings-drawer');
   d.classList.remove('hidden');
-  // Chrome's side panel sometimes doesn't paint this position:absolute overlay until
-  // a reflow — users saw a blank panel until they resized it (clicked the divider).
-  // Reading a layout property forces a synchronous reflow so it shows immediately.
-  void d.offsetHeight;
+  forceDrawerPaint(d);
   $('meeting-view').classList.add('hidden');
   $('meetings-list-view').classList.remove('hidden');
   $('meetings-search').value = '';
   await renderMeetingsList('');
 }
 function closeMeetings() { clearInterval(meetingsView.liveTimer); $('meetings-drawer').classList.add('hidden'); renderRail(); }
+
+// Chrome's side panel sometimes won't paint a freshly-shown position:absolute drawer
+// until a real DIMENSION change — users had to drag the resize handle (the "divider")
+// to reveal it. A plain reflow-read (offsetHeight) only forces layout, not a repaint,
+// so it wasn't enough. Nudge the width by a pixel across two frames (the same kind of
+// change the resize makes), then restore the original CSS/saved width.
+function forceDrawerPaint(d) {
+  const cur = Math.round(d.getBoundingClientRect().width);
+  if (cur <= 1) return;
+  const inline = d.style.width; // '' (CSS width) or a saved px width from applyDrawerWidth
+  d.style.width = `${cur - 1}px`;
+  requestAnimationFrame(() => { d.style.width = inline; });
+}
 
 async function renderMeetingsList(query) {
   const list = $('meetings-list');
