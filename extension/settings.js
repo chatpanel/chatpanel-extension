@@ -14,6 +14,7 @@ import { getMcpProviders } from './js/mcp-manager.js';
 import { historyToolProvider } from './js/history-rag.js';
 import { webSearchToolProvider, webSearchOpts, webSearchUsage } from './js/web-search.js';
 import { fullRedactionUsage } from './js/pii-usage.js';
+import { sanitizeUnicode } from './js/sanitize.js';
 import { narrowToolset, isLocalToolSpec } from './js/tool-select.js';
 import { DEFAULT_AUTO_TOOL_CAP } from './js/tool-policy.js';
 import {
@@ -1477,7 +1478,7 @@ const GW_TEST_SAMPLE = 'My name is John, email john@adams.com — who is the fam
 function renderGatewayFlow({ input, detected, redacted, spans, reply, error, toolEvents }, withModel) {
   const esc = (s) => escapeHtml(String(s == null ? '' : s));
   const cards = [];
-  cards.push(flowCard(1, 'Your prompt', `<div class="flow-text">${esc(input)}</div>`));
+  cards.push(flowCard(1, 'Your prompt', `<div class="flow-text">${esc(input)}</div>${hiddenCharNote(input)}`));
   const chips = (detected || []).length
     ? detected.map((d) => `<span class="flow-chip">${esc(d.value)}<em>${esc(d.type)}</em></span>`).join('')
     : '<span class="muted sm">No AI-detected entities (patterns + dictionary still apply).</span>';
@@ -2843,6 +2844,18 @@ function flowCard(n, title, bodyHtml, cls = '') {
   return `<div class="flow-card ${cls}"><div class="flow-card-h">${badge}${escapeHtml(title)}</div><div class="flow-card-b">${bodyHtml}</div></div>`;
 }
 
+// "Your prompt" badge when the de-steganography pass found invisible/format Unicode
+// (zero-width-split values, Tag-char ASCII smuggling, bidi, fingerprint markers). The
+// pipeline strips these before redaction; this just makes the otherwise-invisible
+// removal visible. Returns '' when the text is clean.
+function hiddenCharNote(text) {
+  const { removed, findings } = sanitizeUnicode(String(text == null ? '' : text));
+  if (!removed) return '';
+  const kinds = Object.entries(findings).map(([k, v]) => `${v} ${k}`).join(', ');
+  return `<div class="flow-warn">⚠ Scrubbed ${removed} hidden character${removed === 1 ? '' : 's'}`
+    + ` <span class="muted sm">(${escapeHtml(kinds)})</span> before redaction</div>`;
+}
+
 // The gateway un-redacts the model's reply server-side, so the client only ever
 // receives REAL values. To show what the destination model ACTUALLY emitted (with
 // placeholders still in it, before restoration), reconstruct it by swapping each
@@ -2858,7 +2871,7 @@ function reRedactReply(text, spans) {
 function renderFlow(t, withModel) {
   const esc = (s) => escapeHtml(String(s == null ? '' : s));
   const cards = [];
-  cards.push(flowCard(1, 'Your prompt', `<div class="flow-text">${esc(t.input)}</div>`));
+  cards.push(flowCard(1, 'Your prompt', `<div class="flow-text">${esc(t.input)}</div>${hiddenCharNote(t.input)}`));
   if (t.skipped) {
     cards.push(flowCard(2, 'Redaction', '<span class="muted sm">Skipped — “Redact for: Remote only” and this is a <b>local</b> model, so nothing is redacted (faster; the model gets the real text).</span>', 'flow-tools'));
     cards.push(flowCard(3, 'Model sees', `<div class="flow-text">${esc(t.modelSees)}</div>`, 'flow-model'));

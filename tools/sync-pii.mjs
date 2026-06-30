@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const FILES = ['pii-redact.js', 'pii-detect.js', 'tool-rank.js', 'tool-harness.js'];
+const FILES = ['pii-redact.js', 'pii-detect.js', 'tool-rank.js', 'tool-harness.js', 'sanitize.js'];
 
 // Resolve the package source: installed dep first, then a sibling checkout.
 function pkgDir() {

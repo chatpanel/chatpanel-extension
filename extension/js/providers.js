@@ -18,6 +18,7 @@ import {
 } from './pii-pipeline.js';
 import { makeToolHarness, placeholderToolNote } from './tool-harness.js';
 import { canUseFullRedaction, recordFullRedaction } from './pii-usage.js';
+import { sanitizeUnicode } from './sanitize.js';
 import { detectEntities, normalizeEntities, EXTRACT_SYS, parseJsonLoose, withTimeout } from './pii-detect.js';
 import { createVault, redactText, restoreText } from './pii-redact.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
@@ -1034,7 +1035,9 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
   // no upsell wall mid-send). Pro always passes.
   if (redaction.detect && cfg.mode === 'model' && await canUseFullRedaction(isPro)) {
     try {
-      const sample = (messages || []).map((m) => m.content || '').join('\n');
+      // Sanitize before detection too: a zero-width-split name must be rejoined here
+      // or the NER pass misses it (redactOutbound also scrubs the delivered copy).
+      const sample = sanitizeUnicode((messages || []).map((m) => m.content || '').join('\n')).clean;
       // Same detection budget as the Settings "Test a prompt" harness, so the real
       // chat detects+tokenizes (reversible [[TYPE_n]] → restored) instead of timing
       // out and falling back to dictionary pseudonyms (permanent, unrestored).

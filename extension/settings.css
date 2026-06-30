@@ -92,6 +92,7 @@ body {
 .flow-map { font-family: var(--mono); font-size: 11px; margin: 3px 0; overflow-wrap: anywhere; }
 .flow-map em { font-style: normal; color: var(--accent); }
 .flow-err { color: #f87171; }
+.flow-warn { margin-top: 6px; font-size: 11px; color: #b45309; font-weight: 600; }
 .flow-tools-pick { display: flex; flex-wrap: wrap; gap: 2px 16px; }
 .flow-tools-pick .check { margin: 0; }
 

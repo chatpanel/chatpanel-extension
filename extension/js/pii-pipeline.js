@@ -14,6 +14,7 @@
 // entities into the same vault, so nothing here changes when it lands.
 
 import { createVault, redactText, restoreText, restoreWithAliases } from './pii-redact.js';
+import { sanitizeUnicode } from './sanitize.js';
 
 export function redactionEnabled(cfg) {
   return !!(cfg && cfg.mode && cfg.mode !== 'off');
@@ -87,22 +88,30 @@ export function redactOutbound({ messages, system, vault, cfg, isPro = false, en
   if (!redactionEnabled(cfg) || !vault) return { messages, system };
   const opts = redactOpts(cfg, isPro, entities);
   const scope = gatedScope(cfg, isPro);
+  // De-steganography pass (see sanitize.js): strip invisible/format Unicode BEFORE
+  // deterministic redaction so a zero-width-split value can't slip past the detector,
+  // and a hidden instruction or fingerprint marker can't ride along to the model.
+  // Runs on the outbound COPIES only — stored history keeps the user's literal text.
+  let sanitized = 0;
+  const scrub = (t) => { const { clean, removed } = sanitizeUnicode(t); sanitized += removed; return clean; };
   const redactMsg = (m) => {
     const copy = { ...m };
-    if (scope.chat !== false && m.content) copy.content = redactText(m.content, vault, opts);
+    if (scope.chat !== false && m.content) copy.content = redactText(scrub(m.content), vault, opts);
     if (Array.isArray(m.attachments)) {
       copy.attachments = m.attachments.map((a) => {
         if (a.kind === 'image' || !a.text) return a;
         const isHistory = a.kind === 'history-rag';
         if (isHistory ? scope.history === false : scope.context === false) return a;
-        return { ...a, text: redactText(a.text, vault, opts) };
+        return { ...a, text: redactText(scrub(a.text), vault, opts) };
       });
     }
     return copy;
   };
+  const outMessages = (messages || []).map(redactMsg);
   return {
-    messages: (messages || []).map(redactMsg),
-    system: system ? redactText(system, vault, opts) : system,
+    messages: outMessages,
+    system: system ? redactText(scrub(system), vault, opts) : system,
+    sanitized,
   };
 }
 
