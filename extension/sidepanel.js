@@ -4017,6 +4017,7 @@ let acTimer = null;
 let acController = null;
 let acSuggestion = '';
 let acHintShown = false;
+let acBridgeHintShown = false; // one-time "CLI agents are slow for autocomplete" notice
 const acSmallModel = new Map(); // endpoint → smallest model id (cached)
 
 // For an API endpoint, query its models once and cache the smallest one to use
@@ -4129,6 +4130,12 @@ function scheduleAutocomplete() {
   // Bridge agents cold-spawn a CLI per call (~5s), so fire only after a real pause
   // (a per-keystroke request would just be aborted by the next key, never landing).
   // A fast API endpoint streams in well under a second, so keep it snappy there.
+  if (source.kind === 'bridge') {
+    if (!acBridgeHintShown) {
+      acBridgeHintShown = true;
+      toast('💡 Autocomplete via a CLI agent (Claude Code/Codex) is slow (~5s) — it only appears if you pause. Enable a fast API model for instant suggestions.', 5000);
+    }
+  }
   const delay = source.kind === 'bridge' ? 1100 : 500;
   acTimer = setTimeout(() => requestAutocomplete(text, source), delay);
 }
