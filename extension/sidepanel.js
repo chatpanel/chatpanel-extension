@@ -4126,7 +4126,11 @@ function scheduleAutocomplete() {
     }
     return;
   }
-  acTimer = setTimeout(() => requestAutocomplete(text, source), 500);
+  // Bridge agents cold-spawn a CLI per call (~5s), so fire only after a real pause
+  // (a per-keystroke request would just be aborted by the next key, never landing).
+  // A fast API endpoint streams in well under a second, so keep it snappy there.
+  const delay = source.kind === 'bridge' ? 1100 : 500;
+  acTimer = setTimeout(() => requestAutocomplete(text, source), delay);
 }
 
 // A short, de-duplicated slice of the attached context (the page/tabs/url the
