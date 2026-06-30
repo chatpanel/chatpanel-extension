@@ -13,6 +13,7 @@ import { buildToolset } from './js/toolset.js';
 import { getMcpProviders } from './js/mcp-manager.js';
 import { historyToolProvider } from './js/history-rag.js';
 import { webSearchToolProvider, webSearchOpts, webSearchUsage } from './js/web-search.js';
+import { fullRedactionUsage } from './js/pii-usage.js';
 import { narrowToolset, isLocalToolSpec } from './js/tool-select.js';
 import { DEFAULT_AUTO_TOOL_CAP } from './js/tool-policy.js';
 import {
@@ -1486,14 +1487,21 @@ function renderGatewayFlow({ input, detected, redacted, spans, reply, error, too
     ? spans.map((s) => `<div class="flow-map"><code>${esc(s.token)}</code> → <b>${esc(s.value)}</b></div>`).join('')
     : '<span class="muted sm">Nothing replaced.</span>';
   cards.push(flowCard(4, 'Restored from', maps, 'flow-tools'));
+  let n = 4;
   // Tool round-trip the agent ran through the gateway (args restored to REAL values).
   if (withModel && (toolEvents || []).length) {
     const rows = toolEvents.map((t) => `<div class="flow-map">🔧 <code>${esc(t.name)}</code><div class="muted sm">args → tool: ${esc(JSON.stringify(t.args))}</div><div class="muted sm">result → ${esc((t.result || '').slice(0, 240))}</div></div>`).join('');
-    cards.push(flowCard(5, 'Tools run (real values)', rows, 'flow-tools'));
+    cards.push(flowCard(++n, 'Tools run (real values)', rows, 'flow-tools'));
   }
   if (withModel) {
+    // What the destination model actually sent back — still holding the placeholder
+    // tokens, BEFORE the gateway swaps them back to real values. Reconstructed from
+    // the spans, since the gateway restores server-side (the client never sees it raw).
+    if (!error && reply) {
+      cards.push(flowCard(++n, 'Model reply (redacted)', `<div class="flow-text">${esc(reRedactReply(reply, spans))}</div>`, 'flow-model'));
+    }
     const r = error ? `<span class="flow-err">✕ ${esc(error)}</span>` : `<div class="flow-text">${esc(reply) || '<span class="muted sm">(empty)</span>'}</div>`;
-    cards.push(flowCard((toolEvents || []).length ? 6 : 5, 'You see (restored)', r, 'flow-you'));
+    cards.push(flowCard(++n, 'You see (restored)', r, 'flow-you'));
   }
   $('gw-test-out').innerHTML = cards.join('<div class="flow-arrow">→</div>');
 }
@@ -2638,6 +2646,29 @@ function addWebSearchEngine() {
 // --------------------------------------------------------------------------
 // Preferences
 // --------------------------------------------------------------------------
+
+// The shared AI-detection allowance, shown on the privacy screen the way the
+// gateway screen shows its own. Free gets FREE_LIMITS.fullRedactions lifetime
+// full-tier redactions, spent by BOTH normal ChatPanel chat AND privacy runs;
+// Pro is unlimited. Async (reads chrome.storage) — fire-and-forget like the rest.
+async function renderPrivFullUsage(pro) {
+  const el = $('priv-free-usage');
+  if (!el) return;
+  if (pro) {
+    el.innerHTML = '✨ <strong>Pro active</strong> — unlimited AI detection (names, orgs &amp; locations).';
+    el.classList.remove('warn');
+    return;
+  }
+  const { used, cap, remaining } = await fullRedactionUsage(false);
+  el.innerHTML = `AI detection (names / orgs / locations) is a <strong>Pro</strong> feature — Free includes `
+    + `<strong>${cap} full redactions</strong> total to try it out, then it falls back to patterns + dictionary. `
+    + `<strong>${remaining} of ${cap} left.</strong> The same allowance is shared with the gateway and counts your `
+    + `ChatPanel chats too. <a href="#" class="priv-usage-upsell">Upgrade to Pro</a> for unlimited.`;
+  el.classList.toggle('warn', remaining === 0);
+  const up = el.querySelector('.priv-usage-upsell');
+  if (up) up.onclick = (e) => { e.preventDefault(); upsell(`Free includes ${cap} AI-detection redactions. Pro unlocks unlimited.`); };
+}
+
 function renderPrefs() {
   $('pref-theme').value = settings.ui.theme || 'system';
   $('pref-language').value = settings.ui.language || '';
@@ -2709,10 +2740,12 @@ function renderPrefs() {
   }
   const proNote = $('priv-pro-note');
   if (proNote) proNote.classList.toggle('hidden', proPii);
-  // Phase 2 — local-model detection (Pro). Gate the 'model' mode + its controls.
-  const modelOpt = $('priv-mode').querySelector('option[value="model"]');
-  if (modelOpt) modelOpt.disabled = !proPii;
-  if (!proPii && $('priv-mode').value === 'model') $('priv-mode').value = 'deterministic';
+  // AI (model) detection is a Pro feature, but — like the gateway — Free gets a
+  // lifetime taste counted by the shared quota (FREE_LIMITS.fullRedactions). So we
+  // DON'T hard-disable the option anymore; Free can select it and the chat path
+  // falls back to deterministic once the allowance is spent. The usage line below
+  // shows how many remain.
+  renderPrivFullUsage(proPii);
   const det = pii.detection || {};
   // "Bundled NER" persists as an endpoint pointed at the gateway's /ner; the
   // `bundled` flag distinguishes it from a hand-typed custom URL on reload.
@@ -2810,6 +2843,18 @@ function flowCard(n, title, bodyHtml, cls = '') {
   return `<div class="flow-card ${cls}"><div class="flow-card-h">${badge}${escapeHtml(title)}</div><div class="flow-card-b">${bodyHtml}</div></div>`;
 }
 
+// The gateway un-redacts the model's reply server-side, so the client only ever
+// receives REAL values. To show what the destination model ACTUALLY emitted (with
+// placeholders still in it, before restoration), reconstruct it by swapping each
+// real value back to its token. Longest values first so an overlapping shorter
+// value can't corrupt a longer match.
+function reRedactReply(text, spans) {
+  let out = String(text == null ? '' : text);
+  const ordered = [...(spans || [])].filter((s) => s && s.value).sort((a, b) => String(b.value).length - String(a.value).length);
+  for (const s of ordered) out = out.split(s.value).join(s.token);
+  return out;
+}
+
 function renderFlow(t, withModel) {
   const esc = (s) => escapeHtml(String(s == null ? '' : s));
   const cards = [];
@@ -2845,8 +2890,8 @@ function renderFlow(t, withModel) {
     const reply = t.error
       ? `<span class="flow-err">✕ ${esc(t.error)}</span>`
       : `<div class="flow-text">${esc(t.modelRaw) || '<span class="muted sm">(empty)</span>'}</div>`;
-    cards.push(flowCard(5, 'Model reply', reply, 'flow-model'));
-    cards.push(flowCard(6, 'You see', `<div class="flow-text">${esc(t.youSee) || (t.error ? '—' : '<span class="muted sm">(empty)</span>')}</div>`, 'flow-you'));
+    cards.push(flowCard(5, 'Model reply (redacted)', reply, 'flow-model'));
+    cards.push(flowCard(6, 'You see (restored)', `<div class="flow-text">${esc(t.youSee) || (t.error ? '—' : '<span class="muted sm">(empty)</span>')}</div>`, 'flow-you'));
   }
   $('priv-flow-out').innerHTML = cards.join('<div class="flow-arrow">→</div>');
 }

@@ -17,6 +17,7 @@ import {
   redactOpts, gatedScope,
 } from './pii-pipeline.js';
 import { makeToolHarness, placeholderToolNote } from './tool-harness.js';
+import { canUseFullRedaction, recordFullRedaction } from './pii-usage.js';
 import { detectEntities, normalizeEntities, EXTRACT_SYS, parseJsonLoose, withTimeout } from './pii-detect.js';
 import { createVault, redactText, restoreText } from './pii-redact.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
@@ -1027,7 +1028,11 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
   let activeCfg = cfg;
   let activeEntities = entities;
   let effIsPro = isPro;
-  if (redaction.detect && cfg.mode === 'model') {
+  // AI (full-tier) detection is Pro, but Free gets a lifetime taste counted by the
+  // shared quota (chat + privacy screen). Check BEFORE running the detector so an
+  // out-of-quota Free user quietly stays on deterministic redaction (no model call,
+  // no upsell wall mid-send). Pro always passes.
+  if (redaction.detect && cfg.mode === 'model' && await canUseFullRedaction(isPro)) {
     try {
       const sample = (messages || []).map((m) => m.content || '').join('\n');
       // Same detection budget as the Settings "Test a prompt" harness, so the real
@@ -1038,10 +1043,13 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
       if (found.length) {
         activeEntities = [...entities, ...found];
         activeCfg = { ...cfg, tier: 'full' };
-        // Model detection is itself the Pro gate (UI-locked). Once it has run and
-        // found entities, redact them regardless of a possibly-stale isPro on the
-        // default (auxiliary-call) path — otherwise titles/topics/etc. would leak.
+        // Model detection is itself the Pro gate. Once it has run and found
+        // entities, redact them regardless of a possibly-stale isPro on the default
+        // (auxiliary-call) path — otherwise titles/topics/etc. would leak.
         effIsPro = true;
+        // Burn one of the Free lifetime allowance (no-op for Pro). Only on a real
+        // hit, so an empty detection doesn't cost the user a redaction.
+        await recordFullRedaction(isPro);
       }
     } catch { /* fail open */ }
   }

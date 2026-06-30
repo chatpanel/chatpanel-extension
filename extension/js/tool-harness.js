@@ -58,10 +58,22 @@ export function placeholderToolNote({ toolData = 'real' } = {}) {
       + 'values before the tool executes — the tool receives the TRUE value and returns correct '
       + 'results. ';
   const rules =
-    'So: CALL THE TOOL using the placeholder exactly as written, as if it were the real value. '
-    + 'Do NOT say you cannot see the real value, do NOT ask the user to re-type it, and do NOT '
-    + 'refuse on privacy grounds — the lookup will work. The real values are restored in your '
-    + 'final answer automatically, so write your answer using the placeholders too.';
+    'So: treat each placeholder as a CONCRETE, specific value you already have — it is enough to '
+    + 'act on, NOT missing or unknown information. CALL THE TOOL using the placeholder exactly as '
+    + 'written, as if it were the real value. '
+    // The common failure isn\'t a privacy refusal — it\'s the model deciding it "lacks data"
+    // because the value is a token, and answering from general knowledge instead of looking up.
+    + 'If answering needs the real data behind a placeholder (e.g. which city [[LOCATION_1]] is, '
+    + 'who [[PERSON_1]] is, what [[ORG_1]] does), do NOT reply that you lack information or cannot '
+    + 'answer. Instead pick the most relevant available tool for that placeholder\'s TYPE — LOCATION '
+    + '→ geography / place lookups, PERSON → people lookups, ORG → company/org lookups, dates/IDs → '
+    + 'the matching lookup — and pass the placeholder straight through as the argument. The harness '
+    + 'restores the true value before the tool runs, so the lookup returns correct results. Make your '
+    + 'best-guess tool call FIRST; only conclude you lack data AFTER a tool has actually returned '
+    + 'nothing useful. '
+    + 'Do NOT ask the user to re-type the value and do NOT refuse on privacy grounds — the lookup '
+    + 'will work. The real values are restored in your final answer automatically, so write your '
+    + 'answer using the placeholders too.';
   return intro + remote + rules;
 }
 

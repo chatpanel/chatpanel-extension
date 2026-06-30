@@ -119,6 +119,10 @@ export const FREE_LIMITS = {
   gatewayDestinations: 1, // routable gateway destinations on Free — Pro is unlimited
   webSearchEngines: 3, // enabled web-search engines on Free — Pro is unlimited
   webSearchesPerDay: 50, // web searches/day on Free — Pro is unlimited
+  fullRedactions: 25, // LIFETIME AI (full-tier) redactions on Free — a taste of
+  // name/org/location detection before Pro. Counted locally across the chat path
+  // AND the privacy screen (see js/pii-usage.js); Pro is unlimited. Mirrors the
+  // gateway's own "25 free full redactions" allowance.
 };
 
 export async function getLicense() {

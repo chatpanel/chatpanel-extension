@@ -251,8 +251,15 @@ a:hover { text-decoration: underline; }
 
 /* Pro markers / locked state --------------------------------------------- */
 .pro-badge, .pro-pill { display: inline-block; font-size: 10px; font-weight: 700; line-height: 1.5; padding: 0 7px; border-radius: 999px; background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; vertical-align: middle; letter-spacing: .03em; margin-left: 5px; }
-input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opacity: .5; cursor: not-allowed; }
+/* Locked controls must be inert, not just dimmed: cursor:not-allowed is cosmetic
+   and does NOT stop clicks, so a greyed .locked button (e.g. a Pro-gated Delete
+   that wasn't also given [disabled]) would still fire. pointer-events:none makes
+   the appearance and the behaviour agree. Only form controls are targeted here —
+   greyed CARDS (.locked-card / .mcp-entity.locked) keep their working children. */
+input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opacity: .5; cursor: not-allowed; pointer-events: none; }
 .locked-card { opacity: .94; }
+/* Quota line when the Free allowance is spent (e.g. AI-detection redactions). */
+.muted.warn, p.warn { color: #b45309; }
 .free-slot { font-size: 11px; white-space: nowrap; }
 .free-slot.on { font-weight: 700; color: var(--accent); padding: 4px 6px; }
 .btn.free-slot { font-size: 12px; padding: 5px 10px; }
