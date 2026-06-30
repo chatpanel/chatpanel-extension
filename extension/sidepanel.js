@@ -4362,8 +4362,10 @@ function applyDrawerWidth(px) {
 }
 
 function wireDrawerResize() {
-  const saved = parseInt(localStorage.getItem(DRAWER_WIDTH_KEY) || '', 10);
-  if (saved > 0) applyDrawerWidth(Math.min(saved, window.innerWidth));
+  // Always establish a concrete px width (saved or default) so BOTH drawers (live scribe
+  // + past meetings) lay out and paint on their first open — without it, CSS width:88%
+  // didn't resolve on Chrome's side panel until a manual resize. See sizeDrawers().
+  sizeDrawers();
 
   document.querySelectorAll('.live-notes-resize').forEach((handle) => {
     const drawer = handle.closest('.live-notes-drawer');
