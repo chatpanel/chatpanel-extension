@@ -12,6 +12,9 @@
 
   let _idc = 0;
   let _ids = new WeakMap();
+  // Accumulated attendees (name → {name,role,initials}) so names survive the roster
+  // panel being closed again after we open it once.
+  const roster = new Map();
   function idFor(el) {
     let id = _ids.get(el);
     if (!id) { id = 'g' + ++_idc; _ids.set(el, id); }
@@ -62,6 +65,24 @@
 
     isLive: () => !!document.querySelector(`${BLOCK_SEL}, ${TEXT_SEL}`),
 
+    // Open the People panel once so we capture real names (the roster lists every
+    // attendee). Meet labels it "Show everyone" / "People".
+    openParticipants(ui) {
+      if (document.querySelector('div[role="listitem"].cxdMu')) return 'open';
+      const btn = ui.byName(/show everyone|^people$|participants/i);
+      if (btn) { ui.click(btn); return 'clicked'; }
+      return null;
+    },
+
+    // Joined to the call vs. sitting in the green room (which shows "Join now" /
+    // "Ask to join" at the same URL). The "Leave call" control exists only once
+    // you're in; isLive() is the definitive fallback. Gates auto-start so the
+    // green room never spins up an empty meeting record.
+    inCall() {
+      return !!document.querySelector('button[aria-label*="leave call" i], [aria-label*="leave call" i]')
+        || this.isLive();
+    },
+
     onStart() { _idc = 0; _ids = new WeakMap(); },
 
     // Meet exposes a single labelled toggle in the call controls — "Turn on
@@ -106,18 +127,22 @@
     },
 
     participants() {
-      const out = [];
       document.querySelectorAll('div[role="listitem"].cxdMu').forEach((p) => {
         const name = p.querySelector('span.zWGUib')?.textContent?.trim();
-        if (name) {
-          out.push({
+        if (!name) return;
+        const role = p.querySelector('.d93U2d')?.textContent?.trim() || '';
+        const existing = roster.get(name);
+        if (!existing) {
+          roster.set(name, {
             name,
-            role: p.querySelector('.d93U2d')?.textContent?.trim() || '',
+            role,
             initials: name.split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase(),
           });
+        } else if (!existing.role && role) {
+          existing.role = role;
         }
       });
-      return out;
+      return [...roster.values()];
     },
 
     debug() {

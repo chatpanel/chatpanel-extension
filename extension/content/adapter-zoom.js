@@ -118,6 +118,34 @@
         ));
     },
 
+    // Are we actually JOINED to the call (vs. on the web client's landing / join /
+    // audio-video preview page, which all live under /wc/ too)? The in-meeting
+    // bottom control bar only exists once joined, so we use it as the join signal.
+    // Detection has to be tolerant: the app.zoom.us PWA varies its markup, the HOST
+    // sees "End" while a guest sees "Leave", and buttons expose their name via
+    // aria-label OR visible text. isLive() is OR'd in as a definitive fallback —
+    // captions can't appear outside a live meeting. This gates auto-start so we
+    // never open an (empty) record on a non-meeting Zoom page.
+    inCall() {
+      if (this.isLive()) return true;
+      // Unambiguous in-meeting controls — present only once joined, anywhere in the DOM.
+      if (document.querySelector(
+        '#wc-footer, [class*="footer__leave"], .footer__leave-btn, ' +
+        '[aria-label*="leave" i], [aria-label*="end meeting" i], [aria-label*="more meeting controls" i]',
+      )) return true;
+      // Fallback: scan the control bar for a meeting-control name (aria-label OR
+      // text), since the PWA sometimes labels footer buttons by text only.
+      const NAMES = /\b(leave|end|participants?|reactions?|react|share|chat|mute|unmute|start video|stop video|host tools|more)\b/i;
+      const ctrls = document.querySelectorAll(
+        '#wc-footer button, footer button, [class*="footer"] button, [class*="meeting-control"] button, [class*="controls"] button',
+      );
+      for (const b of ctrls) {
+        const n = (b.getAttribute('aria-label') || b.textContent || '').trim();
+        if (n && NAMES.test(n)) return true;
+      }
+      return false;
+    },
+
     // One-shot DOM probe so capture problems are diagnosable from the console
     // without a hand-written snippet. Deep-walks open shadow roots (the new
     // app.zoom.us client nests UI in shadow DOM), reports which caption selectors
@@ -209,6 +237,19 @@
     // Refresh the name map when capture starts (the participants panel may be open).
     onStart() {
       refreshParticipants();
+    },
+
+    // Open the Participants panel once so caption avatars/initials resolve to real
+    // names. Host sees "Manage participants"; guests see "Participants" / "Open the
+    // participants list panel". Returns 'open' if already showing.
+    openParticipants(ui) {
+      if (document.querySelector('div[id^="participants-list-"], [class*="participants-section-container"]')) {
+        refreshParticipants();
+        return 'open';
+      }
+      const btn = ui.byName(/^participants$|participants list|manage participants|open the participants/i);
+      if (btn) { ui.click(btn); return 'clicked'; }
+      return null;
     },
 
     // Best-effort, and the least reliable of the four: Zoom buries captions under

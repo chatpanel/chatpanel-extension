@@ -10,6 +10,8 @@
 
   let _idc = 0;
   let _ids = new WeakMap(); // caption element -> stable id for this session
+  // Accumulated attendees so names survive the roster panel being closed again.
+  const roster = new Map();
   function idFor(el) {
     let id = _ids.get(el);
     if (!id) { id = 't' + ++_idc; _ids.set(el, id); }
@@ -54,7 +56,29 @@
 
     isLive: () => !!document.querySelector(CAPTION_SEL),
 
+    // Joined to the call vs. anywhere else in the Teams web app (our content script
+    // matches all of teams.microsoft.com, not just meetings — so the signal must be
+    // meeting-SPECIFIC, never a generic "Leave" label that also means leave-a-team).
+    // The hang-up control only renders inside an active call; isLive() is the
+    // definitive fallback. Gates auto-start so non-meeting Teams pages and the
+    // pre-join lobby never open an empty record.
+    inCall() {
+      return !!document.querySelector(
+        '[data-tid="hangup-button"], [data-tid="call-end"], #hangup-button, [data-tid="call-roster-button"]',
+      ) || this.isLive();
+    },
+
     onStart() { _idc = 0; _ids = new WeakMap(); },
+
+    // Open the People/roster panel once so captions resolve to real names. Teams
+    // labels it "People" / "Show participants"; the roster button has a stable tid.
+    openParticipants(ui) {
+      if (document.querySelector('li[data-cid="roster-participant"]')) return 'open';
+      const btn = document.querySelector('[data-tid="call-roster-button"], [data-tid="roster-button"]')
+        || ui.byName(/^people$|show participants|participants|roster/i);
+      if (btn) { ui.click(btn); return 'clicked'; }
+      return null;
+    },
 
     // Best-effort: Teams buries captions under More → Language and speech → Turn on
     // live captions. We walk one menu level per core tick — click the deepest item
@@ -108,12 +132,13 @@
     },
 
     participants() {
-      const out = [];
       document.querySelectorAll('li[data-cid="roster-participant"] span[title]').forEach((n) => {
         const name = (n.getAttribute('title') || n.textContent || '').trim();
-        if (name) out.push({ name, role: '', initials: name.split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase() });
+        if (name && !roster.has(name)) {
+          roster.set(name, { name, role: '', initials: name.split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase() });
+        }
       });
-      return out;
+      return [...roster.values()];
     },
 
     debug() {

@@ -12,7 +12,7 @@
 //   • persists a meeting record to chrome.storage.local on a debounce.
 //
 // The side panel drives this over runtime messages (see context.js):
-//   CP_MEETING_PING  → { ok, platform, meetingKey, title, live, capturing }
+//   CP_MEETING_PING  → { ok, platform, meetingKey, title, live, inCall, capturing }
 //   CP_MEETING_START → begins capture; { ok, meetingId }
 //   CP_MEETING_STOP  → final flush + status:'ended'; { ok }
 //   CP_MEETING_GET   → { ok, record }  (current buffer, finalized + live tail)
@@ -44,6 +44,7 @@
   let startedAt = 0;
   let observer = null;
   let flushTimer = null;
+  let pollTimer = null;
 
   let finalizedTranscript = [];        // [{ t, speaker, text }]
   let currentSpokenEntry = null;       // the in-progress utterance
@@ -164,7 +165,7 @@
   }
 
   // ---- record build + persist --------------------------------------------
-  function buildRecord(status) {
+  function buildRecord(status, endReason) {
     const segments = finalizedTranscript.slice();
     if (currentSpokenEntry) segments.push(currentSpokenEntry);
     return {
@@ -175,6 +176,11 @@
       title: safe(() => adapter.title()) || document.title,
       url: location.href,
       status,
+      // Why the session ended — drives resume eligibility. 'unload' (a tab reload)
+      // is the ONLY end we resume across; a real end ('left'/'idle'/'user') must
+      // start a fresh record even when the same meeting URL/key comes back (e.g.
+      // reusing a Google Meet code for a new call).
+      endReason: status === 'ended' ? (endReason || 'ended') : null,
       startedAt,
       endedAt: status === 'ended' ? Date.now() : null,
       participants: safe(() => adapter.participants()) || [],
@@ -187,13 +193,13 @@
   // record size and encrypts at rest. The content script just hands it the buffer.
   // Writing from here would bypass those, and content scripts can't import the
   // crypto module anyway (they're classic scripts).
-  async function flush(status = 'live') {
+  async function flush(status = 'live', endReason) {
     if (!meetingId) return;
     // On tab refresh / extension reload the context is invalidated; chrome.runtime.id
     // goes undefined and any chrome.* call throws. Skip quietly once detached.
     if (!chrome.runtime?.id) return;
     try {
-      await chrome.runtime.sendMessage({ type: 'CP_MEETING_PERSIST', record: buildRecord(status) });
+      await chrome.runtime.sendMessage({ type: 'CP_MEETING_PERSIST', record: buildRecord(status, endReason) });
     } catch {
       /* worker asleep or context gone during teardown — nothing actionable */
     }
@@ -239,6 +245,26 @@
       }
     });
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  }
+
+  // Poll path — for adapters whose captions render in a SAME-ORIGIN CHILD IFRAME
+  // (Webex) that this frame's single observer can't watch. The adapter's
+  // scanCaptions() walks all reachable docs and returns the current caption rows;
+  // we feed them on a short interval (deduped/grown by stable id, exactly like the
+  // observer path). Foreground-reliable; setInterval throttles in a backgrounded
+  // tab, but the observer path covers same-frame captions there.
+  const CAPTION_POLL_MS = 2000;
+  function startCaptionPoll() {
+    if (typeof adapter.scanCaptions !== 'function') return;
+    const tick = () => {
+      if (!capturing) return;
+      const caps = safe(() => adapter.scanCaptions());
+      if (Array.isArray(caps)) {
+        for (const c of caps) if (c && c.text) feedDiscrete(c.id, c.speaker, c.text.trim());
+      }
+    };
+    pollTimer = setInterval(tick, CAPTION_POLL_MS);
+    tick();
   }
 
   function safe(fn) { try { return fn(); } catch { return null; } }
@@ -312,18 +338,48 @@
     };
   })();
 
+  // Best-effort UI automation to turn the platform's live captions ON (we only
+  // capture rendered caption text — no captions, no transcript). Re-entrancy-guarded
+  // so the start-time burst and the periodic watchdog (see the captions watcher
+  // below) never run overlapping click loops. Returns nothing; success is observed
+  // via adapter.isLive() going true.
+  let enablingCaptions = false;
   async function tryEnableCaptions() {
     if (typeof adapter.enableCaptions !== 'function') return;
+    if (enablingCaptions) return;
+    enablingCaptions = true;
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    // ~12s of attempts: meeting toolbars/menus can take several seconds to render,
-    // and nested-menu platforms (Teams/Zoom) need a tick per menu level.
-    for (let i = 0; i < 8; i++) {
+    try {
+      // ~12s of attempts: meeting toolbars/menus can take several seconds to render,
+      // and nested-menu platforms (Teams/Zoom) need a tick per menu level.
+      for (let i = 0; i < 8; i++) {
+        if (!capturing) return;
+        if (safe(() => adapter.isLive())) return; // captions already showing
+        let status = null;
+        try { status = await adapter.enableCaptions(captionUI); } catch { status = null; }
+        if (status === 'on' || status === 'clicked') return; // done — don't toggle back off
+        await sleep(1400); // 'pending' (advance a menu) or null (controls not ready) → retry
+      }
+    } finally {
+      enablingCaptions = false;
+    }
+  }
+
+  // One-shot: open the participants/roster panel so the adapter can read real
+  // attendee NAMES (captions often carry only avatars/initials until the roster is
+  // visible). Best-effort UI automation like captions; stops as soon as we have at
+  // least one named participant. Adapters accumulate names, so the panel can be
+  // closed again afterwards without losing them.
+  async function tryOpenParticipants() {
+    if (typeof adapter.openParticipants !== 'function') return;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 6; i++) {
       if (!capturing) return;
-      if (safe(() => adapter.isLive())) return; // captions already showing
+      const named = safe(() => adapter.participants()) || [];
+      if (named.some((p) => p && p.name)) return; // already have names
       let status = null;
-      try { status = await adapter.enableCaptions(captionUI); } catch { status = null; }
-      if (status === 'on' || status === 'clicked') return; // done — don't toggle back off
-      await sleep(1400); // 'pending' (advance a menu) or null (controls not ready) → retry
+      try { status = await adapter.openParticipants(captionUI); } catch { status = null; }
+      await sleep(1500); // 'open'/'clicked'/null → let the panel render, then re-check
     }
   }
 
@@ -345,9 +401,14 @@
     seenChat.clear();
   }
 
-  // Resume a recent session for the same meeting within this window, so reloads /
-  // SPA hops / auto-restarts continue ONE record instead of forking fragments.
+  // Resume a recent session for the same meeting within this window, so an
+  // interrupted-but-not-ended capture (SPA hop / auto-restart) continues ONE record
+  // instead of forking fragments.
   const RESUME_WINDOW_MS = 3 * 60 * 60 * 1000; // 3h
+  // A reload comes back in seconds, so only adopt an 'unload'-ended record very
+  // briefly. This is what stops a reused meeting code (Meet/Zoom PMI) from inheriting
+  // an earlier, already-ended call's transcript.
+  const RELOAD_RESUME_MS = 90 * 1000; // 90s
   async function start() {
     if (capturing) return meetingId;
     capturing = true; // claim synchronously so a re-entrant tick can't double-start
@@ -356,10 +417,21 @@
     resetBuffers();
     startedAt = Date.now();
     meetingId = `mtg_${adapter.platform}_${key}_${startedAt.toString(36)}`;
-    // Ask the worker for the latest record for this meeting; adopt it if recent.
+    // Ask the worker for the latest record for this meeting and adopt it ONLY if
+    // this start is a continuation of that same session — not a brand-new call that
+    // happens to share the URL/key (e.g. a reused Google Meet code). Two cases
+    // resume: a record still 'live' (interrupted mid-call, no clean end), or one
+    // that ended via a tab reload ('unload', brief window — reloads come back in
+    // seconds). A record that ended because the user left / went idle / hit Stop
+    // is finished: we keep the fresh meetingId + empty transcript already set above.
     try {
       const r = await chrome.runtime.sendMessage({ type: 'CP_MEETING_LATEST', platform: adapter.platform, meetingKey: key });
-      if (capturing && r && r.id && Date.now() - (r.persistedAt || r.startedAt || 0) < RESUME_WINDOW_MS) {
+      const age = r ? Date.now() - (r.persistedAt || r.startedAt || 0) : Infinity;
+      const resumable = !!r && !!r.id && (
+        (r.status !== 'ended' && age < RESUME_WINDOW_MS) ||
+        (r.endReason === 'unload' && age < RELOAD_RESUME_MS)
+      );
+      if (capturing && resumable) {
         meetingId = r.id;
         startedAt = r.startedAt || startedAt;
         finalizedTranscript = Array.isArray(r.segments) ? r.segments.slice() : [];
@@ -368,17 +440,21 @@
     if (!capturing) return meetingId; // stopped during the await
     if (adapter.onStart) safe(() => adapter.onStart());
     startObserver();
+    startCaptionPoll(); // for cross-iframe captions (Webex); no-op for other platforms
     flush('live');
     tryEnableCaptions(); // fire-and-forget: turn captions on if the user left them off
+    tryOpenParticipants(); // fire-and-forget: reveal the roster so we capture real names
     return meetingId;
   }
 
-  function stop() {
+  // reason: 'left' | 'idle' | 'switch' | 'user' | 'unload' (see buildRecord.endReason).
+  function stop(reason) {
     if (!capturing) return;
     capturing = false;
     if (observer) { observer.disconnect(); observer = null; }
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-    flush('ended');
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    flush('ended', reason);
   }
 
   // No new captions for this long → assume the call ended (the user left but the
@@ -392,17 +468,31 @@
   // Lifecycle watch (every 3s while capturing):
   //  • meeting key changed (SPA: left one meeting, joined another) → finalize + restart clean.
   //  • navigated off any meeting page → finalize.
-  //  • gone quiet past IDLE_END_MS → finalize (call over, tab left open).
+  //  • left/ended the call but the tab stays on a meeting URL (e.g. Meet's "You've
+  //    ended the meeting" screen keeps meet.google.com/<id>) → finalize promptly.
+  //  • gone quiet past IDLE_END_MS → finalize (fallback when end can't be detected).
   // Finalizing flips status→'ended', so it stops showing as live and lands in Past Meetings.
+  let outOfCallTicks = 0;
   setInterval(() => {
-    if (!capturing) return;
+    if (!capturing) { outOfCallTicks = 0; return; }
     if (currentMeetingKey() !== activeMeetingKey) {
-      stop();
+      stop('switch');
       if (safe(() => adapter.match(location.href))) start();
       return;
     }
-    if (safe(() => adapter.match(location.href)) === false) { stop(); return; }
-    if (Date.now() - lastActivityTs() > IDLE_END_MS) { stop(); return; }
+    if (safe(() => adapter.match(location.href)) === false) { stop('left'); return; }
+    // Out of the call (no leave control, no captions) for 2 consecutive ticks (~6s)
+    // → the call ended; finalize now instead of waiting out the idle timeout. The
+    // brief hysteresis avoids stopping on a transient DOM flap mid-meeting. Only
+    // adapters that implement inCall() participate; others rely on idle/navigation.
+    if (typeof adapter.inCall === 'function') {
+      if (!safe(() => adapter.inCall())) {
+        if (++outOfCallTicks >= 2) { stop('left'); return; }
+      } else {
+        outOfCallTicks = 0;
+      }
+    }
+    if (Date.now() - lastActivityTs() > IDLE_END_MS) { stop('idle'); return; }
   }, 3000);
 
   // Heartbeat: persist periodically while capturing (even during silence) so the
@@ -410,9 +500,47 @@
   // call left, so this script is gone and the record stops getting fresh writes).
   setInterval(() => { if (capturing) flush('live'); }, 20000);
 
+  // Captions watcher (every 3s while capturing): (a) keep trying to auto-enable
+  // captions — toolbars load late and some platforms reset them — and (b) notify
+  // the side panel whenever caption state flips, so its meeting bar can WARN the
+  // user when captions are off (no captions → no transcript) and clear the warning
+  // the moment they come on, without the user having to switch tabs.
+  let lastCaptionsLive = null;
+  let captionsWatchTicks = 0;
+  setInterval(() => {
+    if (!capturing) { lastCaptionsLive = null; captionsWatchTicks = 0; return; }
+    const live = !!safe(() => adapter.isLive());
+    if (live !== lastCaptionsLive) {
+      lastCaptionsLive = live;
+      try { chrome.runtime.sendMessage({ type: 'CP_MEETING_CAPTIONS', live }); } catch { /* panel closed */ }
+    }
+    // Re-attempt auto-enable ~every 15s while still no captions (idempotent + guarded).
+    if (!live && ++captionsWatchTicks % 5 === 0) tryEnableCaptions();
+  }, 3000);
+
+  // Pre-capture join watcher: while NOT yet capturing on a matched meeting page,
+  // watch for the user actually JOINING the call and nudge an open side panel to
+  // re-evaluate auto-start. Joining usually doesn't change the URL (green room →
+  // call, pre-join → call are same-page), so the panel — which only re-checks on
+  // tab switches — would otherwise miss it and capture would start late. We fire
+  // once per join transition; the panel still owns the Pro/suppression gate, so
+  // this is just a "now's the time to look" hint, never a capture trigger itself.
+  let announcedJoin = false;
+  setInterval(() => {
+    if (capturing) { announcedJoin = false; return; }
+    if (!safe(() => adapter.match(location.href))) { announcedJoin = false; return; }
+    const joined = !!safe(() => (adapter.inCall ? adapter.inCall() : adapter.isLive()));
+    if (joined && !announcedJoin) {
+      announcedJoin = true;
+      try { chrome.runtime.sendMessage({ type: 'CP_MEETING_JOINED', platform: adapter.platform }); } catch { /* no receiver (panel closed) */ }
+    } else if (!joined) {
+      announcedJoin = false;
+    }
+  }, 3000);
+
   // Final flush if the tab is closing mid-meeting. Guarded: during teardown the
   // extension context may already be gone, so swallow anything stop() throws.
-  window.addEventListener('pagehide', () => { try { if (capturing) stop(); } catch { /* detached */ } }, { once: true });
+  window.addEventListener('pagehide', () => { try { if (capturing) stop('unload'); } catch { /* detached */ } }, { once: true });
 
   // ---- messaging ---------------------------------------------------------
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -425,6 +553,10 @@
           meetingKey: safe(() => adapter.meetingKey(location.href)),
           title: safe(() => adapter.title()) || document.title,
           live: !!safe(() => adapter.isLive()),
+          // Joined to the call (not the landing/lobby/preview page). The panel
+          // gates auto-start on this so we never open an empty record on a
+          // non-meeting page that merely matched the URL pattern.
+          inCall: !!safe(() => (adapter.inCall ? adapter.inCall() : adapter.isLive())),
           ready: adapter.ready !== false,
           capturing,
           meetingId,
@@ -439,8 +571,13 @@
         start().then((id) => sendResponse({ ok: true, meetingId: id })).catch(() => sendResponse({ ok: true, meetingId }));
         return true; // async response
       case 'CP_MEETING_STOP':
-        stop();
+        stop('user');
         sendResponse({ ok: true });
+        return;
+      case 'CP_MEETING_ENABLE_CC':
+        // Manual nudge from the meeting bar's "Turn on captions" button.
+        tryEnableCaptions();
+        sendResponse({ ok: true, live: !!safe(() => adapter.isLive()) });
         return;
       case 'CP_MEETING_GET':
         sendResponse({ ok: true, record: meetingId ? buildRecord(capturing ? 'live' : 'ended') : null });

@@ -153,7 +153,10 @@ async function resolveMeetingFrame(tabId) {
   const cached = _frameCache.get(tabId);
   if (cached && Date.now() - cached.at < 4000) {
     const ping = await sendToTab(tabId, { type: 'CP_MEETING_PING' }, cached.frameId);
-    if (ping?.ok) return { frameId: cached.frameId, ping };
+    // Trust the cache only while it's actively capturing or already in-call; if it
+    // reports neither, fall through to a full scan so a stale/empty frame can't
+    // mask another frame that holds the meeting toolbar (joined-state detection).
+    if (ping?.ok && (ping.capturing || ping.inCall)) return { frameId: cached.frameId, ping };
   }
   const frames = await getAllFrames(tabId);
   const ids = frames.length ? frames.map((f) => f.frameId) : [undefined];
@@ -164,6 +167,11 @@ async function resolveMeetingFrame(tabId) {
   if (!ok.length) return null;
   ok.sort((a, b) => (b.ping.els || 0) - (a.ping.els || 0));
   const best = ok[0];
+  // The meeting UI can be split across frames (e.g. captions in one, the control
+  // bar in another). Join/live state is "are we in the call at all", so OR it
+  // across every responding frame rather than reading only the chosen one.
+  best.ping.inCall = ok.some((x) => x.ping?.inCall) || !!best.ping.inCall;
+  best.ping.live = ok.some((x) => x.ping?.live) || !!best.ping.live;
   _frameCache.set(tabId, { frameId: best.frameId, at: Date.now() });
   return best;
 }
@@ -183,6 +191,12 @@ export async function startMeeting(tabId) {
 export async function stopMeeting(tabId) {
   const f = await resolveMeetingFrame(tabId);
   return sendToTab(tabId, { type: 'CP_MEETING_STOP' }, f?.frameId);
+}
+// Manually (re)trigger the platform's "turn on captions" automation — the meeting
+// bar's fallback button when auto-enable hasn't taken (host menus, late toolbars).
+export async function enableMeetingCaptions(tabId) {
+  const f = await resolveMeetingFrame(tabId);
+  return sendToTab(tabId, { type: 'CP_MEETING_ENABLE_CC' }, f?.frameId);
 }
 
 // Fetch the raw meeting record (segments + chat) from the capturing frame, or null

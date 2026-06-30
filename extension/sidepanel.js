@@ -29,6 +29,7 @@ import {
   probeMeeting,
   startMeeting,
   stopMeeting,
+  enableMeetingCaptions,
   getMeetingRecord,
 } from './js/context.js';
 import { captureSearch, webSearchOpts, webSearchToolProvider } from './js/web-search.js';
@@ -521,6 +522,11 @@ async function init() {
       chrome.storage.local.remove('chatpanel:openMeetingId').catch(() => {});
       $('meetings-drawer').classList.remove('hidden');
       openStoredMeeting(msg.id);
+    } else if (msg?.type === 'CP_MEETING_JOINED' || msg?.type === 'CP_MEETING_CAPTIONS') {
+      // JOINED: the user joined a call (inCall flipped) → auto-start now.
+      // CAPTIONS: live-caption state flipped → refresh so the "captions off" warning
+      // appears/clears immediately. Both just re-run the bar (it re-probes + gates).
+      renderMeetingBar();
     }
   });
   const { pendingSeed } = await chrome.storage.session.get('pendingSeed').catch(() => ({}));
@@ -3198,6 +3204,33 @@ async function renderMeetingBar() {
   const key = probe.meetingKey || tab.url;
   if (probe.capturing) {
     const iv = liveNotesIntervalMin();
+    // We capture rendered caption text — with captions OFF there's nothing to read.
+    // Auto-enable runs in the content script; if it hasn't taken, warn + offer a
+    // manual nudge. The content script pings CP_MEETING_CAPTIONS when this flips, so
+    // the warning appears/clears without the user switching tabs.
+    if (!probe.live) {
+      render(`${scribe} · ⚠ captions off — no transcript`, [
+        {
+          label: '🔴 Turn on captions',
+          primary: true,
+          onClick: async () => {
+            toast('Trying to turn on captions…');
+            await enableMeetingCaptions(tab.id);
+          },
+        },
+        { label: '📄 View', onClick: () => viewActiveMeeting(tab.id) },
+        {
+          label: 'Stop',
+          onClick: async () => {
+            _autoStartSuppressed.add(key);
+            await stopMeeting(tab.id);
+            renderMeetingBar();
+          },
+        },
+      ]);
+      scheduleLiveNotes();
+      return;
+    }
     render(scribe, [
       { label: '📄 View', onClick: () => viewActiveMeeting(tab.id) },
       { label: `📝 Live ${iv ? iv + 'm' : 'Off'}`, onClick: cycleLiveNotesInterval },
@@ -3218,8 +3251,18 @@ async function renderMeetingBar() {
   // Not capturing on THIS tab — but the global scribe loop keeps running for any
   // OTHER live meetings, so we intentionally do not stop it here.
 
-  // Not capturing: auto-start the moment we see a ready meeting tab, so the user
-  // never has to click Start — unless they explicitly Stopped this meeting.
+  // On a meeting platform but not actually in the call yet (landing / green room /
+  // pre-join / preview — all share the meeting URL pattern). Don't auto-start: that
+  // would open an empty record on a non-meeting page. Show a passive "ready" chip;
+  // the content script pings CP_MEETING_JOINED the moment the user joins, which
+  // re-runs this and auto-starts then.
+  if (!probe.inCall) {
+    render(`${scribe} · ready · starts when you join`);
+    return;
+  }
+
+  // Not capturing but in the call: auto-start the moment we see a live meeting, so
+  // the user never has to click Start — unless they explicitly Stopped this meeting.
   if (!_autoStartSuppressed.has(key)) {
     await startMeeting(tab.id);
     if (seq !== _meetingBarSeq) return;
