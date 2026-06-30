@@ -173,15 +173,109 @@ export async function clearAllMeetings() {
   await saveIndex([]);
 }
 
-// The AI scribe summary (markdown) for a meeting — saved by the side panel as the
-// live notes refresh, so reopening a past meeting shows the last summary.
-export async function saveMeetingNotes(id, text) {
-  if (!id) return;
-  await chrome.storage.local.set({ [notesKey(id)]: await encryptJSON(String(text || '')) });
+// The AI scribe summary (markdown) for a meeting. VERSIONED (schema v2): one evolving
+// 'live' version the scribe maintains, plus any regenerated versions the user keeps to
+// switch between. Stored encrypted as { v:2, activeId, versions:[{id,kind,style,text,…}] }.
+//
+// Back-compat + DATA SAFETY: an OLD plain-string summary is read as the single 'live'
+// version with NO destructive rewrite (migration happens lazily, only on the next
+// write, preserving the original text). Anything unrecognized normalizes to empty and
+// never throws — a corrupt blob can't crash the scribe or lose other meetings' notes.
+const MAX_NOTE_VERSIONS = 12; // cap stored versions: the 'live' one + recent regenerations
+const LIVE_VERSION_ID = 'live';
+
+function noteVersionId() {
+  return `gen_${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
 }
+
+function normalizeNotes(stored) {
+  if (typeof stored === 'string') {
+    return stored
+      ? { activeId: LIVE_VERSION_ID, versions: [{ id: LIVE_VERSION_ID, kind: 'live', style: 'concise', text: stored, createdAt: 0 }] }
+      : { activeId: null, versions: [] };
+  }
+  if (stored && typeof stored === 'object' && Array.isArray(stored.versions)) {
+    const versions = stored.versions.filter((x) => x && typeof x.id === 'string' && typeof x.text === 'string');
+    const activeId = versions.some((x) => x.id === stored.activeId) ? stored.activeId : (versions[versions.length - 1]?.id ?? null);
+    return { activeId, versions };
+  }
+  return { activeId: null, versions: [] };
+}
+
+function capVersions(versions) {
+  if (versions.length <= MAX_NOTE_VERSIONS) return versions;
+  const live = versions.filter((x) => x.id === LIVE_VERSION_ID);
+  const rest = versions
+    .filter((x) => x.id !== LIVE_VERSION_ID)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)) // newest first
+    .slice(0, Math.max(0, MAX_NOTE_VERSIONS - live.length))
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)); // back to oldest-first
+  return [...live, ...rest];
+}
+
+async function writeNotes(id, activeId, versions) {
+  const capped = capVersions(versions);
+  const active = capped.some((x) => x.id === activeId) ? activeId : (capped[capped.length - 1]?.id ?? null);
+  await chrome.storage.local.set({ [notesKey(id)]: await encryptJSON({ v: 2, activeId: active, versions: capped }) });
+}
+
+// saveMeetingNotes(id, text)                      → update the evolving 'live' version
+// saveMeetingNotes(id, text, { newVersion:true }) → append a NEW (regenerated) version
+//   opts: { newVersion, style:'concise'|'detailed', kind, model }. The 2-arg form (the
+//   live scribe + import) is unchanged, so every existing caller keeps working.
+export async function saveMeetingNotes(id, text, opts = {}) {
+  if (!id) return;
+  const { newVersion = false, style = 'concise', kind, model = '' } = opts;
+  const { activeId, versions } = normalizeNotes(await readStoredJSON(notesKey(id)));
+  let nextActive = activeId;
+  const now = Date.now();
+  if (newVersion) {
+    const v = { id: noteVersionId(), kind: kind || 'regenerated', style, text: String(text || ''), createdAt: now, model };
+    versions.push(v);
+    nextActive = v.id; // surface the freshly generated one; the user can switch back
+  } else {
+    let live = versions.find((x) => x.id === LIVE_VERSION_ID);
+    if (!live) { live = { id: LIVE_VERSION_ID, kind: 'live', style, text: '', createdAt: now }; versions.push(live); }
+    live.text = String(text || '');
+    live.style = style;
+    live.updatedAt = now;
+    if (!nextActive || nextActive === LIVE_VERSION_ID) nextActive = LIVE_VERSION_ID; // never steal a user-chosen version
+  }
+  await writeNotes(id, nextActive, versions);
+}
+
+// Active version's text (string) — the back-compat accessor every existing caller uses.
 export async function getMeetingNotes(id) {
-  const v = await readStoredJSON(notesKey(id));
-  return typeof v === 'string' ? v : '';
+  const { activeId, versions } = normalizeNotes(await readStoredJSON(notesKey(id)));
+  const v = versions.find((x) => x.id === activeId) || versions[versions.length - 1];
+  return v ? String(v.text || '') : '';
+}
+
+// Full version list for the switcher UI: { activeId, versions:[{id,kind,style,text,createdAt,…}] }.
+export async function getMeetingNoteVersions(id) {
+  return normalizeNotes(await readStoredJSON(notesKey(id)));
+}
+
+// The evolving 'live' version's text — the scribe's merge base, independent of which
+// version the user is currently VIEWING (so regenerating doesn't derail the running summary).
+export async function getLiveNotesText(id) {
+  const { versions } = normalizeNotes(await readStoredJSON(notesKey(id)));
+  const live = versions.find((x) => x.id === LIVE_VERSION_ID);
+  return live ? String(live.text || '') : '';
+}
+
+export async function setActiveMeetingNote(id, versionId) {
+  const { versions } = normalizeNotes(await readStoredJSON(notesKey(id)));
+  if (!versions.some((x) => x.id === versionId)) return;
+  await writeNotes(id, versionId, versions);
+}
+
+export async function deleteMeetingNoteVersion(id, versionId) {
+  if (versionId === LIVE_VERSION_ID) return; // the live running summary isn't user-deletable
+  const { activeId, versions } = normalizeNotes(await readStoredJSON(notesKey(id)));
+  const next = versions.filter((x) => x.id !== versionId);
+  if (next.length === versions.length) return;
+  await writeNotes(id, activeId === versionId ? (next[next.length - 1]?.id ?? null) : activeId, next);
 }
 
 export async function saveMeetingTopics(id, topics) {
