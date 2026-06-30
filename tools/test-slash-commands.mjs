@@ -16,13 +16,18 @@ const freeRoot = slashCommandItems({
 });
 assert.deepEqual(
   freeRoot.map((item) => item.command),
-  ['search', 'history', 'history chats', 'history meetings'],
-  'Free users should discover built-in commands (search + history) even when custom skills are gated.',
+  ['search', 'history', 'history chats', 'history meetings', 'monitor', 'tldr'],
+  'Free users should discover built-in commands (search + history + meeting monitors) even when custom skills are gated.',
 );
 assert.equal(
   freeRoot.find((item) => item.command === 'history meetings')?.locked,
   true,
   'Meeting-history command should be visible but marked locked without meeting access.',
+);
+assert.equal(
+  freeRoot.find((item) => item.command === 'monitor')?.locked,
+  true,
+  'Meeting monitor commands should be visible but locked without meeting access.',
 );
 assert.equal(
   freeRoot.some((item) => item.command === 'summarize'),

@@ -182,6 +182,41 @@ function confirmPageAction(detail) {
   });
 }
 
+// Generic confirm for DESTRUCTIVE actions (delete a meeting / chat). Resolves true
+// only on an explicit click. Escape or clicking the backdrop cancels; Enter does NOT
+// confirm (so a stray keypress can't delete) — Cancel is focused by default.
+function confirmDelete({ title = 'Delete?', body = '', confirmLabel = 'Delete' } = {}) {
+  return new Promise((resolve) => {
+    const ov = document.createElement('div');
+    ov.className = 'cp-confirm-ov';
+    ov.setAttribute('role', 'alertdialog');
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.38);padding:12px';
+    const card = document.createElement('div');
+    card.style.cssText = 'width:100%;max-width:420px;background:var(--panel,#1b1d22);color:var(--fg,#e8e8ea);border:1px solid var(--border,#33363d);border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.4);padding:14px 16px;font:13px/1.45 system-ui,-apple-system,sans-serif';
+    const t = document.createElement('div'); t.textContent = title; t.style.cssText = 'font-weight:600;margin-bottom:6px';
+    const b = document.createElement('div'); b.textContent = body; b.style.cssText = 'opacity:.92;margin-bottom:12px;word-break:break-word';
+    const rowEl = document.createElement('div'); rowEl.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
+    let settled = false;
+    const done = (v) => { if (settled) return; settled = true; document.removeEventListener('keydown', onKey, true); ov.remove(); resolve(v); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(false); } };
+    const mk = (label, val, danger) => {
+      const btn = document.createElement('button');
+      btn.textContent = label;
+      btn.style.cssText = `cursor:pointer;border-radius:8px;padding:7px 12px;font:inherit;font-weight:600;${danger ? 'background:#dc2626;color:#fff;border:1px solid transparent' : 'background:transparent;color:inherit;border:1px solid var(--border,#33363d)'}`;
+      btn.onclick = () => done(val);
+      return btn;
+    };
+    const cancel = mk('Cancel', false, false);
+    rowEl.append(cancel, mk(confirmLabel, true, true));
+    card.append(t, b, rowEl);
+    ov.append(card);
+    ov.addEventListener('mousedown', (e) => { if (e.target === ov) done(false); });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(ov);
+    cancel.focus(); // safe default
+  });
+}
+
 async function pageToolProvider(resolvedAgent) {
   if (!state.settings.ui?.pageActions) return null; // feature off — stay silent
   // API agents run the in-extension tool loop; bridge/CLI agents (Claude Code,
@@ -779,28 +814,6 @@ function renderMessage(m) {
     return card;
   }
 
-  // Live-meeting "monitor a question" answer — ONE card re-answered as the meeting
-  // progresses (Phase 3c). Also excluded from the model payload.
-  if (m.role === 'live-answer') {
-    const card = document.createElement('div');
-    card.className = 'msg live-answer';
-    card.dataset.id = m.id;
-    const head = document.createElement('div');
-    head.className = 'live-summary-h';
-    head.textContent = `👁 Monitoring · updated ${timeLabel(m.ts)}`;
-    const q = document.createElement('div');
-    q.className = 'live-answer-q';
-    q.textContent = m.q || '';
-    const body = document.createElement('div');
-    body.className = 'live-summary-b bubble';
-    body.innerHTML = m.pendingAnswer
-      ? '<span class="muted">Answering…</span>'
-      : (m.content ? renderMarkdown(m.content) : '<span class="muted">No answer yet.</span>');
-    if (!m.pendingAnswer) enhanceCode(body);
-    card.append(head, q, body);
-    return card;
-  }
-
   const wrap = document.createElement('div');
   wrap.className = `msg ${m.role}${m.error ? ' error' : ''}${m.queued ? ' queued' : ''}`;
   wrap.dataset.id = m.id;
@@ -1151,6 +1164,15 @@ async function send() {
   const searchCommand = parseSearchCommand(raw);
   if (/^\/(?:search|web)\b/i.test(raw) && !searchCommand) {
     toast('Type a query after /search');
+    return;
+  }
+  // /monitor <question> · /tldr <focus?> — launch a standing meeting monitor instead
+  // of a normal turn (answered + kept fresh in the Live monitors panel).
+  const monitorCommand = parseMonitorCommand(raw);
+  if (monitorCommand) {
+    if (monitorCommand.kind === 'qa' && !monitorCommand.prompt) { toast('Type a question after /monitor'); return; }
+    $('input').value = '';
+    addMonitor(monitorCommand);
     return;
   }
   const conv = state.conv; // capture: the user may switch chats while this streams
@@ -2101,90 +2123,189 @@ async function toggleLiveSummary() {
 }
 
 // --------------------------------------------------------------------------
-// Phase 3c — "Monitor a question": keep ONE answer card fresh as the meeting
-// progresses. The user asks a question, clicks 👁 Monitor; on each scribe tick with
-// NEW transcript we re-answer (single-shot) from the running summary + recent
-// transcript. Token-lean: only fires on new transcript, gated by the scribe interval.
+// Live monitors — standing "goals" answered against the meeting as it progresses.
+// kind 'qa' (a question), 'tldr' (running summary, optional focus), or 'skill' (a
+// BYO meeting skill's prompt). Each re-runs on a scribe tick WITH new transcript and
+// shows in the pinned panel above the composer; stop any one independently. Stored on
+// the conversation (conv.monitors) so they survive reload and are per-chat. The cards
+// are NOT chat messages, so they never enter the model payload.
 // --------------------------------------------------------------------------
-let meetingWatchBusy = false;
-function liveAnswerCardId(meetingId) { return `ans_${meetingId}`; }
+let monitorsBusy = false;
 
-function upsertLiveAnswerCard(meetingId, question, text, pending) {
-  const conv = state.conv;
-  if (!conv) return;
-  const id = liveAnswerCardId(meetingId);
-  let m = conv.messages.find((x) => x.id === id);
-  if (!m) { m = { id, role: 'live-answer', kind: 'live-answer', meetingId }; conv.messages.push(m); }
-  Object.assign(m, { q: question, content: text, ts: Date.now(), pendingAnswer: !!pending });
-  const node = $('messages').querySelector(`[data-id="${id}"]`);
-  if (node) node.replaceWith(renderMessage(m));
-  else { $('messages').appendChild(renderMessage(m)); scrollToBottomNow(); }
-  if (!pending) saveConversation(conv).catch(() => {}); // persist the settled answer
+// Skills the user has flagged for meetings (Unit 2 sets the flag; [] until then).
+function meetingSkills() {
+  return (state.settings?.skills || []).filter((s) => s && s.meeting && s.prompt);
 }
 
-function removeLiveAnswerCard(meetingId) {
+function activeMonitors() {
+  const conv = state.conv;
+  if (!conv || !state.liveMeeting) return [];
+  return (conv.monitors || []).filter((m) => m.meetingId === state.liveMeeting.id);
+}
+
+function monitorIcon(m) { return m.kind === 'tldr' ? '📌' : (m.kind === 'skill' ? (m.icon || '🎓') : '👁'); }
+function monitorLabel(m) {
+  if (m.kind === 'tldr') return m.prompt ? `TL;DR — ${m.prompt}` : 'Running TL;DR';
+  return m.prompt || m.title || 'Monitor';
+}
+
+function renderMonitors() {
+  const panel = $('monitors-panel');
+  if (!panel) return;
+  const show = !!state.liveMeeting && state.excludedMeetingId !== state.liveMeeting?.id && can(state.license, 'liveMeetings');
+  panel.classList.toggle('hidden', !show);
+  if (!show) { panel.innerHTML = ''; return; }
+  panel.innerHTML = '';
+
+  const head = document.createElement('div');
+  head.className = 'mon-head';
+  const title = document.createElement('span');
+  title.className = 'mon-title';
+  title.textContent = '👁 Live monitors';
+  head.appendChild(title);
+  panel.appendChild(head);
+
+  // Add-a-question input + quick goals (TL;DR + the user's meeting skills).
+  const add = document.createElement('div');
+  add.className = 'mon-add';
+  const inp = document.createElement('input');
+  inp.className = 'mon-input';
+  inp.placeholder = 'Ask a question to keep watching as the meeting goes…';
+  const addQ = () => { const q = inp.value.trim(); if (q) { inp.value = ''; addMonitor({ kind: 'qa', prompt: q }); } };
+  inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addQ(); } };
+  const watch = document.createElement('button');
+  watch.className = 'mon-add-btn'; watch.textContent = 'Watch'; watch.onclick = addQ;
+  add.append(inp, watch);
+  const tldr = document.createElement('button');
+  tldr.className = 'mon-skill-btn'; tldr.textContent = '📌 TL;DR';
+  tldr.title = 'Keep a running TL;DR'; tldr.onclick = () => addMonitor({ kind: 'tldr', prompt: '' });
+  add.appendChild(tldr);
+  for (const sk of meetingSkills()) {
+    const b = document.createElement('button');
+    b.className = 'mon-skill-btn';
+    b.textContent = `${sk.icon || '🎓'} ${sk.name}`;
+    b.title = sk.description || sk.name;
+    b.onclick = () => addMonitor({ kind: 'skill', skillId: sk.id, title: sk.name, icon: sk.icon });
+    add.appendChild(b);
+  }
+  panel.appendChild(add);
+
+  for (const m of activeMonitors()) {
+    const card = document.createElement('div');
+    card.className = 'mon-card';
+    const h = document.createElement('div');
+    h.className = 'mon-card-h';
+    const q = document.createElement('span');
+    q.className = 'mon-card-q';
+    q.textContent = `${monitorIcon(m)} ${monitorLabel(m)}`;
+    const t = document.createElement('span');
+    t.className = 'mon-card-t';
+    t.textContent = m.pending ? 'updating…' : timeLabel(m.ts);
+    const x = document.createElement('button');
+    x.className = 'mon-card-x'; x.textContent = '✕'; x.title = 'Stop monitoring';
+    x.onclick = () => stopMonitor(m.id);
+    h.append(q, t, x);
+    const body = document.createElement('div');
+    body.className = 'mon-card-b bubble';
+    body.innerHTML = m.answer ? renderMarkdown(m.answer) : `<span class="muted">${m.pending ? 'Answering…' : 'Waiting for the meeting…'}</span>`;
+    if (m.answer && !m.pending) enhanceCode(body);
+    card.append(h, body);
+    panel.appendChild(card);
+  }
+}
+
+async function addMonitor({ kind, prompt = '', skillId = '', title = '', icon = '' }) {
   const conv = state.conv;
   if (!conv) return;
-  const id = liveAnswerCardId(meetingId);
-  const i = conv.messages.findIndex((x) => x.id === id);
-  if (i < 0) return;
-  conv.messages.splice(i, 1);
-  $('messages').querySelector(`[data-id="${id}"]`)?.remove();
+  if (!state.liveMeeting) { toast('No live meeting — start or attach one first'); return; }
+  if (!can(state.license, 'liveMeetings')) { upsell('liveMeetings'); return; }
+  if (kind === 'qa' && !prompt) { toast('Type a question to monitor'); return; }
+  conv.monitors = conv.monitors || [];
+  const m = { id: `mon_${uid()}`, kind, prompt, skillId, title, icon, answer: '', ts: Date.now(), pending: true, meetingId: state.liveMeeting.id };
+  conv.monitors.push(m);
+  renderMonitors();
+  await saveConversation(conv).catch(() => {});
+  runMonitor(m);
+  scheduleLiveNotes({ force: true, delayMs: 1500 });
+}
+
+function stopMonitor(id) {
+  const conv = state.conv;
+  if (!conv) return;
+  conv.monitors = (conv.monitors || []).filter((m) => m.id !== id);
+  renderMonitors();
   saveConversation(conv).catch(() => {});
 }
 
-async function runMeetingWatchAnswer() {
+function monitorPrompt(m, summary, transcript) {
+  if (m.kind === 'tldr') {
+    return [
+      'You are maintaining a SHORT running TL;DR of a LIVE meeting'
+        + (m.prompt ? `, focused on: ${m.prompt}` : '') + '. 2–5 tight bullets of what matters so far; update as it progresses; never invent.',
+      summary && `RUNNING SUMMARY:\n${summary}`,
+      `RECENT TRANSCRIPT:\n${transcript}`,
+    ].filter(Boolean).join('\n\n');
+  }
+  if (m.kind === 'skill') {
+    const sk = (state.settings?.skills || []).find((s) => s.id === m.skillId);
+    return [
+      sk?.prompt || 'Summarize the relevant part of this meeting.',
+      'Apply the instruction above to the LIVE meeting using the running summary + recent transcript. Be concise and grounded; say plainly if still unknown; never invent.',
+      summary && `RUNNING SUMMARY:\n${summary}`,
+      `RECENT TRANSCRIPT:\n${transcript}`,
+    ].filter(Boolean).join('\n\n');
+  }
+  return [
+    'You are keeping a SINGLE concise answer to the user’s question up to date as a LIVE meeting progresses. Answer from the running summary + recent transcript; state what is known so far and flag if still unknown; never invent.',
+    `QUESTION: ${m.prompt}`,
+    summary && `RUNNING SUMMARY:\n${summary}`,
+    `RECENT TRANSCRIPT:\n${transcript}`,
+  ].filter(Boolean).join('\n\n');
+}
+
+async function runMonitor(m) {
   const conv = state.conv;
-  if (!conv?.watchQ || !state.liveMeeting || meetingWatchBusy) return;
-  const mid = state.liveMeeting.id;
-  const question = conv.watchQ;
-  meetingWatchBusy = true;
+  if (!conv) return;
+  m.pending = true; renderMonitors();
   try {
     const rec = await getLiveMeetingRecord().catch(() => null);
     const transcript = rec ? meetingToText(rec, { sinceTs: Date.now() - 15 * 60_000 }) : '';
-    const summary = await getLiveNotesText(mid).catch(() => '');
-    const prompt = [
-      'You are monitoring a LIVE meeting and keeping a SINGLE answer to the user’s question up to date as it progresses. Answer concisely from the running summary and recent transcript below — state what is known so far and say plainly if it is still unknown. Never invent.',
-      '',
-      `QUESTION: ${question}`,
-      '',
-      summary ? `RUNNING SUMMARY:\n${summary}\n` : '',
-      `RECENT TRANSCRIPT:\n${transcript}`,
-    ].join('\n');
-    upsertLiveAnswerCard(mid, question, '', true);
+    const summary = await getLiveNotesText(m.meetingId).catch(() => '');
     let out = '';
     await streamChat({
       agent: resolveTarget(agentForConv(conv), state.settings),
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content: monitorPrompt(m, summary, transcript) }],
       settings: state.settings,
       onDelta: (d) => { out += d; },
     });
-    upsertLiveAnswerCard(mid, question, out.trim(), false);
+    m.answer = out.trim();
   } catch (e) {
-    upsertLiveAnswerCard(mid, question, `⚠ ${e.message || 'failed'}`, false);
+    m.answer = `⚠ ${e.message || 'failed'}`;
   } finally {
-    meetingWatchBusy = false;
+    m.pending = false;
+    m.ts = Date.now();
+    renderMonitors();
+    saveConversation(conv).catch(() => {});
   }
 }
 
-async function toggleMeetingWatch() {
+// Re-run every monitor for a meeting once new transcript has landed (serialized so a
+// slow tick can't overlap the next). Called by the scribe loop after it saves.
+async function runMeetingMonitors(meetingId) {
+  if (monitorsBusy) return;
   const conv = state.conv;
-  if (!conv || !state.liveMeeting) return;
-  const mid = state.liveMeeting.id;
-  if (conv.watchQ) {
-    conv.watchQ = '';
-    removeLiveAnswerCard(mid);
-    toast('Monitoring stopped');
-  } else {
-    const lastUser = [...conv.messages].reverse().find((m) => m.role === 'user' && m.content);
-    if (!lastUser) { toast('Ask a question first, then click 👁 Monitor'); return; }
-    conv.watchQ = lastUser.content;
-    toast('Monitoring — I’ll keep this answer fresh as the meeting continues');
-    runMeetingWatchAnswer();
-    scheduleLiveNotes({ force: true, delayMs: 1500 });
-  }
-  await saveConversation(conv).catch(() => {});
-  renderContextBar();
+  const mons = (conv?.monitors || []).filter((m) => m.meetingId === meetingId);
+  if (!mons.length) return;
+  monitorsBusy = true;
+  try { for (const m of mons) await runMonitor(m); }
+  finally { monitorsBusy = false; }
+}
+
+// Slash launchers: /monitor <question> · /tldr <focus?>
+function parseMonitorCommand(raw) {
+  const mm = /^\/(monitor|tldr)\b\s*([\s\S]*)$/i.exec(raw || '');
+  if (!mm) return null;
+  return { kind: mm[1].toLowerCase() === 'tldr' ? 'tldr' : 'qa', prompt: mm[2].trim() };
 }
 
 const scribeState = new Map(); // meetingId → { lastTs }
@@ -2232,9 +2353,9 @@ async function runLiveNotesTick() {
           // Phase 2: if this conversation is streaming THIS live meeting's summary,
           // refresh its in-chat card in place (no extra model call — same summary).
           if (state.conv?.liveSummary && state.liveMeeting?.id === e.id) upsertLiveSummaryCard(e.id, text);
-          // Phase 3c: re-answer the monitored question on new transcript (token-lean —
-          // only here, where the scribe already confirmed something new was said).
-          if (state.conv?.watchQ && state.liveMeeting?.id === e.id) runMeetingWatchAnswer();
+          // Live monitors: re-run every standing goal for this meeting on new
+          // transcript (token-lean — only here, where the scribe confirmed new content).
+          if (state.liveMeeting?.id === e.id) runMeetingMonitors(e.id);
         }
         st.lastTs = latestTs;
         scribeState.set(e.id, st);
@@ -2858,6 +2979,11 @@ async function renderMeetingsList(query) {
       `<div class="meeting-row-meta">${escHtml(meta)}</div>`;
     main.onclick = () => openStoredMeeting(e.id);
     const del = miniBtn('✕', async () => {
+      if (!(await confirmDelete({
+        title: 'Delete this meeting?',
+        body: `“${e.title || 'Meeting'}” and its transcript & summaries will be permanently removed. This can’t be undone.`,
+        confirmLabel: 'Delete meeting',
+      }))) return;
       await deleteMeeting(e.id);
       renderMeetingsList($('meetings-search').value);
       toast('Meeting deleted');
@@ -3729,16 +3855,7 @@ function renderContextBar() {
       : 'Stream the meeting’s running summary into this chat (auto-updates, no extra model calls)';
     live.onclick = (e) => { e.stopPropagation(); toggleLiveSummary(); };
     chip.appendChild(live);
-    // Monitor-a-question toggle (Phase 3c): keep the last question's answer fresh.
-    const watching = !!state.conv?.watchQ;
-    const mon = document.createElement('button');
-    mon.className = 'ctx-live' + (watching ? ' on' : '');
-    mon.textContent = watching ? '👁 Monitoring' : '👁 Monitor';
-    mon.title = watching
-      ? 'Re-answering your question as the meeting continues — click to stop'
-      : 'Keep your last question’s answer up to date as the meeting continues';
-    mon.onclick = (e) => { e.stopPropagation(); toggleMeetingWatch(); };
-    chip.appendChild(mon);
+    // (Monitors moved to the pinned "Live monitors" panel below — see renderMonitors.)
     const x = document.createElement('button');
     x.className = 'ctx-x';
     x.textContent = '✕';
@@ -3790,6 +3907,7 @@ function renderContextBar() {
     chip.appendChild(x);
     bar.appendChild(chip);
   });
+  renderMonitors(); // the live-monitors panel tracks the same meeting state as the chip
 }
 
 async function renderAttachMenu() {
@@ -4255,9 +4373,15 @@ function startRename(e, itemEl) {
   input.select();
 }
 
-// Delete immediately (confirm() is unreliable in side panels) with an Undo.
+// Confirm first (a DOM modal — native confirm() is unreliable in side panels), then
+// delete with an Undo toast as a second safety net.
 async function removeConv(id) {
   const conv = state.convCache.get(id) || (await getConversation(id));
+  if (!(await confirmDelete({
+    title: 'Delete this chat?',
+    body: `“${(conv && conv.title) || 'Untitled chat'}” will be deleted. You can Undo right after.`,
+    confirmLabel: 'Delete chat',
+  }))) return;
   const s = state.streams.get(id);
   if (s) {
     s.controller.abort();

@@ -24,6 +24,20 @@ const BUILTIN_COMMANDS = [
     description: 'Search saved meeting transcripts.',
     feature: 'liveMeetings',
   },
+  {
+    type: 'builtin',
+    command: 'monitor',
+    icon: '👁',
+    description: 'Keep answering a question as the live meeting progresses.',
+    feature: 'liveMeetings',
+  },
+  {
+    type: 'builtin',
+    command: 'tldr',
+    icon: '📌',
+    description: 'Keep a running TL;DR of the live meeting (optional focus).',
+    feature: 'liveMeetings',
+  },
 ];
 
 function normalizePrefix(prefix) {
