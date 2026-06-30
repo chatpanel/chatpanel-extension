@@ -40,6 +40,10 @@ import {
   getMeetingIndex,
   getMeeting,
   getMeetingNotes,
+  getLiveNotesText,
+  getMeetingNoteVersions,
+  setActiveMeetingNote,
+  deleteMeetingNoteVersion,
   getMeetingTopics,
   saveMeetingNotes,
   saveMeetingTopics,
@@ -2104,7 +2108,9 @@ async function runLiveNotesTick() {
         if (!segs.length) continue;
         const st = scribeState.get(e.id) || { lastTs: 0 };
         const latestTs = segs[segs.length - 1]?.t || Date.now();
-        const prev = await getMeetingNotes(e.id).catch(() => '');
+        // Merge into the evolving LIVE version (not whichever version the user is
+        // currently viewing) so regenerating a summary never derails the scribe.
+        const prev = await getLiveNotesText(e.id).catch(() => '');
         const isFirst = !prev;
         if (!isFirst && latestTs <= st.lastTs) continue; // nothing new said
         const delta = meetingToText(rec, { sinceTs: isFirst ? 0 : st.lastTs });
@@ -2757,7 +2763,7 @@ async function openStoredMeeting(id) {
   if (!rec) { toast('Meeting not found'); return; }
   clearInterval(meetingsView.liveTimer);
   meetingsView.rec = rec;
-  meetingsView.notes = await getMeetingNotes(id).catch(() => '');
+  await loadMeetingVersions();
   meetingsView.generating = false;
   meetingsView.live = rec.status !== 'ended';
   $('meeting-view-title').textContent =
@@ -2782,7 +2788,7 @@ async function refreshLiveMeetingView() {
       : await getMeeting(cur.id);
   if (!rec) return;
   meetingsView.rec = rec;
-  meetingsView.notes = await getMeetingNotes(cur.id).catch(() => meetingsView.notes);
+  if (!meetingsView.generating) await loadMeetingVersions();
   meetingsView.live = rec.status !== 'ended';
   if (meetingsView.tab === 'transcript') renderMeetingTranscript();
   else if (!meetingsView.generating) renderMeetingSummary();
@@ -2969,16 +2975,85 @@ function switchMeetingTab(tab) {
   setMeetingViewStatus();
 }
 
+// Load all summary versions for the viewed meeting into meetingsView (active text
+// stays in meetingsView.notes for the existing attach/export/download callers).
+async function loadMeetingVersions() {
+  if (!meetingsView.rec) { meetingsView.versions = []; meetingsView.activeId = null; meetingsView.notes = ''; return; }
+  const { activeId, versions } = await getMeetingNoteVersions(meetingsView.rec.id).catch(() => ({ activeId: null, versions: [] }));
+  meetingsView.versions = versions;
+  meetingsView.activeId = activeId;
+  const active = versions.find((x) => x.id === activeId) || versions[versions.length - 1];
+  meetingsView.notes = active ? String(active.text || '') : '';
+}
+
+function noteVersionLabel(v) {
+  if (v.id === 'live') return '🔴 Live';
+  return `${v.style === 'detailed' ? 'Detailed' : 'Concise'} · ${timeLabel(v.createdAt)}`;
+}
+
 function renderMeetingSummary() {
   const body = $('meeting-summary');
-  if (meetingsView.notes) { body.innerHTML = renderMarkdown(meetingsView.notes); return; }
-  body.innerHTML = '<div class="empty-notes">No summary was saved for this meeting.</div>';
-  const btn = document.createElement('button');
-  btn.className = 'watch-btn primary';
-  btn.style.margin = '8px 12px';
-  btn.textContent = 'Generate summary';
-  btn.onclick = () => generateMeetingSummary();
-  body.appendChild(btn);
+  body.innerHTML = '';
+  const versions = meetingsView.versions || [];
+
+  // Version bar: switch between kept summaries + regenerate in either style.
+  const bar = document.createElement('div');
+  bar.className = 'mtg-ver-bar';
+  for (const v of versions) {
+    const chip = document.createElement('span');
+    chip.className = 'mtg-ver' + (v.id === meetingsView.activeId ? ' on' : '');
+    const lab = document.createElement('button');
+    lab.className = 'mtg-ver-lab';
+    lab.textContent = noteVersionLabel(v);
+    lab.title = 'View this version';
+    lab.onclick = () => switchMeetingVersion(v.id);
+    chip.appendChild(lab);
+    if (v.id !== 'live') {
+      const x = document.createElement('button');
+      x.className = 'mtg-ver-x';
+      x.textContent = '✕';
+      x.title = 'Delete this version';
+      x.onclick = (e) => { e.stopPropagation(); deleteMeetingVersion(v.id); };
+      chip.appendChild(x);
+    }
+    bar.appendChild(chip);
+  }
+  const spacer = document.createElement('span');
+  spacer.className = 'mtg-ver-spacer';
+  bar.appendChild(spacer);
+  for (const style of ['concise', 'detailed']) {
+    const b = document.createElement('button');
+    b.className = 'mtg-ver regen';
+    b.disabled = !!meetingsView.generating;
+    b.textContent = meetingsView.generating ? '…' : (style === 'concise' ? '↻ Concise' : '↻ Detailed');
+    b.title = `Generate a new ${style} summary from the full transcript (kept as a new version)`;
+    b.onclick = (e) => { e.stopPropagation(); regenerateMeetingSummary(style); };
+    bar.appendChild(b);
+  }
+  body.appendChild(bar);
+
+  const content = document.createElement('div');
+  content.className = 'mtg-summary-content';
+  content.innerHTML = meetingsView.notes
+    ? renderMarkdown(meetingsView.notes)
+    : '<div class="empty-notes">No summary yet — click ↻ Concise or ↻ Detailed to generate one.</div>';
+  enhanceCode(content);
+  body.appendChild(content);
+}
+
+async function switchMeetingVersion(vid) {
+  if (!meetingsView.rec) return;
+  await setActiveMeetingNote(meetingsView.rec.id, vid).catch(() => {});
+  await loadMeetingVersions();
+  renderMeetingSummary();
+}
+
+async function deleteMeetingVersion(vid) {
+  if (!meetingsView.rec) return;
+  await deleteMeetingNoteVersion(meetingsView.rec.id, vid).catch(() => {});
+  await loadMeetingVersions();
+  renderMeetingSummary();
+  toast('Version deleted');
 }
 
 function renderMeetingTranscript() {
@@ -3007,33 +3082,27 @@ function setMeetingViewStatus() {
   }
 }
 
-async function generateMeetingSummary() {
+// Generate a NEW summary version from the full transcript in the chosen style and
+// keep it (the live running summary is never overwritten — the user can switch back).
+async function regenerateMeetingSummary(style = 'concise') {
   if (meetingsView.generating || !meetingsView.rec) return;
   meetingsView.generating = true;
-  const body = $('meeting-summary');
-  body.innerHTML = '<div class="empty-notes">Generating summary…</div>';
+  renderMeetingSummary();
+  const content = $('meeting-summary').querySelector('.mtg-summary-content');
+  if (content) content.innerHTML = `<div class="empty-notes">Generating ${style} summary…</div>`;
   const transcript = meetingToText(meetingsView.rec, { sinceTs: 0 });
-  const agent = agentForConv(state.conv);
-  let text = '';
   try {
-    await streamChat({
-      agent: resolveTarget(agent, state.settings),
-      messages: [{
-        role: 'user',
-        content: `Summarize this meeting transcript as concise markdown notes — a short summary, key decisions, and action items with owners.\n\n---\n${transcript}`,
-      }],
-      settings: state.settings,
-      onDelta: (d) => { text += d; body.innerHTML = renderMarkdown(text); body.scrollTop = body.scrollHeight; },
-    });
-    meetingsView.notes = text.trim();
-    await saveMeetingNotes(meetingsView.rec.id, meetingsView.notes);
+    const text = (await summarizeMeeting('', transcript, true, { style })).trim();
+    if (!text) throw new Error('empty summary');
+    await saveMeetingNotes(meetingsView.rec.id, text, { newVersion: true, style, kind: 'regenerated' });
     maybeExtractMeetingTopics(meetingsView.rec.id).catch(() => {});
-    renderMeetingSummary();
-    toast('Summary saved');
+    toast(`${style === 'detailed' ? 'Detailed' : 'Concise'} summary added`);
   } catch (e) {
-    body.innerHTML = `<div class="empty-notes">⚠ ${escHtml(e.message || String(e))}</div>`;
+    toast(`⚠ ${e.message || String(e)}`);
   } finally {
     meetingsView.generating = false;
+    await loadMeetingVersions();
+    renderMeetingSummary();
   }
 }
 

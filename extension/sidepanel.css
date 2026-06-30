@@ -567,6 +567,16 @@ body.rail-collapsed { --rail-w: 0px; }
 .live-summary-b { font-size: 13px; }
 .ctx-live { cursor: pointer; border: 1px solid var(--accent); background: none; color: var(--accent); border-radius: 999px; font-size: 10px; font-weight: 600; padding: 1px 8px; margin-left: 4px; white-space: nowrap; }
 .ctx-live.on { background: var(--accent); color: #fff; }
+/* Meeting-summary version bar (Phase 3b) — switch versions + regenerate. */
+.mtg-ver-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.mtg-ver-spacer { flex: 1; min-width: 8px; }
+.mtg-ver { display: inline-flex; align-items: center; font-size: 11px; border: 1px solid var(--border); border-radius: 999px; background: none; color: var(--text); overflow: hidden; }
+.mtg-ver.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.mtg-ver-lab { background: none; border: none; color: inherit; font: inherit; cursor: pointer; padding: 2px 8px; }
+.mtg-ver-x { background: none; border: none; color: var(--text-dim); cursor: pointer; padding: 2px 6px 2px 0; font-size: 10px; }
+.mtg-ver.regen { cursor: pointer; padding: 2px 9px; color: var(--accent); border-color: var(--accent); }
+.mtg-ver.regen:disabled { opacity: .5; cursor: default; }
+.mtg-summary-content { padding: 4px 12px 12px; }
 .watch-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12.5px; color: var(--text); }
 .watch-row select {
   font: inherit; font-size: 12.5px; background: var(--bg-soft); color: var(--text);
