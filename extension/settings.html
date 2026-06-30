@@ -728,14 +728,21 @@ npx @chatpanel/bridge</code></pre>
           <div class="card" id="backup-card">
             <h2>Back up &amp; restore your data <span class="pro-pill">Pro</span></h2>
             <p class="muted">
-              Export <strong>everything</strong> to a single .zip — your settings
+              Export <strong>everything</strong> to a single file — your settings
               (API endpoints &amp; keys, agents, MCP servers, skills, preferences),
-              all chat history and all captured meetings — plus readable Markdown
-              copies. Restore it on a <strong>fresh install on another machine</strong>
+              endpoint sign-ins, all chat history and all captured meetings.
+              Restore it on a <strong>fresh install on another machine</strong>
               to bring your whole setup across. Everything stays on your device —
-              nothing is uploaded. <strong>The file contains your API keys, so keep it
-              safe.</strong> Your Pro license isn’t included — it re-activates from your
-              purchase email.
+              nothing is uploaded. Your Pro license isn’t included — it re-activates
+              from your purchase email.
+            </p>
+            <p class="muted">
+              With <strong>no password</strong> you get a browsable <code>.zip</code>
+              (the restorable backup plus readable Markdown copies of every chat and
+              meeting) — <strong>it contains your API keys, so keep it safe</strong>.
+              Set a <strong>password</strong> and you instead get a single encrypted
+              <code>.json</code> file (no Markdown — that’s the point); you’ll need the
+              same password to restore it.
             </p>
             <div class="row">
               <button id="backup-export" class="btn">Export all data</button>
