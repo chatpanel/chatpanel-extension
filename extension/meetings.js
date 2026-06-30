@@ -205,6 +205,7 @@ async function select(id) {
   const d = store.get(id);
   if (!d) return;
   current = d; current.tab = current.tab || 'insights';
+  topicGraphFocus = null; // a fresh meeting resets any topic-graph drill-down
   await reloadCurrentNotes(); // pick up any versions the side panel created since boot
   graphDrawToken += 1;
   const graphHost = $('m-biggraph');
@@ -430,23 +431,41 @@ function renderRelated() {
   $('m-tabbody').querySelectorAll('.rel[data-id]').forEach((li) => (li.onclick = () => select(li.dataset.id)));
 }
 
+// The meeting the topic graph is currently DRILLED into (null = the open meeting).
+// Single-click a related meeting node to re-center the graph on it; double-click opens it.
+let topicGraphFocus = null;
+
 function renderTopicGraph() {
-  const id = current.entry.id;
+  const focusId = (topicGraphFocus && store.get(topicGraphFocus)) ? topicGraphFocus : current.entry.id;
+  const focusD = store.get(focusId) || current;
   const q = $('m-search').value.trim();
-  const related = graph.relatedMeetings(id);
-  let meetings = [current, ...related.slice(0, 6).map((r) => store.get(r.id)).filter(Boolean)];
+  const related = graph.relatedMeetings(focusId);
+  let meetings = [focusD, ...related.slice(0, 6).map((r) => store.get(r.id)).filter(Boolean)];
   const matchIds = q ? new Set(searchResults(q).map((r) => r.d?.entry?.id).filter(Boolean)) : null;
   if (matchIds) meetings = meetings.filter((d) => matchIds.has(d.entry.id));
-  const graphData = buildMeetingTopicGraph(meetings, { topicPrefix: 'm-topic:', participantPrefix: 'm-participant:', focusId: id, connectorQuery: q });
+  const graphData = buildMeetingTopicGraph(meetings, { topicPrefix: 'm-topic:', participantPrefix: 'm-participant:', focusId, connectorQuery: q });
   const topics = graphData.nodes.filter((n) => n.type === 'topic').length;
   const participants = graphData.nodes.filter((n) => n.type === 'participant').length;
+  const drilled = focusId !== current.entry.id;
   $('m-tabbody').innerHTML = `
     <div class="graph-head">
-      <div><strong>Meeting graph</strong> <span class="owner">— ${meetings.length} meeting${meetings.length === 1 ? '' : 's'} · ${topics} topic${topics === 1 ? '' : 's'} · ${participants} participant${participants === 1 ? '' : 's'}${q ? ` · matching “${esc(q)}”` : ''}. Click a meeting to open it, a topic or participant to filter.</span></div>
+      <div><strong>Meeting graph</strong> <span class="owner">— ${drilled ? `focused on “${esc(focusD.rec.title || 'Untitled')}” · ` : ''}${meetings.length} meeting${meetings.length === 1 ? '' : 's'} · ${topics} topic${topics === 1 ? '' : 's'} · ${participants} participant${participants === 1 ? '' : 's'}${q ? ` · matching “${esc(q)}”` : ''}. Single-click a meeting to drill into it; double-click to open it.</span></div>
+      ${drilled ? `<button class="btn" id="m-graph-back" type="button">↩ Back to “${esc(current.rec.title || 'this meeting')}”</button>` : ''}
       <div class="legend"><span class="lg"><i class="sw meeting"></i> Meeting</span><span class="lg"><i class="sw topic"></i> Topic</span><span class="lg"><i class="sw participant"></i> Participant</span></div>
     </div>
     <div class="graph-host big" id="m-meetinggraph"></div>`;
-  drawGraph($('m-meetinggraph'), graphData.nodes, graphData.links, (n) => { if (n.type === 'meeting') select(n.id); else searchTopic(n.label); });
+  if (drilled) $('m-graph-back').onclick = () => { topicGraphFocus = null; renderTopicGraph(); };
+  drawGraph(
+    $('m-meetinggraph'), graphData.nodes, graphData.links,
+    (n) => { // single tap → drill into a meeting / filter by a topic
+      if (n.type === 'meeting') { topicGraphFocus = n.id; renderTopicGraph(); }
+      else searchTopic(n.label);
+    },
+    (n) => { // double tap → open the object
+      if (n.type === 'meeting') select(n.id);
+      else searchTopic(n.label);
+    },
+  );
 }
 
 function renderParticipants() {
@@ -560,7 +579,11 @@ function showGraphView() {
     if (token !== graphDrawToken) return;
     const graphHost = $('m-biggraph');
     if (!graphHost?.isConnected) return;
-    drawGraph(graphHost, graphData.nodes, graphData.links, (n) => { if (n.type === 'meeting') select(n.id); else searchTopic(n.label); });
+    drawGraph(
+      graphHost, graphData.nodes, graphData.links,
+      (n) => searchTopic(n.label),                                          // single → filter
+      (n) => { if (n.type === 'meeting') select(n.id); else searchTopic(n.label); }, // double → open
+    );
   });
 }
 

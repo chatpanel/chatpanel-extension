@@ -6,7 +6,10 @@
 // `person` is kept for the older chat-history graph, where topic-like nodes
 // were historically emitted with that type.
 // links: [{ s: id, t: id }]
-// onNode(node): called on a tap (not a drag).
+// onNode(node):     called on a SINGLE tap (not a drag) — use to drill/focus the graph.
+// onNodeOpen(node):  optional; called on a DOUBLE tap — use to open the object (navigate
+//                    to the meeting/chat). When omitted, a single tap fires immediately
+//                    (legacy callers keep working).
 const SVGNS = 'http://www.w3.org/2000/svg';
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const GOLDEN_ANGLE = 2.399963229728653;
@@ -169,9 +172,26 @@ function labelPriority(node, adj) {
   return score;
 }
 
-export function drawGraph(host, nodes, links, onNode) {
+export function drawGraph(host, nodes, links, onNode, onNodeOpen) {
   if (!host) return;
   if (host._stop) host._stop(); // tear down a previous sim on re-render
+
+  // Tap routing: single tap → onNode (drill/focus); double tap → onNodeOpen (open).
+  // With no onNodeOpen, fire the single tap immediately so legacy callers are unchanged.
+  let tapTimer = null; let lastTapId = null; let lastTapAt = 0;
+  const handleTap = (node) => {
+    if (!onNodeOpen) { onNode?.(node); return; }
+    const now = Date.now();
+    if (lastTapId === node.id && now - lastTapAt < 320) {
+      lastTapId = null; lastTapAt = 0;
+      if (tapTimer) { clearTimeout(tapTimer); tapTimer = null; }
+      onNodeOpen(node);
+    } else {
+      lastTapId = node.id; lastTapAt = now;
+      if (tapTimer) clearTimeout(tapTimer);
+      tapTimer = setTimeout(() => { tapTimer = null; onNode?.(node); }, 300);
+    }
+  };
   const W = Math.max(host.clientWidth || 600, 320);
   const N = nodes.length;
   const baseH = host.classList.contains('big') ? 520 : 300;
@@ -306,7 +326,7 @@ export function drawGraph(host, nodes, links, onNode) {
     else if (panning) { tf.x = panning.tx + (e.clientX - panning.x); tf.y = panning.ty + (e.clientY - panning.y); moved += 1; applyView(); }
   });
   const endPointer = (e) => {
-    if (drag && moved < 3) onNode(drag);
+    if (drag && moved < 3) handleTap(drag);
     if (drag) { drag.fx = undefined; drag.fy = undefined; drag = null; reheat(0.2); }
     panning = null; svg.classList.remove('grabbing');
     try { svg.releasePointerCapture(e.pointerId); } catch { /* ok */ }
@@ -333,6 +353,6 @@ export function drawGraph(host, nodes, links, onNode) {
     });
   });
 
-  host._stop = () => { if (raf) cancelAnimationFrame(raf); raf = 0; host._stop = null; };
+  host._stop = () => { if (raf) cancelAnimationFrame(raf); raf = 0; if (tapTimer) { clearTimeout(tapTimer); tapTimer = null; } host._stop = null; };
   paint(); reheat(1);
 }

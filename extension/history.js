@@ -282,7 +282,9 @@ function renderRelated() {
   const chats = [current, ...related.slice(0, 6).map((r) => store.get(r.id)).filter(Boolean)];
   const { nodes, links } = topicGraph(chats, 'h-topic:');
   if (nodes.some((n) => n.id === id)) nodes.find((n) => n.id === id).focus = true;
-  drawGraph($('h-relgraph'), nodes, links, (nd) => { if (nd.type === 'meeting') select(nd.id); else searchTopic(nd.label); });
+  drawGraph($('h-relgraph'), nodes, links,
+    (nd) => searchTopic(nd.label),
+    (nd) => { if (nd.type === 'meeting') select(nd.id); else searchTopic(nd.label); });
 }
 
 // --- global graph ----------------------------------------------------------
@@ -335,7 +337,9 @@ function showGraphView() {
     const graphHost = $('h-biggraph');
     if (!graphHost?.isConnected) return;
     const { nodes, links } = topicGraph(chats, 'h-topic:');
-    drawGraph(graphHost, nodes, links, (nd) => { if (nd.type === 'meeting') select(nd.id); else searchTopic(nd.label); });
+    drawGraph(graphHost, nodes, links,
+      (nd) => searchTopic(nd.label),
+      (nd) => { if (nd.type === 'meeting') select(nd.id); else searchTopic(nd.label); });
   });
 }
 function toggleGraph() {
