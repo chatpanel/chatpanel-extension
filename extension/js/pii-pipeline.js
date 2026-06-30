@@ -57,11 +57,10 @@ export function effectiveTier(cfg, isPro) {
   return t === 'full' && !isPro ? 'basic' : t;
 }
 
-// Free ceiling: Free users get a generous custom dictionary (the first
-// FREE_DICT_LIMIT entries apply) so they can fully experience the feature; an
-// unlimited dictionary, wider scope, and the model layer are Pro. Enforced here
-// at runtime as defense-in-depth (the UI also surfaces the cap).
-export const FREE_DICT_LIMIT = 100;
+// Free ceiling: a small taste of the custom dictionary (the first FREE_DICT_LIMIT
+// entries apply); an unlimited dictionary, wider scope, and the model layer are Pro.
+// Enforced here at runtime as defense-in-depth (the UI also surfaces the cap).
+export const FREE_DICT_LIMIT = 5;
 
 function gatedDictionary(cfg, isPro) {
   const d = Array.isArray(cfg?.dictionary) ? cfg.dictionary : [];

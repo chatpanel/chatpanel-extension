@@ -117,6 +117,8 @@ export const FREE_LIMITS = {
   attachmentsPerMessage: 1,
   mcpServers: 1, // usable MCP tool servers on Free — Pro is unlimited
   gatewayDestinations: 1, // routable gateway destinations on Free — Pro is unlimited
+  webSearchEngines: 3, // enabled web-search engines on Free — Pro is unlimited
+  webSearchesPerDay: 50, // web searches/day on Free — Pro is unlimited
 };
 
 export async function getLicense() {

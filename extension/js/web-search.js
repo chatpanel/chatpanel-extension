@@ -23,6 +23,7 @@
 // so a poisoned SERP can't make us fetch the local bridge / cloud metadata / LAN.
 
 import { assertFetchable, stripResourceTags, extractReadable } from './context.js';
+import { FREE_LIMITS } from './license.js';
 
 // Chrome-style engines: a `%s` (or `{q}`) placeholder for the URL-encoded query.
 // Defaults favour engines that return real results to a plain (invisible) fetch:
@@ -335,12 +336,57 @@ async function mapLimit(items, limit, fn) {
 }
 
 // --------------------------------------------------------------------------
+// Free-tier daily search quota. Persisted per calendar day in chrome.storage.local
+// (shared across the side panel, settings page, and background). Pro is unlimited.
+// --------------------------------------------------------------------------
+const SEARCH_USAGE_KEY = 'chatpanel:webSearchUsage';
+const todayStamp = () => new Date().toISOString().slice(0, 10); // YYYY-MM-DD (local-ish, stable per day)
+
+async function readSearchUsage() {
+  try {
+    const got = await chrome.storage.local.get(SEARCH_USAGE_KEY);
+    const u = got[SEARCH_USAGE_KEY];
+    if (u && u.date === todayStamp()) return { date: u.date, used: Number(u.used) || 0 };
+  } catch { /* storage unavailable — treat as fresh */ }
+  return { date: todayStamp(), used: 0 };
+}
+
+// Read-only snapshot for the UI ("X / 50 searches today").
+export async function webSearchUsage() {
+  const u = await readSearchUsage();
+  const cap = FREE_LIMITS.webSearchesPerDay;
+  return { used: u.used, cap, remaining: Math.max(0, cap - u.used) };
+}
+
+// Throw a clear upsell if a Free user is out of daily searches. No-op for Pro.
+async function assertDailySearchQuota(isPro) {
+  if (isPro) return;
+  const { used } = await readSearchUsage();
+  if (used >= FREE_LIMITS.webSearchesPerDay) {
+    const e = new Error(`Free web search is limited to ${FREE_LIMITS.webSearchesPerDay} searches per day. Upgrade to Pro for unlimited.`);
+    e.code = 'quota';
+    throw e;
+  }
+}
+
+// Count one consumed search (Free only) — called AFTER a search actually ran.
+async function recordSearch(isPro) {
+  if (isPro) return;
+  const u = await readSearchUsage();
+  try { await chrome.storage.local.set({ [SEARCH_USAGE_KEY]: { date: u.date, used: u.used + 1 } }); } catch { /* best effort */ }
+}
+
 // Public entry point
 // --------------------------------------------------------------------------
 // Returns { query, engines: [ids], results: [{ rank, title, url, engine, score, text }] }.
 export async function webSearch(query, opts = {}) {
   const q = String(query || '').trim();
   if (!q) throw new Error('Empty search query.');
+
+  // Free tier: a daily search cap (Pro is unlimited). Checked BEFORE any fetch so a
+  // capped user gets a clean upsell instead of burning bandwidth.
+  const isPro = opts.isPro === true;
+  await assertDailySearchQuota(isPro);
 
   const engines = (opts.engines || DEFAULT_ENGINES).filter((e) => e.enabled !== false);
   if (!engines.length) throw new Error('No search engines enabled.');
@@ -390,6 +436,7 @@ export async function webSearch(query, opts = {}) {
     .sort((a, b) => b.score - a.score)
     .map((p, i) => ({ rank: i + 1, ...p }));
 
+  await recordSearch(isPro); // a real search ran → count it against the Free daily cap
   return { query: q, engines: engines.map((e) => e.id), results: ranked };
 }
 
@@ -417,11 +464,23 @@ export function searchResultsToText(res) {
 
 // Pull the user's web-search config (engines + counts) out of settings, falling
 // back to defaults. Lives here so callers don't hard-code the settings shape.
-export function webSearchOpts(settings) {
+export function webSearchOpts(settings, isPro = false) {
   const cfg = settings?.ui?.webSearch || {};
-  const engines = Array.isArray(cfg.engines) && cfg.engines.length ? cfg.engines : DEFAULT_ENGINES;
+  let engines = Array.isArray(cfg.engines) && cfg.engines.length ? cfg.engines : DEFAULT_ENGINES;
+  // Free tier: at most FREE_LIMITS.webSearchEngines ENABLED engines — any enabled
+  // beyond the cap are forced off in the opts (settings are left untouched so they
+  // re-enable on upgrade). Pro keeps the full list.
+  if (!isPro) {
+    let kept = 0;
+    engines = engines.map((e) => {
+      if (e.enabled === false) return e;
+      kept += 1;
+      return kept <= FREE_LIMITS.webSearchEngines ? e : { ...e, enabled: false };
+    });
+  }
   return {
     engines,
+    isPro,
     perEngine: cfg.perEngine || RESULTS_PER_ENGINE,
     maxPages: cfg.maxPages || MAX_PAGES,
     tabFallback: cfg.tabFallback === true, // last-resort tab render; OPT-IN (a rendered page's own console warnings can't be silenced)

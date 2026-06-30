@@ -12,6 +12,7 @@ import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModel
 import { buildToolset } from './js/toolset.js';
 import { getMcpProviders } from './js/mcp-manager.js';
 import { historyToolProvider } from './js/history-rag.js';
+import { webSearchToolProvider, webSearchOpts, webSearchUsage } from './js/web-search.js';
 import { narrowToolset, isLocalToolSpec } from './js/tool-select.js';
 import { DEFAULT_AUTO_TOOL_CAP } from './js/tool-policy.js';
 import {
@@ -1064,7 +1065,7 @@ function renderGatewayFreeUsage(pro, usage) {
   // Prefer an explicit usage object (/status); else the free block from /config.
   const u = usage || pro?.free || {};
   const used = Number(u.used) || 0;
-  const cap = Number(u.cap) || 25;
+  const cap = Number(u.cap) || 100;
   const left = Math.max(0, cap - used);
   el.innerHTML = `Free includes <strong>${cap} full redactions</strong> total (the real thing — names &amp; orgs `
     + `included) to try it out. <strong>${left} of ${cap} left.</strong> Activate Pro below for unlimited.`;
@@ -2025,6 +2026,11 @@ function mcpServerCard(server, index = 0) {
   const overFreeLimit = !isPro(license) && index >= FREE_LIMITS.mcpServers;
   if (overFreeLimit) {
     node.classList.add('locked');
+    // Enforce the gate, don't just grey it: a locked server can't be armed or
+    // tested on Free (the runtime + harness already cap usage by position; this
+    // stops the UI from letting a Free user toggle/test it past the cap).
+    q('.mcp-enabled').disabled = true;
+    q('.mcp-test').disabled = true;
     status.innerHTML = `🔒 Free includes ${FREE_LIMITS.mcpServers} MCP servers — <a href="#" class="mcp-upsell">upgrade to Pro</a> for more`;
     status.querySelector('.mcp-upsell').onclick = (e) => {
       e.preventDefault();
@@ -2527,6 +2533,30 @@ function renderWebSearchEngines() {
   const root = $('websearch-engines');
   if (!root) return;
   root.innerHTML = '';
+  const pro = isPro(license);
+  const engineCap = FREE_LIMITS.webSearchEngines;
+  // Adding custom engines is Pro; mark the button so Free users see why.
+  const addBtn = $('add-websearch');
+  if (addBtn) {
+    addBtn.textContent = pro ? '+ Add engine' : '+ Add engine 🔒';
+    addBtn.title = pro ? '' : 'Custom search engines are a Pro feature';
+  }
+
+  // Free-tier hint: engine cap + daily search allowance (Pro = unlimited). The
+  // daily count is async; fill it in once it resolves.
+  if (!pro) {
+    const hint = document.createElement('p');
+    hint.className = 'muted sm';
+    hint.style.margin = '0 0 4px';
+    hint.innerHTML = `🔒 Free: up to <strong>${engineCap}</strong> engines and <strong>${FREE_LIMITS.webSearchesPerDay}</strong> searches/day. `
+      + `<a href="#" class="ws-upsell">Upgrade to Pro</a> for unlimited.`;
+    hint.querySelector('.ws-upsell').onclick = (e) => { e.preventDefault(); upsell('Unlimited web search (engines + daily searches) is a Pro feature.'); };
+    root.appendChild(hint);
+    webSearchUsage().then((u) => {
+      if (hint.isConnected) hint.insertAdjacentHTML('beforeend', ` <span class="muted">· ${u.used}/${u.cap} used today.</span>`);
+    }).catch(() => {});
+  }
+
   webSearchEngines.forEach((eng, i) => {
     const row = document.createElement('div');
     row.className = 'row ws-engine';
@@ -2537,6 +2567,18 @@ function renderWebSearchEngines() {
     en.className = 'ws-en';
     en.checked = eng.enabled !== false;
     en.title = 'Enable this engine';
+    // Free can enable at most engineCap engines (matches the runtime cap). Block the
+    // checkbox from turning on a 4th and upsell instead.
+    if (!pro) {
+      en.onchange = () => {
+        if (!en.checked) return;
+        const enabledNow = [...root.querySelectorAll('.ws-en:checked')].length;
+        if (enabledNow > engineCap) {
+          en.checked = false;
+          upsell(`Free includes ${engineCap} web-search engines. Upgrade to Pro to use more.`);
+        }
+      };
+    }
 
     const name = document.createElement('input');
     name.className = 'ws-name';
@@ -2583,6 +2625,11 @@ function collectWebSearchEngines() {
 }
 
 function addWebSearchEngine() {
+  // Custom search engines are a Pro feature — Free uses the built-in defaults only.
+  if (!isPro(license)) {
+    upsell('Custom search engines are a Pro feature. Free includes the built-in engines.');
+    return;
+  }
   webSearchEngines = collectWebSearchEngines();
   webSearchEngines.push({ id: '', name: '', url: 'https://', enabled: true });
   renderWebSearchEngines();
@@ -2838,10 +2885,18 @@ function renderFlowTools(boxId = 'priv-flow-tools') {
   items.push(`<label class="check" title="Arm every enabled tool and automatically narrow to the most relevant for your message (like chat AUTO mode)"><input type="checkbox" data-flow-tool="auto"${autoOn ? ' checked' : ''} /> <strong>Auto</strong> — pick relevant</label>`);
   const histOn = first ? settings.ui?.historyTools !== false : prev.has('history');
   items.push(`<label class="check"><input type="checkbox" data-flow-tool="history"${histOn ? ' checked' : ''} /> History</label>`);
-  for (const s of servers) {
+  // Web search — the same model-callable tool the chat exposes; armable here so you
+  // can test how a search round-trips through redaction / the gateway.
+  const wsOn = first ? settings.ui?.webSearch?.enabled !== false : prev.has('websearch');
+  items.push(`<label class="check"><input type="checkbox" data-flow-tool="websearch"${wsOn ? ' checked' : ''} /> Web search</label>`);
+  // Free uses the first FREE_LIMITS.mcpServers servers (by list position) — match the
+  // runtime cap + the Tools-tab lock here so a Free user can't arm/test locked ones.
+  const mcpLimit = isPro(license) ? Infinity : FREE_LIMITS.mcpServers;
+  servers.forEach((s, i) => {
     const key = `mcp:${mcpKey(s)}`;
-    items.push(`<label class="check"><input type="checkbox" data-flow-tool="${escapeHtml(key)}"${prev.has(key) ? ' checked' : ''} /> ${escapeHtml(s.name || s.url || s.command)}</label>`);
-  }
+    const locked = i >= mcpLimit;
+    items.push(`<label class="check${locked ? ' off' : ''}" title="${locked ? 'Pro — Free includes ' + FREE_LIMITS.mcpServers + ' MCP server' + (FREE_LIMITS.mcpServers === 1 ? '' : 's') : ''}"><input type="checkbox" data-flow-tool="${escapeHtml(key)}"${prev.has(key) && !locked ? ' checked' : ''}${locked ? ' disabled' : ''} /> ${escapeHtml(s.name || s.url || s.command)}${locked ? ' 🔒' : ''}</label>`);
+  });
   if (!servers.length) items.push('<span class="muted sm">No MCP servers enabled (Settings → MCP).</span>');
   box.innerHTML = items.join('');
   box.dataset.rendered = '1';
@@ -2855,8 +2910,17 @@ async function buildHarnessTools(boxId = 'priv-flow-tools') {
   if ((auto || picks.has('history')) && settings.ui?.historyTools !== false) {
     providers.push(historyToolProvider({ includeMeetings: true, explicit: false }));
   }
+  // Web search (model-callable), same as the chat path — armable via Auto or its pick.
+  if ((auto || picks.has('websearch')) && settings.ui?.webSearch?.enabled !== false) {
+    providers.push(webSearchToolProvider(webSearchOpts(settings, isPro(license))));
+  }
   const want = new Set([...picks].filter((p) => p.startsWith('mcp:')).map((p) => p.slice(4)));
-  const enabled = (settings.mcpServers || []).filter((s) => s && s.enabled !== false && (s.url || s.command));
+  // Apply the Free MCP cap (first N by position) BEFORE selecting, so the harness
+  // can't test more servers than the runtime would actually use.
+  const mcpLimit = isPro(license) ? Infinity : FREE_LIMITS.mcpServers;
+  const enabled = (settings.mcpServers || [])
+    .filter((s) => s && s.enabled !== false && (s.url || s.command))
+    .slice(0, mcpLimit);
   const usable = auto ? enabled : enabled.filter((s) => want.has(mcpKey(s)));
   if (usable.length) {
     let bridgeOk = false;

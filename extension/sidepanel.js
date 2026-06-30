@@ -270,7 +270,7 @@ async function toolsetFor(
   // web_search without the user typing /search. Locally executed; no tab needed.
   // Same provider reaches bridge CLIs (relayed) and the gateway. Off via settings.
   if (resolvedAgent && state.settings.ui?.webSearch?.enabled !== false) {
-    providers.push(webSearchToolProvider(webSearchOpts(state.settings)));
+    providers.push(webSearchToolProvider(webSearchOpts(state.settings, isPro(state.license))));
   }
 
   // MCP servers — Free uses the first FREE_LIMITS.mcpServers by list position
@@ -1139,7 +1139,7 @@ async function send() {
         toast('Web search is turned off in Settings');
       } else {
         toast('🔎 Searching the web…');
-        await addAttachment(() => captureSearch(searchCommand.query, webSearchOpts(state.settings)));
+        await addAttachment(() => captureSearch(searchCommand.query, webSearchOpts(state.settings, isPro(state.license))));
       }
       // Strip the directive from the sent message; if nothing else remains, the
       // query itself becomes the question the model answers with the results.
