@@ -34,6 +34,17 @@ endpoint you configure.
 - **`sidePanel`** — The extension's entire UI is a side panel.
 - **`contextMenus`** — The right-click “Ask ChatPanel about this page” entry point.
 - **`alarms`** — A periodic local check that re-validates Pro/Team entitlement.
+- **`identity`** — Sign in to AI providers the user chooses to connect (OpenRouter,
+  Hugging Face, Gemini) via the standard OAuth 2.0 Authorization Code + PKCE flow,
+  using `chrome.identity.launchWebAuthFlow` and the extension's own
+  `chromiumapp.org` redirect URL. The returned access token is stored locally and
+  sent only to that provider's model API. Used only when the user clicks
+  “Connect”; no tokens go to ChatPanel servers. Not a ChatGPT/Claude.ai web-session
+  bridge.
+- **`downloads`** — Powers the optional **Pro auto-backup** feature: writes an
+  encrypted (or plain) backup of the user's chats/history to their local disk as a
+  `data:` URL the extension builds from its own bytes, and prunes its own older
+  backup files. Off by default; writes to local disk only — nothing is uploaded.
 - **`storage` / `unlimitedStorage`** — Save chats, settings, and meeting transcripts
   locally in the browser (transcripts can be large, hence unlimited).
 
