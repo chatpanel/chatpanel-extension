@@ -1052,8 +1052,8 @@ function gatewayLogBody(timings, detail) {
   let html = '';
   if (timings && typeof timings === 'object') {
     // Label upstream as "model"; flag the slowest non-total leg as the bottleneck.
-    const legs = ['redact', 'upstream', 'restore'].filter((k) => typeof timings[k] === 'number');
-    const label = { redact: 'redact', upstream: 'model', restore: 'restore' };
+    const legs = ['redact', 'upstream', 'stream', 'restore'].filter((k) => typeof timings[k] === 'number');
+    const label = { redact: 'redact', upstream: 'model', stream: 'stream', restore: 'restore' };
     const slowest = legs.reduce((a, k) => (timings[k] > (timings[a] ?? -1) ? k : a), legs[0]);
     const parts = legs.map((k) => `<span class="leg${k === slowest ? ' hot' : ''}">${label[k]} ${timings[k]}ms</span>`).join('<span class="sep">·</span>');
     const total = typeof timings.total === 'number' ? `<span class="leg total">total ${timings.total}ms</span>` : '';
