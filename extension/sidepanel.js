@@ -1280,7 +1280,9 @@ async function send() {
           state.attachments = state.attachments.filter((a) => a.kind !== 'meeting');
           state.attachments.unshift({
             id: `mtg_${rec.id}_${Date.now()}`, kind: 'meeting',
-            title: `🎙 ${rec.title || 'Meeting'} (live)`, url: rec.url || '',
+            // Cite the meeting INSIDE ChatPanel (by id), not the external call URL —
+            // the model echoes this as its source; the link opens the in-panel view.
+            title: `🎙 ${rec.title || 'Meeting'} (live)`, url: meetingDeepLink(rec.id),
             text: body, chars: body.length,
           });
           meetingIncluded = true;
@@ -3070,6 +3072,19 @@ async function renderMeetingsList(query) {
     row.appendChild(del);
     list.appendChild(row);
   }
+}
+
+// Citation link for a meeting → opens it INSIDE ChatPanel by id (the in-panel
+// meetings view), not the external call URL. The markdown-link handler intercepts it.
+function meetingDeepLink(id) {
+  try { return chrome.runtime.getURL(`meetings.html#${encodeURIComponent(id)}`); }
+  catch { return ''; }
+}
+
+async function openMeetingFromLink(id) {
+  $('meetings-drawer')?.classList.remove('hidden');
+  renderRail();
+  try { await openStoredMeeting(id); } catch { toast('Meeting not found'); }
 }
 
 async function openStoredMeeting(id) {
@@ -4953,7 +4968,12 @@ function wireMarkdownLinks() {
     if (!a) return;
     e.preventDefault();
     const url = a.getAttribute('data-href');
-    if (url) chrome.tabs.create({ url, active });
+    if (!url) return;
+    // A ChatPanel meeting citation (meetings.html#<id>) → open the meeting INSIDE the
+    // panel instead of a new tab, so a cited source stays in context.
+    const mm = /\/meetings\.html#(.+)$/.exec(url);
+    if (mm) { openMeetingFromLink(decodeURIComponent(mm[1])); return; }
+    chrome.tabs.create({ url, active });
   };
   document.addEventListener('click', (e) => open(e, true));
   document.addEventListener('auxclick', (e) => { if (e.button === 1) open(e, false); });
