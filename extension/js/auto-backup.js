@@ -57,6 +57,24 @@ function bytesToBase64(bytes) {
   return btoa(bin);
 }
 
+// Delete our own backup files in the OTHER format (regex fragment for the
+// extension) across every weekday slot — so switching encryption on doesn't leave
+// stale plaintext .zip copies behind (and vice versa). Matched by basename so it
+// works regardless of OS path separator, and scoped tightly to our own file
+// naming. removeFile deletes from disk; erase clears the download-history entry.
+// Best-effort: never let cleanup fail a backup.
+async function deleteOtherFormat(extRegex) {
+  try {
+    const items = await chrome.downloads.search({ filenameRegex: `chatpanel-backup-[A-Za-z]+\\.${extRegex}$` });
+    for (const it of items) {
+      await chrome.downloads.removeFile(it.id).catch(() => {});
+      await chrome.downloads.erase({ id: it.id }).catch(() => {});
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 // Run one backup. `force` writes even when nothing changed (the "Back up now"
 // button / the toggle-on confirmation); the scheduled path skips an unchanged
 // snapshot so an idle week doesn't rewrite the same file daily ("incremental":
@@ -93,8 +111,13 @@ export async function runAutoBackup({ force = false } = {}) {
     }
     // Fixed, non-interpolated path under the user's Downloads dir. Weekday name
     // gives an automatic 7-file rolling window via conflictAction:'overwrite'.
-    const filename = `${FOLDER}/chatpanel-backup-${WEEKDAYS[new Date().getDay()]}.${ext}`;
-    await chrome.downloads.download({ url, filename, conflictAction: 'overwrite', saveAs: false });
+    const slot = `chatpanel-backup-${WEEKDAYS[new Date().getDay()]}`;
+    await chrome.downloads.download({ url, filename: `${FOLDER}/${slot}.${ext}`, conflictAction: 'overwrite', saveAs: false });
+
+    // Remove any backups in the OTHER format so a plaintext .zip can't linger on
+    // disk after the user turns encryption on (and vice versa). chrome.downloads
+    // can only delete files it wrote itself — which our daily backups are.
+    await deleteOtherFormat(ext === 'zip' ? 'encrypted\\.json' : 'zip');
 
     await patchBackupState({
       lastAt: Date.now(),
