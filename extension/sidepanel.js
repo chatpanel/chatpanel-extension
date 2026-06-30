@@ -3379,6 +3379,12 @@ async function switchMeetingVersion(vid) {
 
 async function deleteMeetingVersion(vid) {
   if (!meetingsView.rec) return;
+  const v = (meetingsView.versions || []).find((x) => x.id === vid);
+  if (!(await confirmDelete({
+    title: 'Delete this summary version?',
+    body: `The ${v ? noteVersionLabel(v) : 'selected'} summary will be removed. Other versions and the transcript are untouched.`,
+    confirmLabel: 'Delete version',
+  }))) return;
   await deleteMeetingNoteVersion(meetingsView.rec.id, vid).catch(() => {});
   await loadMeetingVersions();
   renderMeetingSummary();

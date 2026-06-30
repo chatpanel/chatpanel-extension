@@ -5,6 +5,7 @@
 //  • a topic relationship graph + related-meeting discovery
 import {
   getMeetingIndex, getMeeting, getMeetingNotes, saveMeetingNotes,
+  getMeetingNoteVersions, setActiveMeetingNote, deleteMeetingNoteVersion,
   deleteMeeting, meetingToMarkdown, meetingToText, persistMeeting, PLATFORMS, getMeetingTopics, saveMeetingTopics,
 } from './js/store-meetings.js';
 import { getSettings, getTarget } from './js/store.js';
@@ -164,10 +165,47 @@ function speakerCount(rec) {
   return speakerCountOfMeeting(rec);
 }
 
+// Refresh the open meeting's summary versions + active text from storage (e.g. after
+// switching or deleting a version, or to pick up versions the side panel regenerated).
+async function reloadCurrentNotes() {
+  if (!current) return;
+  const ver = await getMeetingNoteVersions(current.entry.id).catch(() => ({ activeId: null, versions: [] }));
+  current.versions = ver.versions;
+  current.activeId = ver.activeId;
+  current.notes = await getMeetingNotes(current.entry.id).catch(() => current.notes);
+  current.parsed = parseNotes(current.notes);
+}
+
+function versionLabel(v) {
+  if (!v) return 'Summary';
+  if (v.id === 'live') return '🔴 Live';
+  const style = v.style === 'detailed' ? 'Detailed' : 'Concise';
+  const d = new Date(v.createdAt || 0);
+  return `${style} · ${d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
+}
+
+async function switchVersionPage(vid) {
+  if (!current) return;
+  await setActiveMeetingNote(current.entry.id, vid).catch(() => {});
+  await reloadCurrentNotes();
+  renderDetail();
+}
+
+async function deleteVersionPage(vid) {
+  if (!current) return;
+  const v = (current.versions || []).find((x) => x.id === vid);
+  if (!confirm(`Delete the ${versionLabel(v)} summary version? Other versions and the transcript are untouched.`)) return;
+  await deleteMeetingNoteVersion(current.entry.id, vid).catch(() => {});
+  await reloadCurrentNotes();
+  renderDetail();
+  toast('Version deleted');
+}
+
 async function select(id) {
   const d = store.get(id);
   if (!d) return;
   current = d; current.tab = current.tab || 'insights';
+  await reloadCurrentNotes(); // pick up any versions the side panel created since boot
   graphDrawToken += 1;
   const graphHost = $('m-biggraph');
   if (graphHost?._stop) graphHost._stop();
@@ -215,6 +253,11 @@ function renderDetail() {
       <div class="metric"><div class="n">${risks}</div><div class="l">Risks</div></div>
       <div class="metric"><div class="n">${lines}</div><div class="l">Transcript lines</div></div>
     </div>
+    ${(current.versions || []).length > 1 ? `
+    <div class="ver-bar" id="m-verbar">
+      <span class="ver-title">Summary version</span>
+      ${current.versions.map((v) => `<span class="ver ${v.id === current.activeId ? 'on' : ''}"><button class="ver-pick" data-vid="${esc(v.id)}" title="View this version">${esc(versionLabel(v))}</button>${v.id !== 'live' ? `<button class="ver-x" data-vid="${esc(v.id)}" title="Delete version">✕</button>` : ''}</span>`).join('')}
+    </div>` : ''}
     <div class="tabs">
       <button data-tab="insights" class="${tab === 'insights' ? 'active' : ''}" type="button">Insights</button>
       <button data-tab="related" class="${tab === 'related' ? 'active' : ''}" type="button">Related</button>
@@ -225,6 +268,8 @@ function renderDetail() {
     <div id="m-tabbody"></div>`;
 
   c.querySelectorAll('.tabs button').forEach((b) => (b.onclick = () => { current.tab = b.dataset.tab; renderDetail(); }));
+  c.querySelectorAll('.ver-pick').forEach((b) => (b.onclick = () => switchVersionPage(b.dataset.vid)));
+  c.querySelectorAll('.ver-x').forEach((b) => (b.onclick = () => deleteVersionPage(b.dataset.vid)));
   $('m-gen').onclick = () => generateInsights(current);
   $('m-ask').onclick = askAboutMeeting;
   $('m-export').onclick = exportMeeting;
