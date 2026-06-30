@@ -2530,9 +2530,8 @@ const PLATFORM_ICON = { zoom: '🟦', meet: '🟩', teams: '🟪', webex: '🟧'
 
 async function openMeetings() {
   if (!can(state.license, 'liveMeetings')) return upsell('liveMeetings'); // Pro — covers all entry points
-  const d = $('meetings-drawer');
-  d.classList.remove('hidden');
-  forceDrawerPaint(d);
+  $('meetings-drawer').classList.remove('hidden');
+  sizeDrawers();
   $('meeting-view').classList.add('hidden');
   $('meetings-list-view').classList.remove('hidden');
   $('meetings-search').value = '';
@@ -2540,17 +2539,19 @@ async function openMeetings() {
 }
 function closeMeetings() { clearInterval(meetingsView.liveTimer); $('meetings-drawer').classList.add('hidden'); renderRail(); }
 
-// Chrome's side panel sometimes won't paint a freshly-shown position:absolute drawer
-// until a real DIMENSION change — users had to drag the resize handle (the "divider")
-// to reveal it. A plain reflow-read (offsetHeight) only forces layout, not a repaint,
-// so it wasn't enough. Nudge the width by a pixel across two frames (the same kind of
-// change the resize makes), then restore the original CSS/saved width.
-function forceDrawerPaint(d) {
-  const cur = Math.round(d.getBoundingClientRect().width);
-  if (cur <= 1) return;
-  const inline = d.style.width; // '' (CSS width) or a saved px width from applyDrawerWidth
-  d.style.width = `${cur - 1}px`;
-  requestAnimationFrame(() => { d.style.width = inline; });
+// On Chrome's side panel a freshly-shown position:absolute drawer opened blank/near-zero
+// width — its `width:88%` didn't resolve until the user dragged the resize handle, which
+// sets an EXPLICIT pixel width via applyDrawerWidth(). So do that ourselves on open: give
+// the drawers a concrete px width (saved, or a sensible default) so they lay out and paint
+// immediately. Re-tries on the next frame if the panel hasn't been measured yet.
+function sizeDrawers() {
+  const panelW = Math.round(($('panel-body') || document.body).getBoundingClientRect().width);
+  if (panelW <= 1) { requestAnimationFrame(sizeDrawers); return; }
+  const saved = parseInt(localStorage.getItem(DRAWER_WIDTH_KEY) || '', 10);
+  const target = saved > 0
+    ? Math.min(saved, panelW)
+    : Math.min(380, Math.max(DRAWER_MIN_W, Math.round(panelW * 0.88)));
+  applyDrawerWidth(target);
 }
 
 async function renderMeetingsList(query) {
