@@ -757,6 +757,24 @@ function renderMessage(m) {
     return row;
   }
 
+  // Live-meeting running summary — ONE self-updating card the scribe refreshes
+  // (Phase 2). Role isn't user/assistant, so it's auto-excluded from the model
+  // payload (messagesForModel) — it's a view for the user, not chat history.
+  if (m.role === 'live-summary') {
+    const card = document.createElement('div');
+    card.className = 'msg live-summary';
+    card.dataset.id = m.id;
+    const head = document.createElement('div');
+    head.className = 'live-summary-h';
+    head.textContent = `🎙 Live summary · updated ${timeLabel(m.ts)}`;
+    const body = document.createElement('div');
+    body.className = 'live-summary-b bubble';
+    body.innerHTML = m.content ? renderMarkdown(m.content) : '<span class="muted">Waiting for the first summary…</span>';
+    enhanceCode(body);
+    card.append(head, body);
+    return card;
+  }
+
   const wrap = document.createElement('div');
   wrap.className = `msg ${m.role}${m.error ? ' error' : ''}${m.queued ? ' queued' : ''}`;
   wrap.dataset.id = m.id;
@@ -2001,6 +2019,61 @@ function stopLiveNotes() {
 // (Names kept so existing callers — init, the meeting bar, the interval cycler —
 // keep arming it.) Runs while the side panel is open + a Live interval is set.
 // --------------------------------------------------------------------------
+// --------------------------------------------------------------------------
+// Phase 2 — stream the scribe's running summary into the chat as ONE self-updating
+// card (no extra model calls; it reuses the summary the scribe already produces).
+// Opt-in per conversation via the live-meeting chip toggle. The card lives in
+// conv.messages with a stable id so each refresh updates it in place.
+// --------------------------------------------------------------------------
+function liveSummaryCardId(meetingId) { return `live_${meetingId}`; }
+
+function upsertLiveSummaryCard(meetingId, text) {
+  const conv = state.conv;
+  if (!conv) return;
+  const id = liveSummaryCardId(meetingId);
+  let m = conv.messages.find((x) => x.id === id);
+  if (m) {
+    m.content = text; m.ts = Date.now();
+    const node = $('messages').querySelector(`[data-id="${id}"]`);
+    if (node) node.replaceWith(renderMessage(m));
+  } else {
+    m = { id, role: 'live-summary', kind: 'live-summary', meetingId, content: text, ts: Date.now() };
+    conv.messages.push(m);
+    $('messages').appendChild(renderMessage(m));
+    scrollToBottomNow();
+  }
+  saveConversation(conv).catch(() => {});
+}
+
+function removeLiveSummaryCard(meetingId) {
+  const conv = state.conv;
+  if (!conv) return;
+  const id = liveSummaryCardId(meetingId);
+  const i = conv.messages.findIndex((x) => x.id === id);
+  if (i < 0) return;
+  conv.messages.splice(i, 1);
+  $('messages').querySelector(`[data-id="${id}"]`)?.remove();
+  saveConversation(conv).catch(() => {});
+}
+
+async function toggleLiveSummary() {
+  const conv = state.conv;
+  if (!conv || !state.liveMeeting) return;
+  const mid = state.liveMeeting.id;
+  conv.liveSummary = !conv.liveSummary;
+  if (conv.liveSummary) {
+    const notes = await getMeetingNotes(mid).catch(() => '');
+    upsertLiveSummaryCard(mid, notes || '');
+    scheduleLiveNotes({ force: true, delayMs: 1500 }); // nudge a fresh summary soon
+    toast('Live summary on — updates as the meeting continues');
+  } else {
+    removeLiveSummaryCard(mid);
+    toast('Live summary off');
+  }
+  await saveConversation(conv).catch(() => {});
+  renderContextBar();
+}
+
 const scribeState = new Map(); // meetingId → { lastTs }
 let scribeBusy = false;
 
@@ -2041,6 +2114,9 @@ async function runLiveNotesTick() {
           await saveMeetingNotes(e.id, text);
           maybeExtractMeetingTopics(e.id).catch(() => {});
           if (meetingsView.rec && meetingsView.rec.id === e.id) refreshLiveMeetingView();
+          // Phase 2: if this conversation is streaming THIS live meeting's summary,
+          // refresh its in-chat card in place (no extra model call — same summary).
+          if (state.conv?.liveSummary && state.liveMeeting?.id === e.id) upsertLiveSummaryCard(e.id, text);
         }
         st.lastTs = latestTs;
         scribeState.set(e.id, st);
@@ -3434,6 +3510,17 @@ function renderContextBar() {
     chip.innerHTML = `<span class="ctx-kind">🎙</span><span class="ctx-title">${escapeAttr(
       (state.liveMeeting.title || 'Meeting') + ' · live',
     )}</span>`;
+    // Live-summary toggle (Phase 2): stream the scribe's running summary into this
+    // chat, updated automatically — no extra model calls.
+    const on = !!state.conv?.liveSummary;
+    const live = document.createElement('button');
+    live.className = 'ctx-live' + (on ? ' on' : '');
+    live.textContent = on ? '🔴 Live summary' : '○ Live summary';
+    live.title = on
+      ? 'Streaming the running summary into this chat — click to stop'
+      : 'Stream the meeting’s running summary into this chat (auto-updates, no extra model calls)';
+    live.onclick = (e) => { e.stopPropagation(); toggleLiveSummary(); };
+    chip.appendChild(live);
     const x = document.createElement('button');
     x.className = 'ctx-x';
     x.textContent = '✕';
