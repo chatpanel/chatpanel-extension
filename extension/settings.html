@@ -251,6 +251,26 @@ npx @chatpanel/bridge</code></pre>
               </select>
             </div>
           </div>
+          <div class="row half">
+            <div>
+              <label>Live summary style</label>
+              <select id="pref-meeting-summary-style">
+                <option value="concise">Concise — tight TL;DR + decisions + action items</option>
+                <option value="detailed">Detailed — full minutes (TL;DR, topics, key moments…)</option>
+              </select>
+            </div>
+          </div>
+          <p class="muted tiny">
+            Concise keeps the running summary short and cheap (recommended for long
+            calls); Detailed produces full minutes. You can always ↻ regenerate either
+            style per meeting in the meetings dashboard.
+          </p>
+          <p class="muted tiny">
+            🗂 <strong>Meeting monitors:</strong> turn any of your
+            <a href="#" id="meetings-open-skills">Skills</a> into a one-tap live monitor
+            with “Use as a live-meeting monitor”, then launch it (or <code>/monitor</code>
+            / <code>/tldr</code>) from the panel above the composer during a call.
+          </p>
           <p class="muted tiny">
             Auto-refresh merges new captions into the running summary on that interval
             and saves it to Past Meetings automatically. A shorter transcript window

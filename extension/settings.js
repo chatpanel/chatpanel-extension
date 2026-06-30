@@ -2721,6 +2721,7 @@ function renderPrefs() {
   // Meetings tab — live scribe behavior.
   $('pref-live-notes').value = String(settings.ui.liveNotesIntervalMin ?? 2);
   $('pref-meeting-window').value = String(settings.ui.meetingWindowMin ?? 0);
+  $('pref-meeting-summary-style').value = settings.ui.meetingSummaryStyle === 'detailed' ? 'detailed' : 'concise';
   // Privacy tab — reversible PII redaction.
   const pii = settings.ui.piiRedaction || {};
   $('priv-mode').value = pii.mode || 'off';
@@ -3065,6 +3066,7 @@ async function savePrefs() {
   settings.ui.autocomplete = isPro(license) && $('pref-autocomplete').checked;
   settings.ui.liveNotesIntervalMin = Number($('pref-live-notes').value);
   settings.ui.meetingWindowMin = Number($('pref-meeting-window').value);
+  settings.ui.meetingSummaryStyle = $('pref-meeting-summary-style').value === 'detailed' ? 'detailed' : 'concise';
   settings.ui.piiRedaction = {
     ...(settings.ui.piiRedaction || {}),
     mode: $('priv-mode').value,
@@ -3370,6 +3372,8 @@ function wire() {
   $('pref-suggestions-target').onchange = savePrefs;
   $('pref-live-notes').onchange = savePrefs;
   $('pref-meeting-window').onchange = savePrefs;
+  $('pref-meeting-summary-style').onchange = savePrefs;
+  { const a = $('meetings-open-skills'); if (a) a.onclick = (e) => { e.preventDefault(); document.querySelector('[data-tab="skills"]')?.click(); }; }
   $('priv-mode').onchange = () => { savePrefs(); renderPrefs(); };
   $('priv-scope-chat').onchange = savePrefs;
   $('priv-scope-context').onchange = savePrefs;

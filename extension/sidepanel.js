@@ -2367,7 +2367,9 @@ async function runLiveNotesTick() {
         if (!isFirst && latestTs <= st.lastTs) continue; // nothing new said
         const delta = meetingToText(rec, { sinceTs: isFirst ? 0 : st.lastTs });
         if (!delta.trim()) { st.lastTs = latestTs; scribeState.set(e.id, st); continue; }
-        const text = await summarizeMeeting(prev, delta, isFirst);
+        const text = await summarizeMeeting(prev, delta, isFirst, {
+          style: state.settings?.ui?.meetingSummaryStyle === 'detailed' ? 'detailed' : 'concise',
+        });
         if (text) {
           await saveMeetingNotes(e.id, text);
           maybeExtractMeetingTopics(e.id).catch(() => {});
