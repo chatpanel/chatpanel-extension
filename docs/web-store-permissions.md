@@ -6,10 +6,11 @@ justifications) at submission time. Keep them in sync with `manifest.json`.
 ## Single purpose
 
 ChatPanel is a browser side-panel AI assistant. It lets you chat with your chosen
-AI agents and models using the context of the tabs you're looking at, and —
-when you explicitly turn it on — fill in forms and click elements on the current
-page on your behalf. Everything runs locally; chat content goes only to the model
-endpoint you configure.
+AI agents and models using the context of the tabs you're looking at, take live
+notes from meetings in the browser, and — when you explicitly turn it on — fill in
+forms and click elements on the current page on your behalf. It can redact personal
+data (PII) from your messages on-device before they reach a cloud model. Everything
+runs locally; chat content goes only to the model endpoint you configure.
 
 ## Permission justifications
 
