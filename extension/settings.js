@@ -2437,6 +2437,17 @@ function renderPrefs() {
   $('pref-websearch-reader-key').value = ws.reader?.key || '';
   webSearchEngines = (Array.isArray(ws.engines) && ws.engines.length ? ws.engines : DEFAULT_WS_ENGINES).map((e) => ({ ...e }));
   renderWebSearchEngines();
+  const sugg = settings.ui.suggestions || {};
+  $('pref-suggestions-enabled').checked = sugg.enabled === true;
+  const suggTarget = $('pref-suggestions-target');
+  suggTarget.innerHTML = '<option value="">Default (active model/agent)</option>';
+  for (const t of skillTargets()) {
+    const o = document.createElement('option');
+    o.value = t.id;
+    o.textContent = t.name;
+    if (t.id === sugg.targetId) o.selected = true;
+    suggTarget.appendChild(o);
+  }
   const topicCfg = settings.ui.topicExtraction || { enabled: true, targetId: '' };
   $('pref-topic-extract').checked = topicCfg.enabled !== false;
   const topicTarget = $('pref-topic-target');
@@ -2744,6 +2755,11 @@ async function savePrefs() {
     enabled: $('pref-topic-extract').checked,
     targetId: $('pref-topic-target').value,
   };
+  settings.ui.suggestions = {
+    ...(settings.ui.suggestions || {}),
+    enabled: $('pref-suggestions-enabled').checked,
+    targetId: $('pref-suggestions-target').value,
+  };
   settings.ui.autocomplete = isPro(license) && $('pref-autocomplete').checked;
   settings.ui.liveNotesIntervalMin = Number($('pref-live-notes').value);
   settings.ui.meetingWindowMin = Number($('pref-meeting-window').value);
@@ -3040,6 +3056,8 @@ function wire() {
   $('pref-max-tools').onchange = savePrefs;
   $('pref-topic-extract').onchange = savePrefs;
   $('pref-topic-target').onchange = savePrefs;
+  $('pref-suggestions-enabled').onchange = savePrefs;
+  $('pref-suggestions-target').onchange = savePrefs;
   $('pref-live-notes').onchange = savePrefs;
   $('pref-meeting-window').onchange = savePrefs;
   $('priv-mode').onchange = () => { savePrefs(); renderPrefs(); };

@@ -995,14 +995,60 @@ function paintSuggestions(box, ideas) {
 // Monotonic token so a slow per-site fetch can't overwrite a newer render.
 let suggestRun = 0;
 
+// Toggle the "working on it" state while suggestions are generated: a soft pulse on
+// the chips + the trigger button, so the user knows ideas are being tailored.
+function setSuggestLoading(on, label) {
+  const box = $('empty-suggestions');
+  if (box) box.classList.toggle('loading', on);
+  const btn = $('suggest-reload');
+  if (!btn) return;
+  if (on) {
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    btn.classList.add('loading');
+    if (btn._label == null) btn._label = btn.textContent;
+    btn.textContent = label || '✨ Tailoring to this page…';
+  } else {
+    btn.dataset.busy = '0';
+    btn.disabled = false;
+    btn.classList.remove('loading');
+    if (btn._label != null) { btn.textContent = btn._label; btn._label = null; }
+  }
+}
+
+// Explicit "suggest for this page" — works even when auto-suggestions are off, and
+// always re-fetches (bypasses the per-origin cache). Guides the user if no model is set.
+async function runManualSuggest() {
+  if ($('suggest-reload')?.dataset.busy === '1') return;
+  const run = ++suggestRun; // invalidate any in-flight auto fetch
+  setSuggestLoading(true, '✨ Thinking…');
+  try {
+    const tab = await getActiveTab();
+    const { items, source } = await getSuggestions({ tab, settings: state.settings, force: true });
+    if (source === 'nomodel') {
+      toast('Pick a model under Settings → Tools → Smart suggestions');
+    } else if (run === suggestRun && items?.length && !state.conv?.messages?.length) {
+      const live = $('empty-suggestions');
+      if (live) paintSuggestions(live, items);
+    }
+  } catch {
+    toast('Couldn’t generate suggestions');
+  } finally {
+    setSuggestLoading(false);
+  }
+}
+
 function renderSuggestions() {
   const box = $('empty-suggestions');
   if (!box) return;
+  const reload = $('suggest-reload');
+  if (reload && !reload._wired) { reload._wired = true; reload.onclick = runManualSuggest; }
   // Universal fallbacks paint instantly — no model call, works offline.
   paintSuggestions(box, FALLBACK_SUGGESTIONS);
   // Opt-in: replace with page-specific ideas from a small model (metadata only).
   if (!state.settings?.ui?.suggestions?.enabled) return;
   const run = ++suggestRun;
+  setSuggestLoading(true); // pulse while we tailor ideas in the background
   (async () => {
     try {
       const tab = await getActiveTab();
@@ -1013,7 +1059,9 @@ function renderSuggestions() {
       if (state.conv?.messages?.length || ($('input')?.value || '').trim()) return;
       const live = $('empty-suggestions');
       if (live) paintSuggestions(live, items);
-    } catch { /* keep the fallbacks already shown */ }
+    } catch { /* keep the fallbacks already shown */ } finally {
+      if (run === suggestRun) setSuggestLoading(false);
+    }
   })();
 }
 
@@ -1856,6 +1904,19 @@ async function refreshActiveTab() {
   renderContextBar();
   renderMeetingBar();
   renderScribeIndicator();
+  maybeRefreshSuggestions();
+}
+
+// Re-run the empty-state suggestions when the page actually changes (navigation,
+// tab switch, window focus) — but only while the chat is empty, and only when the
+// URL changed, so we don't flicker on every onUpdated event.
+let _suggestUrl = null;
+function maybeRefreshSuggestions() {
+  if (state.conv?.messages?.length) return;
+  const url = state.activeTab?.url || '';
+  if (url === _suggestUrl) return;
+  _suggestUrl = url;
+  renderSuggestions();
 }
 
 // Meeting companion status bar. Shown only when the active tab is a recognised

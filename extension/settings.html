@@ -137,6 +137,25 @@ npx @chatpanel/bridge</code></pre>
 
         <div class="card">
           <div class="card-head">
+            <h2>Smart suggestions <span class="sub">— page-specific prompt ideas on an empty chat</span></h2>
+            <div class="card-actions">
+              <label class="check"><input type="checkbox" id="pref-suggestions-enabled" /> Enabled</label>
+            </div>
+          </div>
+          <p class="muted">
+            A new chat shows quick prompt ideas. With this on, ChatPanel tailors them to the page you're
+            viewing by sending only lightweight metadata — the URL, title, and description
+            (<strong>never the page body</strong>) — to your configured model. Off by default, so simply
+            browsing never triggers a model call; enable it once to use it on every site. When off (or if
+            the call fails) you get the universal fallbacks.
+          </p>
+          <div class="row" style="gap:6px;margin-top:4px"><label>Generate with <span class="sub">— which configured API/agent makes the suggestions. Pick a small/cheap one to keep it fast.</span></label>
+            <select id="pref-suggestions-target" style="flex:1"></select>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
             <h2>MCP tool servers <span class="sub">— external tools for your agents</span></h2>
             <div class="card-actions">
               <button id="import-mcp" class="btn" type="button">Import config</button>

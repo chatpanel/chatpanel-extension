@@ -144,6 +144,13 @@ export function defaultSettings() {
       // after chats/meetings change. Blank targetId means the current active
       // model/agent; a specific target id pins extraction to that configured model.
       topicExtraction: { enabled: true, targetId: '' },
+      // Empty-chat prompt suggestions (js/suggestions.js). The universal fallbacks
+      // always show; when `enabled`, ChatPanel asks a small model for page-specific
+      // ideas using ONLY lightweight metadata (URL, title, description) — never the
+      // page body. Off by default so browsing triggers no model calls; turn it on
+      // once to use it everywhere. `targetId` pins which configured API/agent runs it
+      // (blank = the active model/agent — prefer a small/cheap one to keep it fast).
+      suggestions: { enabled: false, targetId: '' },
       // Watch mode: re-read the current tab on an interval and re-run the agent
       // when the page changes. Remembered config (the loop is runtime-only).
       watch: { intervalMs: 10000, onlyWhenChanged: true, instruction: '' },
