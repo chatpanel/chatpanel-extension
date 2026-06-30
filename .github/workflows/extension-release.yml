@@ -85,9 +85,12 @@ jobs:
             || { echo "Upload failed"; exit 1; }
 
           echo "Publishing…"
-          # Capture the body + status so a publish rejection is visible (e.g. a new
-          # permission like `debugger` that the Web Store requires you to review and
-          # submit from the dashboard) instead of a bare curl exit code.
+          # Capture the body + status so a publish rejection is visible instead of a
+          # bare curl exit code. Common causes the upload can't auto-publish past:
+          #   • mandatory Privacy practices info not entered/submitted in the
+          #     dashboard (single purpose, permission justifications, data usage)
+          #   • a newly-added permission (e.g. debugger/identity/downloads) awaiting
+          #     review/submission from the dashboard
           PUB=$(curl -s -w '\n%{http_code}' -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "x-goog-api-version: 2" \
@@ -98,7 +101,7 @@ jobs:
           echo "HTTP $CODE"
           echo "$BODY"
           if [ "$CODE" -ge 400 ] || echo "$BODY" | jq -e '.error // (.status | index("ITEM_NOT_UPDATABLE") // .status | index("NOT_AUTHORIZED"))' >/dev/null 2>&1; then
-            echo "::error::Web Store publish was rejected (HTTP $CODE). The new build uploaded fine, but couldn't auto-publish — most likely the added 'debugger' permission needs review/submission from the Web Store dashboard. See body above."
+            echo "::error::Web Store publish was rejected (HTTP $CODE). The new build UPLOADED fine, but couldn't auto-publish — finish it in the dashboard. Usually either the mandatory Privacy practices info needs to be entered/submitted (single purpose, permission justifications, data usage), or a newly-added permission needs review. See the response body above for the exact reason."
             exit 1
           fi
           echo "Submitted for review."
