@@ -779,6 +779,28 @@ function renderMessage(m) {
     return card;
   }
 
+  // Live-meeting "monitor a question" answer — ONE card re-answered as the meeting
+  // progresses (Phase 3c). Also excluded from the model payload.
+  if (m.role === 'live-answer') {
+    const card = document.createElement('div');
+    card.className = 'msg live-answer';
+    card.dataset.id = m.id;
+    const head = document.createElement('div');
+    head.className = 'live-summary-h';
+    head.textContent = `👁 Monitoring · updated ${timeLabel(m.ts)}`;
+    const q = document.createElement('div');
+    q.className = 'live-answer-q';
+    q.textContent = m.q || '';
+    const body = document.createElement('div');
+    body.className = 'live-summary-b bubble';
+    body.innerHTML = m.pendingAnswer
+      ? '<span class="muted">Answering…</span>'
+      : (m.content ? renderMarkdown(m.content) : '<span class="muted">No answer yet.</span>');
+    if (!m.pendingAnswer) enhanceCode(body);
+    card.append(head, q, body);
+    return card;
+  }
+
   const wrap = document.createElement('div');
   wrap.className = `msg ${m.role}${m.error ? ' error' : ''}${m.queued ? ' queued' : ''}`;
   wrap.dataset.id = m.id;
@@ -2078,6 +2100,93 @@ async function toggleLiveSummary() {
   renderContextBar();
 }
 
+// --------------------------------------------------------------------------
+// Phase 3c — "Monitor a question": keep ONE answer card fresh as the meeting
+// progresses. The user asks a question, clicks 👁 Monitor; on each scribe tick with
+// NEW transcript we re-answer (single-shot) from the running summary + recent
+// transcript. Token-lean: only fires on new transcript, gated by the scribe interval.
+// --------------------------------------------------------------------------
+let meetingWatchBusy = false;
+function liveAnswerCardId(meetingId) { return `ans_${meetingId}`; }
+
+function upsertLiveAnswerCard(meetingId, question, text, pending) {
+  const conv = state.conv;
+  if (!conv) return;
+  const id = liveAnswerCardId(meetingId);
+  let m = conv.messages.find((x) => x.id === id);
+  if (!m) { m = { id, role: 'live-answer', kind: 'live-answer', meetingId }; conv.messages.push(m); }
+  Object.assign(m, { q: question, content: text, ts: Date.now(), pendingAnswer: !!pending });
+  const node = $('messages').querySelector(`[data-id="${id}"]`);
+  if (node) node.replaceWith(renderMessage(m));
+  else { $('messages').appendChild(renderMessage(m)); scrollToBottomNow(); }
+  if (!pending) saveConversation(conv).catch(() => {}); // persist the settled answer
+}
+
+function removeLiveAnswerCard(meetingId) {
+  const conv = state.conv;
+  if (!conv) return;
+  const id = liveAnswerCardId(meetingId);
+  const i = conv.messages.findIndex((x) => x.id === id);
+  if (i < 0) return;
+  conv.messages.splice(i, 1);
+  $('messages').querySelector(`[data-id="${id}"]`)?.remove();
+  saveConversation(conv).catch(() => {});
+}
+
+async function runMeetingWatchAnswer() {
+  const conv = state.conv;
+  if (!conv?.watchQ || !state.liveMeeting || meetingWatchBusy) return;
+  const mid = state.liveMeeting.id;
+  const question = conv.watchQ;
+  meetingWatchBusy = true;
+  try {
+    const rec = await getLiveMeetingRecord().catch(() => null);
+    const transcript = rec ? meetingToText(rec, { sinceTs: Date.now() - 15 * 60_000 }) : '';
+    const summary = await getLiveNotesText(mid).catch(() => '');
+    const prompt = [
+      'You are monitoring a LIVE meeting and keeping a SINGLE answer to the user’s question up to date as it progresses. Answer concisely from the running summary and recent transcript below — state what is known so far and say plainly if it is still unknown. Never invent.',
+      '',
+      `QUESTION: ${question}`,
+      '',
+      summary ? `RUNNING SUMMARY:\n${summary}\n` : '',
+      `RECENT TRANSCRIPT:\n${transcript}`,
+    ].join('\n');
+    upsertLiveAnswerCard(mid, question, '', true);
+    let out = '';
+    await streamChat({
+      agent: resolveTarget(agentForConv(conv), state.settings),
+      messages: [{ role: 'user', content: prompt }],
+      settings: state.settings,
+      onDelta: (d) => { out += d; },
+    });
+    upsertLiveAnswerCard(mid, question, out.trim(), false);
+  } catch (e) {
+    upsertLiveAnswerCard(mid, question, `⚠ ${e.message || 'failed'}`, false);
+  } finally {
+    meetingWatchBusy = false;
+  }
+}
+
+async function toggleMeetingWatch() {
+  const conv = state.conv;
+  if (!conv || !state.liveMeeting) return;
+  const mid = state.liveMeeting.id;
+  if (conv.watchQ) {
+    conv.watchQ = '';
+    removeLiveAnswerCard(mid);
+    toast('Monitoring stopped');
+  } else {
+    const lastUser = [...conv.messages].reverse().find((m) => m.role === 'user' && m.content);
+    if (!lastUser) { toast('Ask a question first, then click 👁 Monitor'); return; }
+    conv.watchQ = lastUser.content;
+    toast('Monitoring — I’ll keep this answer fresh as the meeting continues');
+    runMeetingWatchAnswer();
+    scheduleLiveNotes({ force: true, delayMs: 1500 });
+  }
+  await saveConversation(conv).catch(() => {});
+  renderContextBar();
+}
+
 const scribeState = new Map(); // meetingId → { lastTs }
 let scribeBusy = false;
 
@@ -2123,6 +2232,9 @@ async function runLiveNotesTick() {
           // Phase 2: if this conversation is streaming THIS live meeting's summary,
           // refresh its in-chat card in place (no extra model call — same summary).
           if (state.conv?.liveSummary && state.liveMeeting?.id === e.id) upsertLiveSummaryCard(e.id, text);
+          // Phase 3c: re-answer the monitored question on new transcript (token-lean —
+          // only here, where the scribe already confirmed something new was said).
+          if (state.conv?.watchQ && state.liveMeeting?.id === e.id) runMeetingWatchAnswer();
         }
         st.lastTs = latestTs;
         scribeState.set(e.id, st);
@@ -3617,6 +3729,16 @@ function renderContextBar() {
       : 'Stream the meeting’s running summary into this chat (auto-updates, no extra model calls)';
     live.onclick = (e) => { e.stopPropagation(); toggleLiveSummary(); };
     chip.appendChild(live);
+    // Monitor-a-question toggle (Phase 3c): keep the last question's answer fresh.
+    const watching = !!state.conv?.watchQ;
+    const mon = document.createElement('button');
+    mon.className = 'ctx-live' + (watching ? ' on' : '');
+    mon.textContent = watching ? '👁 Monitoring' : '👁 Monitor';
+    mon.title = watching
+      ? 'Re-answering your question as the meeting continues — click to stop'
+      : 'Keep your last question’s answer up to date as the meeting continues';
+    mon.onclick = (e) => { e.stopPropagation(); toggleMeetingWatch(); };
+    chip.appendChild(mon);
     const x = document.createElement('button');
     x.className = 'ctx-x';
     x.textContent = '✕';
