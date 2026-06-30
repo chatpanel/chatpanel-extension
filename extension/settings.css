@@ -62,7 +62,9 @@ body {
 .card h2 .sub { color: var(--muted); font-weight: 400; font-size: 13px; letter-spacing: 0; }
 .card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 6px; }
 .card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.muted { color: var(--muted); font-size: 13px; margin: 4px 0 16px; max-width: 64ch; }
+/* Descriptive text spans the full width of its section — no narrow measure that
+   strands the right half of a wide card as empty whitespace. */
+.muted { color: var(--muted); font-size: 13px; margin: 4px 0 16px; max-width: none; }
 .muted code, .tip code { font-family: var(--mono); font-size: .9em; background: rgba(127,127,127,.14); padding: 1.5px 5px; border-radius: 5px; }
 .muted.sm { font-size: 11.5px; margin: 4px 0 8px; line-height: 1.45; }
 /* Privacy tab — two-pane layout so the page isn't one long scroll. */
@@ -367,6 +369,14 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .feature-list li.has { color: var(--ok); }
 
 /* ── Gateway tab: 3-way flow + compact destinations ───────────────────────── */
+/* Install / "use as a model" help — full width, command blocks that don't wrap
+   mid-command (scroll horizontally instead of breaking onto cramped lines). */
+.gw-help { margin:6px 0 14px; }
+.gw-help > summary { cursor:pointer; font-weight:600; font-size:13px; color:var(--text); margin-bottom:6px; }
+.gw-cmd { margin:6px 0 10px; background:rgba(127,127,127,.12); padding:10px 12px; border-radius:8px;
+  overflow-x:auto; }
+.gw-cmd code { display:block; background:none; padding:0; font-family:var(--mono); font-size:12px;
+  line-height:1.55; white-space:pre; color:var(--text); }
 .gw-flow { display:flex; align-items:stretch; gap:6px; margin:10px 0 14px; flex-wrap:wrap; }
 .gw-flow-box { flex:1 1 0; min-width:130px; display:flex; flex-direction:column; gap:3px;
   padding:10px 12px; border:1px solid #262b36; border-radius:10px; background:#171a22; text-align:center; }

@@ -116,6 +116,7 @@ export const FREE_LIMITS = {
   customAgents: 1, // saved custom agent configs before Pro is required
   attachmentsPerMessage: 1,
   mcpServers: 1, // usable MCP tool servers on Free — Pro is unlimited
+  gatewayDestinations: 1, // routable gateway destinations on Free — Pro is unlimited
 };
 
 export async function getLicense() {

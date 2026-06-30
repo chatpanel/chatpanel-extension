@@ -885,27 +885,53 @@ function renderDestinations() {
   host.innerHTML = '';
   const gwUrl = normalizeGatewayUrl($('gw-url').value || settings.gatewayUrl || '');
 
+  // Free routes to a single destination (same idea as the header model dropdown:
+  // one free pick, the rest locked behind Pro). Pro routes to unlimited.
+  const pro = isPro(license);
+  const cap = FREE_LIMITS.gatewayDestinations;
+  const atCap = () => !pro && gatewayDests.length >= cap;
+  const lockMsg = `Free routes to ${cap} gateway destination. Upgrade to Pro to route to all your APIs & agents.`;
+
   const isEnabled = (id) => gatewayDests.some((d) => d.id === id);
   const flowCount = () => {
     const el = $('gw-flow-dests'); if (el) el.textContent = gatewayDests.length ? `${gatewayDests.length} enabled` : 'your APIs & agents';
     updateDestSummary();
   };
-  const toggle = (dest, on) => { gatewayDests = gatewayDests.filter((d) => d.id !== dest.id); if (on) gatewayDests.push(dest); flowCount(); autoSaveGateway(); };
+  const toggle = (dest, on) => {
+    if (on && !isEnabled(dest.id) && atCap()) { upsell(lockMsg); renderDestinations(); return; }
+    gatewayDests = gatewayDests.filter((d) => d.id !== dest.id);
+    if (on) gatewayDests.push(dest);
+    flowCount(); autoSaveGateway();
+    if (!pro) renderDestinations(); // refresh which rows are locked
+  };
   const checkRow = (icon, name, models, dest, { disabled = false, note = '' } = {}) => {
+    const locked = !disabled && !pro && !isEnabled(dest.id) && atCap();
     const wrap = document.createElement('label');
-    wrap.className = 'gw-dest' + (disabled ? ' off' : '');
+    wrap.className = 'gw-dest' + (disabled || locked ? ' off' : '');
     const cb = document.createElement('input');
-    cb.type = 'checkbox'; cb.checked = isEnabled(dest.id); cb.disabled = disabled;
+    cb.type = 'checkbox'; cb.checked = isEnabled(dest.id); cb.disabled = disabled || locked;
     cb.onchange = () => toggle(dest, cb.checked);
     wrap.appendChild(cb);
     const nm = document.createElement('span'); nm.className = 'name'; nm.textContent = `${icon} ${name}`;
     wrap.appendChild(nm);
     for (const m of (models || []).slice(0, 4)) { const c = document.createElement('span'); c.className = 'chip'; c.textContent = m; wrap.appendChild(c); }
     const sp = document.createElement('span'); sp.className = 'spacer'; wrap.appendChild(sp);
-    if (note) { const n = document.createElement('span'); n.className = 'muted sm'; n.textContent = note; wrap.appendChild(n); }
+    if (locked) {
+      wrap.onclick = (e) => { e.preventDefault(); upsell(lockMsg); };
+      const b = document.createElement('span'); b.className = 'chip'; b.textContent = '🔒 Pro'; wrap.appendChild(b);
+    } else if (note) {
+      const n = document.createElement('span'); n.className = 'muted sm'; n.textContent = note; wrap.appendChild(n);
+    }
     host.appendChild(wrap);
   };
   const head = (text) => { const p = document.createElement('p'); p.className = 'muted sm'; p.style.margin = '8px 0 2px'; p.textContent = text; host.appendChild(p); };
+
+  if (!pro) {
+    const p = document.createElement('p'); p.className = 'muted sm'; p.style.margin = '0 0 4px';
+    p.innerHTML = `🔒 Free routes to <strong>${cap}</strong> destination — <a href="#" class="gw-dest-upsell">upgrade to Pro</a> for unlimited.`;
+    p.querySelector('a').onclick = (e) => { e.preventDefault(); subscribePro(); };
+    host.appendChild(p);
+  }
 
   // APIs (from the API tab)
   head('APIs (from your API tab):');
@@ -938,8 +964,10 @@ function renderDestinations() {
 }
 
 function renderGateway() {
-  $('gw-url').value = settings.gatewayUrl || '';
-  if (settings.gatewayUrl) refreshGateway();
+  // Pre-fill the default localhost URL so the user doesn't have to type it (still
+  // editable). Auto-check whatever ends up in the field.
+  $('gw-url').value = settings.gatewayUrl || 'http://127.0.0.1:4320';
+  if ($('gw-url').value) refreshGateway();
 }
 
 // Build the detector dropdown: bundled NER, custom NER, each configured LOCAL
@@ -1010,7 +1038,7 @@ function fillGatewayForm(cfg) {
   $('gw-dictionary').value = stringifyDictionary(cfg.redaction?.dictionary);
   $('gw-origins').value = (cfg.allowedOrigins || []).join('\n');
   $('gw-pro-token').value = ''; // write-only; never echoed back from the gateway
-  $('gw-free-cap').value = cfg.pro?.free?.maxRequestsPerDay ?? 25;
+  renderGatewayFreeUsage(cfg.pro, cfg.pro?.free);
   $('gw-log').checked = !!cfg.logRequests;
   const detail = ['types', 'values'].includes(cfg.logDetail) ? cfg.logDetail : 'off';
   $('gw-log-detail').checked = detail !== 'off';
@@ -1022,6 +1050,24 @@ function fillGatewayForm(cfg) {
   $('gw-tools-cap').value = cfg.tools?.maxPerTurn ?? 8;
   $('gw-tools-narrowall').checked = !!cfg.tools?.narrowAll;
   setGwDetectorRows();
+}
+
+// Show the free trial's lifetime usage (read-only — the cap is fixed and the count
+// is server-authoritative; the gateway never accepts a client-set value).
+function renderGatewayFreeUsage(pro, usage) {
+  const el = $('gw-free-usage');
+  if (!el) return;
+  if (pro?.unlocked) {
+    el.innerHTML = '✓ <strong>Pro active</strong> on the gateway — unlimited, full-tier redaction.';
+    return;
+  }
+  // Prefer an explicit usage object (/status); else the free block from /config.
+  const u = usage || pro?.free || {};
+  const used = Number(u.used) || 0;
+  const cap = Number(u.cap) || 25;
+  const left = Math.max(0, cap - used);
+  el.innerHTML = `Free includes <strong>${cap} full redactions</strong> total (the real thing — names &amp; orgs `
+    + `included) to try it out. <strong>${left} of ${cap} left.</strong> Activate Pro below for unlimited.`;
 }
 
 // Recent request summaries (counts only) from the gateway's /logs.
@@ -1076,8 +1122,10 @@ function renderGatewayMonitor(s) {
   if (!el) return;
   if (!s || !s.ok) { el.textContent = '—'; return; }
   const u = s.usage || {};
-  const used = s.pro?.unlocked ? 'unlimited (Pro)' : `${u.used || 0} / ${u.cap || 0} today`;
-  el.innerHTML = `Requests: <strong>${used}</strong> · NER: ${s.ner?.ready ? 'on' : 'off'} · uptime ${Math.floor((s.uptimeSeconds || 0) / 60)}m`;
+  const used = s.pro?.unlocked ? 'unlimited (Pro)' : `${u.used || 0} / ${u.cap || 0} free redactions used`;
+  el.innerHTML = `Redactions: <strong>${used}</strong> · NER: ${s.ner?.ready ? 'on' : 'off'} · uptime ${Math.floor((s.uptimeSeconds || 0) / 60)}m`;
+  // Keep the Pro panel's usage line in sync with the latest /status.
+  renderGatewayFreeUsage(s.pro, s.usage);
 }
 
 async function refreshGateway() {
@@ -1312,10 +1360,11 @@ function collectGatewayPatch() {
       maxPerTurn: Number($('gw-tools-cap').value) || 8,
       narrowAll: $('gw-tools-narrowall').checked,
     },
-    pro: { free: { maxRequestsPerDay: Number($('gw-free-cap').value) || 0 } },
   };
+  // The free trial cap is fixed and its usage is server-authoritative — the client
+  // only ever sends a Pro token (never a cap or usage count).
   const token = $('gw-pro-token').value.trim();
-  if (token) patch.pro.entitlementToken = token;
+  if (token) patch.pro = { entitlementToken: token };
   return patch;
 }
 
@@ -1593,7 +1642,7 @@ function wireGateway() {
   // (gw-url/test/pro-token are excluded: connection + write-only token aren't config.)
   const AUTO = ['gw-tier', 'gw-redact-system', 'gw-det-backend', 'gw-det-url', 'gw-det-model',
     'gw-det-key', 'gw-det-timeout', 'gw-dictionary', 'gw-origins', 'gw-log', 'gw-log-detail',
-    'gw-tools-data', 'gw-tools-narrow', 'gw-tools-cap', 'gw-tools-narrowall', 'gw-free-cap'];
+    'gw-tools-data', 'gw-tools-narrow', 'gw-tools-cap', 'gw-tools-narrowall'];
   for (const id of AUTO) {
     const el = $(id);
     if (!el) continue;
