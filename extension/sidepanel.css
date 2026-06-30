@@ -582,6 +582,8 @@ body.rail-collapsed { --rail-w: 0px; }
 .mon-card-t { font-size: 10px; color: var(--text-dim); white-space: nowrap; }
 .mon-card-x { cursor: pointer; border: none; background: none; color: var(--text-dim); font-size: 11px; padding: 0 2px; }
 .mon-card-b { font-size: 12.5px; }
+.mon-suggest { display: flex; flex-wrap: wrap; gap: 5px; margin: 2px 0 4px; }
+.mon-suggest-chip { cursor: pointer; font-size: 11px; border: 1px dashed var(--accent); background: none; color: var(--accent); border-radius: 999px; padding: 3px 9px; text-align: left; }
 .ctx-live { cursor: pointer; border: 1px solid var(--accent); background: none; color: var(--accent); border-radius: 999px; font-size: 10px; font-weight: 600; padding: 1px 8px; margin-left: 4px; white-space: nowrap; }
 .ctx-live.on { background: var(--accent); color: #fff; }
 /* Meeting-summary version bar (Phase 3b) — switch versions + regenerate. */

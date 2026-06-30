@@ -79,6 +79,37 @@ export async function getSuggestions({ tab, settings, signal, force = false } = 
   return { items: FALLBACK_SUGGESTIONS.slice(), source: 'fallback' };
 }
 
+// Meeting-aware variant: instead of page ideas, suggest CLARIFYING QUESTIONS to ask
+// (or monitor) about a LIVE meeting, grounded in its running summary + recent
+// transcript. On-demand only (the caller decides when) so it never auto-spends tokens.
+// Returns { items: string[], source }. Never throws.
+export async function getMeetingSuggestions({ meeting, settings, signal } = {}) {
+  const agent = pickSuggestionAgent(settings);
+  if (!agent) return { items: [], source: 'nomodel' };
+  if (!meeting || (!meeting.summary && !meeting.transcript)) return { items: [], source: 'fallback' };
+  const sys =
+    'You are assisting during a LIVE meeting. Suggest 4 short, specific CLARIFYING QUESTIONS the ' +
+    'user might want answered or kept watch on as the call continues — open decisions, owners, ' +
+    'risks, deadlines, unclear points. Each 3–9 words, phrased as a question, grounded ONLY in the ' +
+    'summary/transcript provided (never invent). Respond with ONLY a JSON array of 4 strings.';
+  const user = `Meeting: ${meeting.title || 'Meeting'}\n\nRUNNING SUMMARY:\n${meeting.summary || '(none yet)'}`
+    + `\n\nRECENT TRANSCRIPT:\n${String(meeting.transcript || '').slice(-4000)}\n\nReturn a JSON array of 4 question strings.`;
+  let out = '';
+  try {
+    await streamChat({
+      agent: { ...agent, systemPrompt: sys },
+      settings,
+      signal,
+      messages: [{ role: 'user', content: user }],
+      onDelta: (d) => (out += d),
+    });
+  } catch {
+    return { items: [], source: 'fallback' };
+  }
+  const items = parsePrompts(out);
+  return { items, source: items.length ? 'model' : 'fallback' };
+}
+
 // --------------------------------------------------------------------------
 // Providers — backend implementations behind the same contract.
 // --------------------------------------------------------------------------

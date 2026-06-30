@@ -33,7 +33,7 @@ import {
   getMeetingRecord,
 } from './js/context.js';
 import { captureSearch, webSearchOpts, webSearchToolProvider } from './js/web-search.js';
-import { getSuggestions, FALLBACK_SUGGESTIONS } from './js/suggestions.js';
+import { getSuggestions, getMeetingSuggestions, FALLBACK_SUGGESTIONS } from './js/suggestions.js';
 import {
   meetingToText,
   meetingToMarkdown,
@@ -2153,6 +2153,33 @@ async function toggleLiveSummary() {
 // are NOT chat messages, so they never enter the model payload.
 // --------------------------------------------------------------------------
 let monitorsBusy = false;
+// Transient (per panel session) suggested clarifying questions for the active meeting.
+const meetingSuggestState = { loading: false, items: [], meetingId: null };
+
+// Generate clarifying questions from the meeting so far (on demand — no auto-spend).
+async function suggestMeetingQuestions() {
+  if (!state.liveMeeting || meetingSuggestState.loading) return;
+  const mid = state.liveMeeting.id;
+  meetingSuggestState.loading = true; renderMonitors();
+  try {
+    const rec = await getLiveMeetingRecord().catch(() => null);
+    const transcript = rec ? meetingToText(rec, { sinceTs: 0 }) : '';
+    const summary = await getLiveNotesText(mid).catch(() => '');
+    const { items, source } = await getMeetingSuggestions({
+      meeting: { title: state.liveMeeting.title, summary, transcript },
+      settings: state.settings,
+    });
+    if (source === 'nomodel') toast('Pick a model under Settings → Tools → Smart suggestions');
+    else if (!items.length) toast('Nothing to suggest yet — wait for more of the meeting');
+    meetingSuggestState.items = items;
+    meetingSuggestState.meetingId = mid;
+  } catch {
+    toast('Couldn’t generate suggestions');
+  } finally {
+    meetingSuggestState.loading = false;
+    renderMonitors();
+  }
+}
 
 // Skills the user has flagged for meetings (Unit 2 sets the flag; [] until then).
 function meetingSkills() {
@@ -2202,6 +2229,13 @@ function renderMonitors() {
   tldr.className = 'mon-skill-btn'; tldr.textContent = '📌 TL;DR';
   tldr.title = 'Keep a running TL;DR'; tldr.onclick = () => addMonitor({ kind: 'tldr', prompt: '' });
   add.appendChild(tldr);
+  const suggest = document.createElement('button');
+  suggest.className = 'mon-skill-btn';
+  suggest.textContent = meetingSuggestState.loading ? '💡 …' : '💡 Suggest';
+  suggest.title = 'Suggest clarifying questions from the meeting so far';
+  suggest.disabled = meetingSuggestState.loading;
+  suggest.onclick = () => suggestMeetingQuestions();
+  add.appendChild(suggest);
   for (const sk of meetingSkills()) {
     const b = document.createElement('button');
     b.className = 'mon-skill-btn';
@@ -2211,6 +2245,24 @@ function renderMonitors() {
     add.appendChild(b);
   }
   panel.appendChild(add);
+
+  // Suggested clarifying questions (generated on demand) — tap to start monitoring one.
+  if (meetingSuggestState.items.length && meetingSuggestState.meetingId === state.liveMeeting?.id) {
+    const sg = document.createElement('div');
+    sg.className = 'mon-suggest';
+    for (const q of meetingSuggestState.items) {
+      const chip = document.createElement('button');
+      chip.className = 'mon-suggest-chip';
+      chip.textContent = `💡 ${q}`;
+      chip.title = 'Monitor this question';
+      chip.onclick = () => {
+        meetingSuggestState.items = meetingSuggestState.items.filter((x) => x !== q);
+        addMonitor({ kind: 'qa', prompt: q });
+      };
+      sg.appendChild(chip);
+    }
+    panel.appendChild(sg);
+  }
 
   for (const m of activeMonitors()) {
     const card = document.createElement('div');
