@@ -865,6 +865,20 @@ function availableDestinations() {
   return out;
 }
 
+// Compact summary shown on the collapsed dropdown trigger — names a couple of
+// selected destinations, then "+N more", or a placeholder when none are picked.
+function updateDestSummary() {
+  const el = $('gw-dest-summary');
+  if (!el) return;
+  const total = availableDestinations().length;
+  const sel = gatewayDests || [];
+  if (!sel.length) { el.innerHTML = '<span class="none">No destinations selected</span>'; return; }
+  if (total && sel.length >= total) { el.textContent = `All destinations (${sel.length})`; return; }
+  const names = sel.map((d) => d.id);
+  const shown = names.slice(0, 2).join(', ');
+  el.textContent = names.length > 2 ? `${shown} +${names.length - 2} more` : shown;
+}
+
 function renderDestinations() {
   const host = $('gw-dests');
   if (!host) return;
@@ -872,7 +886,10 @@ function renderDestinations() {
   const gwUrl = normalizeGatewayUrl($('gw-url').value || settings.gatewayUrl || '');
 
   const isEnabled = (id) => gatewayDests.some((d) => d.id === id);
-  const flowCount = () => { const el = $('gw-flow-dests'); if (el) el.textContent = gatewayDests.length ? `${gatewayDests.length} enabled` : 'your APIs & agents'; };
+  const flowCount = () => {
+    const el = $('gw-flow-dests'); if (el) el.textContent = gatewayDests.length ? `${gatewayDests.length} enabled` : 'your APIs & agents';
+    updateDestSummary();
+  };
   const toggle = (dest, on) => { gatewayDests = gatewayDests.filter((d) => d.id !== dest.id); if (on) gatewayDests.push(dest); flowCount(); autoSaveGateway(); };
   const checkRow = (icon, name, models, dest, { disabled = false, note = '' } = {}) => {
     const wrap = document.createElement('label');
@@ -943,6 +960,13 @@ function populateDetectorOptions() {
   if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
 }
 
+// Show the types/values radio sub-options only when "Capture redaction detail" is on.
+function setGwDetailRows() {
+  const on = $('gw-log-detail') && $('gw-log-detail').checked;
+  const box = $('gw-log-detail-mode');
+  if (box) box.classList.toggle('hidden', !on);
+}
+
 function setGwDetectorRows() {
   const b = $('gw-det-backend').value;
   const manual = b === 'endpoint' || b === 'openai'; // configured (cfg:*) needs no fields
@@ -988,6 +1012,11 @@ function fillGatewayForm(cfg) {
   $('gw-pro-token').value = ''; // write-only; never echoed back from the gateway
   $('gw-free-cap').value = cfg.pro?.free?.maxRequestsPerDay ?? 25;
   $('gw-log').checked = !!cfg.logRequests;
+  const detail = ['types', 'values'].includes(cfg.logDetail) ? cfg.logDetail : 'off';
+  $('gw-log-detail').checked = detail !== 'off';
+  const detRadio = document.querySelector(`input[name="gw-detail"][value="${detail === 'off' ? 'types' : detail}"]`);
+  if (detRadio) detRadio.checked = true;
+  setGwDetailRows();
   $('gw-tools-data').value = cfg.tools?.toolData === 'redactRemote' ? 'redactRemote' : 'real';
   $('gw-tools-narrow').checked = cfg.tools?.autoNarrow !== false;
   $('gw-tools-cap').value = cfg.tools?.maxPerTurn ?? 8;
@@ -1006,8 +1035,40 @@ async function refreshGatewayLogs() {
   host.innerHTML = entries.slice(0, 12).map((e) => {
     const time = new Date(e.t).toLocaleTimeString();
     const dest = e.dest ? `${escapeHtml(e.dest)}${e.type ? ` (${e.type})` : ''}` : '—';
-    return `<div class="flow-map"><code>${time}</code> ${escapeHtml(e.model || '?')} → <b>${dest}</b> · redacted ${e.redacted || 0}</div>`;
+    const summary = `<code>${time}</code> ${escapeHtml(e.model || '?')} → <b>${dest}</b> · redacted ${e.redacted || 0}`;
+    const detail = Array.isArray(e.detail) ? e.detail : null;
+    const body = gatewayLogBody(e.timings, detail);
+    if (!body) {
+      // Nothing to expand: timings off (logDetail's sibling) and no PII breakdown.
+      return `<details class="gw-logrow flat"><summary>${summary}</summary></details>`;
+    }
+    return `<details class="gw-logrow"><summary>${summary}</summary>${body}</details>`;
   }).join('');
+}
+
+// The expandable contents of one log row: the per-stage latency bar (so you can
+// see WHAT's slow — usually the model hop) plus the redaction breakdown if any.
+function gatewayLogBody(timings, detail) {
+  let html = '';
+  if (timings && typeof timings === 'object') {
+    // Label upstream as "model"; flag the slowest non-total leg as the bottleneck.
+    const legs = ['redact', 'upstream', 'restore'].filter((k) => typeof timings[k] === 'number');
+    const label = { redact: 'redact', upstream: 'model', restore: 'restore' };
+    const slowest = legs.reduce((a, k) => (timings[k] > (timings[a] ?? -1) ? k : a), legs[0]);
+    const parts = legs.map((k) => `<span class="leg${k === slowest ? ' hot' : ''}">${label[k]} ${timings[k]}ms</span>`).join('<span class="sep">·</span>');
+    const total = typeof timings.total === 'number' ? `<span class="leg total">total ${timings.total}ms</span>` : '';
+    html += `<div class="gw-timings">⏱ ${parts}${parts && total ? '<span class="sep">·</span>' : ''}${total}</div>`;
+  }
+  if (Array.isArray(detail) && detail.length) {
+    const rows = detail.map((d) => {
+      const tok = `<span class="tok">[[${escapeHtml(d.token)}]]</span>`;
+      return 'value' in d
+        ? `<div class="ent"><span class="val">${escapeHtml(String(d.value))}</span><span class="arrow">→</span>${tok}</div>`
+        : `<div class="ent">${tok} <span class="ty">${escapeHtml(d.type)}</span></div>`;
+    }).join('');
+    html += `<div class="gw-detail-list">${rows}</div>`;
+  }
+  return html;
 }
 
 function renderGatewayMonitor(s) {
@@ -1208,6 +1269,9 @@ function collectGatewayPatch() {
     },
     allowedOrigins: $('gw-origins').value.split('\n').map((s) => s.trim()).filter(Boolean),
     logRequests: $('gw-log').checked,
+    logDetail: $('gw-log-detail').checked
+      ? (document.querySelector('input[name="gw-detail"]:checked')?.value === 'values' ? 'values' : 'types')
+      : 'off',
     tools: {
       toolData: $('gw-tools-data').value,
       autoNarrow: $('gw-tools-narrow').checked,
@@ -1467,6 +1531,24 @@ function wireGateway() {
   $('gw-pro-activate').onclick = activateGatewayPro;
   $('gw-dest-all').onclick = () => { gatewayDests = availableDestinations(); renderDestinations(); autoSaveGateway(); };
   $('gw-dest-none').onclick = () => { gatewayDests = []; renderDestinations(); autoSaveGateway(); };
+  // Destinations dropdown: toggle the popover; close on outside click / Escape.
+  const gwDestSelect = $('gw-dest-select'), gwDestTrigger = $('gw-dest-trigger'), gwDestMenu = $('gw-dest-menu');
+  const closeDestMenu = () => {
+    if (!gwDestSelect || !gwDestSelect.classList.contains('open')) return;
+    gwDestSelect.classList.remove('open'); gwDestMenu.classList.add('hidden');
+    gwDestTrigger.setAttribute('aria-expanded', 'false');
+  };
+  if (gwDestTrigger) {
+    gwDestTrigger.onclick = (e) => {
+      e.stopPropagation();
+      const open = gwDestSelect.classList.toggle('open');
+      gwDestMenu.classList.toggle('hidden', !open);
+      gwDestTrigger.setAttribute('aria-expanded', String(open));
+    };
+    gwDestMenu.addEventListener('click', (e) => e.stopPropagation());
+    document.addEventListener('click', closeDestMenu);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDestMenu(); });
+  }
   $('gw-test-run').onclick = () => runGatewayTest(true);
   $('gw-test-preview').onclick = () => runGatewayTest(false);
   $('gw-logs-refresh').onclick = refreshGatewayLogs;
@@ -1476,7 +1558,7 @@ function wireGateway() {
   // never lose edits by forgetting "Save to gateway". The explicit button remains.
   // (gw-url/test/pro-token are excluded: connection + write-only token aren't config.)
   const AUTO = ['gw-tier', 'gw-redact-system', 'gw-det-backend', 'gw-det-url', 'gw-det-model',
-    'gw-det-key', 'gw-det-timeout', 'gw-dictionary', 'gw-origins', 'gw-log',
+    'gw-det-key', 'gw-det-timeout', 'gw-dictionary', 'gw-origins', 'gw-log', 'gw-log-detail',
     'gw-tools-data', 'gw-tools-narrow', 'gw-tools-cap', 'gw-tools-narrowall', 'gw-free-cap'];
   for (const id of AUTO) {
     const el = $(id);
@@ -1484,6 +1566,9 @@ function wireGateway() {
     const evt = (el.tagName === 'SELECT' || el.type === 'checkbox') ? 'change' : 'input';
     el.addEventListener(evt, autoSaveGateway);
   }
+  // Toggle the capture checkbox reveals the types/values radios; both auto-save.
+  $('gw-log-detail').addEventListener('change', setGwDetailRows);
+  for (const r of document.querySelectorAll('input[name="gw-detail"]')) r.addEventListener('change', autoSaveGateway);
 }
 
 async function refreshBridgeState() {

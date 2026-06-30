@@ -202,6 +202,7 @@ select {
 }
 .btn:hover { border-color: var(--accent); background: rgba(127,127,127,.05); }
 .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-weak); }
+.btn.sm { padding: 4px 10px; font-size: 12px; font-weight: 600; border-radius: 7px; }
 .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .btn.primary:hover { filter: brightness(1.07); background: var(--accent); }
 .btn.accent { background: var(--accent); color: #fff; border-color: var(--accent); }
@@ -373,11 +374,62 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .gw-flow-mid { background:linear-gradient(135deg,#818cf8,#c084fc); border:none; }
 .gw-flow-mid b, .gw-flow-mid .muted { color:#0b0d12 !important; }
 .gw-flow-arrow { display:flex; align-items:center; color:#9aa1ac; font-size:16px; }
+/* Destinations multi-select dropdown — collapses a long checkbox list into a
+   single trigger + popover so the Gateway tab stays compact. */
+.gw-dest-select { position:relative; }
+.gw-dest-trigger { display:flex; align-items:center; gap:8px; width:100%; box-sizing:border-box;
+  padding:9px 12px; border:1px solid #262b36; border-radius:9px; background:#171a22;
+  color:#e8eaed; font:inherit; cursor:pointer; text-align:left; }
+.gw-dest-trigger:hover { border-color:#3a4150; }
+.gw-dest-select.open .gw-dest-trigger { border-color:var(--accent); }
+.gw-dest-summary { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.gw-dest-summary .none { color:#9aa1ac; }
+.gw-dest-caret { color:#9aa1ac; font-size:12px; transition:transform .15s ease; }
+.gw-dest-select.open .gw-dest-caret { transform:rotate(180deg); }
+.gw-dest-menu { position:absolute; z-index:30; top:calc(100% + 4px); left:0; right:0;
+  background:#12151c; border:1px solid #2c323e; border-radius:10px;
+  box-shadow:0 10px 30px rgba(0,0,0,.45); padding:8px; }
+.gw-dest-menu-head { display:flex; gap:6px; padding:0 2px 8px; margin-bottom:6px;
+  border-bottom:1px solid #232833; }
+.gw-dest-list { max-height:320px; overflow-y:auto; }
+.gw-dest-list .muted.sm { margin:8px 2px 3px; }
+.gw-dest-list p.muted.sm:first-child { margin-top:0; }
+
 .gw-dest { display:flex; align-items:center; gap:8px; padding:6px 9px; border:1px solid #262b36;
   border-radius:8px; margin-bottom:4px; cursor:pointer; }
-.gw-dest:hover { border-color:#3a4150; }
+.gw-dest:hover { border-color:#3a4150; background:#171a22; }
 .gw-dest.off { opacity:.5; cursor:not-allowed; }
+.gw-dest.off:hover { background:transparent; }
 .gw-dest .name { font-weight:600; color:#e8eaed; }
 .gw-dest .chip { font-size:11px; color:#9aa1ac; background:#10131a; border:1px solid #262b36;
   border-radius:6px; padding:1px 6px; margin-left:4px; }
 .gw-dest .spacer { flex:1; }
+
+/* Redaction-detail capture mode (sub-options under the Monitoring checkbox). */
+.gw-detail-mode { margin:2px 0 8px 26px; padding-left:10px; border-left:2px solid #232833;
+  display:flex; flex-direction:column; gap:6px; }
+.gw-detail-mode .radio { display:flex; align-items:center; gap:8px; font-size:12.5px; cursor:pointer; }
+
+/* Expandable recent-request rows — each row's redaction breakdown opens inline. */
+.gw-logrow { margin:3px 0; }
+.gw-logrow > summary { font-family:var(--mono); font-size:11px; cursor:pointer; list-style:none;
+  overflow-wrap:anywhere; padding:2px 0; }
+.gw-logrow > summary::-webkit-details-marker { display:none; }
+.gw-logrow > summary::before { content:'▸ '; color:#9aa1ac; }
+.gw-logrow[open] > summary::before { content:'▾ '; }
+.gw-logrow.flat > summary { cursor:default; }
+.gw-logrow.flat > summary::before { content:'• '; color:#3a4150; }
+/* Per-stage latency bar inside an expanded log row — highlights the bottleneck. */
+.gw-timings { margin:3px 0 6px 16px; font-family:var(--mono); font-size:11px; color:#9aa1ac;
+  display:flex; flex-wrap:wrap; align-items:center; gap:4px; }
+.gw-timings .leg { color:#c7ccd6; }
+.gw-timings .leg.hot { color:#f0b75e; font-weight:600; } /* the slowest stage = what to blame */
+.gw-timings .leg.total { color:#e8eaed; }
+.gw-timings .sep { color:#3a4150; }
+
+.gw-detail-list { margin:3px 0 8px 16px; display:flex; flex-direction:column; gap:2px; }
+.gw-detail-list .ent { font-family:var(--mono); font-size:11px; color:#c7ccd6; }
+.gw-detail-list .ent .tok { color:var(--accent); }
+.gw-detail-list .ent .val { color:#e8eaed; }
+.gw-detail-list .ent .arrow { color:#9aa1ac; padding:0 4px; }
+.gw-detail-list .ent .ty { color:#9aa1ac; }

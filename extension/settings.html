@@ -511,7 +511,15 @@ npx @chatpanel/bridge</code></pre>
                   <input id="gw-free-cap" type="number" min="0" max="100000" placeholder="25" /></div>
 
                 <h3 class="priv-h">Monitoring</h3>
-                <label class="check"><input type="checkbox" id="gw-log" /> Log requests (counts only, no values)</label>
+                <label class="check"><input type="checkbox" id="gw-log" /> Log requests (counts + per-stage latency, no values)</label>
+                <label class="check"><input type="checkbox" id="gw-log-detail" /> Capture redaction detail
+                  <span class="muted sm">— expand a request to see what was redacted</span></label>
+                <div id="gw-log-detail-mode" class="gw-detail-mode hidden">
+                  <label class="radio"><input type="radio" name="gw-detail" value="types" checked />
+                    Types + tokens only <span class="muted sm">(PERSON_1, EMAIL_1 — no real values)</span></label>
+                  <label class="radio"><input type="radio" name="gw-detail" value="values" />
+                    Include real values <span class="muted sm">⚠ shows your actual PII; kept in memory only</span></label>
+                </div>
                 <p class="muted sm" id="gw-monitor">—</p>
                 <div class="row" style="margin:4px 0">
                   <button type="button" id="gw-logs-refresh" class="btn">Recent requests ↻</button>
@@ -529,11 +537,19 @@ npx @chatpanel/bridge</code></pre>
                 <h3 class="priv-h">Destinations <span class="sub">— your APIs &amp; agents</span></h3>
                 <p class="muted sm">Pick which configured <strong>APIs</strong> (API tab) and <strong>agents</strong>
                   (Agents tab) the gateway routes to. Clients select one by its model name via <code>/v1/models</code>.</p>
-                <div class="row" style="margin-bottom:6px">
-                  <button type="button" id="gw-dest-all" class="btn">Select all</button>
-                  <button type="button" id="gw-dest-none" class="btn">Clear</button>
+                <div class="gw-dest-select" id="gw-dest-select">
+                  <button type="button" class="gw-dest-trigger" id="gw-dest-trigger" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="gw-dest-summary" id="gw-dest-summary">No destinations selected</span>
+                    <span class="gw-dest-caret" aria-hidden="true">▾</span>
+                  </button>
+                  <div class="gw-dest-menu hidden" id="gw-dest-menu" role="listbox" aria-multiselectable="true">
+                    <div class="gw-dest-menu-head">
+                      <button type="button" id="gw-dest-all" class="btn sm">Select all</button>
+                      <button type="button" id="gw-dest-none" class="btn sm">Clear</button>
+                    </div>
+                    <div id="gw-dests" class="gw-dest-list"></div>
+                  </div>
                 </div>
-                <div id="gw-dests"></div>
               </div>
             </div>
             <div class="row" style="margin-top:8px">
