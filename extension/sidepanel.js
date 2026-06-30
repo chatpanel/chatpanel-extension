@@ -2715,7 +2715,7 @@ function meetingBackToList() {
 // graph-viz). Add a pane with registerPane({ id, icon, title, open, isOpen, pro? }).
 // --------------------------------------------------------------------------
 const RAIL_PANES = [
-  { id: 'meetings', icon: '🎙', label: 'Meet', title: 'Meetings — live & past', pro: 'liveMeetings', open: openMeetings,
+  { id: 'meetings', icon: '👥', label: 'Meet', title: 'Meetings — live & past', pro: 'liveMeetings', open: openMeetings,
     isOpen: () => !$('meetings-drawer').classList.contains('hidden') },
   { id: 'watch', icon: '👁', label: 'Watch', title: 'Watch this page & act', pro: 'watch', open: openWatchPane,
     isOpen: () => !$('watch-menu').classList.contains('hidden') },
