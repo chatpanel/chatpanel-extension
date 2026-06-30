@@ -13,6 +13,7 @@
     "contextMenus",
     "alarms",
     "identity",
+    "downloads",
     "unlimitedStorage",
     "webNavigation",
     "debugger"

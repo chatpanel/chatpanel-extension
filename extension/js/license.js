@@ -77,6 +77,7 @@ export const FEATURE_TIER = {
   advancedAgent: 'pro',
   structuredInsert: 'pro', // native-format insert for canvas apps (Excalidraw, …)
   exportChats: 'pro',
+  autoBackup: 'pro', // scheduled daily backup of all data to disk (survives a reinstall)
   promptLibrary: 'pro',
   fileAttachments: 'pro',
   liveMeetings: 'pro',
@@ -96,6 +97,7 @@ export const PRO_FEATURES = {
   advancedAgent: 'Per-agent system prompts & working directories',
   structuredInsert: 'Clean diagrams on Excalidraw, draw.io & tldraw — shapes placed as data, not pixel-drawn',
   exportChats: 'Export conversations as Markdown',
+  autoBackup: 'Automatic daily backup of all your data to disk',
   liveMeetings: 'Live meeting scribe — capture & summarize Zoom, Google Meet, Teams & Webex',
   watch: 'Watch a page & act on changes — the agent reacts as the page updates',
 };

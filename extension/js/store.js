@@ -9,6 +9,7 @@
 // All functions are async and safe to call from the side panel or options page.
 
 import { exportMeetings, importMeetings, meetingToMarkdown } from './store-meetings.js';
+import { exportOAuthTokens, importOAuthTokens } from './oauth.js';
 import { makeZip } from './zip.js';
 
 const K_SETTINGS = 'chatpanel:settings';
@@ -754,24 +755,31 @@ export async function importConversations(data, { mode = 'merge' } = {}) {
 }
 
 // "Export data" — the FULL portable backup: everything needed to recreate this
-// install on another machine. version 3 adds `settings` (endpoints incl. API
-// keys, local/bridge agents, MCP servers incl. auth, skills, preferences);
-// version 2 added `meetings`. Older files still restore (missing parts come back
-// empty). The license is NOT exported — it re-activates by purchase email / Pro
-// sync. All client-side; nothing is uploaded. NOTE: this file contains secrets.
+// install on another machine. version 4 adds `oauthTokens` (endpoint sign-ins,
+// so a restore doesn't force a re-auth); version 3 added `settings` (endpoints
+// incl. API keys, local/bridge agents, MCP servers incl. auth, skills,
+// preferences); version 2 added `meetings`. Older files still restore (missing
+// parts come back empty). The license is NOT exported — it re-activates by
+// purchase email / Pro sync. The install-id, runtime UI state, and the local
+// meeting-encryption key are also excluded (re-derived per install; meetings are
+// decrypted on export and re-encrypted under the destination's own key on
+// import). All client-side; nothing is uploaded. NOTE: this file contains
+// secrets (API keys, MCP auth, OAuth tokens) — treat it like a password.
 export async function exportAllData() {
   const conv = await exportConversations();
   const meetings = await exportMeetings();
   const settings = await getSettings();
+  const oauthTokens = await exportOAuthTokens(); // endpoint sign-ins (v4) — see SECURITY note above
   return {
     type: BACKUP_TYPE,
-    version: 3,
+    version: 4,
     exportedAt: Date.now(),
     count: conv.count,
     conversations: conv.conversations,
     meetingsCount: meetings.length,
     meetings,
     settings,
+    oauthTokens,
   };
 }
 
@@ -788,6 +796,11 @@ export async function importAllData(data, { mode = 'merge' } = {}) {
     await chrome.storage.local.set({ [K_SETTINGS]: merged }); // onChanged clears the cache
     _settingsCache = null;
     settings = true;
+  }
+  // OAuth tokens (v4+) ride along so restored endpoints stay signed in. Honor the
+  // same merge/replace mode as the rest of the backup.
+  if (data.oauthTokens && typeof data.oauthTokens === 'object') {
+    await importOAuthTokens(data.oauthTokens, { mode });
   }
   return { conversations, meetings, settings };
 }
@@ -809,8 +822,8 @@ const ARCHIVE_README =
   'NOT included — it re-activates from your purchase email / Pro sync.\n\n' +
   'Everything here stayed on your device — nothing was uploaded.\n';
 
-export async function exportDataArchive() {
-  const data = await exportAllData();
+export async function exportDataArchive(precomputed) {
+  const data = precomputed || (await exportAllData());
   const files = [
     { name: 'chatpanel-data.json', data: JSON.stringify(data) },
     { name: 'settings.json', data: JSON.stringify(data.settings, null, 2) },

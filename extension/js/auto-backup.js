@@ -1,0 +1,137 @@
+// Automatic daily backup to disk (Pro, opt-in).
+//
+// Why this exists: chrome.storage.local and the meeting IndexedDB are scoped to
+// the *extension ID*. A manual reinstall (unpacked, or a sideload) can change
+// that ID and orphan all of the user's data — chats, meetings, settings. The fix
+// is to keep a copy *outside* extension storage. We write the same full portable
+// .zip the manual "Export all data" produces into Downloads/ChatPanel Backups/,
+// rotating by weekday so the last 7 days survive without the user ever confirming
+// a save. After a reinstall the user restores it with Settings → Restore.
+//
+// SECURITY: this file contains secrets (API keys, MCP auth, OAuth tokens) exactly
+// like the manual export. It is therefore strictly Pro + opt-in, the entitlement
+// is re-checked on every scheduled run (fail-closed), and we only ever write to a
+// fixed, non-interpolated path under the user's own Downloads dir. Nothing is
+// uploaded — chrome.downloads writes to the local disk only.
+
+import { exportAllData, exportDataArchive } from './store.js';
+import { getLicense, can } from './license.js';
+import { encryptBackup } from './crypto-backup.js';
+
+const K_STATE = 'chatpanel:autoBackup';
+export const BACKUP_ALARM = 'chatpanel-auto-backup';
+const FOLDER = 'ChatPanel Backups';
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// `passphrase` (optional) encrypts the on-disk files. It's stored here because
+// the backup runs unattended in the service worker — documented as a tradeoff in
+// the UI. It protects the file once it leaves the machine, not against someone
+// who already has full extension-storage access.
+const DEFAULT_STATE = { enabled: false, passphrase: '', lastAt: 0, lastHash: '', lastError: '', count: 0, meetingsCount: 0 };
+
+export async function getBackupState() {
+  const got = await chrome.storage.local.get(K_STATE);
+  return { ...DEFAULT_STATE, ...(got[K_STATE] && typeof got[K_STATE] === 'object' ? got[K_STATE] : {}) };
+}
+
+async function patchBackupState(patch) {
+  const next = { ...(await getBackupState()), ...patch };
+  await chrome.storage.local.set({ [K_STATE]: next });
+  return next;
+}
+
+async function sha256Hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Service workers have no URL.createObjectURL, so the zip is handed to
+// chrome.downloads as a base64 data: URL built from our own bytes (no external
+// input — nothing untrusted reaches this string).
+function bytesToBase64(bytes) {
+  let bin = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
+// Run one backup. `force` writes even when nothing changed (the "Back up now"
+// button / the toggle-on confirmation); the scheduled path skips an unchanged
+// snapshot so an idle week doesn't rewrite the same file daily ("incremental":
+// write only on change). Returns a small status object; never throws.
+export async function runAutoBackup({ force = false } = {}) {
+  try {
+    const license = await getLicense();
+    if (!can(license, 'autoBackup')) {
+      await patchBackupState({ lastError: 'Auto-backup is a Pro feature.' });
+      return { ok: false, reason: 'not-pro' };
+    }
+    const data = await exportAllData();
+    if (!data.count && !data.meetingsCount) return { ok: false, reason: 'empty' };
+
+    const hash = await sha256Hex(JSON.stringify(data));
+    const state = await getBackupState();
+    if (!force && hash === state.lastHash) {
+      return { ok: true, skipped: true, count: data.count, meetingsCount: data.meetingsCount };
+    }
+
+    // Optional passphrase → a single encrypted envelope; otherwise the browsable
+    // .zip. Either way bytes become a base64 data: URL (service workers have no
+    // URL.createObjectURL). The data here is all our own — nothing untrusted.
+    let url, ext;
+    if (state.passphrase) {
+      const envelope = await encryptBackup(data, state.passphrase);
+      const bytes = new TextEncoder().encode(JSON.stringify(envelope));
+      url = `data:application/json;base64,${bytesToBase64(bytes)}`;
+      ext = 'encrypted.json';
+    } else {
+      const { blob } = await exportDataArchive(data); // reuse the snapshot; no double export
+      url = `data:application/zip;base64,${bytesToBase64(new Uint8Array(await blob.arrayBuffer()))}`;
+      ext = 'zip';
+    }
+    // Fixed, non-interpolated path under the user's Downloads dir. Weekday name
+    // gives an automatic 7-file rolling window via conflictAction:'overwrite'.
+    const filename = `${FOLDER}/chatpanel-backup-${WEEKDAYS[new Date().getDay()]}.${ext}`;
+    await chrome.downloads.download({ url, filename, conflictAction: 'overwrite', saveAs: false });
+
+    await patchBackupState({
+      lastAt: Date.now(),
+      lastHash: hash,
+      lastError: '',
+      count: data.count,
+      meetingsCount: data.meetingsCount,
+    });
+    return { ok: true, count: data.count, meetingsCount: data.meetingsCount };
+  } catch (e) {
+    await patchBackupState({ lastError: String(e?.message || e) });
+    return { ok: false, reason: 'error', error: String(e?.message || e) };
+  }
+}
+
+// Create or clear the daily alarm to match the saved preference. Idempotent —
+// safe to call on install, on startup, and whenever the toggle flips.
+export async function syncBackupAlarm() {
+  const { enabled } = await getBackupState();
+  if (enabled) {
+    chrome.alarms.create(BACKUP_ALARM, { periodInMinutes: 1440, delayInMinutes: 1440 });
+  } else {
+    await chrome.alarms.clear(BACKUP_ALARM);
+  }
+}
+
+// Persist the optional disk-encryption passphrase. Empty string disables
+// encryption (future backups go out as plain .zip).
+export async function setAutoBackupPassphrase(passphrase) {
+  await patchBackupState({ passphrase: String(passphrase || '') });
+}
+
+// Toggle handler for the settings UI. Turning it on runs an immediate first
+// backup so the user sees it work; turning it off clears the schedule.
+export async function setAutoBackupEnabled(enabled) {
+  await patchBackupState({ enabled: !!enabled });
+  await syncBackupAlarm();
+  if (enabled) return await runAutoBackup({ force: true });
+  return { ok: true };
+}

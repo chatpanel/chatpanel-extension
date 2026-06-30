@@ -9,6 +9,7 @@
 
 import { revalidate } from './js/license.js';
 import { persistMeeting, getLatestSessionRecord } from './js/store-meetings.js';
+import { runAutoBackup, syncBackupAlarm, BACKUP_ALARM } from './js/auto-backup.js';
 
 const REVALIDATE_ALARM = 'chatpanel-revalidate-license';
 
@@ -36,13 +37,23 @@ chrome.runtime.onInstalled.addListener(() => {
   // within ~half a day even if the browser is rarely restarted).
   chrome.alarms.create(REVALIDATE_ALARM, { periodInMinutes: 720 });
   revalidate({ force: true }).catch(() => {});
+
+  // Re-arm the daily auto-backup alarm if the user had it enabled (alarms can be
+  // dropped on update). syncBackupAlarm() is a no-op when the feature is off.
+  syncBackupAlarm().catch(() => {});
 });
 
 // Re-check on browser start and on the alarm. revalidate() self-throttles and
 // fails open, so calling it liberally is safe.
-chrome.runtime.onStartup.addListener(() => revalidate().catch(() => {}));
+chrome.runtime.onStartup.addListener(() => {
+  revalidate().catch(() => {});
+  // Catch up a backup the device missed while it was off — runAutoBackup
+  // self-gates on Pro and skips when nothing changed, so this is cheap.
+  runAutoBackup().catch(() => {});
+});
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === REVALIDATE_ALARM) revalidate().catch(() => {});
+  else if (a.name === BACKUP_ALARM) runAutoBackup().catch(() => {});
 });
 
 // Open the panel and hand it the click target. The panel listens for

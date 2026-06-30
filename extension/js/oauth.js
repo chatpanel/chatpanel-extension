@@ -77,6 +77,19 @@ async function saveTokenStore(tokens) {
   await chrome.storage.local.set({ [K_OAUTH]: tokens });
 }
 
+// Backup hooks — the whole OAuth token store travels in the portable backup so a
+// restore on a fresh install (or after a reinstall that orphaned chrome.storage)
+// keeps you signed in to OAuth endpoints instead of forcing a re-auth of each.
+export async function exportOAuthTokens() {
+  return await loadTokenStore();
+}
+export async function importOAuthTokens(tokens, { mode = 'merge' } = {}) {
+  if (!tokens || typeof tokens !== 'object') return 0;
+  const base = mode === 'replace' ? {} : await loadTokenStore();
+  await saveTokenStore({ ...base, ...tokens });
+  return Object.keys(tokens).length;
+}
+
 function normalizeTokenResponse(json) {
   const now = Date.now();
   const expiresIn = Number(json.expires_in || json.expiresIn || 0);

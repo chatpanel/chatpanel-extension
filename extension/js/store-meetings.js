@@ -204,7 +204,7 @@ export async function exportMeetings() {
   for (const e of index) {
     const record = await getMeeting(e.id);
     if (!record) continue;
-    meetings.push({ record, notes: await getMeetingNotes(e.id) });
+    meetings.push({ record, notes: await getMeetingNotes(e.id), topics: await getMeetingTopics(e.id) });
   }
   return meetings;
 }
@@ -226,6 +226,7 @@ export async function importMeetings(list, { mode = 'merge' } = {}) {
     }
     await persistMeeting(rec); // caps + encrypts + refreshes the index entry
     if (typeof item.notes === 'string' && item.notes) await saveMeetingNotes(rec.id, item.notes);
+    if (item.topics) await saveMeetingTopics(rec.id, item.topics);
     imported++;
   }
   return { imported, total: list.length };

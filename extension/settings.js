@@ -4,8 +4,10 @@
 //             model and optional system prompt/tuning. Chat with one directly.
 //   Agents  — the local bridge (CLI) agents: Claude Code, Codex, Antigravity CLI,
 //             plus the bridge connection itself.
-import { getSettings, saveSettings, uid, exportDataArchive, importAllData, resetSkillsToDefaults } from './js/store.js';
+import { getSettings, saveSettings, uid, exportAllData, exportDataArchive, importAllData, resetSkillsToDefaults } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
+import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, runAutoBackup } from './js/auto-backup.js';
+import { encryptBackup, decryptBackup, isEncryptedBackup } from './js/crypto-backup.js';
 import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, previewRedaction, traceFlow } from './js/providers.js';
 import { buildToolset } from './js/toolset.js';
 import { getMcpProviders } from './js/mcp-manager.js';
@@ -3145,19 +3147,41 @@ function wireBackup() {
     }
     setStatus(msg, 'Exporting…');
     try {
-      const { blob, count, meetingsCount } = await exportDataArchive();
-      if (!count && !meetingsCount) return setStatus(msg, 'No data to export yet.', '');
-      const url = URL.createObjectURL(blob);
+      const pass = $('backup-password').value;
       const stamp = new Date().toISOString().slice(0, 10);
+      let blob, name, count, meetingsCount, kind;
+      if (pass) {
+        // Encrypted export: a single envelope file. We can't ship the browsable
+        // Markdown archive here — that would defeat the encryption — so this is
+        // the JSON backup only, wrapped in AES-GCM.
+        const data = await exportAllData();
+        count = data.count;
+        meetingsCount = data.meetingsCount;
+        if (!count && !meetingsCount) return setStatus(msg, 'No data to export yet.', '');
+        const envelope = await encryptBackup(data, pass);
+        blob = new Blob([JSON.stringify(envelope)], { type: 'application/json' });
+        name = `chatpanel-data-${stamp}.encrypted.json`;
+        kind = 'encrypted';
+      } else {
+        const archive = await exportDataArchive();
+        count = archive.count;
+        meetingsCount = archive.meetingsCount;
+        if (!count && !meetingsCount) return setStatus(msg, 'No data to export yet.', '');
+        blob = archive.blob;
+        name = `chatpanel-data-${stamp}.zip`;
+        kind = 'zip';
+      }
+      const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `chatpanel-data-${stamp}.zip`;
+      a.download = name;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
       const parts = [`${count} conversation${count === 1 ? '' : 's'}`];
       if (meetingsCount) parts.push(`${meetingsCount} meeting${meetingsCount === 1 ? '' : 's'}`);
       parts.push('settings'); // always included — endpoints/keys, agents, MCP, skills, prefs
-      setStatus(msg, `✓ Exported ${parts.join(' + ')} (.zip — JSON backup + Markdown).`, 'ok');
+      const tail = kind === 'encrypted' ? '🔒 password-protected — keep the password safe.' : '.zip — JSON backup + Markdown.';
+      setStatus(msg, `✓ Exported ${parts.join(' + ')} (${tail})`, 'ok');
     } catch (e) {
       setStatus(msg, '✕ ' + (e.message || e), 'err');
     }
@@ -3187,7 +3211,12 @@ function wireBackup() {
       } else {
         text = new TextDecoder().decode(buf);
       }
-      const data = JSON.parse(text);
+      let data = JSON.parse(text);
+      // Encrypted backup? Decrypt with the password from the box (same field used
+      // for export). A wrong/empty password throws a friendly message.
+      if (isEncryptedBackup(data)) {
+        data = await decryptBackup(data, $('backup-password').value);
+      }
       const mode = $('backup-replace').checked ? 'replace' : 'merge';
       const { conversations, meetings, settings: settingsRestored } = await importAllData(data, { mode });
       const parts = [`${conversations.imported} conversation${conversations.imported === 1 ? '' : 's'}`];
@@ -3209,6 +3238,83 @@ function wireBackup() {
       setStatus(msg, `✓ Restored ${parts.join(' + ')}${skipped ? ` (${skipped} skipped)` : ''}. Reopen ChatPanel to see everything.`, 'ok');
     } catch (err) {
       setStatus(msg, '✕ ' + (err.message || err), 'err');
+    }
+  };
+
+  wireAutoBackup();
+}
+
+// Daily automatic backup to disk (Pro). Same .zip as manual export, written to
+// Downloads/ChatPanel Backups/ on a schedule by the service worker. Here we only
+// drive the toggle / "Back up now" and reflect the saved state.
+function wireAutoBackup() {
+  const toggle = $('autobackup-enabled');
+  const status = $('autobackup-status');
+  const pw = $('autobackup-password');
+  if (!toggle) return; // defensive — UI not present
+
+  const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : 'never');
+  const showState = (st) => {
+    if (st.lastError) return setStatus(status, '✕ ' + st.lastError, 'err');
+    if (!st.enabled) return setStatus(status, 'Off — your data is only inside the extension.', '');
+    const lock = st.passphrase ? ' 🔒 encrypted' : '';
+    setStatus(status, `On${lock} — saved to Downloads → ChatPanel Backups. Last backup: ${fmt(st.lastAt)}.`, st.lastAt ? 'ok' : '');
+  };
+  // Persist the encryption passphrase from the field before any backup runs so
+  // the unattended service-worker write uses the latest value.
+  const syncPass = () => setAutoBackupPassphrase(pw ? pw.value : '');
+
+  getBackupState().then((st) => {
+    toggle.checked = !!st.enabled;
+    if (pw) pw.value = st.passphrase || '';
+    showState(st);
+  });
+
+  // Changing the passphrase must rewrite the on-disk file immediately: the
+  // change-detector hashes plaintext, so without this a newly-set password
+  // wouldn't take effect until the data itself next changes.
+  if (pw) {
+    pw.onchange = async () => {
+      await syncPass();
+      const st = await getBackupState();
+      if (st.enabled && can(license, 'autoBackup')) {
+        await runAutoBackup({ force: true });
+        showState(await getBackupState());
+      }
+    };
+  }
+
+  toggle.onchange = async () => {
+    // Pro-gate: same entitlement as the rest of backup/restore.
+    if (!can(license, 'autoBackup')) {
+      toggle.checked = false;
+      return setStatus(status, '✨ Automatic backup is a Pro feature — upgrade above.', 'err');
+    }
+    const enabled = toggle.checked;
+    setStatus(status, enabled ? 'Turning on & taking a first backup…' : 'Turning off…');
+    await syncPass();
+    const res = await setAutoBackupEnabled(enabled);
+    if (enabled && res && res.ok === false && res.reason !== 'empty') {
+      toggle.checked = false;
+    }
+    showState(await getBackupState());
+  };
+
+  $('autobackup-now').onclick = async () => {
+    if (!can(license, 'autoBackup')) {
+      return setStatus(status, '✨ Automatic backup is a Pro feature — upgrade above.', 'err');
+    }
+    setStatus(status, 'Backing up…');
+    await syncPass();
+    const res = await runAutoBackup({ force: true });
+    if (res.ok) {
+      const parts = [`${res.count} conversation${res.count === 1 ? '' : 's'}`];
+      if (res.meetingsCount) parts.push(`${res.meetingsCount} meeting${res.meetingsCount === 1 ? '' : 's'}`);
+      setStatus(status, `✓ Backed up ${parts.join(' + ')} to Downloads → ChatPanel Backups.`, 'ok');
+    } else if (res.reason === 'empty') {
+      setStatus(status, 'No data to back up yet.', '');
+    } else {
+      setStatus(status, '✕ ' + (res.error || 'Backup failed.'), 'err');
     }
   };
 }
