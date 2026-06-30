@@ -2509,7 +2509,12 @@ const PLATFORM_ICON = { zoom: '🟦', meet: '🟩', teams: '🟪', webex: '🟧'
 
 async function openMeetings() {
   if (!can(state.license, 'liveMeetings')) return upsell('liveMeetings'); // Pro — covers all entry points
-  $('meetings-drawer').classList.remove('hidden');
+  const d = $('meetings-drawer');
+  d.classList.remove('hidden');
+  // Chrome's side panel sometimes doesn't paint this position:absolute overlay until
+  // a reflow — users saw a blank panel until they resized it (clicked the divider).
+  // Reading a layout property forces a synchronous reflow so it shows immediately.
+  void d.offsetHeight;
   $('meeting-view').classList.add('hidden');
   $('meetings-list-view').classList.remove('hidden');
   $('meetings-search').value = '';
