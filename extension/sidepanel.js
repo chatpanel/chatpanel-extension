@@ -3055,21 +3055,48 @@ function downloadMeetingActive() {
 // Produce/merge a meeting's running notes from `prevNotes` + the new transcript
 // delta. Headless — returns the merged markdown (the scribe loop saves it to
 // storage; viewers read it from there). No drawer/UI coupling.
-async function summarizeMeeting(prevNotes, deltaText, isFirst) {
+// Concise running-summary prompts — the DEFAULT for the live scribe (refreshes every
+// couple minutes, so it must stay short). 'detailed' falls back to the full Meeting
+// notes minutes. Regenerate (Phase 3b) lets the user pick the style per version.
+const CONCISE_FIRST = [
+  'You are a live meeting scribe. Write a SHORT running summary of the transcript so far. It may be partial/live — write "as of now" and never invent an ending, decision, owner, or date. Ground every line in the transcript; no padding or speculation.',
+  'Output compact GitHub-flavored Markdown, OMITTING any section with no real content:',
+  '## TL;DR — 2–4 short bullets: the bottom line and the biggest open issue.',
+  '## Decisions & risks — only if explicit; one line each, tagged **[decision]** / **[risk]** / **[question]**. Skip the whole section if none.',
+  '## Action items — a task list; owner in _(parens)_ and — _due_ ONLY if stated. Skip if none.',
+  'Keep it tight: short phrases over sentences, no preamble, no restating the question.',
+].join('\n');
+const CONCISE_MERGE = [
+  'You are a live meeting scribe maintaining ONE short running summary. Merge the NEW transcript into the CURRENT summary — do NOT start over, do NOT duplicate, keep stable items stable, and refine an earlier line only if the new transcript clarifies it.',
+  'Keep the SAME compact shape (TL;DR 2–4 bullets; Decisions & risks only if explicit; Action items only if stated) and stay tight — short phrases. Output ONLY the complete updated summary.',
+].join('\n');
+
+async function summarizeMeeting(prevNotes, deltaText, isFirst, { style = 'concise' } = {}) {
   const agent = getTarget(state.settings, state.settings.activeAgentId);
+  const detailed = style === 'detailed';
   const prompt = isFirst
-    ? `${meetingNotesSkill().prompt}\n\n--- MEETING TRANSCRIPT SO FAR ---\n${deltaText}`
-    : [
-        'You are a live meeting scribe maintaining ONE running minutes document.',
-        'Update the CURRENT running notes by merging in the NEW transcript below — do not start over.',
-        'Rules: keep the same sections (TL;DR, Topics, Key Moments tagged [decision]/[highlight]/[risk]/[question], Action Items with owners/dues). Merge new items into the right place; refine or correct earlier entries if the new transcript clarifies them; never duplicate; keep stable items stable. Output ONLY the complete updated document.',
-        '',
-        '--- CURRENT RUNNING NOTES ---',
-        prevNotes,
-        '',
-        '--- NEW TRANSCRIPT SINCE LAST UPDATE ---',
-        deltaText,
-      ].join('\n');
+    ? `${detailed ? meetingNotesSkill().prompt : CONCISE_FIRST}\n\n--- MEETING TRANSCRIPT SO FAR ---\n${deltaText}`
+    : detailed
+      ? [
+          'You are a live meeting scribe maintaining ONE running minutes document.',
+          'Update the CURRENT running notes by merging in the NEW transcript below — do not start over.',
+          'Rules: keep the same sections (TL;DR, Topics, Key Moments tagged [decision]/[highlight]/[risk]/[question], Action Items with owners/dues). Merge new items into the right place; refine or correct earlier entries if the new transcript clarifies them; never duplicate; keep stable items stable. Output ONLY the complete updated document.',
+          '',
+          '--- CURRENT RUNNING NOTES ---',
+          prevNotes,
+          '',
+          '--- NEW TRANSCRIPT SINCE LAST UPDATE ---',
+          deltaText,
+        ].join('\n')
+      : [
+          CONCISE_MERGE,
+          '',
+          '--- CURRENT SUMMARY ---',
+          prevNotes,
+          '',
+          '--- NEW TRANSCRIPT SINCE LAST UPDATE ---',
+          deltaText,
+        ].join('\n');
 
   let out = '';
   await streamChat({
