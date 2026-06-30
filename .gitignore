@@ -13,6 +13,11 @@ dist/
 *.key
 secrets/
 
+# Agent instructions — live ONLY in the private backend repo (docs/agent-guides/).
+# Kept out of this public repo so strategy/roadmap isn't exposed.
+CLAUDE.md
+AGENTS.md
+
 # Local tool/editor state
 .DS_Store
 Thumbs.db
