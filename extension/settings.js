@@ -2380,6 +2380,7 @@ function skillCard(skill) {
   q('.s-context').value = skill.context || 'auto';
   q('.s-history').value = skill.historyContext || 'none';
   q('.s-mcp-mode').value = skill.mcpMode || 'none';
+  q('.s-meeting').checked = !!skill.meeting;
   if (skill.builtin) q('.s-del').classList.add('hidden');
 
   // "Run on" — Default (the agent picked in the panel) + every endpoint/agent.
@@ -2492,6 +2493,7 @@ function skillCard(skill) {
       prompt: q('.s-prompt').value,
       context: q('.s-context').value,
       historyContext: q('.s-history').value,
+      meeting: q('.s-meeting').checked,
       mcpMode,
       mcpServerIds: mcpMode === 'selected'
         ? currentDraftMcpServerIds()
