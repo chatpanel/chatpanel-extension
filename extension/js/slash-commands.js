@@ -37,7 +37,7 @@ function skillItem(skill) {
   return {
     type: 'skill',
     command: skill.command || '',
-    icon: skill.icon || '⚡',
+    icon: skill.icon || '🎓',
     description: skill.description || skill.name || '',
     skill,
   };

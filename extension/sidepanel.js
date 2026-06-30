@@ -98,7 +98,7 @@ const HISTORY_PAGE_SIZE = 25;
 // browser automation," which is impossible to debug from the chat alone.
 //
 // Page-action tools for the chat loop. Requires an API agent (bridge CLIs run
-// their own loop), the 🕹️ Act-on-page opt-in, and a readable tab. The user's
+// their own loop), the ▶️ Act-on-page opt-in, and a readable tab. The user's
 // "High-reliability page control" setting selects the backend per turn: CDP
 // trusted events (js/page-actions-cdp.js) when on, synthetic events otherwise.
 // --- Page-action confirmation gate -------------------------------------------
@@ -184,7 +184,7 @@ async function pageToolProvider(resolvedAgent) {
   if (!resolvedAgent) return null;
   if (!state.activeTab?.id) {
     console.warn('[chatpanel] page actions NOT attached — no readable web tab is active');
-    toast('🕹️ Act on page can’t run: no readable web tab is active');
+    toast('▶️ Act on page can’t run: no readable web tab is active');
     return null;
   }
   const cdp = !!state.settings.ui?.pageActionsCdp;
@@ -3459,7 +3459,7 @@ function renderSkillsMenu() {
   for (const skill of state.settings.skills) {
     const item = document.createElement('button');
     item.className = 'menu-item';
-    item.innerHTML = `<span>${skill.icon || '⚡'}</span><span>${escapeAttr(skill.name)}</span><span class="mi-sub">/${escapeAttr(
+    item.innerHTML = `<span>${skill.icon || '🎓'}</span><span>${escapeAttr(skill.name)}</span><span class="mi-sub">/${escapeAttr(
       skill.command || '',
     )}</span>`;
     item.onclick = () => {
@@ -3475,7 +3475,7 @@ function renderSkillsMenu() {
   menu.appendChild(manage);
 }
 
-// Apply a skill from the ⚡ menu: prep agent/context, fill variables, drop the
+// Apply a skill from the 🎓 menu: prep agent/context, fill variables, drop the
 // prompt into the composer for the user to review and send.
 async function applySkill(skill) {
   const input = $('input');
@@ -3575,7 +3575,7 @@ async function improvePrompt() {
   }
 }
 
-// Skills (the ⚡ menu, /commands, suggestions) are a Pro feature.
+// Skills (the 🎓 menu, /commands, suggestions) are a Pro feature.
 function skillsAllowed() {
   return can(state.license, 'customSkills');
 }
@@ -3661,7 +3661,7 @@ function renderSlashMenu() {
     item.className = 'slash-item' + (i === slashActive ? ' active' : '');
     const badge = itemData.locked ? '<span class="si-badge">Pro</span>' : '';
     item.innerHTML =
-      `<span class="si-icon">${escapeAttr(itemData.icon || '⚡')}</span>` +
+      `<span class="si-icon">${escapeAttr(itemData.icon || '🎓')}</span>` +
       `<span class="si-cmd">/${escapeAttr(itemData.command || '')}</span>` +
       `${badge}` +
       `<span class="si-desc">${escapeAttr(itemData.description || '')}</span>`;
@@ -4521,12 +4521,12 @@ function wireEvents() {
     renderPageActBtn();
     const agent = resolveTarget(agentForConv(state.conv), state.settings);
     if (on && agent?.kind === 'bridge') {
-      toast('🕹️ Act on page on. Bridge agents use browser tools through the local bridge.');
+      toast('▶️ Act on page on. Bridge agents use browser tools through the local bridge.');
     } else if (on) {
       // Disclaimer up front: this is best-effort automation by an LLM.
       toast(
         state.activeTab
-          ? '🕹️ Act on page on. I’ll fill & click when asked — I can get it wrong, so review before you submit.'
+          ? '▶️ Act on page on. I’ll fill & click when asked — I can get it wrong, so review before you submit.'
           : 'Open a web tab to act on.',
       );
     }

@@ -2154,7 +2154,7 @@ function skillsBanner() {
   const div = document.createElement('div');
   div.className = 'gate-banner';
   const span = document.createElement('span');
-  span.innerHTML = '✨ <b>Skills are a Pro feature.</b> Reusable prompts, the ⚡ menu, slash-commands and prompt-assist all unlock with Pro.';
+  span.innerHTML = '✨ <b>Skills are a Pro feature.</b> Reusable prompts, the 🎓 menu, slash-commands and prompt-assist all unlock with Pro.';
   const a = document.createElement('button');
   a.className = 'btn primary';
   a.textContent = 'Upgrade to Pro';
@@ -2328,7 +2328,7 @@ function addSkill() {
   if (!can(license, 'customSkills')) {
     return upsell('Creating custom skills is Pro. You can edit the built-ins on any plan.');
   }
-  settings.skills.push({ id: uid(), name: 'New skill', command: 'mycmd', icon: '⚡', prompt: '', historyContext: 'none', mcpMode: 'none', mcpServerIds: [] });
+  settings.skills.push({ id: uid(), name: 'New skill', command: 'mycmd', icon: '🎓', prompt: '', historyContext: 'none', mcpMode: 'none', mcpServerIds: [] });
   saveSettings(settings);
   renderSkills();
   $('skills').lastElementChild?.scrollIntoView({ behavior: 'smooth' });
