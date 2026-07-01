@@ -101,6 +101,30 @@ function setMode(mode) {
   if (mode !== 'read') autoGrow();
 }
 function updatePreview() { $('n-preview').innerHTML = renderMarkdown($('n-body').value); }
+// Toggle the Nth GitHub task item (`- [ ]`↔`- [x]`) in the source when its rendered
+// checkbox is clicked in read/split mode. Skips fenced code blocks so the index lines
+// up with the renderer's (which never emits checkboxes inside a code fence).
+function toggleTaskCheckbox(n) {
+  if (!current || noteJobs.has(current.id)) return; // don't edit under a running command
+  const ta = $('n-body');
+  const lines = ta.value.split('\n');
+  let idx = -1;
+  let inFence = false;
+  for (let li = 0; li < lines.length; li++) {
+    if (/^```/.test(lines[li])) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const m = lines[li].match(/^(\s*[-*+]\s+\[)([ xX])(\]\s+.*)$/);
+    if (!m) continue;
+    if (++idx !== n) continue;
+    lines[li] = m[1] + (m[2].toLowerCase() === 'x' ? ' ' : 'x') + m[3];
+    ta.value = lines.join('\n');
+    current.body = ta.value;
+    updatePreview();
+    updateWordCount();
+    scheduleSave(true);
+    return;
+  }
+}
 // Grow the textarea to fit its content so text always flows to the footer (never
 // clips), and the page scrolls as a whole rather than nesting a tiny inner scroll.
 function autoGrow() {
@@ -840,6 +864,19 @@ async function persistJobBody(job) {
   renderList($('n-search').value);
 }
 
+// The note itself (minus the command line) as grounding context, so an instruction
+// like "action items for this meeting" resolves against what's ACTUALLY in the note —
+// a linked meeting's #id, a date, a [[wikilink]] — instead of the model free-searching
+// history and grabbing the wrong one. Capped to bound tokens; redacted by the harness.
+function noteCommandContext(head, tail) {
+  const body = `${head}\n${tail}`.replace(/\n{3,}/g, '\n\n').trim();
+  if (!body) return '';
+  const MAX = 4000;
+  const clipped = body.length > MAX ? `${body.slice(0, MAX)}\n…(note truncated)` : body;
+  const title = (current?.title || '').trim();
+  return `The note I'm editing${title ? ` (title: "${title}")` : ''} is below. Resolve any reference in my instruction — "this meeting", a date, a name, a [[wikilink]] or a URL (a meeting link's #id identifies that exact meeting) — against THIS note, not a guess. If a tool lets you fetch something referenced here by id, use that id.\n\n"""\n${clipped}\n"""`;
+}
+
 async function runNoteCommand() {
   const ctx = currentCommandLine();
   if (!ctx || !current || noteJobs.has(current.id)) return false; // one job per note
@@ -884,6 +921,7 @@ async function runNoteCommand() {
   // PII redaction wraps EVERY note→model call — the harness must never be skipped.
   let redaction = null;
   try { redaction = deps.buildRedaction({ settings, license }); } catch { /* redaction off */ }
+  const noteCtx = noteCommandContext(head, tail); // ground the command in the note's own content
 
   const job = {
     noteId: current.id, cmd: ctx.spec.cmd, instruction: ctx.instruction,
@@ -907,7 +945,7 @@ async function runNoteCommand() {
       signal: job.abort.signal,
       tools,
       redaction,
-      messages: [{ role: 'user', content: job.instruction }],
+      messages: [{ role: 'user', content: noteCtx ? `${noteCtx}\n\n---\nInstruction: ${job.instruction}` : job.instruction }],
       onDelta: (d) => { job.out += d; job.status = 'writing'; job.statusText = 'writing…'; scheduleJobRender(job); scheduleActivityRender(); },
       onEvent: (ev) => {
         if (ev?.type === 'tool' && ev.phase === 'start') {
@@ -1963,6 +2001,10 @@ function init() {
   // Rendered-markdown links: external URLs carry the target in data-href (no live
   // href, to dodge Chrome's speculative preload), so open them via a click handler.
   $('n-preview').addEventListener('click', async (e) => {
+    // Task-list checkbox → toggle the matching `- [ ]`/`- [x]` in the source so read
+    // mode stays interactive (the native toggle is overridden by the re-render).
+    const cb = e.target.closest?.('input.md-check[data-task]');
+    if (cb) { toggleTaskCheckbox(Number(cb.getAttribute('data-task'))); return; }
     // [[wiki links]] → resolve the title to a doc and navigate.
     const wl = e.target.closest?.('a.wikilink[data-wikilink]');
     if (wl) {

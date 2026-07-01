@@ -339,6 +339,7 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .md ul.md-tasklist { list-style: none; padding-left: 3px; }
 .md li.md-task { display: flex; align-items: baseline; gap: 8px; }
 .md li.md-task input { margin: 0; transform: translateY(1px); }
+.md li.md-task input.md-check { cursor: pointer; accent-color: var(--accent); }
 .md a.md-link { color: var(--accent); text-decoration: none; cursor: pointer; }
 .md a.md-link:hover { text-decoration: underline; }
 .md a { color: var(--accent); text-decoration: none; }
