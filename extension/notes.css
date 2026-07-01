@@ -376,7 +376,11 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .md h1 { font-size: 1.55em; margin: 1.1em 0 .45em; } .md h2 { font-size: 1.3em; margin: 1.5em 0 .5em; }
 .md h3 { font-size: 1.12em; margin: 1.35em 0 .4em; } .md h4 { font-size: 1em; margin: 1.2em 0 .35em; }
 /* Justified body with hyphenation so long lines fill the wider measure without rivers. */
-.md p { margin: .75em 0; text-align: justify; text-justify: inter-word; hyphens: auto; -webkit-hyphens: auto; overflow-wrap: break-word; }
+/* Justified body text by default — paragraphs AND list items — with hyphenation so the
+   wider measure fills cleanly. (Single-line items are naturally unaffected; the last line
+   of a wrapped block is never stretched.) */
+.md p, .md li { text-align: justify; text-justify: inter-word; hyphens: auto; -webkit-hyphens: auto; overflow-wrap: break-word; }
+.md p { margin: .75em 0; }
 .md ul, .md ol { margin: .55em 0; padding-left: 1.35em; }
 .md li { margin: .3em 0; }
 .md li::marker { color: var(--faint); }
@@ -384,7 +388,7 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
    container, which fragmented each inline run into columns), with a hanging indent so
    wrapped lines align under the text. */
 .md ul.md-tasklist { list-style: none; padding-left: 0; }
-.md li.md-task { padding-left: 1.7em; text-indent: -1.7em; text-align: left; }
+.md li.md-task { padding-left: 1.7em; text-indent: -1.7em; }
 .md li.md-task input.md-check {
   width: 1.02em; height: 1.02em; margin: 0 .55em 0 0; vertical-align: -.14em;
   text-indent: 0; cursor: pointer; accent-color: var(--accent); flex: none;
