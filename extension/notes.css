@@ -61,8 +61,18 @@ body {
 .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 .btn.ghost:hover { background: var(--field); color: var(--text); border-color: transparent; }
 
-.layout { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 56px); transition: grid-template-columns .16s ease; }
+.layout { display: grid; grid-template-columns: var(--rail-w, 320px) 1fr; height: calc(100vh - 56px); transition: grid-template-columns .16s ease; }
 .layout.rail-collapsed { grid-template-columns: 0 1fr; }
+/* Drag handles to resize the list rail and the assistant sidebar. */
+.resizer { position: absolute; top: 0; bottom: 0; width: 7px; z-index: 20; cursor: col-resize; }
+.resizer::after { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; transform: translateX(-50%); background: transparent; transition: background .12s; }
+.resizer:hover::after, body.resizing .resizer::after { background: var(--accent); }
+body.resizing { cursor: col-resize; user-select: none; }
+.rail-resizer { left: -3px; }
+.rail-collapsed .rail-resizer { display: none; }
+.side-resizer { left: -3px; }
+.side.collapsed .side-resizer { display: none; }
+body.resizing .side, body.resizing .layout { transition: none; } /* immediate while dragging */
 
 /* List rail */
 .nlist { border-right: 1px solid var(--border); background: var(--card); display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
@@ -94,7 +104,7 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .list-empty p { margin: 0 0 12px; }
 
 /* Detail / editor */
-.detail { min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.detail { min-height: 0; overflow: hidden; display: flex; flex-direction: column; position: relative; }
 .blank { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); padding: 24px; }
 .blank-mark { font-size: 40px; opacity: .35; margin-bottom: 8px; }
 .blank h2 { color: var(--text); font-size: 20px; letter-spacing: -.02em; margin: 4px 0 6px; }
@@ -138,7 +148,7 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .editor-scroll { flex: 1; overflow-y: auto; min-width: 0; }
 
 /* ── Right assistant sidebar (Team activity / Research / Co-writer / History as tabs) ── */
-.side { flex: none; width: 360px; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--card); overflow: hidden; transition: width .16s ease; }
+.side { position: relative; flex: none; width: var(--side-w, 360px); display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--card); overflow: hidden; transition: width .16s ease; }
 .side.collapsed { width: 0; border-left-width: 0; }
 .side-tabs { display: flex; align-items: center; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--border); flex: none; }
 .side-tab { position: relative; font: inherit; font-size: 15px; line-height: 1; cursor: pointer; border: 1px solid transparent; background: transparent; color: var(--muted); border-radius: 8px; padding: 6px 9px; }

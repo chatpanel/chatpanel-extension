@@ -138,6 +138,35 @@ function refreshSideTabs() {
   setSideBadge('activity', board.log.length);
   setSideBadge('cowriter', cwSuggestions.length + boardSuggestions.length);
 }
+
+// Drag-to-resize the list rail and the assistant sidebar (persisted).
+function initResizers() {
+  const layout = $('n-layout');
+  const side = $('n-side');
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const rw = parseInt(localStorage.getItem('chatpanel.notes.railW') || '', 10);
+  if (rw) layout.style.setProperty('--rail-w', `${rw}px`);
+  const sw = parseInt(localStorage.getItem('chatpanel.notes.sideW') || '', 10);
+  if (sw) side.style.setProperty('--side-w', `${sw}px`);
+  const startDrag = (e, onMove) => {
+    e.preventDefault();
+    document.body.classList.add('resizing');
+    const move = (ev) => onMove(ev);
+    const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.classList.remove('resizing'); };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  };
+  $('n-rail-resizer').addEventListener('mousedown', (e) => startDrag(e, (ev) => {
+    const w = clamp(Math.round(ev.clientX - layout.getBoundingClientRect().left), 200, 560);
+    layout.style.setProperty('--rail-w', `${w}px`);
+    localStorage.setItem('chatpanel.notes.railW', String(w));
+  }));
+  $('n-side-resizer').addEventListener('mousedown', (e) => startDrag(e, (ev) => {
+    const w = clamp(Math.round(side.getBoundingClientRect().right - ev.clientX), 240, 680);
+    side.style.setProperty('--side-w', `${w}px`);
+    localStorage.setItem('chatpanel.notes.sideW', String(w));
+  }));
+}
 // Toggle the Nth GitHub task item (`- [ ]`↔`- [x]`) in the source when its rendered
 // checkbox is clicked in read/split mode. Skips fenced code blocks so the index lines
 // up with the renderer's (which never emits checkboxes inside a code fence).
@@ -2882,6 +2911,7 @@ function init() {
   setAlign(localStorage.getItem(ALIGN_KEY) || 'justify');
   setSideTab(localStorage.getItem('chatpanel.notes.sideTab') || 'activity', { open: false });
   setSideCollapsed(localStorage.getItem('chatpanel.notes.sideCollapsed') === '1');
+  initResizers();
 }
 
 (async function start() {
