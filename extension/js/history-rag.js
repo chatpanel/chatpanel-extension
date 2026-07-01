@@ -1,5 +1,6 @@
 import { getConversation, getIndex } from './store.js';
 import { getMeeting, getMeetingIndex, getMeetingNotes, getMeetingTopics, meetingToText } from './store-meetings.js';
+import { getNote, getNoteIndex } from './store-notes.js';
 import { peopleOfMeeting } from './meeting-people.js';
 import { insightTopicItemsFromNotes } from './topic-extraction.js';
 import { sourceCitationSystem } from './tool-hints.js';
@@ -68,7 +69,7 @@ function limitText(text, cap = 6000) {
 }
 
 function localDashboardUrl(type, id) {
-  const page = type === 'meeting' ? 'meetings.html' : 'history.html';
+  const page = type === 'meeting' ? 'meetings.html' : type === 'note' ? 'notes.html' : 'history.html';
   const path = `${page}#${encodeURIComponent(id || '')}`;
   try {
     if (globalThis.chrome?.runtime?.getURL) return chrome.runtime.getURL(path);
@@ -180,6 +181,36 @@ export function meetingSource(entry, rec, notes = '', topics = null) {
   };
 }
 
+// A note → a searchable source. Notes are plain markdown; the whole body is the
+// content (capped like chat/meeting bodies). Tags double as graph terms.
+export function noteSource(entry, rec) {
+  const id = entry?.id || rec?.id;
+  if (!id) return null;
+  const title = rec?.title || entry?.title || 'Note';
+  const date = rec?.updatedAt || entry?.updatedAt || 0;
+  const body = String(rec?.body || '');
+  const tags = Array.isArray(rec?.tags) ? rec.tags : (entry?.tags || []);
+  const lines = [`NOTE: ${title}`];
+  const contentLines = [];
+  if (date) lines.push(`Date: ${new Date(date).toLocaleString()}`);
+  if (tags.length) lines.push(`Tags: ${tags.join(', ')}`);
+  if (body) {
+    const capped = limitText(body, 12000);
+    lines.push('', capped);
+    contentLines.push(capped);
+  }
+  return {
+    id: `note:${id}`,
+    type: 'note',
+    title,
+    date,
+    url: localDashboardUrl('note', id),
+    text: lines.join('\n').trim(),
+    contentText: contentLines.join('\n').trim(),
+    meta: { id, tags, terms: tags },
+  };
+}
+
 // Source cache. Decrypting + building the source list is the expensive part at scale
 // (a year of chats/meetings), and the SAME set is re-loaded on every history search.
 // Cache the built sources in memory and invalidate when the underlying conversation/
@@ -192,7 +223,7 @@ export function meetingSource(entry, rec, notes = '', topics = null) {
 // is dropped and the memory is freed. That keeps searches fast without ChatPanel
 // sitting on a large heap between queries.
 const SRC_CACHE_TTL_MS = 60_000;
-const _srcCache = { chats: null, meetings: null, at: 0, timer: null };
+const _srcCache = { chats: null, meetings: null, notes: null, at: 0, timer: null };
 let _srcCacheWired = false;
 let _srcCacheable = false;
 // Monotonic corpus version — bumped whenever chats/meetings change. The search worker
@@ -203,6 +234,7 @@ export function historySourcesVersion() { return _srcVersion; }
 function releaseSrcCache() {
   _srcCache.chats = null;
   _srcCache.meetings = null;
+  _srcCache.notes = null;
   _srcCache.at = 0;
   if (_srcCache.timer) { clearTimeout(_srcCache.timer); _srcCache.timer = null; }
 }
@@ -218,6 +250,7 @@ function wireSourceCache() {
       for (const key of Object.keys(changes || {})) {
         if (/^chatpanel:(conv|chat)/i.test(key)) { _srcCache.chats = null; changed = true; }
         if (/^chatpanel:meeting/i.test(key)) { _srcCache.meetings = null; changed = true; }
+        if (/^chatpanel:note/i.test(key)) { _srcCache.notes = null; changed = true; }
       }
       if (changed) _srcVersion += 1;
     });
@@ -270,7 +303,22 @@ async function loadMeetingSources() {
   return out;
 }
 
-export async function loadHistorySources({ includeChats = true, includeMeetings = false } = {}) {
+async function loadNoteSources() {
+  const out = [];
+  const index = await getNoteIndex();
+  for (const entry of index || []) {
+    try {
+      const rec = await getNote(entry.id);
+      const source = noteSource(entry, rec);
+      if (source?.text) out.push(source);
+    } catch (e) {
+      console.warn('[chatpanel] history source load failed for note', entry?.id, e);
+    }
+  }
+  return out;
+}
+
+export async function loadHistorySources({ includeChats = true, includeMeetings = false, includeNotes = true } = {}) {
   const cacheable = wireSourceCache();
   // Drop a stale burst before reusing, so an idle cache can't serve old data.
   if (cacheable && _srcCache.at && Date.now() - _srcCache.at > SRC_CACHE_TTL_MS) releaseSrcCache();
@@ -282,6 +330,10 @@ export async function loadHistorySources({ includeChats = true, includeMeetings 
   if (includeMeetings) {
     if (cacheable) { if (!_srcCache.meetings) _srcCache.meetings = await loadMeetingSources(); sources.push(..._srcCache.meetings); }
     else sources.push(...(await loadMeetingSources()));
+  }
+  if (includeNotes) {
+    if (cacheable) { if (!_srcCache.notes) _srcCache.notes = await loadNoteSources(); sources.push(..._srcCache.notes); }
+    else sources.push(...(await loadNoteSources()));
   }
   if (cacheable) touchSrcCacheTTL();
   return sources;

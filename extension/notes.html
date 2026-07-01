@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Notes · ChatPanel</title>
+    <link rel="stylesheet" href="notes.css" />
+  </head>
+  <body>
+    <header class="hdr">
+      <h1>Notes <span id="n-count" class="count"></span></h1>
+      <div class="hdr-actions">
+        <button id="n-new" class="btn primary" title="New note (⌘N)">✎ New note</button>
+        <button id="n-history" class="btn ghost" title="Chat history">☰ Chats</button>
+        <button id="n-meetings" class="btn ghost" title="Meetings">👥 Meetings</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="nlist">
+        <div class="nlist-search">
+          <input id="n-search" class="search" placeholder="Search notes…  (⌘K)" autocomplete="off" spellcheck="false" />
+        </div>
+        <div id="n-items" class="nitems"></div>
+        <div id="n-empty-list" class="list-empty hidden">
+          <p>No notes yet.</p>
+          <button id="n-new2" class="btn primary">Create your first note</button>
+        </div>
+      </aside>
+
+      <main class="detail">
+        <!-- Empty state -->
+        <div id="n-blank" class="blank">
+          <div class="blank-mark">✎</div>
+          <h2>Your notes, in one private place</h2>
+          <p>Everything stays on your device — encrypted, backed up, and searchable alongside your chats and meetings.</p>
+          <button id="n-new3" class="btn primary">New note</button>
+        </div>
+
+        <!-- Editor -->
+        <div id="n-editor" class="editor hidden">
+          <div class="editor-toolbar">
+            <div class="seg" id="n-mode" role="tablist" aria-label="View mode">
+              <button data-mode="write" class="active" title="Write">Write</button>
+              <button data-mode="split" title="Split">Split</button>
+              <button data-mode="read" title="Read">Read</button>
+            </div>
+            <div class="fmt" id="n-fmt">
+              <button data-fmt="bold" title="Bold (⌘B)"><b>B</b></button>
+              <button data-fmt="italic" title="Italic (⌘I)"><i>I</i></button>
+              <button data-fmt="h1" title="Heading">H</button>
+              <button data-fmt="ul" title="Bullet list">•</button>
+              <button data-fmt="task" title="Checklist">☑</button>
+              <button data-fmt="quote" title="Quote">❝</button>
+              <button data-fmt="code" title="Code">‹›</button>
+              <button data-fmt="link" title="Link (⌘K in text)">🔗</button>
+            </div>
+            <div class="toolbar-right">
+              <span id="n-status" class="save-status"></span>
+              <button id="n-copy" class="icon-btn" title="Copy as Markdown">⧉</button>
+              <button id="n-download" class="icon-btn" title="Download .md">⬇</button>
+              <button id="n-delete" class="icon-btn danger" title="Delete note">🗑</button>
+            </div>
+          </div>
+
+          <div class="editor-scroll">
+            <input id="n-title" class="title-input" placeholder="Untitled note" spellcheck="false" />
+            <div id="n-tags" class="tags-row"></div>
+            <div class="panes" id="n-panes">
+              <textarea id="n-body" class="body-input" placeholder="Start writing…  Markdown supported." spellcheck="true"></textarea>
+              <div id="n-preview" class="preview md"></div>
+            </div>
+          </div>
+          <div class="editor-foot">
+            <span id="n-words" class="words"></span>
+            <span id="n-when" class="when"></span>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div id="n-toast" class="toast hidden"></div>
+    <script type="module" src="notes.js"></script>
+  </body>
+</html>

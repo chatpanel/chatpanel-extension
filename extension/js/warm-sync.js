@@ -21,7 +21,7 @@ export async function syncHistoryToGateway(gatewayUrl, {
   if (!gatewayUrl || syncing || typeof fetchImpl !== 'function') return { ok: false, skipped: true };
   syncing = true;
   try {
-    const sources = await loadSources({ includeChats: true, includeMeetings: true });
+    const sources = await loadSources({ includeChats: true, includeMeetings: true, includeNotes: true });
     const upserts = sources
       .filter((s) => s && s.id && s.text)
       .map((s) => ({ id: s.id, text: s.text, title: s.title || '', type: s.type || '', date: s.date || 0 }));

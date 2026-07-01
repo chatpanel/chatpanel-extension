@@ -30,12 +30,13 @@ function normalizeField(field) {
 }
 
 function scopedSources(sources, scope, includeMeetings) {
-  const wanted = scope === 'meetings' || scope === 'chats' ? scope : 'all';
+  const wanted = scope === 'meetings' || scope === 'chats' || scope === 'notes' ? scope : 'all';
   return (sources || []).filter((s) => {
     if (!includeMeetings && s.type === 'meeting') return false;
     if (wanted === 'meetings') return s.type === 'meeting';
     if (wanted === 'chats') return s.type === 'chat';
-    return s.type === 'chat' || s.type === 'meeting';
+    if (wanted === 'notes') return s.type === 'note';
+    return s.type === 'chat' || s.type === 'meeting' || s.type === 'note';
   });
 }
 
@@ -60,7 +61,7 @@ export function chunkHistorySource(source, { maxChunkChars = DEFAULT_CHUNK_CHARS
         sourceId: source.id,
         chunk: index,
         type: source.type,
-        title: source.title || (source.type === 'meeting' ? 'Meeting' : 'Chat'),
+        title: source.title || (source.type === 'meeting' ? 'Meeting' : source.type === 'note' ? 'Note' : 'Chat'),
         date: source.date || 0,
         text: chunkText,
         url: source.url || '',

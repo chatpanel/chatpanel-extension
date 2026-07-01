@@ -1,5 +1,5 @@
 // Live, interactive force-directed graph (animated settle + drag + hover +
-// zoom/pan), like the "famous" graph views (D3 / Obsidian). SVG, no deps.
+// zoom/pan). SVG, no deps.
 // Shared by the Meetings and Chat-history dashboards.
 //
 // nodes: [{ id, type: 'meeting'|'topic'|'participant'|'person', label, focus? }]

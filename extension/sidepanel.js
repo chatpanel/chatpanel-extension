@@ -5258,6 +5258,7 @@ function wireEvents() {
   };
   $('history-close').onclick = () => { historyView.renderToken += 1; $('history').classList.add('hidden'); };
   $('history-expand').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('history.html') });
+  $('btn-notes').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('notes.html') });
   $('history-search').oninput = (e) => { historyView.page = 1; renderHistory(e.target.value); };
   $('history-modes').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-mode]');
@@ -5360,7 +5361,7 @@ function wireEvents() {
       maybeWarmSync(); // a just-enabled warm toggle should start syncing
     }
     // WARM tier: history changed → refresh the gateway index (opt-in, debounced no-op otherwise).
-    if (Object.keys(changes).some((k) => /^chatpanel:(conv|chat|meeting)/i.test(k))) maybeWarmSync();
+    if (Object.keys(changes).some((k) => /^chatpanel:(conv|chat|meeting|note)/i.test(k))) maybeWarmSync();
     if (changes['chatpanel:license']) {
       state.license = await getLicense();
       setPiiEntitlement(isPro(state.license));

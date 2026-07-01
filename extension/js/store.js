@@ -9,6 +9,7 @@
 // All functions are async and safe to call from the side panel or options page.
 
 import { exportMeetings, importMeetings, meetingToMarkdown } from './store-meetings.js';
+import { exportNotes, importNotes, noteToMarkdown } from './store-notes.js';
 import { exportOAuthTokens, importOAuthTokens } from './oauth.js';
 import { makeZip } from './zip.js';
 
@@ -773,16 +774,19 @@ export async function importConversations(data, { mode = 'merge' } = {}) {
 export async function exportAllData() {
   const conv = await exportConversations();
   const meetings = await exportMeetings();
+  const notes = await exportNotes(); // v5 — user notes as a third first-class source
   const settings = await getSettings();
   const oauthTokens = await exportOAuthTokens(); // endpoint sign-ins (v4) — see SECURITY note above
   return {
     type: BACKUP_TYPE,
-    version: 4,
+    version: 5,
     exportedAt: Date.now(),
     count: conv.count,
     conversations: conv.conversations,
     meetingsCount: meetings.length,
     meetings,
+    notesCount: notes.length,
+    notes,
     settings,
     oauthTokens,
   };
@@ -795,6 +799,7 @@ export async function exportAllData() {
 export async function importAllData(data, { mode = 'merge' } = {}) {
   const conversations = await importConversations(data, { mode }); // validates the file
   const meetings = await importMeetings(data.meetings, { mode });
+  const notes = await importNotes(data.notes, { mode }); // v5+; older backups have no notes
   let settings = false;
   if (data.settings && typeof data.settings === 'object') {
     const merged = mergeSettings(defaultSettings(), data.settings); // folds in any newer fields
@@ -807,7 +812,7 @@ export async function importAllData(data, { mode = 'merge' } = {}) {
   if (data.oauthTokens && typeof data.oauthTokens === 'object') {
     await importOAuthTokens(data.oauthTokens, { mode });
   }
-  return { conversations, meetings, settings };
+  return { conversations, meetings, notes, settings };
 }
 
 // "Export all data" as a ZIP that is BOTH a restorable backup and a browsable
@@ -849,6 +854,9 @@ export async function exportDataArchive(precomputed) {
   for (const m of data.meetings) {
     const md = meetingToMarkdown(m.record) + (m.notes ? `\n\n## Summary\n\n${m.notes}\n` : '');
     files.push({ name: mdName('meetings', m.record.title, m.record.startedAt), data: md });
+  }
+  for (const n of data.notes || []) {
+    files.push({ name: mdName('notes', n.title, n.updatedAt || n.createdAt), data: noteToMarkdown(n) });
   }
   return { blob: await makeZip(files), count: data.count, meetingsCount: data.meetingsCount };
 }
