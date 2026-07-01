@@ -18,6 +18,9 @@ import {
 import {
   SWARM_ROLES, SWARM_ROLE_META, swarmOverrides, swarmCandidates, roleAgent, getRouter,
 } from './js/notes-swarm-router.js';
+import {
+  HUMAN, blankAttribution, applyAttribution, attributionSummary, normalizeAttribution,
+} from './js/notes-provenance.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -287,62 +290,8 @@ function histReset(value) {
   histAt = 0; histCoalescing = false;
 }
 // ── Provenance ledger — who (human / which agent) wrote each run, + versions ───────
-// Attribution is a run-list `[{ len, author, at }]` summing to body.length, so it
-// shifts naturally as text is inserted/deleted (no absolute offsets to fix up). Each
-// committed edit attributes only its CHANGED span (found by a prefix/suffix diff) to
-// its author; untouched text keeps its prior authorship.
-const HUMAN = 'You';
-function blankAttribution(len, author = HUMAN, at = 0) { return len > 0 ? [{ len, author, at }] : []; }
-// The minimal replaced range: [start,end) of `prev` became `insLen` new chars in `next`.
-function diffRange(prev, next) {
-  const max = Math.min(prev.length, next.length);
-  let s = 0; while (s < max && prev[s] === next[s]) s++;
-  let e = 0; while (e < max - s && prev[prev.length - 1 - e] === next[next.length - 1 - e]) e++;
-  return { start: s, end: prev.length - e, insLen: next.length - s - e };
-}
-function mergeRuns(runs) {
-  const out = [];
-  for (const r of runs) {
-    if (!r.len) continue;
-    const last = out[out.length - 1];
-    if (last && last.author === r.author && last.at === r.at) last.len += r.len;
-    else out.push({ len: r.len, author: r.author, at: r.at });
-  }
-  return out;
-}
-function spliceAttribution(runs, start, end, insLen, author, at) {
-  const before = [], after = [];
-  let pos = 0;
-  for (const r of runs) {
-    const rStart = pos, rEnd = pos + r.len;
-    if (rEnd <= start) before.push(r);
-    else if (rStart >= end) after.push(r);
-    else {
-      if (rStart < start) before.push({ len: start - rStart, author: r.author, at: r.at });
-      if (rEnd > end) after.push({ len: rEnd - end, author: r.author, at: r.at });
-    }
-    pos = rEnd;
-  }
-  return mergeRuns([...before, ...(insLen ? [{ len: insLen, author, at }] : []), ...after]);
-}
-function applyAttribution(runs, prev, next, author, at) {
-  const cur = Array.isArray(runs) && runs.length ? runs : blankAttribution(prev.length);
-  const { start, end, insLen } = diffRange(prev, next);
-  if (start === end && !insLen) return cur; // no change
-  return spliceAttribution(cur, start, end, insLen, author, at);
-}
-function attributionSummary(runs) {
-  const by = new Map();
-  let total = 0;
-  for (const r of runs || []) { by.set(r.author, (by.get(r.author) || 0) + r.len); total += r.len; }
-  return { by: [...by.entries()].map(([author, chars]) => ({ author, chars })).sort((a, b) => b.chars - a.chars), total };
-}
-// Adopt a stored ledger only if it still matches the body length (a note edited by an
-// older build, or imported, won't have one) — otherwise seed the whole body as You.
-function normalizeAttribution(runs, bodyLen, at) {
-  if (Array.isArray(runs) && runs.length && runs.reduce((n, r) => n + (r.len || 0), 0) === bodyLen) return mergeRuns(runs);
-  return blankAttribution(bodyLen, HUMAN, at);
-}
+// The pure attribution engine lives in ./js/notes-provenance.js (imported above);
+// here we own the live run-list on `current.attribution` + the undo/version glue.
 
 // Record the pre-change checkpoint if the body changed, AND attribute the changed
 // span to `author`. Consecutive single-char typing within 500ms coalesces into one
