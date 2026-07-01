@@ -306,6 +306,9 @@ async function toolsetFor(
       // so the model can pull fresh captions instead of reaching for a browser it
       // doesn't have. Reads the in-memory record (newer than the persisted copy).
       liveReader: (state.liveMeeting && can(state.license, 'liveMeetings')) ? getLiveMeetingRecord : null,
+      // Route history_search through the local gateway's warm index (fused with
+      // the in-browser results) only when the user opted in. Off → HOT-only.
+      warm: warmSearchConfig(),
     }));
   }
 
@@ -1176,6 +1179,13 @@ function markComposerReady() { composerReady = true; resolveComposerReady(); }
 // WARM tier (opt-in): keep the local gateway's search index in step with local history.
 // Debounced so a burst of edits collapses into one push; a no-op unless enabled.
 let _warmSyncTimer = null;
+// The opt-in warm-search config for query-time fusion, or null when off. Same
+// gate as maybeWarmSync — only route to the gateway if the user enabled it.
+function warmSearchConfig() {
+  const ws = state.settings?.ui?.warmSearch;
+  return ws?.enabled && ws.url ? { url: ws.url } : null;
+}
+
 function maybeWarmSync({ immediate = false } = {}) {
   const ws = state.settings?.ui?.warmSearch;
   if (!ws?.enabled || !ws.url) return;
@@ -1343,6 +1353,7 @@ async function send() {
           scope: historyCommand.scope,
           limit: 8,
           maxChars: 12000,
+          warm: warmSearchConfig(),
         });
         if (retrieved.results.length) {
           state.attachments.unshift(retrieved.attachment);
@@ -1365,6 +1376,7 @@ async function send() {
             scope: autoHistoryContext.scope,
             limit: 8,
             maxChars: 12000,
+            warm: warmSearchConfig(),
           });
           if (retrieved.results.length) {
             state.attachments.unshift(retrieved.attachment);

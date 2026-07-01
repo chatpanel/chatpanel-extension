@@ -11,6 +11,7 @@ import {
   searchHistorySources,
 } from './history-rag-core.js';
 import { rankHistorySources } from './search-engine.js';
+import { searchGateway, fuseHistoryResults } from './warm-query.js';
 
 export { relatedHistorySources };
 
@@ -305,21 +306,32 @@ export async function retrieveHistory(
     mode = 'best',
     field = 'all',
     recency = true,
+    warm = null, // { url } → also query the local gateway's warm index and RRF-fuse
   } = {},
 ) {
   const q = String(query || '').trim();
   const sources = await loadSources({ includeChats: true, includeMeetings: !!includeMeetings });
   const scopeForSearch = effectiveScope(scope, q, { includeMeetings: !!includeMeetings });
-  const results = q
+  const wantLimit = clampInt(limit, DEFAULT_RESULT_LIMIT, 1, 30);
+  // When fusing, pull a deeper HOT candidate pool so WARM can reorder within it.
+  const hotLimit = warm?.url ? Math.min(30, Math.max(wantLimit, 20)) : wantLimit;
+  let results = q
     ? await rankHistorySources(sources, q, {
       scope: scopeForSearch,
       includeMeetings: !!includeMeetings,
-      limit: clampInt(limit, DEFAULT_RESULT_LIMIT, 1, 30),
+      limit: hotLimit,
       mode,
       field,
       recency, // mild freshness prior (default on for the model's history search)
     }, { version: historySourcesVersion() })
     : [];
+  if (q && warm?.url && results.length) {
+    // Fail-safe: any gateway hiccup returns [] and HOT stands unchanged.
+    const warmHits = await searchGateway(warm.url, q, { limit: 20 });
+    results = warmHits.length ? fuseHistoryResults(results, warmHits, { limit: wantLimit }) : results.slice(0, wantLimit);
+  } else {
+    results = results.slice(0, wantLimit);
+  }
   return {
     sources,
     results,
@@ -621,6 +633,9 @@ export function historyToolProvider({
   // the capturing tab). When provided + Pro, exposes the meeting_live_transcript tool.
   liveReader = null,
   now = Date.now(),
+  // { url } → route history_search through the local gateway warm index (fused
+  // with the in-browser results). Off unless the user opted into warm search.
+  warm = null,
 } = {}) {
   const canReadMeetings = !!includeMeetings;
   const hasLive = canReadMeetings && typeof liveReader === 'function';
@@ -662,6 +677,7 @@ export function historyToolProvider({
           mode: input?.mode || 'best',
           field: input?.field || 'all',
           loadSources,
+          warm,
         });
         return formatHistoryResults(results, { query, maxChars: input?.maxChars });
       }

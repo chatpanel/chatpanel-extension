@@ -1,0 +1,83 @@
+// WARM-tier query: ask the local gateway's full-corpus index, and fuse its
+// ranking with the in-browser (HOT) results via Reciprocal Rank Fusion.
+//
+// Why fuse instead of replace: HOT carries a mild freshness prior and always has
+// the result objects (chunked text/snippets); WARM is a clean BM25 over the whole
+// corpus that keeps working when the browser index is still warming up or (later,
+// with eviction) holds sources HOT has dropped. RRF needs no score calibration
+// between the two engines — it merges by RANK, so a gateway score and a hot score
+// never have to mean the same thing. Fail-safe: any gateway error → HOT unchanged.
+
+// Query the gateway warm index. Returns [{id, score, title, type, date}] or [] on
+// ANY failure (offline, disabled, 500) — the caller then just uses HOT results.
+export async function searchGateway(gatewayUrl, query, { limit = 12, signal, fetchImpl } = {}) {
+  const fetcher = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
+  const url = String(gatewayUrl || '').trim();
+  const q = String(query || '').trim();
+  if (!fetcher || !url || !q) return [];
+  try {
+    const res = await fetcher(url.replace(/\/+$/, '') + '/v1/history/search', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: q, limit }),
+      signal,
+    });
+    if (!res || !res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data?.results) ? data.results.filter((r) => r && r.id) : [];
+  } catch {
+    return [];
+  }
+}
+
+// Reciprocal Rank Fusion over N ranked id-lists. score(id) = Σ 1/(k + rank),
+// rank 0-based. k dampens the weight of top ranks so a single list can't dominate.
+// Returns [{id, score}] sorted desc, optionally capped to `limit`.
+export function fuseRRF(lists, { k = 60, limit = 0 } = {}) {
+  const score = new Map();
+  for (const list of lists || []) {
+    if (!Array.isArray(list)) continue;
+    list.forEach((id, rank) => {
+      if (id == null) return;
+      score.set(id, (score.get(id) || 0) + 1 / (k + rank));
+    });
+  }
+  const out = [...score.entries()].map(([id, s]) => ({ id, score: s })).sort((a, b) => b.score - a.score);
+  return limit > 0 ? out.slice(0, limit) : out;
+}
+
+// Fuse HOT result objects with WARM hits. HOT provides the objects (chunked text,
+// url, snippet); WARM contributes a ranking co-signal. Fusion is at SOURCE
+// granularity (warm is one doc per source; hot may be several chunks per source),
+// then hot chunks are emitted in the fused source order. Warm-only ids that HOT
+// never returned are ignored here (no re-chunking) — a no-op while HOT holds the
+// full corpus, and the seam where eviction later resolves cold sources. Returns
+// re-ordered HOT results, capped to `limit`.
+export function fuseHistoryResults(hotResults, warmHits, { limit = 8 } = {}) {
+  const hot = Array.isArray(hotResults) ? hotResults : [];
+  const warm = Array.isArray(warmHits) ? warmHits : [];
+  if (!warm.length) return hot.slice(0, limit);
+
+  // Group hot chunks under their source id, preserving first-seen order.
+  const bySource = new Map();
+  const hotOrder = [];
+  for (const r of hot) {
+    const sid = r.sourceId ?? r.id;
+    if (!bySource.has(sid)) {
+      bySource.set(sid, []);
+      hotOrder.push(sid);
+    }
+    bySource.get(sid).push(r);
+  }
+  const fused = fuseRRF([hotOrder, warm.map((h) => h.id)], { limit: 0 });
+  const out = [];
+  for (const { id, score } of fused) {
+    const chunks = bySource.get(id);
+    if (!chunks) continue; // warm-only source HOT didn't return — skip (no re-chunk yet)
+    for (const c of chunks) {
+      out.push({ ...c, score }); // fused source score, applied to each of its chunks
+      if (out.length >= limit) return out;
+    }
+  }
+  return out;
+}
