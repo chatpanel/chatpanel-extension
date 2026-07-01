@@ -440,12 +440,12 @@ function candidateModel(ag, settings) {
 function swarmCandidates(deps, settings, license) {
   const out = [];
   for (const ep of settings.endpoints || []) {
-    if (ep?.model) out.push({ id: ep.id, name: ep.name || ep.model, kind: ep.kind || 'openai', model: ep.model, usable: deps.canUseAgent(license, settings, ep) });
+    if (ep?.model) out.push({ id: ep.id, name: ep.name || ep.model, kind: ep.kind || 'openai', model: ep.model, enabled: ep.enabled !== false, usable: deps.canUseAgent(license, settings, ep) });
   }
   for (const ag of settings.agents || []) {
     const model = candidateModel(ag, settings);
     if (!model) continue;
-    out.push({ id: ag.id, name: ag.name || ag.bridgeAgent || model, kind: ag.kind || 'bridge', bridgeAgent: ag.bridgeAgent, model, usable: deps.canUseAgent(license, settings, ag) });
+    out.push({ id: ag.id, name: ag.name || ag.bridgeAgent || model, kind: ag.kind || 'bridge', bridgeAgent: ag.bridgeAgent, model, enabled: ag.enabled !== false, usable: deps.canUseAgent(license, settings, ag) });
   }
   return out;
 }
@@ -453,7 +453,10 @@ function swarmCandidates(deps, settings, license) {
 // single-model user still gets every co-writer.
 async function roleAgent(deps, settings, license, roleId) {
   if (!_router) _router = await import('./js/cowriter-router.js');
-  const appt = _router.appoint(SWARM_ROLES[roleId], swarmCandidates(deps, settings, license), { overrides: swarmOverrides() });
+  // Never route to a DISABLED model (enabled:false is "hidden from pickers"); appoint()
+  // further drops license-gated ones (usable:false).
+  const cands = swarmCandidates(deps, settings, license).filter((c) => c.enabled !== false);
+  const appt = _router.appoint(SWARM_ROLES[roleId], cands, { overrides: swarmOverrides() });
   const target = appt ? deps.getTarget(settings, appt.id) : deps.getTarget(settings, settings.activeAgentId);
   if (!target || !deps.canUseAgent(license, settings, target)) return null;
   return { resolved: deps.resolveTarget(target, settings), mode: appt?.mode || 'api', label: target.name || appt?.model || '' };
@@ -1614,11 +1617,15 @@ async function renderSwarmMenu() {
     deps = await agentDeps();
     settings = await deps.getSettings();
     license = await deps.getLicense();
-    cands = swarmCandidates(deps, settings, license).filter((c) => c.usable !== false);
+    cands = swarmCandidates(deps, settings, license); // ALL configured models (enabled + disabled)
     overrides = swarmOverrides();
     if (!_router) _router = await import('./js/cowriter-router.js');
   } catch { menu.innerHTML = '<div class="agent-hint">Set up a model in ChatPanel settings first</div>'; return; }
   if (!cands.length) { menu.innerHTML = '<div class="agent-hint">Add a model in ChatPanel settings to use the co-writer swarm.</div>'; return; }
+  // Only ENABLED + license-usable models are actually routable; disabled ones are shown
+  // in the dropdown as inactive so you know to enable them (Settings → API / Agents).
+  const pickable = cands.filter((c) => c.enabled !== false && c.usable !== false);
+  const reasonFor = (c) => (c.enabled === false ? ' — inactive (enable in Settings)' : (c.usable === false ? ' — needs Pro' : ''));
   menu.innerHTML = '<div class="swarm-title">Co-writer team</div>';
   // Two gears — Ambient (quiet, suggest-only) vs Focus (drafts sections + fact-checks).
   const gearRow = document.createElement('div');
@@ -1642,9 +1649,9 @@ async function renderSwarmMenu() {
   intentWrap.appendChild(intentIn);
   menu.appendChild(intentWrap);
   for (const role of SWARM_ROLE_META) {
-    const appt = _router.appoint(SWARM_ROLES[role.id], cands, { overrides });
+    const appt = _router.appoint(SWARM_ROLES[role.id], pickable, { overrides }); // route only among enabled+usable
     const tier = appt?.mode === 'subagent' ? 'subagent' : (appt?.tier || SWARM_ROLES[role.id].prefer);
-    const pinned = overrides[role.id] && cands.some((c) => c.id === overrides[role.id]) ? overrides[role.id] : '';
+    const pinned = overrides[role.id] && pickable.some((c) => c.id === overrides[role.id]) ? overrides[role.id] : ''; // a disabled pin → falls back to Auto
     const row = document.createElement('div');
     row.className = 'swarm-row';
     row.innerHTML =
@@ -1653,8 +1660,13 @@ async function renderSwarmMenu() {
       `<span class="swarm-tier tier-${escapeHtml(tier)}">${escapeHtml(tier)}</span></div>`;
     const sel = document.createElement('select');
     sel.className = 'swarm-select';
-    sel.innerHTML = `<option value="">${escapeHtml(appt ? `Auto → ${appt.name || appt.model}` : 'Auto')}</option>`
-      + cands.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name || c.model)}</option>`).join('');
+    // Show every configured model; disable (grey, unselectable) the ones that can't run,
+    // with the reason, so you know to go enable them in Settings → API / Agents.
+    sel.innerHTML = `<option value="">${escapeHtml(appt ? `Auto → ${appt.name || appt.model}` : 'Auto (no active model)')}</option>`
+      + cands.map((c) => {
+        const off = c.enabled === false || c.usable === false;
+        return `<option value="${escapeHtml(c.id)}"${off ? ' disabled' : ''}>${escapeHtml(c.name || c.model)}${escapeHtml(reasonFor(c))}</option>`;
+      }).join('');
     sel.value = pinned;
     sel.onchange = () => setRoleOverride(role.id, sel.value);
     row.appendChild(sel);
@@ -1667,7 +1679,9 @@ async function renderSwarmMenu() {
   menu.appendChild(meter);
   const hint = document.createElement('div');
   hint.className = 'agent-hint';
-  hint.textContent = 'Auto = the router picks by role (cheap → strong). Free work (deterministic edits, retrieval) never counts against spend.';
+  hint.textContent = cands.length > pickable.length
+    ? 'Greyed models are inactive — enable them in Settings → API / Agents. Auto routes among active models by role (cheap → strong).'
+    : 'Auto = the router picks by role (cheap → strong). Free work (deterministic edits, retrieval) never counts against spend.';
   menu.appendChild(hint);
 }
 function setRoleOverride(roleId, candId) {
