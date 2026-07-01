@@ -6,7 +6,7 @@
 //             plus the bridge connection itself.
 import { getSettings, saveSettings, uid, exportAllData, exportDataArchive, importAllData, resetSkillsToDefaults } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
-import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, runAutoBackup } from './js/auto-backup.js';
+import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, setAutoBackupHour, runAutoBackup } from './js/auto-backup.js';
 import { encryptBackup, decryptBackup, isEncryptedBackup } from './js/crypto-backup.js';
 import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, previewRedaction, traceFlow } from './js/providers.js';
 import { buildToolset } from './js/toolset.js';
@@ -3584,11 +3584,20 @@ function wireAutoBackup() {
     const mb = n / (1024 * 1024);
     return mb >= 1 ? ` (${mb.toFixed(1)} MB)` : ` (${Math.max(1, Math.round(n / 1024))} KB)`;
   };
+  const hourSel = $('autobackup-hour');
+  // Populate 12am–11pm once (value = 0–23 local hour).
+  if (hourSel && hourSel.options.length <= 1) {
+    for (let h = 0; h < 24; h++) {
+      const label = h === 0 ? '12:00 AM' : h < 12 ? `${h}:00 AM` : h === 12 ? '12:00 PM' : `${h - 12}:00 PM`;
+      hourSel.add(new Option(`Daily at ${label}`, String(h)));
+    }
+  }
+  const hourText = (st) => (Number.isInteger(st.hour) ? ` · daily at ${st.hour % 12 || 12}${st.hour < 12 ? 'am' : 'pm'}` : '');
   const showState = (st) => {
     if (st.lastError) return setStatus(status, '✕ ' + st.lastError, 'err');
     if (!st.enabled) return setStatus(status, 'Off — your data is only inside the extension.', '');
     const lock = st.passphrase ? ' 🔒 encrypted' : '';
-    setStatus(status, `On${lock} — saved to Downloads → ChatPanel Backups. Last backup: ${fmt(st.lastAt)}${fmtSize(st.lastBytes)}.`, st.lastAt ? 'ok' : '');
+    setStatus(status, `On${lock}${hourText(st)} — saved to Downloads → ChatPanel Backups. Last backup: ${fmt(st.lastAt)}${fmtSize(st.lastBytes)}.`, st.lastAt ? 'ok' : '');
   };
   // Persist the encryption passphrase from the field before any backup runs so
   // the unattended service-worker write uses the latest value.
@@ -3597,8 +3606,16 @@ function wireAutoBackup() {
   getBackupState().then((st) => {
     toggle.checked = !!st.enabled;
     if (pw) pw.value = st.passphrase || '';
+    if (hourSel) hourSel.value = Number.isInteger(st.hour) ? String(st.hour) : '';
     showState(st);
   });
+
+  if (hourSel) {
+    hourSel.onchange = async () => {
+      await setAutoBackupHour(hourSel.value === '' ? null : hourSel.value);
+      showState(await getBackupState());
+    };
+  }
 
   // Changing the passphrase must rewrite the on-disk file immediately: the
   // change-detector hashes plaintext, so without this a newly-set password

@@ -854,6 +854,13 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
             </p>
             <label class="check"><input type="checkbox" id="autobackup-enabled" /> Back up my data to disk every day</label>
             <div class="field">
+              <label for="autobackup-hour">Run the daily backup</label>
+              <select id="autobackup-hour">
+                <option value="">Automatically (~24h after it's armed)</option>
+              </select>
+              <p class="muted tiny">Pick a time of day (your local time), or leave it automatic. “Back up now” below is a one-off and doesn’t change this schedule.</p>
+            </div>
+            <div class="field">
               <label for="autobackup-password">Encrypt disk backups (optional)</label>
               <input id="autobackup-password" type="password" autocomplete="off"
                      placeholder="Password for the daily files — leave blank for plain .zip" />
