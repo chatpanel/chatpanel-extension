@@ -61,6 +61,16 @@
               <button data-fmt="link" title="Link (⌘K in text)">🔗</button>
             </div>
             <div class="agent-wrap">
+              <button id="n-align" class="fmt-menu-btn" title="Paragraph alignment (reading view)" aria-haspopup="menu">¶ ▾</button>
+              <div id="n-align-menu" class="agent-menu align-menu hidden" role="menu">
+                <button data-align="left" role="menuitem">⯇&nbsp;&nbsp;Left</button>
+                <button data-align="justify" role="menuitem">☰&nbsp;&nbsp;Justify</button>
+                <button data-align="center" role="menuitem">≡&nbsp;&nbsp;Center</button>
+                <button data-align="right" role="menuitem">⯈&nbsp;&nbsp;Right</button>
+                <div class="agent-hint">Applies to the Read / Split preview</div>
+              </div>
+            </div>
+            <div class="agent-wrap">
               <button id="n-agent" class="ai-btn" title="Agent actions — uses your selected model">✨ Agent</button>
               <div id="n-agent-menu" class="agent-menu hidden" role="menu">
                 <button data-act="plannote" role="menuitem">🧭 Plan in a new note</button>

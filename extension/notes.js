@@ -88,6 +88,17 @@ function setMode(mode, persist = true) {
   if (mode !== 'write') updatePreview();
   if (mode !== 'read') autoGrow();
 }
+// Paragraph alignment for the reading view — left / justify / center / right, live &
+// persisted, driven by a CSS var on the preview so you can compare what reads best.
+const ALIGN_KEY = 'chatpanel.notes.align';
+const ALIGNS = ['left', 'justify', 'center', 'right'];
+function setAlign(a) {
+  const align = ALIGNS.includes(a) ? a : 'justify';
+  $('n-preview').style.setProperty('--para-align', align);
+  localStorage.setItem(ALIGN_KEY, align);
+  const menu = $('n-align-menu');
+  if (menu) for (const b of menu.querySelectorAll('button[data-align]')) b.classList.toggle('active', b.dataset.align === align);
+}
 function updatePreview() { $('n-preview').innerHTML = renderMarkdown($('n-body').value); }
 // Toggle the Nth GitHub task item (`- [ ]`↔`- [x]`) in the source when its rendered
 // checkbox is clicked in read/split mode. Skips fenced code blocks so the index lines
@@ -2701,6 +2712,11 @@ function init() {
 
   for (const b of $('n-mode').children) b.onclick = () => setMode(b.dataset.mode);
   for (const b of $('n-fmt').children) b.onclick = () => applyFmt(b.dataset.fmt);
+  // Paragraph-alignment menu (reading view).
+  $('n-align').onclick = (e) => { e.stopPropagation(); $('n-align-menu').classList.toggle('hidden'); };
+  for (const b of $('n-align-menu').querySelectorAll('button[data-align]')) {
+    b.onclick = () => { setAlign(b.dataset.align); $('n-align-menu').classList.add('hidden'); };
+  }
 
   // Rendered-markdown links: external URLs carry the target in data-href (no live
   // href, to dodge Chrome's speculative preload), so open them via a click handler.
@@ -2738,6 +2754,7 @@ function init() {
   };
   for (const b of $('n-agent-menu').querySelectorAll('button[data-act]')) b.onclick = () => (b.dataset.act === 'plannote' ? planInNewNote() : runAgentAction(b.dataset.act));
   document.addEventListener('click', closeAgentMenu);
+  document.addEventListener('click', () => $('n-align-menu').classList.add('hidden'));
 
   // Co-writer swarm toggle (opt-in; persisted). Announce only on user action, not load.
   $('n-cw-toggle').onclick = () => setCowriter(!cwEnabled, true);
@@ -2845,6 +2862,7 @@ function init() {
   loadMentionTargets();  // configured agents for the @ picker / @mention task runner
 
   setMode(localStorage.getItem('chatpanel.notes.mode') || 'write');
+  setAlign(localStorage.getItem(ALIGN_KEY) || 'justify');
 }
 
 (async function start() {
