@@ -652,29 +652,46 @@ async function planInNewNote(explicitTopic) {
   setIntent(`Plan: ${clean}`);
   if (!cwEnabled) setCowriter(true);
 
-  // 4) Draft a researched plan into it — tools armed, PII-wrapped, activity in the widget.
+  // 4) ORCHESTRATE: decompose the goal → dispatch each sub-task to the right member →
+  //    fill its section → check it off. Live, in the activity widget; body untouched
+  //    elsewhere. Research tasks do web + history; write tasks use the Writer.
   agentAbort = new AbortController();
   setAgentBusy(true);
   setStatus('Planning…');
   const act = makeSwarmActivity(plan.id, '🧭 Planner', resolved.model || resolved.bridgeAgent || 'model', false);
-  let tools = null; let redaction = null;
+  let redaction = null;
+  try { redaction = deps.buildRedaction?.({ settings, license }); } catch { /* redaction off */ }
+  const renderPlan = () => { if (current === planNote) { ta.value = planBody(topic, planNote.tasks || []); autoGrow(); if (!$('n-panes').classList.contains('write')) updatePreview(); } };
+
   try {
-    const bridge = await deps.checkBridge?.(settings.bridgeUrl).catch(() => ({ ok: false }));
-    tools = await deps.buildTurnTools?.({ resolvedAgent: resolved, settings, license, bridgeUrl: settings.bridgeUrl, bridgeAvailable: !!bridge?.ok, userText: topic });
-  } catch { /* no tools */ }
-  try { redaction = deps.buildRedaction?.({ settings, license }); act.trace && (act.trace.redacted = !!redaction); } catch { /* redaction off */ }
-  const sys = 'You are a planning assistant. Produce a clear, ACTIONABLE plan in GitHub-flavored markdown for the topic below: a one-line intro, then `##` sections, with `- [ ]` checkboxes for concrete steps and owners/dates where known. If tools are available, research to ground it and cite sources as markdown links. Output ONLY the plan markdown.';
-  let out = '';
-  const render = () => { if (current === planNote) { ta.value = out || '⏳ planning…'; autoGrow(); if (!$('n-panes').classList.contains('write')) updatePreview(); } };
-  render();
-  try {
-    await deps.streamChat({
-      agent: { ...resolved, systemPrompt: sys, maxTokens: 1400, temperature: 0.5 },
-      settings, tools, redaction, signal: agentAbort.signal,
-      messages: [{ role: 'user', content: `Topic to plan:\n${topic}` }],
-      onDelta: (d) => { out += d; render(); },
-      onEvent: act.onEvent,
-    });
+    // Phase A — decompose (one model call → JSON sub-tasks, each assigned a role).
+    setStatus('Decomposing the goal…');
+    const dsys = 'You are a planning orchestrator. Break the goal into 3–6 concrete sub-tasks. For each, pick a role: "research" (needs facts, options, prices, or current info — it will web + history search) or "write" (drafting, structure, synthesis). Return ONLY compact JSON: {"tasks":[{"title":"short title","role":"research|write","prompt":"a focused instruction for this sub-task"}]}';
+    let tasks = [];
+    try {
+      const raw = await deps.streamChat({ agent: { ...resolved, systemPrompt: dsys, maxTokens: 600, temperature: 0.2 }, settings, redaction, signal: agentAbort.signal, messages: [{ role: 'user', content: `Goal:\n${topic}` }], onEvent: act.onEvent });
+      tasks = (JSON.parse((raw.match(/\{[\s\S]*\}/) || ['{}'])[0]).tasks || []).slice(0, 6)
+        .map((t) => ({ title: String(t.title || 'Task').slice(0, 80), role: t.role === 'research' ? 'research' : 'write', prompt: String(t.prompt || t.title || ''), done: false, working: false, output: '' }));
+    } catch { /* fall back below */ }
+    if (!tasks.length) tasks = [{ title: clean.slice(0, 60), role: 'write', prompt: topic, done: false, working: false, output: '' }];
+    planNote.tasks = tasks;
+    renderPlan();
+
+    // Phase B — run each sub-task with its assigned member; check it off when done.
+    for (const t of tasks) {
+      if (agentAbort?.signal.aborted) break;
+      t.working = true;
+      setStatus(`${t.role === 'research' ? '🔎 Researching' : '✍️ Writing'}: ${t.title}`);
+      logActivity('Planner', `→ ${t.role}: ${t.title.slice(0, 40)}`);
+      renderPlan();
+      try {
+        if (t.role === 'research') t.output = await researchTaskMd(t.prompt, planNote);
+        else await writeTaskMd(deps, settings, license, redaction, topic, t, act, renderPlan);
+      } catch (e) { if (agentAbort?.signal.aborted) break; t.output = `_error: ${e?.message || e}_`; }
+      t.working = false; t.done = true;
+      renderPlan();
+      if (current === planNote) { current.body = ta.value; dirty = true; await flushSave(); }
+    }
     act.done();
   } catch (e) {
     act.done();
@@ -683,16 +700,59 @@ async function planInNewNote(explicitTopic) {
     agentAbort = null;
     setAgentBusy(false);
     setStatus('');
-    if (current === planNote) {
-      current.body = ta.value;
-      autoGrow();
-      updateWordCount();
-      dirty = true;
-      await flushSave();
-    }
-    logActivity('Planner', 'drafted a plan');
-    toast('Plan note created — the swarm is on it');
+    if (current === planNote) { current.body = ta.value; autoGrow(); updateWordCount(); dirty = true; await flushSave(); }
+    const done = (planNote.tasks || []).filter((t) => t.done).length;
+    logActivity('Planner', `plan complete · ${done}/${(planNote.tasks || []).length} sub-tasks`);
+    toast(`Plan orchestrated — ${done} sub-tasks done`);
   }
+}
+
+// The plan note's body, rebuilt from the task state — a progress checklist that flips
+// live, then a section per sub-task filled by its assigned member.
+function planBody(goal, tasks) {
+  const done = tasks.filter((t) => t.done).length;
+  const checklist = tasks.map((t, i) => `- [${t.done ? 'x' : ' '}] ${i + 1}. ${t.title}${t.working ? ' — _working…_' : ''}`).join('\n');
+  const sections = tasks.map((t, i) => {
+    const who = t.role === 'research' ? 'Researcher' : 'Writer';
+    const body = t.output || (t.working ? `_⏳ ${who} working…_` : '_pending_');
+    return `## ${i + 1}. ${t.title}\n\n${body}`;
+  }).join('\n\n');
+  return `# ${goal}\n\n**Plan** — ${done}/${tasks.length} sub-tasks done\n\n${checklist}\n\n---\n\n${sections}\n`;
+}
+
+// A research sub-task — token-free: history + WEB, formatted as cited bullets.
+async function researchTaskMd(prompt, note) {
+  const lines = [];
+  try {
+    if (!_ragMod) _ragMod = await import('./js/history-rag.js');
+    const { results } = await _ragMod.retrieveHistory(prompt, { includeMeetings: true, limit: 3 });
+    for (const r of results.filter((r) => r.sourceId !== `note:${note?.id}`).slice(0, 3)) {
+      lines.push(`- ${sourceKind(r.sourceId) === 'note' ? `[[${r.title}]]` : `[${r.title}](${r.url})`} — ${researchSnippet(r.text)}`);
+    }
+  } catch { /* history best-effort */ }
+  try {
+    const [ws, lic, store] = await Promise.all([import('./js/web-search.js'), import('./js/license.js'), import('./js/store.js')]);
+    const settings = await store.getSettings();
+    const license = await lic.getLicense();
+    const res = await ws.webSearch(prompt, ws.webSearchOpts(settings, lic.isPro(license)));
+    for (const r of (res.results || []).slice(0, 4)) lines.push(`- 🌐 [${r.title || r.url}](${r.url}) — ${researchSnippet(r.text)}`);
+  } catch (e) { lines.push(`- _web search unavailable: ${(e?.message || String(e)).slice(0, 80)}_`); }
+  return lines.length ? lines.join('\n') : '_No sources found._';
+}
+
+// A write sub-task — the Writer (routed) drafts the section, streaming live.
+async function writeTaskMd(deps, settings, license, redaction, goal, task, act, renderPlan) {
+  const writer = await roleAgent(deps, settings, license, 'writer');
+  const resolved = writer?.resolved || deps.resolveTarget(deps.getTarget(settings, settings.activeAgentId), settings);
+  const sys = `You are drafting ONE section of a plan for the goal "${goal}". Write the section titled "${task.title}". Instruction: ${task.prompt}. Be concrete and actionable — bullets, - [ ] tasks, or a small table for options. Output ONLY the section's markdown content (no heading, no preamble).`;
+  task.output = '';
+  await deps.streamChat({
+    agent: { ...resolved, systemPrompt: sys, maxTokens: 700, temperature: 0.5 },
+    settings, redaction, signal: agentAbort.signal,
+    messages: [{ role: 'user', content: task.prompt || task.title }],
+    onDelta: (d) => { task.output += d; renderPlan(); },
+    onEvent: act.onEvent,
+  });
 }
 
 // ── [[ wiki-link autocomplete (deterministic — links notes / chats / meetings) ────
@@ -2016,7 +2076,7 @@ function observe() {
   // Focus mode actively drafts a section on the spot; Ambient just nudges.
   if (aff) { if (swarmGear === 'focus' && aff.kind === 'section') autoDraft(aff); else addWriterNudge(aff); }
   else removeWriterNudge();
-  if (isQuestion) { if (t !== lastQuestion) { lastQuestion = t; runResearch({ question: t }); } }
+  if (isQuestion) { if (t !== lastQuestion) { lastQuestion = t; runResearch({ question: t, web: true }); } } // a question wants an answer → search the web too
   else { runResearch(); runConnector(); }
   if (swarmGear === 'focus') runFactcheck(); // the reasoning-tier member only runs in Focus
 }
