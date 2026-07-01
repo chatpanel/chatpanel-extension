@@ -260,6 +260,7 @@ async function openNote(id, preloaded = null) {
   const bodyLen = (current.body || '').length;
   current.attribution = normalizeAttribution(current.attribution, bodyLen, current.updatedAt || 0);
   current.versions = Array.isArray(current.versions) ? current.versions : [];
+  previewedVersion = -1; $('n-history-preview')?.classList.add('hidden'); // clear stale version preview
   renderHistory();
   renderTags(current.tags || []);
   suggestTags();
@@ -440,15 +441,34 @@ function renderHistory() {
   for (let i = vers.length - 1; i >= 0; i--) {
     const v = vers[i];
     const row = document.createElement('div');
-    row.className = 'hrow';
+    row.className = 'hrow' + (i === previewedVersion ? ' active' : '');
+    row.title = 'Click to preview this version';
     row.innerHTML =
       `<span class="hrow-by ${authorClass(v.by)}">${escapeHtml(v.label || v.by)}</span>` +
       `<span class="hrow-when">${escapeHtml(relTime(v.at))}</span>` +
       `<span class="hrow-len">${v.body.length} chars</span>` +
       '<button class="hrow-restore">Restore</button>';
-    row.querySelector('.hrow-restore').onclick = () => restoreVersion(i);
+    row.querySelector('.hrow-restore').onclick = (e) => { e.stopPropagation(); restoreVersion(i); };
+    row.onclick = () => previewVersion(i); // click the row to preview before restoring
     wrap.appendChild(row);
   }
+}
+let previewedVersion = -1;
+// Preview a version's content (read-only) in the History tab before restoring.
+function previewVersion(idx) {
+  const v = current?.versions?.[idx];
+  const el = $('n-history-preview');
+  if (!v || !el) return;
+  if (previewedVersion === idx) { previewedVersion = -1; el.classList.add('hidden'); renderHistory(); return; } // toggle off
+  previewedVersion = idx;
+  el.innerHTML =
+    `<div class="hpv-head"><span class="hpv-label">${escapeHtml(v.label || v.by)} · ${escapeHtml(relTime(v.at))}</span>`
+    + `<button class="hpv-restore">Restore this</button><button class="hpv-close" title="Close preview">✕</button></div>`
+    + `<div class="hpv-body md">${renderMarkdown(v.body)}</div>`;
+  el.querySelector('.hpv-restore').onclick = () => restoreVersion(idx);
+  el.querySelector('.hpv-close').onclick = () => { previewedVersion = -1; el.classList.add('hidden'); renderHistory(); };
+  el.classList.remove('hidden');
+  renderHistory(); // re-highlight the active row
 }
 function restoreVersion(idx) {
   if (!current) return;
@@ -1164,8 +1184,8 @@ const noteJobs = new Map(); // noteId -> job
 // produced output, or — if it errored before producing anything — the original
 // command line, so the user can retry rather than losing their instruction.
 function jobFinalMid(job) {
-  if (job.error && !job.out.trim()) return job.commandText;
-  return job.out;
+  if (job.error && !job.out.trim()) return job.commandText; // nothing produced → restore the command
+  return (job.answerPrefix || '') + job.out;                 // @mention keeps the question (prefix) above the answer
 }
 
 // What shows IN the note while a command runs: just the streaming output as it
@@ -1174,9 +1194,10 @@ function jobFinalMid(job) {
 // panel below the editor — not stuffed into the note body.
 function jobProgressText(job) {
   if (job.done) return jobFinalMid(job);
-  if (job.out) return job.out;
+  const pre = job.answerPrefix || '';
+  if (job.out) return pre + job.out;
   const icon = JOB_ICON[job.status] || '⏳';
-  return `${icon} @${job.cmd} — ${job.statusText}`;
+  return `${pre}${icon} @${job.cmd} — ${job.statusText}`;
 }
 
 // Mirror a running job into the editor — ONLY when its note is the open one. Keyed
@@ -1393,12 +1414,12 @@ async function runNoteCommand() {
 async function runNoteJob({
   deps, settings, license, targetAgent, resolved,
   head, tail, commandText, cmdLabel, systemPrompt, instruction,
-  makeExtraProviders = null, armToolset = true, maxTokens = 1800, temperature = 0.4, versionLabel, skillRun = null,
+  makeExtraProviders = null, armToolset = true, maxTokens = 1800, temperature = 0.4, versionLabel, skillRun = null, answerPrefix = '',
 }) {
   const ta = $('n-body');
   const job = {
     noteId: current.id, cmd: cmdLabel, instruction,
-    head, tail, commandText, out: '', steps: [], tools: [],
+    head, tail, commandText, answerPrefix, out: '', steps: [], tools: [],
     redacted: false, status: 'starting', statusText: 'starting…',
     modelLabel: targetAgent.name || resolved.model || resolved.bridgeAgent || 'agent',
     abort: new AbortController(), done: false, error: null,
@@ -1514,10 +1535,14 @@ async function runAgentTask(mention) {
     + 'Your streamed text is inserted where the task was written — use it for the main answer, tools for side effects. Output clean GitHub-flavored markdown, no preamble or meta commentary.';
   // Honor a "#[Skill]" mention in the task (scoped tools + the skill's prompt).
   const skill = resolveSkillMention(mention.task, settings, license, deps);
+  // Keep the user's question in the note (as a blockquote), with the agent's answer
+  // BELOW it — a readable Q&A trail, instead of the answer replacing the question.
+  const question = (mention.task || '').split('\n').map((l) => `> ${l}`).join('\n');
   await runNoteJob({
     deps, settings, license, targetAgent, resolved, head, tail, commandText,
     cmdLabel: `@${targetAgent.name || 'agent'}`, systemPrompt: sys, instruction: skill.instruction,
     armToolset: true, maxTokens: 2400, skillRun: skill.skillRun,
+    answerPrefix: `${question}\n\n**${targetAgent.name || 'Agent'}:**\n\n`,
     makeExtraProviders: (job) => [makeNoteTools(job)],
     versionLabel: `@${targetAgent.name || 'agent'}${skill.skillLabel ? ` #${skill.skillLabel}` : ''} · task`,
   });
