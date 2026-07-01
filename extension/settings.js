@@ -971,6 +971,18 @@ function renderGateway() {
   // editable). Auto-check whatever ends up in the field.
   $('gw-url').value = settings.gatewayUrl || 'http://127.0.0.1:4320';
   if ($('gw-url').value) refreshGateway();
+
+  // WARM search opt-in: index local history to this gateway (off by default).
+  const warm = $('gw-warm-search');
+  if (warm) {
+    warm.checked = !!settings.ui?.warmSearch?.enabled;
+    warm.onchange = async () => {
+      settings.ui = settings.ui || {};
+      settings.ui.warmSearch = { enabled: warm.checked, url: normalizeGatewayUrl($('gw-url').value) || 'http://127.0.0.1:4320' };
+      await saveSettings(settings);
+      toast(warm.checked ? 'Indexing history to the gateway…' : 'Gateway search off');
+    };
+  }
 }
 
 // Build the detector dropdown: bundled NER, custom NER, each configured LOCAL

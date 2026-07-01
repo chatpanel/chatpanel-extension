@@ -34,6 +34,7 @@ import {
 } from './js/context.js';
 import { captureSearch, webSearchOpts, webSearchToolProvider } from './js/web-search.js';
 import { getSuggestions, getMeetingSuggestions, FALLBACK_SUGGESTIONS } from './js/suggestions.js';
+import { syncHistoryToGateway } from './js/warm-sync.js';
 import {
   meetingToText,
   meetingToMarkdown,
@@ -513,6 +514,7 @@ async function init() {
   renderUpgradeChip();
   maybeShowUpdateBanner();
   scheduleLiveNotes({ force: true }); // arm the global meeting-scribe loop (off-tab safe)
+  maybeWarmSync({ immediate: true }); // opt-in: seed the gateway search index on startup
   if (state.settings.ui?.railCollapsed) {
     document.body.classList.add('rail-collapsed');
     const t = $('rail-toggle');
@@ -1170,6 +1172,18 @@ let composerReady = false;
 let resolveComposerReady;
 const composerReadyPromise = new Promise((r) => { resolveComposerReady = r; });
 function markComposerReady() { composerReady = true; resolveComposerReady(); }
+
+// WARM tier (opt-in): keep the local gateway's search index in step with local history.
+// Debounced so a burst of edits collapses into one push; a no-op unless enabled.
+let _warmSyncTimer = null;
+function maybeWarmSync({ immediate = false } = {}) {
+  const ws = state.settings?.ui?.warmSearch;
+  if (!ws?.enabled || !ws.url) return;
+  clearTimeout(_warmSyncTimer);
+  _warmSyncTimer = setTimeout(() => {
+    syncHistoryToGateway(ws.url).then((r) => { if (r && !r.ok && !r.skipped) console.debug('[chatpanel] warm sync:', r.error); });
+  }, immediate ? 400 : 5000);
+}
 
 async function send() {
   // If the user hits Send/Enter before the cold first-run init finishes, wait for it
@@ -5331,7 +5345,10 @@ function wireEvents() {
       renderHistoryContextBtn();
       renderPrivacyBtn();
       refreshBridge();
+      maybeWarmSync(); // a just-enabled warm toggle should start syncing
     }
+    // WARM tier: history changed → refresh the gateway index (opt-in, debounced no-op otherwise).
+    if (Object.keys(changes).some((k) => /^chatpanel:(conv|chat|meeting)/i.test(k))) maybeWarmSync();
     if (changes['chatpanel:license']) {
       state.license = await getLicense();
       setPiiEntitlement(isPro(state.license));

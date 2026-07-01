@@ -157,6 +157,11 @@ export function defaultSettings() {
       watch: { intervalMs: 10000, onlyWhenChanged: true, instruction: '' },
       // Right icon-rail collapsed state.
       railCollapsed: false,
+      // WARM search tier (opt-in). When enabled, the extension pushes its DECRYPTED
+      // history to the LOCAL gateway's index so it (and other on-device tools/agents)
+      // can search the full corpus off the browser thread. Off by default — it sends
+      // decrypted data to the local gateway (on-device, but an explicit choice).
+      warmSearch: { enabled: false, url: 'http://127.0.0.1:4320' },
       // MCP tool exposure for chat turns:
       // auto = only skills that explicitly enable MCP get tools; off = never;
       // on = expose configured MCP servers for the next turns.

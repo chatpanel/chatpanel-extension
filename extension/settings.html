@@ -451,6 +451,10 @@ npx @chatpanel/bridge</code></pre>
             <button type="button" id="gw-check" class="btn">Check</button>
           </div>
           <p class="status" id="gw-status">Not connected.</p>
+          <label class="check" title="Push your chats & meetings to this local gateway so it (and other on-device tools/agents) can search your full history off the browser thread. Data is sent to your LOCAL gateway only — it never leaves your machine.">
+            <input type="checkbox" id="gw-warm-search" /> Index my history to this gateway for fast full-corpus search
+          </label>
+          <p class="muted tiny">Opt-in. Sends your <strong>decrypted</strong> chats &amp; meetings to your <em>local</em> gateway (on-device) so search scales past what the browser can hold. Off = search stays in-browser only.</p>
 
           <details class="gw-help" open>
             <summary>Install the Gateway &amp; use it as a model in ChatPanel</summary>
