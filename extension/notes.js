@@ -868,13 +868,20 @@ async function maybeAutocomplete() {
     ac.index = 0;
     return renderAc();
   }
-  // @ AI commands
+  // @ — AI commands AND your configured agents (assign a task to a named agent).
   const at = currentAtQuery();
   if (at) {
     ac.mode = 'cmd';
     ac.range = at;
     const q = at.word.toLowerCase();
-    ac.items = NOTE_COMMANDS.filter((c) => c.cmd.startsWith(q) || c.label.toLowerCase().startsWith(q)).slice(0, 8);
+    const cmds = NOTE_COMMANDS
+      .filter((c) => c.cmd.startsWith(q) || c.label.toLowerCase().startsWith(q))
+      .map((c) => ({ cmd: c.cmd, hint: c.hint }));
+    const agents = mentionTargets
+      .filter((t) => !q || t.name.toLowerCase().includes(q))
+      .slice(0, 6)
+      .map((t) => ({ agent: true, name: t.name }));
+    ac.items = [...cmds, ...agents].slice(0, 10);
     ac.index = 0;
     return renderAc();
   }
@@ -902,7 +909,8 @@ function renderAc() {
     ac.items.forEach((it, i) => {
       const d = document.createElement('div');
       d.className = 'ac-item' + (i === ac.index ? ' sel' : '');
-      if (ac.mode === 'cmd') d.innerHTML = `<span class="ac-badge cmd">@${it.cmd}</span><span class="ac-title">${escapeHtml(it.hint)}</span>`;
+      if (ac.mode === 'cmd' && it.agent) d.innerHTML = `<span class="ac-badge agent">@${escapeHtml(it.name)}</span><span class="ac-title">assign a task to this agent</span>`;
+      else if (ac.mode === 'cmd') d.innerHTML = `<span class="ac-badge cmd">@${it.cmd}</span><span class="ac-title">${escapeHtml(it.hint)}</span>`;
       else if (ac.mode === 'slash') d.innerHTML = `<span class="ac-badge slash">${it.icon}</span><span class="ac-title"><b>${escapeHtml(it.label)}</b> — ${escapeHtml(it.hint)}</span>`;
       else d.innerHTML = `<span class="ac-badge ${it.type}">${it.type}</span><span class="ac-title">${escapeHtml(it.title)}</span>`;
       d.onmousedown = (e) => { e.preventDefault(); ac.index = i; acceptAc(); };
@@ -927,8 +935,10 @@ function acceptAc() {
   const it = ac.items[ac.index];
   if (ac.mode === 'cmd') {
     if (!it) return closeAc();
-    // Replace the typed "@word" (the @ is at start-1) with "@cmd " and keep typing.
-    ta.setRangeText(`@${it.cmd} `, ac.range.start - 1, ac.range.end, 'end');
+    // Replace the typed "@word" (the @ is at start-1) with the command or a bracketed
+    // agent mention ("@[Name] "), then keep typing the instruction/task.
+    const insert = it.agent ? `@[${it.name}] ` : `@${it.cmd} `;
+    ta.setRangeText(insert, ac.range.start - 1, ac.range.end, 'end');
     closeAc();
     onBodyInput();
     return;
@@ -1009,6 +1019,22 @@ function currentCommandLine() {
   const instruction = (m[2] || '').trim();
   if (!spec || !instruction) return null;
   return { spec, instruction, start: lineStart + m.index, end }; // replace from the @ to line end
+}
+
+// An "@[Agent Name] task" mention on the cursor's line, or null — the bracket form lets
+// agent names contain spaces. Runs the named agent on the task (runAgentTask).
+function currentMention() {
+  const ta = $('n-body');
+  const lineStart = ta.value.lastIndexOf('\n', ta.selectionStart - 1) + 1;
+  let end = ta.value.indexOf('\n', ta.selectionStart);
+  if (end < 0) end = ta.value.length;
+  const line = ta.value.slice(lineStart, end);
+  const m = line.match(/@\[([^\]\n]+)\]\s*(.*)$/);
+  if (!m) return null;
+  const name = m[1].trim();
+  const task = (m[2] || '').trim();
+  if (!name || !task) return null;
+  return { name, task, start: lineStart + m.index, end };
 }
 
 // ── @insert / @command background jobs ──────────────────────────────────────────
@@ -1200,57 +1226,72 @@ async function runNoteCommand() {
   if (!deps.canUseAgent(license, settings, targetAgent)) { toast('That agent needs ChatPanel Pro'); return true; }
   const resolved = deps.resolveTarget(targetAgent, settings);
 
-  // Arm the SAME ChatPanel toolset the side panel uses — web search + history +
-  // your MCP servers — for commands that may need live/external data. Same shared
-  // capability, so Notes and the side panel never drift.
+  await runNoteJob({
+    deps, settings, license, targetAgent, resolved, head, tail, commandText,
+    cmdLabel: ctx.spec.cmd, systemPrompt: ctx.spec.sys, instruction: ctx.instruction,
+    armToolset: !!ctx.spec.tools,
+    versionLabel: `@${ctx.spec.cmd} · ${targetAgent.name || resolved.model || 'agent'}`,
+  });
+  return true;
+}
+
+// Shared background-job runner for @commands AND @agent-mentions: streams a model into
+// the note where the command was written, drives the activity panel, attributes the
+// output to the model in the provenance ledger, and persists — reused so the two paths
+// never drift. `makeExtraProviders(job)` lets the caller add tools (e.g. the note-write
+// provider) that need a reference to the live job.
+async function runNoteJob({
+  deps, settings, license, targetAgent, resolved,
+  head, tail, commandText, cmdLabel, systemPrompt, instruction,
+  makeExtraProviders = null, armToolset = true, maxTokens = 1800, temperature = 0.4, versionLabel,
+}) {
+  const ta = $('n-body');
+  const job = {
+    noteId: current.id, cmd: cmdLabel, instruction,
+    head, tail, commandText, out: '', steps: [], tools: [],
+    redacted: false, status: 'starting', statusText: 'starting…',
+    modelLabel: targetAgent.name || resolved.model || resolved.bridgeAgent || 'agent',
+    abort: new AbortController(), done: false, error: null,
+  };
+  // Build the toolset (job exists first so extra providers can bind to it), armed the
+  // SAME way the side panel is (web + history + MCP, per-Notes overrides) + any extras.
   let tools = null;
-  if (ctx.spec.tools) {
+  const extraProviders = makeExtraProviders ? makeExtraProviders(job) : [];
+  if (armToolset || extraProviders.length) {
     try {
       const bridge = await deps.checkBridge(settings.bridgeUrl).catch(() => ({ ok: false }));
-      // Per-Notes tool overrides (Settings → Notes): unchecked forces a tool off for
-      // note commands only; checked (default) follows the global ChatPanel setting.
       const nt = settings.ui?.notes?.tools || {};
       tools = await deps.buildTurnTools({
-        resolvedAgent: resolved,
-        settings,
-        license,
-        bridgeUrl: settings.bridgeUrl,
-        bridgeAvailable: !!bridge?.ok,
-        userText: ctx.instruction,
-        includeWebSearch: nt.webSearch !== false,
-        includeMcp: nt.mcp !== false,
-        includeHistory: nt.history !== false,
+        resolvedAgent: resolved, settings, license,
+        bridgeUrl: settings.bridgeUrl, bridgeAvailable: !!bridge?.ok, userText: instruction,
+        includeWebSearch: armToolset && nt.webSearch !== false,
+        includeMcp: armToolset && nt.mcp !== false,
+        includeHistory: armToolset && nt.history !== false,
+        extraProviders,
       });
     } catch { /* fall back to no tools */ }
   }
   // PII redaction wraps EVERY note→model call — the harness must never be skipped.
   let redaction = null;
   try { redaction = deps.buildRedaction({ settings, license }); } catch { /* redaction off */ }
-  const noteCtx = noteCommandContext(head, tail); // ground the command in the note's own content
+  job.tools = (tools?.specs || []).map((s) => s.name).filter(Boolean);
+  job.redacted = !!redaction;
+  const noteCtx = noteCommandContext(head, tail); // ground in the note's own content
 
-  const job = {
-    noteId: current.id, cmd: ctx.spec.cmd, instruction: ctx.instruction,
-    head, tail, commandText, out: '', steps: [],
-    tools: (tools?.specs || []).map((s) => s.name).filter(Boolean), // the armed toolset, shown up front
-    redacted: !!redaction,
-    status: 'starting', statusText: 'starting…',
-    modelLabel: targetAgent.name || resolved.model || resolved.bridgeAgent || 'agent',
-    abort: new AbortController(), done: false, error: null,
-  };
   noteJobs.set(job.noteId, job);
-  recordActivity(job);               // the persistent tool-call trace panel
+  recordActivity(job);
   ta.readOnly = true;
-  renderJob(job);                    // swap the command line for the live output/placeholder
-  renderActivity();                  // open the activity panel with the armed toolset
-  renderList($('n-search').value);   // show the running badge in the list
+  renderJob(job);
+  renderActivity();
+  renderList($('n-search').value);
   try {
     await deps.streamChat({
-      agent: { ...resolved, systemPrompt: ctx.spec.sys, maxTokens: 1800, temperature: 0.4 },
+      agent: { ...resolved, systemPrompt, maxTokens, temperature },
       settings,
       signal: job.abort.signal,
       tools,
       redaction,
-      messages: [{ role: 'user', content: noteCtx ? `${noteCtx}\n\n---\nInstruction: ${job.instruction}` : job.instruction }],
+      messages: [{ role: 'user', content: noteCtx ? `${noteCtx}\n\n---\nInstruction: ${instruction}` : instruction }],
       onDelta: (d) => { job.out += d; job.status = 'writing'; job.statusText = 'writing…'; scheduleJobRender(job); scheduleActivityRender(); },
       onEvent: (ev) => {
         if (ev?.type === 'tool' && ev.phase === 'start') {
@@ -1264,7 +1305,7 @@ async function runNoteCommand() {
         } else if (ev?.type === 'reasoning') {
           job.status = 'thinking'; job.statusText = 'thinking…';
         }
-        recordActivity(job);       // a tool fired → make sure the panel is tracking this run
+        recordActivity(job);
         scheduleJobRender(job);
         scheduleActivityRender();
       },
@@ -1278,21 +1319,108 @@ async function runNoteCommand() {
     if (current?.id === job.noteId) {
       $('n-body').readOnly = false;
       renderJob(job); // collapse the progress block down to the final output
-      // Provenance: attribute the produced text to the agent + snapshot a restore point.
       if (!aborted && !job.error) {
-        recordEdit({ author: job.modelLabel, discrete: true });
-        pushVersion(job.modelLabel, `@${job.cmd} · ${job.modelLabel}`);
+        recordEdit({ author: job.modelLabel, discrete: true }); // attribute the produced text
+        pushVersion(job.modelLabel, versionLabel || `${cmdLabel} · ${job.modelLabel}`);
       }
       current.body = $('n-body').value;
       updateWordCount();
       setStatus(aborted ? '' : 'Saved', !aborted);
-      renderActivity(); // the trace persists, now showing final results
+      renderActivity();
       renderHistory();
     }
     await persistJobBody(job); // lands the result (+ ledger) even if the note isn't open
-    renderList($('n-search').value); // clear the running badge
+    renderList($('n-search').value);
   }
+  return job;
+}
+
+// @mention an agent to run a task in the note. `@[Agent Name] do X` → resolve the named
+// agent, arm note-write tools (create new notes / edit this one) + research/web/history,
+// and run it as a background job. Its streamed output lands where the mention was; tool
+// actions create/edit notes on the side. All attributed to the agent + revertible.
+async function runAgentTask(mention) {
+  if (!current || noteJobs.has(current.id)) return true;
+  closeAc();
+  const ta = $('n-body');
+  const head = ta.value.slice(0, mention.start);
+  const tail = ta.value.slice(mention.end);
+  const commandText = ta.value.slice(mention.start, mention.end);
+  let deps;
+  try { deps = await agentDeps(); } catch { toast('Agent unavailable'); return true; }
+  const settings = await deps.getSettings();
+  const targetAgent = getTargetByName(settings, mention.name);
+  if (!targetAgent) { toast(`No configured agent named “${mention.name}”`); return true; }
+  const license = await deps.getLicense();
+  if (!deps.canUseAgent(license, settings, targetAgent)) { toast(`${targetAgent.name || 'That agent'} needs ChatPanel Pro`); return true; }
+  const resolved = deps.resolveTarget(targetAgent, settings);
+  const sys = `You are "${targetAgent.name || 'the agent'}", completing a task INSIDE the user's note. Use your tools to do it well:\n`
+    + '- research with web_search / history tools when you need facts or the user\'s own material;\n'
+    + '- note_create to put content in a NEW note when it belongs on its own;\n'
+    + '- note_edit to revise the user\'s EXISTING text in THIS note (exact find/replace).\n'
+    + 'Your streamed text is inserted where the task was written — use it for the main answer, tools for side effects. Output clean GitHub-flavored markdown, no preamble or meta commentary.';
+  await runNoteJob({
+    deps, settings, license, targetAgent, resolved, head, tail, commandText,
+    cmdLabel: `@${targetAgent.name || 'agent'}`, systemPrompt: sys, instruction: mention.task,
+    armToolset: true, maxTokens: 2400,
+    makeExtraProviders: (job) => [makeNoteTools(job)],
+    versionLabel: `@${targetAgent.name || 'agent'} · task`,
+  });
   return true;
+}
+
+// Resolve a mentioned target by NAME (endpoints + agents), exact first, then contains,
+// then by model/bridge id.
+function getTargetByName(settings, name) {
+  const q = String(name || '').trim().toLowerCase();
+  if (!q) return null;
+  const all = [...(settings.endpoints || []), ...(settings.agents || [])];
+  return all.find((t) => (t.name || '').toLowerCase() === q)
+    || all.find((t) => (t.name || '').toLowerCase().includes(q))
+    || all.find((t) => String(t.model || t.bridgeAgent || '').toLowerCase() === q)
+    || null;
+}
+
+// The note-write tool provider handed to a mentioned agent. Bound to the live job so
+// note_edit can revise the surrounding text (head/tail) mid-run without fighting the
+// streamed output; all changes are attributed to the agent when the job completes.
+function makeNoteTools(job) {
+  const specs = [
+    {
+      name: 'note_create',
+      description: 'Create a NEW note with a markdown body (and optional title). Use for content that belongs in its own note, not inline. Returns the new note id + a notes.html#id link to reference as [markdown](link).',
+      parameters: { type: 'object', properties: { title: { type: 'string', description: 'Optional; first line is used if omitted.' }, body: { type: 'string', description: 'GitHub-flavored markdown.' } }, required: ['body'] },
+    },
+    {
+      name: 'note_edit',
+      description: "Revise the CURRENT note by replacing an exact snippet of its EXISTING text (not the part you're writing). `find` must be an exact substring of the note. Returns ok, or an error if `find` was not found.",
+      parameters: { type: 'object', properties: { find: { type: 'string' }, replace: { type: 'string' } }, required: ['find', 'replace'] },
+    },
+  ];
+  const execute = async (name, input) => {
+    try {
+      if (name === 'note_create') {
+        const rec = await createNote({ title: String(input?.title || '').trim(), body: String(input?.body || '') });
+        await reloadIndex();
+        renderList($('n-search').value);
+        return JSON.stringify({ ok: true, id: rec.id, title: rec.title, link: `notes.html#${rec.id}` });
+      }
+      if (name === 'note_edit') {
+        const find = String(input?.find || '');
+        const replace = String(input?.replace || '');
+        if (!find) return JSON.stringify({ error: '`find` is required.' });
+        if (job.head.includes(find)) job.head = job.head.replace(find, replace);
+        else if (job.tail.includes(find)) job.tail = job.tail.replace(find, replace);
+        else return JSON.stringify({ error: '`find` was not an exact substring of the note (outside the text being written). Copy the exact text to replace.' });
+        scheduleJobRender(job);
+        return JSON.stringify({ ok: true });
+      }
+      return JSON.stringify({ error: `Unknown tool: ${name}` });
+    } catch (e) {
+      return JSON.stringify({ error: e?.message || String(e) });
+    }
+  };
+  return { specs, execute };
 }
 
 // ── Editor co-writer — Phase 1 of the swarm ──────────────────────────────────────
@@ -1820,6 +1948,22 @@ let autoTimer = null;
 let autoAbort = null;
 let autoGen = 0;
 let autocompleteCfg = { enabled: false, agentId: '' };
+let mentionTargets = []; // [{ name }] configured agents/endpoints, for the @ picker & @mention
+
+// Cheap direct read of the (plaintext) settings object for the @ picker's agent list —
+// must NOT pull the agent graph onto the load path.
+async function loadMentionTargets() {
+  try {
+    const s = (await chrome.storage.local.get('chatpanel:settings'))['chatpanel:settings'] || {};
+    const out = [];
+    const seen = new Set();
+    for (const t of [...(s.endpoints || []), ...(s.agents || [])]) {
+      const name = t?.name || t?.model || t?.bridgeAgent;
+      if (name && !seen.has(name.toLowerCase())) { seen.add(name.toLowerCase()); out.push({ name }); }
+    }
+    mentionTargets = out;
+  } catch { mentionTargets = []; }
+}
 
 async function loadAutocompleteCfg() {
   // Cheap direct read of the (plaintext) settings object — must NOT pull the agent
@@ -2386,6 +2530,11 @@ function init() {
         return;
       }
     }
+    // Enter on an "@[Agent] task" line assigns the task to that named agent.
+    if (e.key === 'Enter' && !e.shiftKey && !openJob) {
+      const mention = currentMention();
+      if (mention) { e.preventDefault(); runAgentTask(mention); return; }
+    }
     // Enter on an "@command instruction" line runs it (instead of a newline).
     if (e.key === 'Enter' && !e.shiftKey && !openJob && currentCommandLine()) {
       e.preventDefault();
@@ -2530,14 +2679,15 @@ function init() {
   if (chrome.storage?.onChanged) {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
-      // Pick up an autocomplete on/off or model change made in the Settings tab.
-      if (changes['chatpanel:settings']) loadAutocompleteCfg();
+      // Pick up autocomplete on/off + model and the agent list from the Settings tab.
+      if (changes['chatpanel:settings']) { loadAutocompleteCfg(); loadMentionTargets(); }
       if (!Object.keys(changes).some((k) => k.startsWith('chatpanel:note'))) return;
       clearTimeout(extRefreshTimer);
       extRefreshTimer = setTimeout(async () => { await reloadIndex(); renderList($('n-search').value); }, 400);
     });
   }
   loadAutocompleteCfg(); // inline-autocomplete on/off + model (Settings → Notes)
+  loadMentionTargets();  // configured agents for the @ picker / @mention task runner
 
   setMode(localStorage.getItem('chatpanel.notes.mode') || 'write');
 }
