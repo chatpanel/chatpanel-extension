@@ -2403,6 +2403,11 @@ let lastQuestion = '';
 function observe() {
   if (!cwEnabled || !current || noteJobs.has(current.id)) return;
   const t = currentLine().text.trim();
+  // A directed command/mention line (@insert…, @[Agent] task, /plan…, @research…) is a
+  // task the user is composing for a specific agent — the ambient swarm must NOT research,
+  // draft or fact-check it (that's noise, and an auto-draft would swallow the Enter that
+  // runs the task). Enter handles these lines.
+  if (/^[@/]/.test(t)) { removeWriterNudge(); return; }
   const isQuestion = /\?\s*$/.test(t) && t.split(/\s+/).length >= 3;
   const aff = writerAffordance();
   // Focus mode actively drafts a section on the spot; Ambient just nudges.
@@ -2590,8 +2595,15 @@ function init() {
     // Writer draft-ahead ghost. While streaming, swallow keys (Esc aborts). When a draft
     // is pending: Tab accepts, Esc rejects, any other key rejects then applies normally.
     if (writerAbort) {
-      if (e.key === 'Escape') { e.preventDefault(); writerAbort.abort(); clearGhost({ remove: true }); }
-      return;
+      // …but Enter on a directed @[Agent]/@command line still submits the task (abort the
+      // in-flight ambient draft first) — the user's explicit action wins.
+      if (e.key === 'Enter' && !e.shiftKey && (currentMention() || currentCommandLine())) {
+        writerAbort.abort();
+        clearGhost({ remove: true });
+      } else {
+        if (e.key === 'Escape') { e.preventDefault(); writerAbort.abort(); clearGhost({ remove: true }); }
+        return;
+      }
     }
     if (ghost) {
       if (e.key === 'Tab') { e.preventDefault(); return acceptGhost(); }
@@ -2654,8 +2666,12 @@ function init() {
   });
   $('n-body').addEventListener('blur', () => {
     setTimeout(closeAc, 120); // let a click land first
+    // Only reject a pending draft-ahead when focus moved to ANOTHER element in this page
+    // (title, a note in the list, …). When the whole WINDOW loses focus — clicking another
+    // app/window, or switching tabs — leave in-flight AI work running in the background.
+    if (!document.hasFocus()) return;
     if (writerAbort) writerAbort.abort();
-    clearGhost({ remove: true }); // a pending draft-ahead is rejected when focus leaves
+    clearGhost({ remove: true });
   });
   $('n-search').addEventListener('input', (e) => renderList(e.target.value));
 
