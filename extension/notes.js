@@ -1120,7 +1120,7 @@ function clearResearch() {
 function scheduleResearch() {
   if (!cwEnabled) return;               // the researcher rides the same swarm toggle
   clearTimeout(researchTimer);
-  researchTimer = setTimeout(() => autoResearch(), 2600); // longer idle than the editor
+  researchTimer = setTimeout(() => observe(), 2600); // longer idle than the editor
 }
 
 async function runResearch({ web = false, question = '' } = {}) {
@@ -1504,18 +1504,59 @@ function currentLine() {
   return { text: v.slice(s, e), start: s, end: e };
 }
 
-// Affordance orchestrator — the single auto-research decision (debounced by
-// scheduleResearch). A finished question on the cursor line (ends in "?") wakes the
-// Researcher for THAT question — free local retrieval, then a Writer handoff to draft
-// the answer. Otherwise it surfaces material related to what you're writing. One
-// trigger, so the two never clobber each other.
+// Affordance orchestrator — the single debounced observer that wakes the RIGHT member
+// for what the text affords: a finished question ("…?") → Researcher (+ Writer handoff);
+// an empty heading / TODO / bullet → a Writer draft NUDGE (offered, never auto-spent —
+// token control); otherwise → related-material (Researcher) + link-new-topics (Connector).
 let lastQuestion = '';
-function autoResearch() {
+function observe() {
   if (!cwEnabled || !current || noteJobs.has(current.id)) return;
-  const line = currentLine().text.trim();
-  const isQuestion = /\?\s*$/.test(line) && line.split(/\s+/).length >= 3;
-  if (isQuestion) { if (line !== lastQuestion) { lastQuestion = line; runResearch({ question: line }); } }
-  else { runResearch(); runConnector(); } // related-material + link new topics to your docs
+  const t = currentLine().text.trim();
+  const isQuestion = /\?\s*$/.test(t) && t.split(/\s+/).length >= 3;
+  const aff = writerAffordance();
+  if (aff) addWriterNudge(aff); else removeWriterNudge();
+  if (isQuestion) { if (t !== lastQuestion) { lastQuestion = t; runResearch({ question: t }); } }
+  else { runResearch(); runConnector(); }
+}
+
+// What the cursor line affords the Writer: an empty outline item, a TODO marker, or a
+// heading with no body yet → { kind, at, label }, or null. The Writer only DRAFTS on an
+// explicit nudge/⌘↵, so detecting the spot is free.
+function writerAffordance() {
+  const v = $('n-body').value;
+  const line = currentLine();
+  const t = line.text;
+  if (/^\s*([-*]|\d+\.)\s*(\[ \]\s*)?$/.test(t)) return { kind: 'item', at: line.end, label: 'this item' };
+  if (/\b(TODO|TK|TBD)\b:?\s*$/i.test(t)) return { kind: 'todo', at: line.end, label: 'this to-do' };
+  if (/^#{1,6}\s+\S/.test(t)) { // heading whose section has no body yet
+    const next = v.slice(line.end).replace(/^\n/, '').split('\n', 1)[0] || '';
+    if (!next.trim() || /^#{1,6}\s/.test(next)) return { kind: 'section', at: line.end, label: 'this section' };
+  }
+  if (!t.trim()) { // blank line directly under a heading
+    const before = v.slice(0, line.start).replace(/\n$/, '');
+    const prev = before.slice(before.lastIndexOf('\n') + 1);
+    if (/^#{1,6}\s+\S/.test(prev)) return { kind: 'section', at: line.start, label: 'this section' };
+  }
+  return null;
+}
+function addWriterNudge(aff) {
+  const key = `draft:${aff.kind}:${aff.at}`;
+  boardSuggestions = boardSuggestions.filter((s) => s.role !== 'writer');
+  if (!boardDismissed.has(key)) {
+    boardSuggestions.push({
+      role: 'writer', icon: '✨', key,
+      html: `Draft ${escapeHtml(aff.label)}`,
+      title: 'Hand to the Writer — draft here (or press ⌘↵)',
+      apply: () => { const ta = $('n-body'); ta.focus(); ta.selectionStart = ta.selectionEnd = Math.min(aff.at, ta.value.length); draftAhead(); },
+    });
+  }
+  renderCowriter();
+}
+function removeWriterNudge() {
+  if (boardSuggestions.some((s) => s.role === 'writer')) {
+    boardSuggestions = boardSuggestions.filter((s) => s.role !== 'writer');
+    renderCowriter();
+  }
 }
 
 // Researcher → Writer handoff: draft an answer to the question the Researcher just
@@ -1597,6 +1638,19 @@ function init() {
     // Esc stops the @command running on THIS note (jobs on other notes keep going).
     const openJob = current && noteJobs.get(current.id);
     if (e.key === 'Escape' && openJob) { e.preventDefault(); openJob.abort.abort(); return; }
+    // Enter on "@research <topic>" wakes the Researcher for that topic (local + web) and
+    // consumes the command line. Self-contained — doesn't touch the @command job path.
+    if (e.key === 'Enter' && !e.shiftKey && !openJob) {
+      const rline = currentLine();
+      const rm = rline.text.match(/^@research\s+(.{2,})$/i);
+      if (rm) {
+        e.preventDefault();
+        ta.setRangeText('', rline.start, rline.end, 'end');
+        onBodyInput();
+        runResearch({ question: rm[1].trim(), web: true });
+        return;
+      }
+    }
     // Enter on an "@command instruction" line runs it (instead of a newline).
     if (e.key === 'Enter' && !e.shiftKey && !openJob && currentCommandLine()) {
       e.preventDefault();
