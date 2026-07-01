@@ -26,14 +26,25 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Header */
+/* Header: [ nav ] [ omni-search ] [ actions ] */
 .hdr {
-  display: flex; align-items: center; justify-content: space-between;
-  height: 56px; padding: 0 18px; border-bottom: 1px solid var(--border); background: var(--card);
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 16px;
+  height: 56px; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--card);
 }
-.hdr h1 { font-size: 18px; font-weight: 650; letter-spacing: -.02em; margin: 0; }
-.count { color: var(--faint); font-weight: 500; font-size: 13px; margin-left: 2px; }
-.hdr-actions { display: flex; gap: 8px; }
+.count { color: var(--faint); font-weight: 500; font-size: 12px; margin-left: 1px; }
+.hdr-actions { display: flex; gap: 6px; align-items: center; }
+
+/* Cross-page workspace nav (same on Notes / Chats / Meetings) */
+.topnav { display: inline-flex; background: var(--field); border-radius: 10px; padding: 3px; gap: 2px; }
+.topnav-item { text-decoration: none; color: var(--muted); font-size: 13px; font-weight: 500; padding: 6px 12px; border-radius: 8px; white-space: nowrap; transition: background .1s, color .1s; }
+.topnav-item:hover { color: var(--text); }
+.topnav-item.active { background: var(--card); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .08); font-weight: 600; }
+
+/* Omni search (top, centered) */
+.omni { position: relative; max-width: 540px; width: 100%; margin: 0 auto; }
+.omni-ico { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--faint); font-size: 14px; pointer-events: none; }
+.omni-input { width: 100%; font: inherit; font-size: 13.5px; padding: 9px 12px 9px 33px; border-radius: 10px; border: 1px solid var(--border); background: var(--field); color: var(--text); }
+.omni-input:focus { outline: none; border-color: var(--accent); background: var(--card); }
 
 .btn {
   font: inherit; cursor: pointer; border-radius: var(--radius-sm); padding: 7px 13px;
@@ -47,10 +58,12 @@ body {
 .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 .btn.ghost:hover { background: var(--field); color: var(--text); border-color: transparent; }
 
-.layout { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 56px); }
+.layout { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 56px); transition: grid-template-columns .16s ease; }
+.layout.rail-collapsed { grid-template-columns: 0 1fr; }
 
 /* List rail */
-.nlist { border-right: 1px solid var(--border); background: var(--card); display: flex; flex-direction: column; min-height: 0; }
+.nlist { border-right: 1px solid var(--border); background: var(--card); display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+.rail-collapsed .nlist { border-right-color: transparent; }
 .nlist-search { padding: 12px 12px 8px; }
 .search {
   width: 100%; font: inherit; padding: 9px 12px; border-radius: var(--radius-sm);

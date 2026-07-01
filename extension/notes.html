@@ -8,19 +8,23 @@
   </head>
   <body>
     <header class="hdr">
-      <h1>Notes <span id="n-count" class="count"></span></h1>
+      <nav class="topnav" aria-label="Workspace">
+        <a href="notes.html" class="topnav-item active">✎ Notes <span id="n-count" class="count"></span></a>
+        <a href="history.html" class="topnav-item">☰ Chats</a>
+        <a href="meetings.html" class="topnav-item">👥 Meetings</a>
+      </nav>
+      <div class="omni">
+        <span class="omni-ico">⌕</span>
+        <input id="n-search" class="omni-input" placeholder="Search notes…" autocomplete="off" spellcheck="false" />
+      </div>
       <div class="hdr-actions">
-        <button id="n-new" class="btn primary" title="New note (⌘N)">✎ New note</button>
-        <button id="n-history" class="btn ghost" title="Chat history">☰ Chats</button>
-        <button id="n-meetings" class="btn ghost" title="Meetings">👥 Meetings</button>
+        <button id="n-collapse" class="icon-btn" title="Hide list (⌘\)" aria-label="Toggle list">⇤</button>
+        <button id="n-new" class="btn primary" title="New note (⌘N)">✎ New</button>
       </div>
     </header>
 
-    <div class="layout">
+    <div class="layout" id="n-layout">
       <aside class="nlist">
-        <div class="nlist-search">
-          <input id="n-search" class="search" placeholder="Search notes…  (⌘K)" autocomplete="off" spellcheck="false" />
-        </div>
         <div id="n-items" class="nitems"></div>
         <div id="n-empty-list" class="list-empty hidden">
           <p>No notes yet.</p>

@@ -263,8 +263,17 @@ function init() {
   $('n-delete').onclick = removeCurrent;
   $('n-copy').onclick = copyCurrent;
   $('n-download').onclick = downloadCurrent;
-  $('n-history').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('history.html') });
-  $('n-meetings').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('meetings.html') });
+
+  // Collapsible list rail → full-width editor. Persisted.
+  const collapseBtn = $('n-collapse');
+  const applyCollapsed = (c) => {
+    $('n-layout').classList.toggle('rail-collapsed', c);
+    collapseBtn.textContent = c ? '⇥' : '⇤';
+    collapseBtn.title = c ? 'Show list' : 'Hide list (⌘\\)';
+  };
+  let collapsed = localStorage.getItem('chatpanel.notes.railCollapsed') === '1';
+  applyCollapsed(collapsed);
+  collapseBtn.onclick = () => { collapsed = !collapsed; localStorage.setItem('chatpanel.notes.railCollapsed', collapsed ? '1' : '0'); applyCollapsed(collapsed); };
 
   $('n-title').addEventListener('input', () => { updateWordCount(); scheduleSave(); });
   $('n-body').addEventListener('input', onBodyInput);
@@ -280,6 +289,7 @@ function init() {
     if (k === 'n') { e.preventDefault(); newNote(); }
     else if (k === 'k') { e.preventDefault(); $('n-search').focus(); }
     else if (k === 's') { e.preventDefault(); flushSave(); toast('Saved'); }
+    else if (e.key === '\\') { e.preventDefault(); collapseBtn.click(); }
     else if (k === 'b' && document.activeElement === $('n-body')) { e.preventDefault(); applyFmt('bold'); }
     else if (k === 'i' && document.activeElement === $('n-body')) { e.preventDefault(); applyFmt('italic'); }
   });

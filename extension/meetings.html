@@ -9,7 +9,11 @@
   </head>
   <body>
     <header class="hdr">
-      <h1><img src="assets/icon48.png" class="brand-ico" alt="" /> Meetings <span id="m-count" class="count"></span></h1>
+      <nav class="topnav" aria-label="Workspace">
+        <a href="notes.html" class="topnav-item">✎ Notes</a>
+        <a href="history.html" class="topnav-item">☰ Chats</a>
+        <a href="meetings.html" class="topnav-item active">👥 Meetings <span id="m-count" class="count"></span></a>
+      </nav>
       <div class="hdr-actions">
         <button id="m-import" class="btn" type="button">⬇ Import meeting</button>
         <input id="m-import-file" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple class="hidden" />
