@@ -196,28 +196,31 @@ function recencyFactor(date) {
   return 1 + RECENCY_MAX_BOOST * Math.exp(-ageDays / RECENCY_HALFLIFE_DAYS);
 }
 
-export function searchHistorySources(sources, query, options = {}) {
-  const limit = clampInt(options.limit, 8, 1, 30);
+// Build the reusable BM25 index (the expensive part) for a set of sources. The result
+// is fed to runSearch(). Split out so the index can be built ONCE and reused across
+// queries — and, crucially, built OFF the UI thread inside a Web Worker (search-worker).
+export function buildSearchIndex(sources, options = {}) {
   const scoped = scopedSources(sources, options.scope || 'all', options.includeMeetings !== false);
-  const mode = normalizeMode(options.mode);
   const field = normalizeField(options.field);
-  const q = cleanText(query);
-  if (!q) return [];
-
-  if (mode === 'exact') {
-    return exactSearch(scoped, q, { ...options, field, limit });
-  }
-
   const chunks = chunksForSearch(scoped, options, field);
   const docs = field === 'title'
     ? firstChunksBySource(scoped, options).map((c) => ({ id: c.id, text: c.title }))
     : chunks.map((c) => ({ id: c.id, text: field === 'content' ? c.text : `${c.title}\n${c.text}` }));
   const byId = new Map(chunks.map((c) => [c.id, c]));
   for (const c of firstChunksBySource(scoped, options)) byId.set(c.id, c);
+  return { idx: buildIndex(docs), byId, field };
+}
+
+// Rank a query against a prebuilt index (from buildSearchIndex). Pure; no I/O — safe
+// to run in a Worker.
+export function runSearch(built, query, options = {}) {
+  const limit = clampInt(options.limit, 8, 1, 30);
+  const q = cleanText(query);
+  if (!q || !built?.idx) return [];
+  const { idx, byId, field } = built;
   const qLower = q.toLowerCase();
   const qTerms = tokenize(qLower);
   const profile = queryProfile(q);
-  const idx = buildIndex(docs);
   const ranked = bm25Search(idx, q)
     .map((r) => {
       const chunk = byId.get(r.id);
@@ -239,6 +242,17 @@ export function searchHistorySources(sources, query, options = {}) {
       return { ...chunk, score };
     });
   return diversifyResults(ranked, limit);
+}
+
+export function searchHistorySources(sources, query, options = {}) {
+  const mode = normalizeMode(options.mode);
+  const q = cleanText(query);
+  if (!q) return [];
+  if (mode === 'exact') {
+    const scoped = scopedSources(sources, options.scope || 'all', options.includeMeetings !== false);
+    return exactSearch(scoped, q, { ...options, field: normalizeField(options.field), limit: clampInt(options.limit, 8, 1, 30) });
+  }
+  return runSearch(buildSearchIndex(sources, options), query, options);
 }
 
 function firstChunksBySource(sources, options = {}) {

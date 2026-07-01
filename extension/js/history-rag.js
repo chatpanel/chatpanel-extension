@@ -10,6 +10,7 @@ import {
   relatedHistorySources,
   searchHistorySources,
 } from './history-rag-core.js';
+import { rankHistorySources } from './search-engine.js';
 
 export { relatedHistorySources };
 
@@ -188,6 +189,10 @@ const SRC_CACHE_TTL_MS = 60_000;
 const _srcCache = { chats: null, meetings: null, at: 0, timer: null };
 let _srcCacheWired = false;
 let _srcCacheable = false;
+// Monotonic corpus version — bumped whenever chats/meetings change. The search worker
+// uses it as its index cache key, so it only rebuilds when the underlying data moved.
+let _srcVersion = 0;
+export function historySourcesVersion() { return _srcVersion; }
 
 function releaseSrcCache() {
   _srcCache.chats = null;
@@ -203,10 +208,12 @@ function wireSourceCache() {
   if (oc?.addListener) {
     oc.addListener((changes, area) => {
       if (area && area !== 'local') return;
+      let changed = false;
       for (const key of Object.keys(changes || {})) {
-        if (/^chatpanel:(conv|chat)/i.test(key)) _srcCache.chats = null;
-        if (/^chatpanel:meeting/i.test(key)) _srcCache.meetings = null;
+        if (/^chatpanel:(conv|chat)/i.test(key)) { _srcCache.chats = null; changed = true; }
+        if (/^chatpanel:meeting/i.test(key)) { _srcCache.meetings = null; changed = true; }
       }
+      if (changed) _srcVersion += 1;
     });
     _srcCacheable = true;
   }
@@ -304,14 +311,14 @@ export async function retrieveHistory(
   const sources = await loadSources({ includeChats: true, includeMeetings: !!includeMeetings });
   const scopeForSearch = effectiveScope(scope, q, { includeMeetings: !!includeMeetings });
   const results = q
-    ? searchHistorySources(sources, q, {
+    ? await rankHistorySources(sources, q, {
       scope: scopeForSearch,
       includeMeetings: !!includeMeetings,
       limit: clampInt(limit, DEFAULT_RESULT_LIMIT, 1, 30),
       mode,
       field,
       recency, // mild freshness prior (default on for the model's history search)
-    })
+    }, { version: historySourcesVersion() })
     : [];
   return {
     sources,
