@@ -164,6 +164,7 @@ async function openNote(id, preloaded = null) {
   renderTags(current.tags || []);
   suggestTags();
   renderBacklinks(current.title);
+  clearResearch(); // drop the previous note's research shelf (re-runs on the next typing pause)
   updatePreview();
   updateWordCount();
   autoGrow();
@@ -248,6 +249,7 @@ function onBodyInput() {
   scheduleSuggest();
   maybeAutocomplete();
   scheduleCowriter();
+  scheduleResearch();
 }
 
 // ── agent beside you: local topic extraction → tag suggestions (no LLM) ──────────
@@ -956,9 +958,145 @@ function setCowriter(on) {
   const btn = $('n-cw-toggle');
   btn.classList.toggle('on', on);
   btn.title = on ? 'Co-writer: on — proofreads as you write' : 'Co-writer: off';
-  if (on) scheduleCowriter();
+  if (on) { scheduleCowriter(); scheduleResearch(); }
   else clearCowriterUI();
 }
+
+// ── Researcher co-writer — Phase 2 of the swarm ──────────────────────────────────
+// A token-FREE research lane. On an idle pause it retrieves related material from the
+// user's own workspace (notes/chats/meetings) via history-rag — no model call — and on
+// demand also searches the web (still no model: webSearch returns structured results).
+// Hits land in an ambient, collapsible shelf as cards you can insert (as a [[wikilink]]
+// or [markdown](url)), open, or dismiss. Reuses retrieveHistory + webSearch wholesale.
+let researchGen = 0;
+let researchCards = [];
+let researchBusy = false;
+let researchTimer = null;
+let _ragMod = null;
+const researchDismissed = new Set();
+const KIND_ICON = { note: '📝', meeting: '👥', chat: '💬', web: '🌐' };
+
+function researchQuery() {
+  // Title + the section around the cursor — a strong, cheap relevance signal.
+  const title = ($('n-title').value || '').trim();
+  const para = currentParagraph().text.trim();
+  return `${title}\n${para}`.trim().slice(0, 500);
+}
+function sourceKind(sourceId = '') {
+  if (sourceId.startsWith('note:')) return 'note';
+  if (sourceId.startsWith('meeting:')) return 'meeting';
+  return 'chat';
+}
+function researchSnippet(text = '') {
+  return String(text)
+    .replace(/^(NOTE|CHAT|MEETING):.*$/gim, '').replace(/^(Date|Tags):.*$/gim, '')
+    .replace(/\s+/g, ' ').trim().slice(0, 140);
+}
+function setResearchStatus(t) { const el = $('n-research-status'); if (el) el.textContent = t || ''; }
+function clearResearch() {
+  researchGen++; researchCards = []; researchBusy = false;
+  const el = $('n-research');
+  if (el) { el.classList.add('hidden'); $('n-research-cards').innerHTML = ''; }
+  setResearchStatus('');
+}
+function scheduleResearch() {
+  if (!cwEnabled) return;               // the researcher rides the same swarm toggle
+  clearTimeout(researchTimer);
+  researchTimer = setTimeout(() => runResearch(), 2600); // longer idle than the editor
+}
+
+async function runResearch({ web = false } = {}) {
+  if (!current) return;
+  const q = researchQuery();
+  if (!q) { if (web) toast('Write something to research first'); return; }
+  if (q.length < 16 && !web) return;
+  const gen = ++researchGen;
+  researchBusy = true;
+  setResearchStatus(web ? 'Searching your workspace and the web…' : 'Finding related material…');
+  renderResearch(); // reveal the shelf with a working state immediately
+
+  // Local lane — free, always. Related notes/chats/meetings from the user's own history.
+  let cards = [];
+  try {
+    if (!_ragMod) _ragMod = await import('./js/history-rag.js');
+    const { results } = await _ragMod.retrieveHistory(q, { includeMeetings: true, limit: 6 });
+    cards = results
+      .filter((r) => r.sourceId !== `note:${current.id}`)
+      .map((r) => ({ kind: sourceKind(r.sourceId), title: r.title || 'Untitled', url: r.url, snippet: researchSnippet(r.text), key: r.url || r.sourceId }))
+      .filter((c) => !researchDismissed.has(c.key));
+  } catch { /* local lane is best-effort */ }
+  if (gen !== researchGen) return;
+
+  // Web lane — on demand only (network + a Free daily quota); still token-free.
+  if (web) {
+    try {
+      const [ws, lic, store] = await Promise.all([import('./js/web-search.js'), import('./js/license.js'), import('./js/store.js')]);
+      const settings = await store.getSettings();
+      const license = await lic.getLicense();
+      const term = q.split('\n').filter(Boolean).pop() || q;
+      const res = await ws.webSearch(term, ws.webSearchOpts(settings, lic.isPro(license)));
+      if (gen !== researchGen) return;
+      for (const r of (res.results || []).slice(0, 5)) {
+        if (!researchDismissed.has(r.url)) cards.push({ kind: 'web', title: r.title || r.url, url: r.url, snippet: researchSnippet(r.text), key: r.url });
+      }
+    } catch (e) { toast(e?.message ? `Web search: ${e.message}` : 'Web search unavailable'); }
+  }
+  if (gen !== researchGen) return;
+
+  const seen = new Set();
+  researchCards = cards.filter((c) => c.key && !seen.has(c.key) && seen.add(c.key)).slice(0, 10);
+  researchBusy = false;
+  setResearchStatus('');
+  renderResearch();
+}
+
+function renderResearch() {
+  const shelf = $('n-research');
+  const wrap = $('n-research-cards');
+  if (!shelf || !wrap) return;
+  $('n-research-count').textContent = researchCards.length ? String(researchCards.length) : '';
+  wrap.innerHTML = '';
+  if (!researchCards.length) {
+    wrap.innerHTML = `<div class="research-empty">${researchBusy ? 'Working…' : 'Nothing related yet — keep writing, or search the web.'}</div>`;
+    shelf.classList.remove('hidden');
+    return;
+  }
+  for (const c of researchCards) {
+    const card = document.createElement('div');
+    card.className = 'rcard';
+    card.innerHTML =
+      `<div class="rcard-top"><span class="rcard-ico">${KIND_ICON[c.kind] || '📄'}</span>` +
+      `<span class="rcard-title">${escapeHtml(c.title)}</span></div>` +
+      (c.snippet ? `<div class="rcard-snip">${escapeHtml(c.snippet)}</div>` : '') +
+      `<div class="rcard-acts">` +
+      `<button class="rcard-insert" title="Insert a link at the cursor">Insert</button>` +
+      `<button class="rcard-open" title="Open">Open</button>` +
+      `<button class="rcard-x" title="Dismiss">✕</button></div>`;
+    card.querySelector('.rcard-insert').onclick = () => insertResearch(c);
+    card.querySelector('.rcard-open').onclick = () => openResearch(c);
+    card.querySelector('.rcard-x').onclick = () => { researchDismissed.add(c.key); researchCards = researchCards.filter((x) => x !== c); renderResearch(); };
+    wrap.appendChild(card);
+  }
+  shelf.classList.remove('hidden');
+}
+function insertResearch(c) {
+  const ta = $('n-body');
+  const link = c.kind === 'note' ? `[[${c.title}]]` : `[${escapeMdText(c.title)}](${c.url})`;
+  const pos = ta.selectionStart;
+  const lead = pos > 0 && !/\s$/.test(ta.value.slice(0, pos)) ? ' ' : '';
+  ta.setRangeText(lead + link + ' ', pos, ta.selectionEnd, 'end');
+  onBodyInput();
+  ta.focus();
+  toast('Inserted');
+}
+function openResearch(c) {
+  if (!c.url) return;
+  const [page, hash] = c.url.split('#');
+  if (page === 'notes.html' && hash) return openNote(decodeURIComponent(hash));
+  if (/^https?:/i.test(c.url)) window.open(c.url, '_blank', 'noopener,noreferrer');
+  else chrome.tabs?.create?.({ url: c.url });
+}
+function escapeMdText(s) { return String(s || '').replace(/[[\]]/g, '\\$&'); }
 
 // ── wire up ───────────────────────────────────────────────────────────────────
 function init() {
@@ -1069,6 +1207,19 @@ function init() {
   // Editor co-writer toggle (opt-in; persisted).
   $('n-cw-toggle').onclick = () => setCowriter(!cwEnabled);
   setCowriter(cwEnabled);
+
+  // Researcher: 🔎 runs research on demand (local + web). Shelf head repeats web + collapses.
+  $('n-research-btn').onclick = () => runResearch({ web: true });
+  $('n-research-web').onclick = () => runResearch({ web: true });
+  $('n-research-collapse').onclick = () => {
+    const collapsed = $('n-research').classList.toggle('collapsed');
+    localStorage.setItem('chatpanel.notes.researchCollapsed', collapsed ? '1' : '0');
+    $('n-research-collapse').textContent = collapsed ? '▸' : '▾';
+  };
+  if (localStorage.getItem('chatpanel.notes.researchCollapsed') === '1') {
+    $('n-research').classList.add('collapsed');
+    $('n-research-collapse').textContent = '▸';
+  }
 
   document.addEventListener('keydown', (e) => {
     const mod = e.metaKey || e.ctrlKey;
