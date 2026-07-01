@@ -792,13 +792,17 @@ const noteActivity = new Map();       // noteId -> activity (the job, live or fi
 const activityCollapsed = new Set();  // noteIds the user has collapsed
 
 function toolTitle(name) {
+  if (/^task$/i.test(name)) return 'subagent';
   const m = /^mcp_(.+?)__(.+)$/.exec(name || '');
   return m ? `${m[1]} / ${m[2]}` : (name || 'tool');
 }
 function stepIcon(s) {
-  if (s.tool === 'web_search') return '🌐';
+  if (/^task$/i.test(s.tool)) return '🪆'; // a spawned subagent
+  if (/search/i.test(s.tool)) return '🌐';
   if (/^mcp_/.test(s.tool)) return '🔌';
   if (/^history_/.test(s.tool)) return '🗂';
+  if (/^(read|write|edit|glob|grep|ls)$/i.test(s.tool)) return '📄';
+  if (/^bash$/i.test(s.tool)) return '⌘';
   return '🔧';
 }
 
@@ -813,7 +817,7 @@ function renderActivity() {
   const a = current && noteActivity.get(current.id);
   if (!a) { panel.classList.add('hidden'); return; }
   panel.classList.toggle('collapsed', activityCollapsed.has(current.id));
-  $('n-activity-cmd').textContent = `@${a.cmd}`;
+  $('n-activity-cmd').textContent = a.label || `@${a.cmd}`;
   $('n-activity-model').textContent = a.modelLabel || '';
   const statusEl = $('n-activity-status');
   const running = !a.done;
@@ -851,6 +855,42 @@ function renderActivity() {
 // The activity panel only earns its space when a command armed tools; a plain
 // summarize/translate (no tools) leaves it hidden.
 function recordActivity(job) { if (job.tools.length || job.steps.length) noteActivity.set(job.noteId, job); }
+
+// Stream a swarm member's live agent activity (tool calls / subagents / reasoning) into
+// the SAME collapsible activity widget the @commands use — never into the note body, so
+// nothing the user wants to keep gets overwritten. The trace is created lazily on the
+// first tool/subagent event, so a plain API model (no tools) shows no widget at all.
+// Handles both shapes: API tools ({phase:'start'|'done', callId, input, result}) and a
+// bridge agent's own tools ({name, summary} with no phase — a single completed step).
+function makeSwarmActivity(noteId, label, modelLabel, redacted) {
+  const ctx = { trace: null };
+  const ensure = () => {
+    if (!ctx.trace) {
+      ctx.trace = { kind: 'cowriter', label, cmd: label, modelLabel, tools: [], steps: [], done: false, statusText: 'working…', redacted, error: null };
+      noteActivity.set(noteId, ctx.trace);
+      if (current?.id === noteId) activityCollapsed.delete(noteId); // reveal it while working
+    }
+    return ctx.trace;
+  };
+  ctx.onEvent = (ev) => {
+    if (!ev) return;
+    if (ev.type === 'tool') {
+      const t = ensure();
+      if (ev.phase === 'done') {
+        const step = ev.callId ? t.steps.find((s) => s.callId === ev.callId) : t.steps[t.steps.length - 1];
+        if (step) { step.done = true; step.status = ev.status; step.result = ev.result; }
+        t.statusText = 'working…';
+      } else {
+        t.statusText = /search/i.test(ev.name || '') ? 'searching…' : `${toolTitle(ev.name)}…`;
+        t.steps.push({ tool: ev.name, input: ev.input ?? ev.summary, callId: ev.callId, done: ev.phase !== 'start', status: ev.status, result: ev.result });
+      }
+      scheduleActivityRender();
+    } else if (ev.type === 'reasoning') { ensure().statusText = 'thinking…'; scheduleActivityRender(); }
+    else if (ev.type === 'status' && ev.text) { ensure().statusText = String(ev.text).slice(0, 60); scheduleActivityRender(); }
+  };
+  ctx.done = (err) => { if (ctx.trace) { ctx.trace.done = true; ctx.trace.error = err || null; if (current?.id === noteId) scheduleActivityRender(); } };
+  return ctx;
+}
 
 // Persist a job's current body to the store — id-keyed, so it works whether or not
 // the note is open. On completion the result lands even for a note you never reopen.
@@ -1531,6 +1571,9 @@ async function draftAhead() {
   setStatus('Drafting…');
   showGhostHint('Drafting…');
   setSwarmState('writer', 'working');
+  // If the Writer is a bridge agent, its tools/subagents stream into the activity widget
+  // (not the note body). API models with no tools show nothing extra.
+  const act = makeSwarmActivity(current.id, '✨ Writer', writer.resolved.model || writer.resolved.bridgeAgent || 'model', !!redaction);
   let out = '';
   try {
     await deps.streamChat({
@@ -1540,11 +1583,13 @@ async function draftAhead() {
       redaction, // the PII harness wraps the draft-ahead call too
       messages: [{ role: 'user', content: writerTail(before) }],
       onDelta: (d) => { if (gen === writerGen) { out += d; renderGhost(from, out); } }, // hint already shown; anchor is fixed at `from`
+      onEvent: act.onEvent,
     });
   } catch (e) {
     if (!writerAbort.signal.aborted) toast(`Writer error: ${e?.message || e}`);
   } finally {
     const aborted = writerAbort?.signal.aborted;
+    act.done(aborted ? null : undefined);
     writerAbort = null;
     setStatus('');
     if (!aborted && gen === writerGen && out.trim()) { renderGhost(from, out.replace(/\s+$/, '')); showGhostHint('Tab ↹ accept · Esc dismiss'); setSwarmState('writer', 'idle', 'draft ready'); logActivity('Writer', 'drafted a continuation'); }
@@ -1802,14 +1847,17 @@ async function runFactcheck() {
   try { redaction = deps.buildRedaction?.({ settings, license }); } catch { /* redaction off */ }
   setSwarmState('factcheck', 'working');
   const sys = 'You are a careful fact-checker reviewing ONE claim from a note. Decide only if the claim is internally UNSUPPORTED or CONTRADICTS the rest of the note — do not judge outside facts. Reply with a single compact JSON object and nothing else: {"verdict":"ok"|"unsupported"|"contradiction","why":"<=12 words"}.';
+  const act = makeSwarmActivity(current.id, '⚠️ Fact-checker', fc.resolved.model || fc.resolved.bridgeAgent || 'model', !!redaction);
   let out = '';
   try {
     out = await deps.streamChat({
       agent: { ...fc.resolved, systemPrompt: sys, maxTokens: 120, temperature: 0 },
       settings, redaction,
       messages: [{ role: 'user', content: `NOTE:\n${(current.body || '').slice(0, 4000)}\n\nCLAIM TO CHECK:\n${claim}` }],
+      onEvent: act.onEvent,
     });
-  } catch { setSwarmState('factcheck', 'idle'); return; }
+    act.done();
+  } catch { act.done(); setSwarmState('factcheck', 'idle'); return; }
   if (gen !== factcheckGen || !cwEnabled) return;
   let verdict = null;
   try { verdict = JSON.parse((out.match(/\{[\s\S]*\}/) || ['{}'])[0]); } catch { /* non-JSON → treat as ok */ }
