@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "ChatPanel — Privacy-First AI Agent",
+  "name": "ChatPanel \u2014 Privacy-First AI Agent",
   "version": "0.17.13",
   "description": "Chat from any tab with Claude Code, Codex, Antigravity, or your own API. Tab context, URL analysis, history, agents & skills.",
   "minimum_chrome_version": "116",
@@ -14,6 +14,7 @@
     "alarms",
     "identity",
     "downloads",
+    "offscreen",
     "unlimitedStorage",
     "webNavigation",
     "debugger"

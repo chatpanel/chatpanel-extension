@@ -3579,11 +3579,16 @@ function wireAutoBackup() {
   if (!toggle) return; // defensive — UI not present
 
   const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : 'never');
+  const fmtSize = (n) => {
+    if (!n) return '';
+    const mb = n / (1024 * 1024);
+    return mb >= 1 ? ` (${mb.toFixed(1)} MB)` : ` (${Math.max(1, Math.round(n / 1024))} KB)`;
+  };
   const showState = (st) => {
     if (st.lastError) return setStatus(status, '✕ ' + st.lastError, 'err');
     if (!st.enabled) return setStatus(status, 'Off — your data is only inside the extension.', '');
     const lock = st.passphrase ? ' 🔒 encrypted' : '';
-    setStatus(status, `On${lock} — saved to Downloads → ChatPanel Backups. Last backup: ${fmt(st.lastAt)}.`, st.lastAt ? 'ok' : '');
+    setStatus(status, `On${lock} — saved to Downloads → ChatPanel Backups. Last backup: ${fmt(st.lastAt)}${fmtSize(st.lastBytes)}.`, st.lastAt ? 'ok' : '');
   };
   // Persist the encryption passphrase from the field before any backup runs so
   // the unattended service-worker write uses the latest value.

@@ -14,9 +14,7 @@
 // fixed, non-interpolated path under the user's own Downloads dir. Nothing is
 // uploaded — chrome.downloads writes to the local disk only.
 
-import { exportAllData, exportDataArchive } from './store.js';
 import { getLicense, can } from './license.js';
-import { encryptBackup } from './crypto-backup.js';
 
 const K_STATE = 'chatpanel:autoBackup';
 export const BACKUP_ALARM = 'chatpanel-auto-backup';
@@ -27,7 +25,7 @@ const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 // the backup runs unattended in the service worker — documented as a tradeoff in
 // the UI. It protects the file once it leaves the machine, not against someone
 // who already has full extension-storage access.
-const DEFAULT_STATE = { enabled: false, passphrase: '', lastAt: 0, lastHash: '', lastError: '', count: 0, meetingsCount: 0 };
+const DEFAULT_STATE = { enabled: false, passphrase: '', lastAt: 0, lastHash: '', lastError: '', count: 0, meetingsCount: 0, lastBytes: 0 };
 
 export async function getBackupState() {
   const got = await chrome.storage.local.get(K_STATE);
@@ -40,21 +38,35 @@ async function patchBackupState(patch) {
   return next;
 }
 
-async function sha256Hex(str) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+// Build the backup in an offscreen document — it has URL.createObjectURL (a
+// service worker doesn't) and more memory headroom, so we download a blob: URL
+// instead of a huge base64 data: URL that fails past ~tens of MB. Idempotent.
+async function ensureOffscreen() {
+  if (await chrome.offscreen.hasDocument?.()) return;
+  try {
+    await chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['BLOBS'],
+      justification: 'Build the backup file as a blob URL (service workers cannot create object URLs).',
+    });
+  } catch (e) {
+    // Racing creators can throw "already exists" — tolerate it.
+    if (!String(e?.message || e).includes('Only a single offscreen')) throw e;
+  }
 }
 
-// Service workers have no URL.createObjectURL, so the zip is handed to
-// chrome.downloads as a base64 data: URL built from our own bytes (no external
-// input — nothing untrusted reaches this string).
-function bytesToBase64(bytes) {
-  let bin = '';
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(bin);
+// Revoke the blob URL once the download settles, then close the offscreen doc so
+// its memory (the whole backup Blob) is freed. Best-effort.
+function releaseAfterDownload(downloadId, url) {
+  const onChanged = (delta) => {
+    if (delta.id !== downloadId || !delta.state) return;
+    const s = delta.state.current;
+    if (s !== 'complete' && s !== 'interrupted') return;
+    chrome.downloads.onChanged.removeListener(onChanged);
+    chrome.runtime.sendMessage({ type: 'cp-backup-revoke', url }).catch(() => {});
+    chrome.offscreen.closeDocument?.().catch(() => {});
+  };
+  chrome.downloads.onChanged.addListener(onChanged);
 }
 
 // Delete our own backup files in the OTHER format (regex fragment for the
@@ -86,47 +98,52 @@ export async function runAutoBackup({ force = false } = {}) {
       await patchBackupState({ lastError: 'Auto-backup is a Pro feature.' });
       return { ok: false, reason: 'not-pro' };
     }
-    const data = await exportAllData();
-    if (!data.count && !data.meetingsCount) return { ok: false, reason: 'empty' };
-
-    const hash = await sha256Hex(JSON.stringify(data));
     const state = await getBackupState();
-    if (!force && hash === state.lastHash) {
-      return { ok: true, skipped: true, count: data.count, meetingsCount: data.meetingsCount };
+
+    // Build the file in the offscreen document: it does the export + optional
+    // compress-then-encrypt and returns a blob: URL + content hash. The large
+    // bytes stay over there; only the small URL/hash cross back.
+    await ensureOffscreen();
+    const built = await chrome.runtime.sendMessage({ type: 'cp-backup-build', passphrase: state.passphrase });
+    if (!built) return { ok: false, reason: 'no-offscreen' };
+    if (built.empty) return { ok: false, reason: 'empty' };
+    if (built.error) {
+      await patchBackupState({ lastError: built.error });
+      return { ok: false, reason: 'error', error: built.error };
     }
 
-    // Optional passphrase → a single encrypted envelope; otherwise the browsable
-    // .zip. Either way bytes become a base64 data: URL (service workers have no
-    // URL.createObjectURL). The data here is all our own — nothing untrusted.
-    let url, ext;
-    if (state.passphrase) {
-      const envelope = await encryptBackup(data, state.passphrase);
-      const bytes = new TextEncoder().encode(JSON.stringify(envelope));
-      url = `data:application/json;base64,${bytesToBase64(bytes)}`;
-      ext = 'encrypted.json';
-    } else {
-      const { blob } = await exportDataArchive(data); // reuse the snapshot; no double export
-      url = `data:application/zip;base64,${bytesToBase64(new Uint8Array(await blob.arrayBuffer()))}`;
-      ext = 'zip';
+    // "Incremental": skip rewriting an unchanged snapshot on the scheduled path.
+    if (!force && built.hash === state.lastHash) {
+      chrome.runtime.sendMessage({ type: 'cp-backup-revoke', url: built.url }).catch(() => {});
+      await chrome.offscreen.closeDocument?.().catch(() => {});
+      return { ok: true, skipped: true, count: built.count, meetingsCount: built.meetingsCount };
     }
+
     // Fixed, non-interpolated path under the user's Downloads dir. Weekday name
     // gives an automatic 7-file rolling window via conflictAction:'overwrite'.
     const slot = `chatpanel-backup-${WEEKDAYS[new Date().getDay()]}`;
-    await chrome.downloads.download({ url, filename: `${FOLDER}/${slot}.${ext}`, conflictAction: 'overwrite', saveAs: false });
+    const downloadId = await chrome.downloads.download({
+      url: built.url,
+      filename: `${FOLDER}/${slot}.${built.ext}`,
+      conflictAction: 'overwrite',
+      saveAs: false,
+    });
+    releaseAfterDownload(downloadId, built.url); // revoke + close offscreen when it settles
 
     // Remove any backups in the OTHER format so a plaintext .zip can't linger on
     // disk after the user turns encryption on (and vice versa). chrome.downloads
     // can only delete files it wrote itself — which our daily backups are.
-    await deleteOtherFormat(ext === 'zip' ? 'encrypted\\.json' : 'zip');
+    await deleteOtherFormat(built.ext === 'zip' ? 'encrypted\\.json' : 'zip');
 
     await patchBackupState({
       lastAt: Date.now(),
-      lastHash: hash,
+      lastHash: built.hash,
       lastError: '',
-      count: data.count,
-      meetingsCount: data.meetingsCount,
+      count: built.count,
+      meetingsCount: built.meetingsCount,
+      lastBytes: built.bytes || 0,
     });
-    return { ok: true, count: data.count, meetingsCount: data.meetingsCount };
+    return { ok: true, count: built.count, meetingsCount: built.meetingsCount, bytes: built.bytes };
   } catch (e) {
     await patchBackupState({ lastError: String(e?.message || e) });
     return { ok: false, reason: 'error', error: String(e?.message || e) };
