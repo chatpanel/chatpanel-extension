@@ -195,6 +195,19 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .md th, .md td { border: 1px solid var(--border); padding: 6px 11px; }
 .md img { max-width: 100%; border-radius: 8px; }
 
+/* [[ wiki-link autocomplete */
+.ac-menu { position: fixed; z-index: 30; min-width: 240px; max-width: 360px; max-height: 260px; overflow-y: auto;
+  background: var(--card); border: 1px solid var(--border); border-radius: 11px; box-shadow: 0 12px 34px rgba(0, 0, 0, .24); padding: 5px; }
+.ac-item { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px; cursor: pointer; }
+.ac-item.sel { background: var(--accent-weak); }
+.ac-badge { font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; padding: 2px 6px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); flex: none; }
+.ac-badge.chat { color: var(--accent); border-color: #33407a; } .ac-badge.meeting { color: #b8860b; } .ac-badge.note { color: #8b5cf6; }
+.ac-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.ac-empty { padding: 9px 11px; color: var(--faint); font-size: 12.5px; }
+/* wiki links in the rendered note */
+.md a.wikilink { color: var(--accent); text-decoration: none; cursor: pointer; border-bottom: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent); }
+.md a.wikilink:hover { border-bottom-style: solid; }
+
 .toast {
   position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
   background: var(--text); color: var(--bg); padding: 9px 16px; border-radius: 10px; font-size: 13px;

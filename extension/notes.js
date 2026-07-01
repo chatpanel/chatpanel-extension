@@ -232,6 +232,7 @@ function onBodyInput() {
   updateWordCount();
   scheduleSave();
   scheduleSuggest();
+  maybeAutocomplete();
 }
 
 // ── agent beside you: local topic extraction → tag suggestions (no LLM) ──────────
@@ -404,6 +405,106 @@ async function runAgentAction(kind) {
   }
 }
 
+// ── [[ wiki-link autocomplete (deterministic — links notes / chats / meetings) ────
+let _crossTargets = null; // chat + meeting titles, lazy-loaded once (off the load path)
+async function linkTargets() {
+  const notes = list.map((n) => ({ title: n.title || 'Untitled note', type: 'note', url: `notes.html#${encodeURIComponent(n.id)}` }));
+  if (!_crossTargets) {
+    try {
+      const [store, meet] = await Promise.all([import('./js/store.js'), import('./js/store-meetings.js')]);
+      const chats = (await store.getIndex()).map((e) => ({ title: e.title || 'Chat', type: 'chat', url: `history.html#${encodeURIComponent(e.id)}` }));
+      const meetings = (await meet.getMeetingIndex()).map((e) => ({ title: e.title || 'Meeting', type: 'meeting', url: `meetings.html#${encodeURIComponent(e.id)}` }));
+      _crossTargets = [...chats, ...meetings];
+    } catch { _crossTargets = []; }
+  }
+  return [...notes, ..._crossTargets];
+}
+
+const ac = { open: false, items: [], index: 0, range: null };
+function closeAc() { ac.open = false; ac.range = null; $('n-ac').classList.add('hidden'); }
+
+// The [[…]] link query under the cursor, or null.
+function currentWikiQuery() {
+  const ta = $('n-body');
+  if (ta.selectionStart !== ta.selectionEnd) return null;
+  const pos = ta.selectionStart;
+  const upto = ta.value.slice(0, pos);
+  const open = upto.lastIndexOf('[[');
+  if (open < 0) return null;
+  const between = upto.slice(open + 2);
+  if (/[[\]\n]/.test(between)) return null; // closed / not a bare query
+  return { query: between, start: open + 2, end: pos };
+}
+
+// Pixel position of the caret (mirror-div technique) to anchor the dropdown.
+function caretXY(ta) {
+  const style = getComputedStyle(ta);
+  const div = document.createElement('div');
+  for (const p of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'wordSpacing', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderWidth', 'boxSizing']) div.style[p] = style[p];
+  const rect = ta.getBoundingClientRect();
+  Object.assign(div.style, { position: 'fixed', visibility: 'hidden', whiteSpace: 'pre-wrap', wordWrap: 'break-word', overflow: 'hidden', width: `${ta.clientWidth}px`, left: `${rect.left}px`, top: `${rect.top}px` });
+  div.textContent = ta.value.slice(0, ta.selectionStart);
+  const span = document.createElement('span');
+  span.textContent = '​';
+  div.appendChild(span);
+  document.body.appendChild(div);
+  const x = rect.left + span.offsetLeft;
+  const y = rect.top + span.offsetTop - ta.scrollTop + (parseFloat(style.lineHeight) || 20);
+  document.body.removeChild(div);
+  return { x, y };
+}
+
+async function maybeAutocomplete() {
+  const ctx = currentWikiQuery();
+  if (!ctx) return closeAc();
+  ac.range = ctx;
+  const q = ctx.query.toLowerCase();
+  const all = await linkTargets();
+  if (!ac.range) return; // closed while awaiting
+  ac.items = (q ? all.filter((t) => t.title.toLowerCase().includes(q)) : all).slice(0, 8);
+  ac.index = 0;
+  renderAc();
+}
+
+function renderAc() {
+  const el = $('n-ac');
+  if (!ac.range) return closeAc();
+  el.innerHTML = '';
+  if (!ac.items.length) {
+    el.innerHTML = '<div class="ac-empty">No match — keep typing to name a new link</div>';
+  } else {
+    ac.items.forEach((it, i) => {
+      const d = document.createElement('div');
+      d.className = 'ac-item' + (i === ac.index ? ' sel' : '');
+      d.innerHTML = `<span class="ac-badge ${it.type}">${it.type}</span><span class="ac-title">${escapeHtml(it.title)}</span>`;
+      d.onmousedown = (e) => { e.preventDefault(); ac.index = i; acceptAc(); };
+      el.appendChild(d);
+    });
+  }
+  const { x, y } = caretXY($('n-body'));
+  el.style.left = `${Math.max(8, Math.min(x, window.innerWidth - 372))}px`;
+  el.style.top = `${y + 4}px`;
+  el.classList.remove('hidden');
+  ac.open = true;
+}
+
+function moveAc(dir) {
+  if (!ac.items.length) return;
+  ac.index = (ac.index + dir + ac.items.length) % ac.items.length;
+  renderAc();
+}
+function acceptAc() {
+  if (!ac.range) return closeAc();
+  const ta = $('n-body');
+  const it = ac.items[ac.index];
+  const title = it ? it.title : ac.range.query; // allow a new (unmatched) link name too
+  ta.setRangeText(title, ac.range.start, ac.range.end, 'end');
+  const after = ac.range.start + title.length;
+  ta.selectionStart = ta.selectionEnd = ta.value.slice(after, after + 2) === ']]' ? after + 2 : after;
+  closeAc();
+  onBodyInput();
+}
+
 // ── wire up ───────────────────────────────────────────────────────────────────
 function init() {
   $('n-new').onclick = newNote;
@@ -435,15 +536,33 @@ function init() {
     }
   });
   $('n-body').addEventListener('input', onBodyInput);
-  // ↑ at the very start of the body hops back to the title.
   $('n-body').addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowUp' && $('n-body').selectionStart === 0 && $('n-body').selectionEnd === 0) {
+    const ta = $('n-body');
+    // Dropdown navigation takes priority while open.
+    if (ac.open) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); return moveAc(1); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); return moveAc(-1); }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); return acceptAc(); }
+      if (e.key === 'Escape') { e.preventDefault(); return closeAc(); }
+    }
+    // Typing the second [ auto-closes to [[]] with the cursor inside → opens the picker.
+    if (e.key === '[' && ta.selectionStart === ta.selectionEnd && ta.value[ta.selectionStart - 1] === '[') {
+      e.preventDefault();
+      const pos = ta.selectionStart;
+      ta.setRangeText('[]]', pos, pos, 'end');
+      ta.selectionStart = ta.selectionEnd = pos + 1;
+      onBodyInput();
+      return;
+    }
+    // ↑ at the very start of the body hops back to the title.
+    if (e.key === 'ArrowUp' && ta.selectionStart === 0 && ta.selectionEnd === 0) {
       e.preventDefault();
       const t = $('n-title');
       t.focus();
       t.setSelectionRange(t.value.length, t.value.length);
     }
   });
+  $('n-body').addEventListener('blur', () => setTimeout(closeAc, 120)); // let a click land first
   $('n-search').addEventListener('input', (e) => renderList(e.target.value));
 
   for (const b of $('n-mode').children) b.onclick = () => setMode(b.dataset.mode);
@@ -451,7 +570,19 @@ function init() {
 
   // Rendered-markdown links: external URLs carry the target in data-href (no live
   // href, to dodge Chrome's speculative preload), so open them via a click handler.
-  $('n-preview').addEventListener('click', (e) => {
+  $('n-preview').addEventListener('click', async (e) => {
+    // [[wiki links]] → resolve the title to a doc and navigate.
+    const wl = e.target.closest?.('a.wikilink[data-wikilink]');
+    if (wl) {
+      e.preventDefault();
+      const title = wl.getAttribute('data-wikilink') || '';
+      const t = (await linkTargets()).find((x) => x.title.toLowerCase() === title.toLowerCase());
+      if (!t) return toast(`No document named "${title}" yet`);
+      const [page, hash] = t.url.split('#');
+      if (page === 'notes.html' && hash) openNote(decodeURIComponent(hash));
+      else chrome.tabs.create({ url: t.url });
+      return;
+    }
     const a = e.target.closest?.('a.md-link[data-href], a[href]');
     if (!a) return;
     const url = a.getAttribute('data-href') || a.getAttribute('href');
