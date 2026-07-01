@@ -242,8 +242,18 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .activity-x:hover { background: var(--field); color: var(--text); }
 .activity-armed { font-size: 11px; color: var(--faint); padding: 0 40px 6px; word-break: break-word; }
 .activity-armed:empty { display: none; }
-.activity.collapsed .activity-cards, .activity.collapsed .activity-armed { display: none; }
+.activity.collapsed .activity-cards, .activity.collapsed .activity-armed,
+.activity.collapsed .activity-timeline, .activity.collapsed .activity-detail { display: none; }
 .activity-cards { display: flex; flex-direction: column; gap: 6px; padding: 0 40px 12px; }
+/* Team-activity timeline — every AI action + completion, ambient + directed. */
+.activity-timeline { padding: 2px 40px 6px; }
+.tlrow { display: flex; align-items: baseline; gap: 8px; font-size: 12px; padding: 3px 0; }
+.tlrow-ico { flex: none; font-size: 12px; }
+.tlrow-who { font-weight: 600; color: var(--text); flex: none; }
+.tlrow-what { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tlrow-when { margin-left: auto; color: var(--faint); font-size: 11px; flex: none; }
+.activity-detail { font-size: 11px; font-weight: 600; color: var(--muted); padding: 6px 40px 2px; border-top: 1px solid var(--border); }
+.activity-detail.hidden { display: none; }
 .acard { border: 1px solid var(--border-strong); background: var(--card); border-radius: 9px; padding: 7px 10px; }
 .acard.err { border-color: var(--danger); }
 .acard-top { display: flex; align-items: center; gap: 7px; }

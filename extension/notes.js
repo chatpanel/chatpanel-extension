@@ -1137,46 +1137,88 @@ function scheduleActivityRender() {
   if (_actRaf) return;
   _actRaf = requestAnimationFrame(() => { _actRaf = null; renderActivity(); });
 }
+// One emoji per team member / actor, so the timeline reads at a glance.
+function activityIcon(who) {
+  const w = String(who || '').toLowerCase();
+  if (w.startsWith('editor')) return '✍️';
+  if (w.startsWith('research')) return '🔎';
+  if (w.startsWith('writer')) return '✨';
+  if (w.startsWith('fact')) return '⚠️';
+  if (w.startsWith('connector')) return '🔗';
+  if (w.startsWith('planner')) return '🧭';
+  if (w.startsWith('autocomplete')) return '⌨️';
+  return '🤖'; // an @command / @mention agent
+}
+// The unified Team-activity panel: a TIMELINE of every AI action + completion (ambient
+// roles AND directed @commands / @mentions), plus the tool-call DETAIL (args + results)
+// of the most recent tool-using run. Persistent per note; the single place to see what
+// the AI is doing and has done.
 function renderActivity() {
   const panel = $('n-activity');
   if (!panel) return;
   const a = current && noteActivity.get(current.id);
-  if (!a) { panel.classList.add('hidden'); return; }
-  panel.classList.toggle('collapsed', activityCollapsed.has(current.id));
-  $('n-activity-cmd').textContent = a.label || `@${a.cmd}`;
-  $('n-activity-model').textContent = a.modelLabel || '';
+  const log = board.log;
+  if (!a && !log.length) { panel.classList.add('hidden'); return; }
+  panel.classList.toggle('collapsed', activityCollapsed.has(current?.id));
+
+  const running = a && !a.done;
   const statusEl = $('n-activity-status');
-  const running = !a.done;
-  statusEl.classList.toggle('running', running);
-  statusEl.textContent = running
-    ? (a.statusText || 'working…')
-    : (a.error ? `error: ${a.error}` : `${a.steps.length} tool call${a.steps.length === 1 ? '' : 's'}`);
-  $('n-activity-pii').classList.toggle('hidden', !a.redacted);
-  $('n-activity-armed').textContent = a.tools.length ? `armed: ${prettyTools(a.tools)}` : '';
+  statusEl.classList.toggle('running', !!running);
+  statusEl.textContent = running ? (a.statusText || 'working…') : `${log.length} action${log.length === 1 ? '' : 's'}`;
+  $('n-activity-pii').classList.toggle('hidden', !(a && a.redacted));
+
+  // Timeline — every AI action + completion.
+  const tl = $('n-activity-timeline');
+  tl.innerHTML = log.length
+    ? log.map((e) =>
+        `<div class="tlrow"><span class="tlrow-ico">${activityIcon(e.who)}</span>`
+        + `<span class="tlrow-who">${escapeHtml(e.who)}</span>`
+        + `<span class="tlrow-what">${escapeHtml(e.what)}${e.n > 1 ? ` ×${e.n}` : ''}</span>`
+        + `<span class="tlrow-when">${escapeHtml(relTime(e.at))}</span></div>`).join('')
+    : (a ? '' : '<div class="activity-armed">No actions yet — the team logs here as it proofreads, researches, drafts and runs your @commands.</div>');
+
+  // Detail — the tool-call trace of the most recent tool-using run.
+  const detail = $('n-activity-detail');
   const wrap = $('n-activity-cards');
   wrap.innerHTML = '';
-  if (!a.steps.length) {
-    const empty = document.createElement('div');
-    empty.className = 'activity-armed';
-    empty.textContent = running ? 'Waiting for the model to call a tool…' : 'No tools were called — answered from the model’s own knowledge.';
-    wrap.appendChild(empty);
-  }
-  for (const s of a.steps) {
-    const state = s.status === 'error' ? 'err' : (s.done ? 'ok' : 'run');
-    const mark = s.status === 'error' ? '✗' : (s.done ? '✓' : '…');
-    const arg = s.input != null ? compactInput(s.input, 240) : '';
-    const res = s.result != null ? String(s.result) : '';
-    const card = document.createElement('div');
-    card.className = `acard ${state}`;
-    card.innerHTML =
-      `<div class="acard-top"><span class="acard-ico">${stepIcon(s)}</span>` +
-      `<span class="acard-name">${escapeHtml(toolTitle(s.tool))}</span>` +
-      `<span class="acard-mark">${mark}</span></div>` +
-      (arg ? `<div class="acard-arg"><code>${escapeHtml(arg)}</code></div>` : '') +
-      (res ? `<details class="acard-res"><summary>result (${res.length} chars)</summary><pre>${escapeHtml(res.slice(0, 4000))}${res.length > 4000 ? '\n…(truncated)' : ''}</pre></details>` : '');
-    wrap.appendChild(card);
+  if (a && (a.steps.length || a.tools?.length)) {
+    detail.classList.remove('hidden');
+    detail.textContent = `${a.label || `@${a.cmd}`}${a.modelLabel ? ` · ${a.modelLabel}` : ''} · `
+      + (a.done ? (a.error ? `error: ${a.error}` : `${a.steps.length} tool call${a.steps.length === 1 ? '' : 's'}`) : (a.statusText || 'working…'));
+    $('n-activity-armed').textContent = a.tools?.length ? `armed: ${prettyTools(a.tools)}` : '';
+    if (!a.steps.length) {
+      const empty = document.createElement('div');
+      empty.className = 'activity-armed';
+      empty.textContent = running ? 'Waiting for the model to call a tool…' : 'No tools were called — answered from the model’s own knowledge.';
+      wrap.appendChild(empty);
+    }
+    for (const s of a.steps) {
+      const state = s.status === 'error' ? 'err' : (s.done ? 'ok' : 'run');
+      const mark = s.status === 'error' ? '✗' : (s.done ? '✓' : '…');
+      const arg = s.input != null ? compactInput(s.input, 240) : '';
+      const res = s.result != null ? String(s.result) : '';
+      const card = document.createElement('div');
+      card.className = `acard ${state}`;
+      card.innerHTML =
+        `<div class="acard-top"><span class="acard-ico">${stepIcon(s)}</span>` +
+        `<span class="acard-name">${escapeHtml(toolTitle(s.tool))}</span>` +
+        `<span class="acard-mark">${mark}</span></div>` +
+        (arg ? `<div class="acard-arg"><code>${escapeHtml(arg)}</code></div>` : '') +
+        (res ? `<details class="acard-res"><summary>result (${res.length} chars)</summary><pre>${escapeHtml(res.slice(0, 4000))}${res.length > 4000 ? '\n…(truncated)' : ''}</pre></details>` : '');
+      wrap.appendChild(card);
+    }
+  } else {
+    detail.classList.add('hidden');
+    $('n-activity-armed').textContent = '';
   }
   panel.classList.remove('hidden');
+}
+// Reveal + expand the Team-activity panel (from the footer status strip).
+function revealActivity() {
+  if (current) activityCollapsed.delete(current.id);
+  renderActivity();
+  const p = $('n-activity');
+  if (p) { p.classList.remove('hidden'); p.scrollIntoView({ block: 'nearest' }); }
 }
 // The activity panel only earns its space when a command armed tools; a plain
 // summarize/translate (no tools) leaves it hidden.
@@ -1360,6 +1402,8 @@ async function runNoteJob({
       if (!aborted && !job.error) {
         recordEdit({ author: job.modelLabel, discrete: true }); // attribute the produced text
         pushVersion(job.modelLabel, versionLabel || `${cmdLabel} · ${job.modelLabel}`);
+        // Log the completion to the Team-activity timeline (directed actions too).
+        logActivity(job.modelLabel, job.cmd.startsWith('@') ? 'completed a task' : `@${job.cmd} inserted`);
       }
       current.body = $('n-body').value;
       updateWordCount();
@@ -1455,6 +1499,7 @@ function makeNoteTools(job) {
         const rec = await createNote({ title: String(input?.title || '').trim(), body: String(input?.body || '') });
         await reloadIndex();
         renderList($('n-search').value);
+        if (current?.id === job.noteId) logActivity(job.modelLabel, `created “${rec.title}”`);
         return JSON.stringify({ ok: true, id: rec.id, title: rec.title, link: `notes.html#${rec.id}` });
       }
       if (name === 'note_edit') {
@@ -1465,6 +1510,7 @@ function makeNoteTools(job) {
         else if (job.tail.includes(find)) job.tail = job.tail.replace(find, replace);
         else return JSON.stringify({ error: '`find` was not an exact substring of the note (outside the text being written). Copy the exact text to replace.' });
         scheduleJobRender(job);
+        if (current?.id === job.noteId) logActivity(job.modelLabel, 'edited the note');
         return JSON.stringify({ ok: true });
       }
       return JSON.stringify({ error: `Unknown tool: ${name}` });
@@ -2301,10 +2347,11 @@ function setIntent(v) {
 }
 function logActivity(who, what) {
   const head = board.log[0];
-  if (head && head.who === who && head.what === what) { head.at = Date.now(); head.n = (head.n || 1) + 1; return; } // collapse repeats
+  if (head && head.who === who && head.what === what) { head.at = Date.now(); head.n = (head.n || 1) + 1; renderSwarmStatus(); scheduleActivityRender(); return; } // collapse repeats
   board.log.unshift({ who, what, at: Date.now(), n: 1 });
   if (board.log.length > 30) board.log.length = 30;
   renderSwarmStatus();
+  scheduleActivityRender(); // the Team-activity timeline
 }
 // The away-timeline: click the status strip to see what the team did while you wrote.
 function timelineEl() {
@@ -2503,8 +2550,10 @@ function init() {
   $('n-activity-clear').onclick = () => {
     if (!current) return;
     if (noteJobs.has(current.id)) return toast('Still running — stop it first (Esc)');
-    noteActivity.delete(current.id);
+    noteActivity.delete(current.id); // the tool-call detail
+    board.log = [];                   // and the Team-activity timeline
     renderActivity();
+    renderSwarmStatus();
   };
 
   // Collapsible list rail → full-width editor. Persisted.
@@ -2697,7 +2746,7 @@ function init() {
   document.addEventListener('click', () => $('n-swarm-menu').classList.add('hidden'));
 
   // Status strip → the away-timeline of what the swarm did.
-  $('n-swarm-status').onclick = (e) => { e.stopPropagation(); toggleTimeline(); };
+  $('n-swarm-status').onclick = (e) => { e.stopPropagation(); revealActivity(); }; // → the unified Team-activity panel
   document.addEventListener('click', () => timelineEl().classList.add('hidden'));
 
   document.addEventListener('keydown', (e) => {
