@@ -194,6 +194,7 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .cw-sug:hover { border-color: var(--accent); }
 .cw-sug .cw-ico { font-size: 11px; }
 .cw-sug b { color: var(--accent); font-weight: 600; }
+.cw-hand { color: var(--faint); font-weight: 400; }
 .cw-all { font: inherit; font-size: 12px; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 999px; padding: 3px 11px; }
 .cw-x { margin-left: auto; width: 24px; height: 24px; border: 0; background: transparent; color: var(--muted); cursor: pointer; border-radius: 6px; font-size: 12px; }
 .cw-x:hover { background: var(--field); color: var(--text); }

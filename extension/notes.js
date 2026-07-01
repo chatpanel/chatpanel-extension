@@ -1627,9 +1627,10 @@ async function runFactcheck() {
     if (!boardDismissed.has(key)) {
       boardSuggestions = boardSuggestions.filter((s) => s.key !== key).concat([{
         role: 'factcheck', icon: '⚠️', key,
-        html: verdict.verdict === 'contradiction' ? 'Contradiction' : 'Unsupported',
-        title: `${escapeHtml(verdict.why || 'shaky claim')} · Fact-checker (${escapeHtml(fc.resolved.model || 'model')})`,
-        apply: () => { toast(verdict.why || 'Flagged claim'); boardDismissed.add(key); },
+        html: `${verdict.verdict === 'contradiction' ? 'Contradiction' : 'Unsupported'} <span class="cw-hand">— find a source</span>`,
+        title: `${escapeHtml(verdict.why || 'shaky claim')} · Fact-checker (${escapeHtml(fc.resolved.model || 'model')}) — click to hand off to the Researcher`,
+        // Fact-checker → Researcher handoff: look for a source that supports the claim.
+        apply: () => { toast(verdict.why || 'Flagged claim'); boardDismissed.add(key); runResearch({ question: claim, web: true }); },
       }]);
       logActivity('Fact-checker', `${verdict.verdict}: ${(verdict.why || '').slice(0, 40)}`);
     }
