@@ -146,6 +146,8 @@ function startTagInput(addBtn) {
 
 async function openNote(id, preloaded = null) {
   if (agentAbort) agentAbort.abort(); // stop any in-flight @agent generation before switching
+  if (writerAbort) writerAbort.abort();
+  clearGhost({ remove: true }); // strip any pending draft-ahead from the OLD note before it's flushed
   // @insert/@command jobs are deliberately NOT aborted here — they run in the
   // background keyed by note id and persist their result on completion.
   const outJob = current && noteJobs.get(current.id);
@@ -191,6 +193,7 @@ function scheduleSave(immediate = false) {
 }
 async function flushSave() {
   clearTimeout(saveTimer);
+  if (ghost) clearGhost({ remove: true }); // never persist an un-accepted draft-ahead
   if (!dirty || !current) return;
   dirty = false;
   current.title = $('n-title').value;
@@ -242,6 +245,8 @@ function applyFmt(fmt) {
   }
 }
 function onBodyInput() {
+  if (ghostApplying) { autoGrow(); return; }     // our own ghost mutation — no autosave / swarm triggers
+  if (ghost) { ghost = null; hideGhostHint(); }   // user edited around a pending ghost → drop the stale state
   autoGrow();
   if (!$('n-panes').classList.contains('write')) updatePreview();
   updateWordCount();
@@ -952,13 +957,13 @@ function applyAllCowriter() {
   clearCowriterUI();
   toast('Fixes applied');
 }
-function setCowriter(on) {
+function setCowriter(on, announce = false) {
   cwEnabled = on;
   localStorage.setItem('chatpanel.notes.cowriter', on ? '1' : '0');
   const btn = $('n-cw-toggle');
   btn.classList.toggle('on', on);
-  btn.title = on ? 'Co-writer: on — proofreads as you write' : 'Co-writer: off';
-  if (on) { scheduleCowriter(); scheduleResearch(); }
+  btn.title = on ? 'Co-writer swarm: on — proofreads as you write · ⌘↵ draft ahead · 🔎 research' : 'Co-writer: off';
+  if (on) { scheduleCowriter(); scheduleResearch(); if (announce) toast('Co-writer on — proofreads as you type · ⌘↵ to draft ahead'); }
   else clearCowriterUI();
 }
 
@@ -1098,6 +1103,119 @@ function openResearch(c) {
 }
 function escapeMdText(s) { return String(s || '').replace(/[[\]]/g, '\\$&'); }
 
+// ── Writer co-writer — Phase 3 of the swarm ──────────────────────────────────────
+// Draft-ahead "ghost text". On ⌘/Ctrl+Enter the strong (routed) Writer model continues
+// from the caret — grounded in the Researcher's shelf, so the swarm members hand off —
+// and streams the draft in as a SELECTED suggestion. Tab accepts, Esc/typing/blur
+// rejects. A pending ghost is tracked separately and NEVER persists un-accepted:
+// every save/switch/blur strips it first.
+let writerGen = 0;
+let writerAbort = null;
+let ghost = null;          // { from, to } range of the pending suggestion in n-body
+let ghostApplying = false; // true while WE mutate the textarea (so input handlers ignore it)
+
+function ghostHintEl() {
+  let el = document.getElementById('n-ghost-hint');
+  if (!el) { el = document.createElement('div'); el.id = 'n-ghost-hint'; el.className = 'ghost-hint hidden'; document.body.appendChild(el); }
+  return el;
+}
+function showGhostHint(text) {
+  const el = ghostHintEl();
+  el.textContent = text;
+  const { x, y } = caretXY($('n-body'));
+  el.style.left = `${Math.round(x)}px`;
+  el.style.top = `${Math.round(y + 4)}px`;
+  el.classList.remove('hidden');
+}
+function hideGhostHint() { ghostHintEl().classList.add('hidden'); }
+
+function clearGhost({ remove = false } = {}) {
+  const ta = $('n-body');
+  if (ghost && remove && ta.value.length >= ghost.to) {
+    ghostApplying = true;
+    ta.setRangeText('', ghost.from, ghost.to, 'end'); // caret returns to `from`
+    ghostApplying = false;
+  }
+  ghost = null;
+  hideGhostHint();
+}
+function renderGhost(from, text) {
+  const ta = $('n-body');
+  ghostApplying = true;
+  const prevTo = ghost ? ghost.to : from;
+  ta.setRangeText(text, from, prevTo, 'select'); // replace prior ghost, keep the draft selected
+  ghostApplying = false;
+  ghost = { from, to: from + text.length };
+  autoGrow();
+}
+function acceptGhost() {
+  if (!ghost) return;
+  const ta = $('n-body');
+  ta.selectionStart = ta.selectionEnd = ghost.to; // collapse to end — keep the text
+  ghost = null;
+  hideGhostHint();
+  current.body = ta.value;
+  autoGrow();
+  if (!$('n-panes').classList.contains('write')) updatePreview();
+  updateWordCount();
+  dirty = true;
+  scheduleSave();
+  ta.focus();
+}
+
+function writerTail(before) {
+  const title = ($('n-title').value || '').trim();
+  const tail = before.length > 1600 ? `…${before.slice(-1600)}` : before;
+  return (title ? `# ${title}\n\n` : '') + tail;
+}
+async function draftAhead() {
+  if (!current || ghost || writerAbort || agentAbort || noteJobs.has(current.id)) return;
+  const ta = $('n-body');
+  const from = ta.selectionStart;
+  const before = ta.value.slice(0, from);
+  if (before.trim().length < 8) return toast('Write a little first, then ⌘↵ to draft ahead');
+  const gen = ++writerGen;
+  let deps;
+  try { deps = await agentDeps(); } catch { return toast('Writer unavailable'); }
+  clearTimeout(saveTimer);
+  await flushSave(); // persist real edits so no autosave fires mid-stream (and dirty resets)
+  const settings = await deps.getSettings();
+  const license = await deps.getLicense();
+  const writer = await roleAgent(deps, settings, license, 'writer'); // strong, routed
+  if (!writer) return toast('Set up a model in ChatPanel settings first');
+
+  // Research handoff — ground the Writer in what the Researcher gathered.
+  const grounding = researchCards.length
+    ? '\n\nRelated material you may draw on (only if genuinely useful — cite as [[title]] or [text](url)):\n'
+      + researchCards.slice(0, 5).map((c) => `- ${c.title}${c.snippet ? ` — ${c.snippet}` : ''}`).join('\n')
+    : '';
+  const sys = "You continue the user's note from where it stops. Match their voice, tone, and markdown style exactly. Write only the NEXT one or two sentences (or finish the current one) — concise, natural, no preamble, no repetition of prior text, no meta commentary. Output ONLY the continuation." + grounding;
+
+  writerAbort = new AbortController();
+  // NB: no readOnly — setRangeText() throws on a readOnly textarea. Typing is blocked
+  // instead by the keydown guard (which swallows keys while writerAbort is set).
+  setStatus('Drafting…');
+  showGhostHint('Drafting…');
+  let out = '';
+  try {
+    await deps.streamChat({
+      agent: { ...writer.resolved, systemPrompt: sys, maxTokens: 220, temperature: 0.6 },
+      settings,
+      signal: writerAbort.signal,
+      messages: [{ role: 'user', content: writerTail(before) }],
+      onDelta: (d) => { if (gen === writerGen) { out += d; renderGhost(from, out); showGhostHint('Drafting…'); } },
+    });
+  } catch (e) {
+    if (!writerAbort.signal.aborted) toast(`Writer error: ${e?.message || e}`);
+  } finally {
+    const aborted = writerAbort?.signal.aborted;
+    writerAbort = null;
+    setStatus('');
+    if (!aborted && gen === writerGen && out.trim()) { renderGhost(from, out.replace(/\s+$/, '')); showGhostHint('Tab ↹ accept · Esc dismiss'); }
+    else clearGhost({ remove: true });
+  }
+}
+
 // ── wire up ───────────────────────────────────────────────────────────────────
 function init() {
   $('n-new').onclick = newNote;
@@ -1139,6 +1257,18 @@ function init() {
       if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); return acceptAc(); }
       if (e.key === 'Escape') { e.preventDefault(); return closeAc(); }
     }
+    // Writer draft-ahead ghost. While streaming, swallow keys (Esc aborts). When a draft
+    // is pending: Tab accepts, Esc rejects, any other key rejects then applies normally.
+    if (writerAbort) {
+      if (e.key === 'Escape') { e.preventDefault(); writerAbort.abort(); clearGhost({ remove: true }); }
+      return;
+    }
+    if (ghost) {
+      if (e.key === 'Tab') { e.preventDefault(); return acceptGhost(); }
+      if (e.key === 'Escape') { e.preventDefault(); return clearGhost({ remove: true }); }
+      if (!['Shift', 'Meta', 'Control', 'Alt', 'CapsLock'].includes(e.key)) clearGhost({ remove: true });
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); return draftAhead(); }
     // Typing the second [ auto-closes to [[]] with the cursor inside → opens the picker.
     if (e.key === '[' && ta.selectionStart === ta.selectionEnd && ta.value[ta.selectionStart - 1] === '[') {
       e.preventDefault();
@@ -1165,7 +1295,11 @@ function init() {
       t.setSelectionRange(t.value.length, t.value.length);
     }
   });
-  $('n-body').addEventListener('blur', () => setTimeout(closeAc, 120)); // let a click land first
+  $('n-body').addEventListener('blur', () => {
+    setTimeout(closeAc, 120); // let a click land first
+    if (writerAbort) writerAbort.abort();
+    clearGhost({ remove: true }); // a pending draft-ahead is rejected when focus leaves
+  });
   $('n-search').addEventListener('input', (e) => renderList(e.target.value));
 
   for (const b of $('n-mode').children) b.onclick = () => setMode(b.dataset.mode);
@@ -1204,8 +1338,8 @@ function init() {
   for (const b of $('n-agent-menu').querySelectorAll('button[data-act]')) b.onclick = () => runAgentAction(b.dataset.act);
   document.addEventListener('click', closeAgentMenu);
 
-  // Editor co-writer toggle (opt-in; persisted).
-  $('n-cw-toggle').onclick = () => setCowriter(!cwEnabled);
+  // Co-writer swarm toggle (opt-in; persisted). Announce only on user action, not load.
+  $('n-cw-toggle').onclick = () => setCowriter(!cwEnabled, true);
   setCowriter(cwEnabled);
 
   // Researcher: 🔎 runs research on demand (local + web). Shelf head repeats web + collapses.
