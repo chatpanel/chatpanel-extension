@@ -167,6 +167,7 @@ async function openNote(id, preloaded = null) {
   suggestTags();
   renderBacklinks(current.title);
   clearResearch(); // drop the previous note's research shelf (re-runs on the next typing pause)
+  resetSwarmState(); // fresh note → the team starts idle
   updatePreview();
   updateWordCount();
   autoGrow();
@@ -378,8 +379,13 @@ function downloadCurrent() {
 let _agentDeps = null;
 async function agentDeps() {
   if (_agentDeps) return _agentDeps;
-  const [p, s, l] = await Promise.all([import('./js/providers.js'), import('./js/store.js'), import('./js/license.js')]);
-  _agentDeps = { streamChat: p.streamChat, getSettings: s.getSettings, getTarget: s.getTarget, resolveTarget: s.resolveTarget, getLicense: l.getLicense, canUseAgent: l.canUseAgent };
+  const [p, s, l, t] = await Promise.all([import('./js/providers.js'), import('./js/store.js'), import('./js/license.js'), import('./js/turn-tools.js')]);
+  _agentDeps = {
+    streamChat: p.streamChat, checkBridge: p.checkBridge,
+    getSettings: s.getSettings, getTarget: s.getTarget, resolveTarget: s.resolveTarget,
+    getLicense: l.getLicense, canUseAgent: l.canUseAgent,
+    buildTurnTools: t.buildTurnTools, buildRedaction: t.buildRedaction,
+  };
   return _agentDeps;
 }
 
@@ -706,13 +712,31 @@ function jobFinalMid(job) {
 function jobProgressText(job) {
   if (job.done) return jobFinalMid(job);
   const icon = JOB_ICON[job.status] || '⏳';
-  const header = `${icon} @${job.cmd} · ${job.modelLabel} · ${job.statusText}`;
-  const steps = job.steps.map((s) => {
+  const lines = [`${icon} @${job.cmd} · ${job.modelLabel} · ${job.statusText}`];
+  // Show the toolset that's ARMED for this turn up front (what's supplied), plus
+  // whether PII redaction is on — not just the tools that happen to fire.
+  const meta = [];
+  if (job.tools.length) meta.push(`🧰 ${job.tools.length} tool${job.tools.length === 1 ? '' : 's'}: ${prettyTools(job.tools)}`);
+  if (job.redacted) meta.push('🛡 PII redaction on');
+  if (meta.length) lines.push(`   ${meta.join('   ')}`);
+  // Each tool call the model actually makes, with its argument and status.
+  for (const s of job.steps) {
     const mark = s.status === 'error' ? '✗' : (s.done ? '✓' : '…');
     const arg = s.input != null ? ` ${compactInput(s.input)}` : '';
-    return `   • ${s.tool}${arg} ${mark}`;
+    lines.push(`   • ${s.tool}${arg} ${mark}`);
+  }
+  return lines.join('\n') + (job.out ? `\n\n${job.out}` : '');
+}
+
+// Compact, readable tool names for the armed-toolset line (MCP tools are namespaced
+// `mcp_<server>__<tool>` — show just server/tool), capped so the line stays short.
+function prettyTools(names) {
+  const pretty = names.map((n) => {
+    const m = /^mcp_(.+?)__(.+)$/.exec(n);
+    return m ? `${m[1]}/${m[2]}` : n;
   });
-  return [header, ...steps].join('\n') + (job.out ? `\n\n${job.out}` : '');
+  const shown = pretty.slice(0, 6).join(', ');
+  return pretty.length > 6 ? `${shown}, +${pretty.length - 6} more` : shown;
 }
 
 // Mirror a running job into the editor — ONLY when its note is the open one. Keyed
@@ -769,18 +793,32 @@ async function runNoteCommand() {
   if (!deps.canUseAgent(license, settings, targetAgent)) { toast('That agent needs ChatPanel Pro'); return true; }
   const resolved = deps.resolveTarget(targetAgent, settings);
 
-  // Arm web search for commands that may need live data (lazy-loaded, off the load path).
+  // Arm the SAME ChatPanel toolset the side panel uses — web search + history +
+  // your MCP servers — for commands that may need live/external data. Same shared
+  // capability, so Notes and the side panel never drift.
   let tools = null;
   if (ctx.spec.tools) {
     try {
-      const [{ buildToolset }, ws, lic] = await Promise.all([import('./js/toolset.js'), import('./js/web-search.js'), import('./js/license.js')]);
-      tools = buildToolset([ws.webSearchToolProvider(ws.webSearchOpts(settings, lic.isPro(license)))]);
+      const bridge = await deps.checkBridge(settings.bridgeUrl).catch(() => ({ ok: false }));
+      tools = await deps.buildTurnTools({
+        resolvedAgent: resolved,
+        settings,
+        license,
+        bridgeUrl: settings.bridgeUrl,
+        bridgeAvailable: !!bridge?.ok,
+        userText: ctx.instruction,
+      });
     } catch { /* fall back to no tools */ }
   }
+  // PII redaction wraps EVERY note→model call — the harness must never be skipped.
+  let redaction = null;
+  try { redaction = deps.buildRedaction({ settings, license }); } catch { /* redaction off */ }
 
   const job = {
     noteId: current.id, cmd: ctx.spec.cmd, instruction: ctx.instruction,
     head, tail, commandText, out: '', steps: [],
+    tools: (tools?.specs || []).map((s) => s.name).filter(Boolean), // the armed toolset, shown up front
+    redacted: !!redaction,
     status: 'starting', statusText: 'starting…',
     modelLabel: targetAgent.name || resolved.model || resolved.bridgeAgent || 'agent',
     abort: new AbortController(), done: false, error: null,
@@ -795,6 +833,7 @@ async function runNoteCommand() {
       settings,
       signal: job.abort.signal,
       tools,
+      redaction,
       messages: [{ role: 'user', content: job.instruction }],
       onDelta: (d) => { job.out += d; job.status = 'writing'; job.statusText = 'writing…'; scheduleJobRender(job); },
       onEvent: (ev) => {
@@ -882,23 +921,28 @@ async function runCowriter() {
   const editor = await roleAgent(deps, settings, license, 'editor'); // routed → cheapest usable model
   if (!editor) return;
   const resolved = editor.resolved;
+  let redaction = null;
+  try { redaction = deps.buildRedaction?.({ settings, license }); } catch { /* redaction off */ }
   const sys = 'You are a meticulous copy-editor. Fix ONLY clear spelling, typo, and grammar mistakes in the text. Change as LITTLE as possible — never rewrite, rephrase, restructure, or change wording, style, or meaning. Preserve ALL markdown, punctuation, and line breaks exactly. Return ONLY the corrected text, nothing else.';
   let corrected = '';
+  setSwarmState('editor', 'working');
   try {
     corrected = await deps.streamChat({
       agent: { ...resolved, model: resolved.autocompleteModel || resolved.model, systemPrompt: sys, maxTokens: Math.min(1200, Math.ceil(para.text.length / 2) + 200), temperature: 0 },
       settings,
+      redaction, // the PII harness wraps this call too — nothing leaks from a co-writer
       messages: [{ role: 'user', content: para.text }],
     });
-  } catch { return; }
+  } catch { setSwarmState('editor', 'idle'); return; }
   if (gen !== cwGen || !current || !cwEnabled) return; // superseded / disabled / note switched
   const ta = $('n-body');
   const idx = ta.value.indexOf(para.text); // relocate (user may have edited above); bail if it moved
-  if (idx < 0) return;
+  if (idx < 0) { setSwarmState('editor', 'idle'); return; }
   cwSuggestions = _cwDiff.filterTypoEdits(_cwDiff.wordDiff(para.text, corrected.trim()))
     .map((e) => ({ ...e, start: e.start + idx, end: e.end + idx, key: _cwDiff.editKey(e) }))
     .filter((e) => !cwDismissed.has(e.key));
   renderCowriter();
+  setSwarmState('editor', 'idle', cwSuggestions.length ? `${cwSuggestions.length} fix${cwSuggestions.length === 1 ? '' : 'es'}` : '');
 }
 
 function renderCowriter() {
@@ -965,6 +1009,7 @@ function setCowriter(on, announce = false) {
   btn.title = on ? 'Co-writer swarm: on — proofreads as you write · ⌘↵ draft ahead · 🔎 research' : 'Co-writer: off';
   if (on) { scheduleCowriter(); scheduleResearch(); if (announce) toast('Co-writer on — proofreads as you type · ⌘↵ to draft ahead'); }
   else clearCowriterUI();
+  renderSwarmStatus(); // show/clear the footer team strip
 }
 
 // ── Researcher co-writer — Phase 2 of the swarm ──────────────────────────────────
@@ -1017,6 +1062,7 @@ async function runResearch({ web = false } = {}) {
   if (q.length < 16 && !web) return;
   const gen = ++researchGen;
   researchBusy = true;
+  setSwarmState('researcher', 'working');
   setResearchStatus(web ? 'Searching your workspace and the web…' : 'Finding related material…');
   renderResearch(); // reveal the shelf with a working state immediately
 
@@ -1053,6 +1099,7 @@ async function runResearch({ web = false } = {}) {
   researchBusy = false;
   setResearchStatus('');
   renderResearch();
+  setSwarmState('researcher', 'idle', researchCards.length ? `${researchCards.length} found` : '');
 }
 
 function renderResearch() {
@@ -1136,6 +1183,7 @@ function clearGhost({ remove = false } = {}) {
     ta.setRangeText('', ghost.from, ghost.to, 'end'); // caret returns to `from`
     ghostApplying = false;
   }
+  if (ghost) setSwarmState('writer', 'idle');
   ghost = null;
   hideGhostHint();
 }
@@ -1154,6 +1202,7 @@ function acceptGhost() {
   ta.selectionStart = ta.selectionEnd = ghost.to; // collapse to end — keep the text
   ghost = null;
   hideGhostHint();
+  setSwarmState('writer', 'idle');
   current.body = ta.value;
   autoGrow();
   if (!$('n-panes').classList.contains('write')) updatePreview();
@@ -1190,18 +1239,22 @@ async function draftAhead() {
       + researchCards.slice(0, 5).map((c) => `- ${c.title}${c.snippet ? ` — ${c.snippet}` : ''}`).join('\n')
     : '';
   const sys = "You continue the user's note from where it stops. Match their voice, tone, and markdown style exactly. Write only the NEXT one or two sentences (or finish the current one) — concise, natural, no preamble, no repetition of prior text, no meta commentary. Output ONLY the continuation." + grounding;
+  let redaction = null;
+  try { redaction = deps.buildRedaction?.({ settings, license }); } catch { /* redaction off */ }
 
   writerAbort = new AbortController();
   // NB: no readOnly — setRangeText() throws on a readOnly textarea. Typing is blocked
   // instead by the keydown guard (which swallows keys while writerAbort is set).
   setStatus('Drafting…');
   showGhostHint('Drafting…');
+  setSwarmState('writer', 'working');
   let out = '';
   try {
     await deps.streamChat({
       agent: { ...writer.resolved, systemPrompt: sys, maxTokens: 220, temperature: 0.6 },
       settings,
       signal: writerAbort.signal,
+      redaction, // the PII harness wraps the draft-ahead call too
       messages: [{ role: 'user', content: writerTail(before) }],
       onDelta: (d) => { if (gen === writerGen) { out += d; renderGhost(from, out); } }, // hint already shown; anchor is fixed at `from`
     });
@@ -1211,8 +1264,8 @@ async function draftAhead() {
     const aborted = writerAbort?.signal.aborted;
     writerAbort = null;
     setStatus('');
-    if (!aborted && gen === writerGen && out.trim()) { renderGhost(from, out.replace(/\s+$/, '')); showGhostHint('Tab ↹ accept · Esc dismiss'); }
-    else clearGhost({ remove: true });
+    if (!aborted && gen === writerGen && out.trim()) { renderGhost(from, out.replace(/\s+$/, '')); showGhostHint('Tab ↹ accept · Esc dismiss'); setSwarmState('writer', 'idle', 'draft ready'); }
+    else { clearGhost({ remove: true }); setSwarmState('writer', 'idle'); }
   }
 }
 
@@ -1268,6 +1321,37 @@ function setRoleOverride(roleId, candId) {
   localStorage.setItem('chatpanel.notes.cowriter.roles', JSON.stringify(o));
   renderSwarmMenu();
   toast(candId ? 'Role pinned' : 'Role back to auto');
+}
+
+// ── Swarm status strip — the orchestrator's live view of the team (Phase 4) ───────
+// A shared, tiny state board each member updates as it works, rendered as an ambient
+// line of role chips in the footer (only while the swarm is on). Gives "the team is
+// working for you" visibility with no rewrite of the members — they call setSwarmState
+// at their edges. A pulsing dot = working; a count/label = the last result.
+const swarm = {
+  editor: { state: 'idle', info: '' },      // idle | working | 'N fixes'
+  researcher: { state: 'idle', info: '' },  // idle | working | 'N found'
+  writer: { state: 'idle', info: '' },      // idle | working | 'draft ready'
+};
+function setSwarmState(role, state, info = '') {
+  if (!swarm[role]) return;
+  swarm[role] = { state, info };
+  renderSwarmStatus();
+}
+function resetSwarmState() {
+  for (const k of Object.keys(swarm)) swarm[k] = { state: 'idle', info: '' };
+  renderSwarmStatus();
+}
+function renderSwarmStatus() {
+  const el = $('n-swarm-status');
+  if (!el) return;
+  if (!cwEnabled) { el.innerHTML = ''; return; }
+  const chip = (icon, r, title) =>
+    `<span class="ss ss-${r.state}" title="${title}"><span class="ss-dot"></span>${icon}${r.info ? ` <span class="ss-info">${escapeHtml(r.info)}</span>` : ''}</span>`;
+  el.innerHTML =
+    chip('✍️', swarm.editor, 'Editor — proofreads as you type')
+    + chip('🔎', swarm.researcher, 'Researcher — finds related material')
+    + chip('✨', swarm.writer, 'Writer — ⌘↵ to draft ahead');
 }
 
 // ── wire up ───────────────────────────────────────────────────────────────────
