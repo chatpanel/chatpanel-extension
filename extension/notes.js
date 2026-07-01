@@ -458,7 +458,7 @@ async function linkTargets() {
   return [...notes, ..._crossTargets];
 }
 
-const ac = { open: false, items: [], index: 0, range: null };
+const ac = { open: false, mode: 'link', items: [], index: 0, range: null };
 function closeAc() { ac.open = false; ac.range = null; $('n-ac').classList.add('hidden'); }
 
 // The [[…]] link query under the cursor, or null.
@@ -493,15 +493,29 @@ function caretXY(ta) {
 }
 
 async function maybeAutocomplete() {
-  const ctx = currentWikiQuery();
-  if (!ctx) return closeAc();
-  ac.range = ctx;
-  const q = ctx.query.toLowerCase();
-  const all = await linkTargets();
-  if (!ac.range) return; // closed while awaiting
-  ac.items = (q ? all.filter((t) => t.title.toLowerCase().includes(q)) : all).slice(0, 8);
-  ac.index = 0;
-  renderAc();
+  // [[ document links (deterministic)
+  const link = currentWikiQuery();
+  if (link) {
+    ac.mode = 'link';
+    ac.range = link;
+    const q = link.query.toLowerCase();
+    const all = await linkTargets();
+    if (ac.mode !== 'link' || !ac.range) return;
+    ac.items = (q ? all.filter((t) => t.title.toLowerCase().includes(q)) : all).slice(0, 8);
+    ac.index = 0;
+    return renderAc();
+  }
+  // @ AI commands
+  const at = currentAtQuery();
+  if (at) {
+    ac.mode = 'cmd';
+    ac.range = at;
+    const q = at.word.toLowerCase();
+    ac.items = NOTE_COMMANDS.filter((c) => c.cmd.startsWith(q) || c.label.toLowerCase().startsWith(q)).slice(0, 8);
+    ac.index = 0;
+    return renderAc();
+  }
+  closeAc();
 }
 
 function renderAc() {
@@ -509,12 +523,15 @@ function renderAc() {
   if (!ac.range) return closeAc();
   el.innerHTML = '';
   if (!ac.items.length) {
+    if (ac.mode === 'cmd') return closeAc();
     el.innerHTML = '<div class="ac-empty">No match — keep typing to name a new link</div>';
   } else {
     ac.items.forEach((it, i) => {
       const d = document.createElement('div');
       d.className = 'ac-item' + (i === ac.index ? ' sel' : '');
-      d.innerHTML = `<span class="ac-badge ${it.type}">${it.type}</span><span class="ac-title">${escapeHtml(it.title)}</span>`;
+      d.innerHTML = ac.mode === 'cmd'
+        ? `<span class="ac-badge cmd">@${it.cmd}</span><span class="ac-title">${escapeHtml(it.hint)}</span>`
+        : `<span class="ac-badge ${it.type}">${it.type}</span><span class="ac-title">${escapeHtml(it.title)}</span>`;
       d.onmousedown = (e) => { e.preventDefault(); ac.index = i; acceptAc(); };
       el.appendChild(d);
     });
@@ -535,12 +552,118 @@ function acceptAc() {
   if (!ac.range) return closeAc();
   const ta = $('n-body');
   const it = ac.items[ac.index];
+  if (ac.mode === 'cmd') {
+    if (!it) return closeAc();
+    // Replace the typed "@word" (the @ is at start-1) with "@cmd " and keep typing.
+    ta.setRangeText(`@${it.cmd} `, ac.range.start - 1, ac.range.end, 'end');
+    closeAc();
+    onBodyInput();
+    return;
+  }
   const title = it ? it.title : ac.range.query; // allow a new (unmatched) link name too
   ta.setRangeText(title, ac.range.start, ac.range.end, 'end');
   const after = ac.range.start + title.length;
   ta.selectionStart = ta.selectionEnd = ta.value.slice(after, after + 2) === ']]' ? after + 2 : after;
   closeAc();
   onBodyInput();
+}
+
+// ── @ commands — AI actions that generate/fetch and insert inline ────────────────
+// Slice 1: a built-in set. Slice 2 will surface user Skills flagged "available in
+// Notes". Commands with tools:true can fetch live data via web search.
+const NOTE_COMMANDS = [
+  { cmd: 'insert', label: 'Insert', hint: 'generate or fetch, then insert', tools: true, sys: 'You insert content into the user\'s note. Follow the instruction. If it needs current, live, or web data, USE the web_search tool to fetch it — never guess or use stale knowledge. Output ONLY the content to insert as clean GitHub-flavored markdown — no preamble, no closing remarks.' },
+  { cmd: 'table', label: 'Table', hint: 'produce a markdown table', tools: true, sys: 'Produce the requested data as a GitHub-flavored markdown table. If it needs live/current data, USE the web_search tool. Output ONLY the table.' },
+  { cmd: 'list', label: 'List', hint: 'produce a bullet/task list', tools: true, sys: 'Produce the requested content as a GitHub-flavored markdown list (use - [ ] for actionable tasks). Use web_search for live data. Output ONLY the list.' },
+  { cmd: 'summarize', label: 'Summarize', hint: 'summarize a topic', tools: false, sys: 'Summarize the requested topic concisely in markdown. Output ONLY the summary.' },
+  { cmd: 'translate', label: 'Translate', hint: 'translate to a language', tools: false, sys: 'Translate the requested text to the requested language, preserving markdown. Output ONLY the translation.' },
+];
+const NOTE_CMD_RE = new RegExp(`^@(${NOTE_COMMANDS.map((c) => c.cmd).join('|')})\\b\\s*(.*)$`, 'i');
+
+// The @word being typed at the cursor (start of line or after whitespace), or null.
+function currentAtQuery() {
+  const ta = $('n-body');
+  if (ta.selectionStart !== ta.selectionEnd) return null;
+  const pos = ta.selectionStart;
+  const line = ta.value.slice(ta.value.lastIndexOf('\n', pos - 1) + 1, pos);
+  const m = line.match(/(?:^|\s)@(\w*)$/);
+  if (!m) return null;
+  return { word: m[1], start: pos - m[1].length, end: pos };
+}
+
+// The runnable "@command instruction" on the cursor's line, or null.
+function currentCommandLine() {
+  const ta = $('n-body');
+  const start = ta.value.lastIndexOf('\n', ta.selectionStart - 1) + 1;
+  let end = ta.value.indexOf('\n', ta.selectionStart);
+  if (end < 0) end = ta.value.length;
+  const line = ta.value.slice(start, end);
+  const m = line.match(NOTE_CMD_RE);
+  if (!m) return null;
+  const spec = NOTE_COMMANDS.find((c) => c.cmd === m[1].toLowerCase());
+  const instruction = (m[2] || '').trim();
+  if (!spec || !instruction) return null;
+  return { spec, instruction, start, end };
+}
+
+let cmdAbort = null;
+async function runNoteCommand() {
+  const ctx = currentCommandLine();
+  if (!ctx || cmdAbort || !current) return false;
+  closeAc();
+  const ta = $('n-body');
+  const head = ta.value.slice(0, ctx.start);
+  const tail = ta.value.slice(ctx.end);
+
+  let deps;
+  try { deps = await agentDeps(); } catch { toast('Agent unavailable'); return true; }
+  const settings = await deps.getSettings();
+  const targetAgent = deps.getTarget(settings, settings.activeAgentId);
+  if (!targetAgent) { toast('Set up a model in ChatPanel settings first'); return true; }
+  const license = await deps.getLicense();
+  if (!deps.canUseAgent(license, settings, targetAgent)) { toast('That agent needs ChatPanel Pro'); return true; }
+  const resolved = deps.resolveTarget(targetAgent, settings);
+
+  // Arm web search for commands that may need live data (lazy-loaded, off the load path).
+  let tools = null;
+  if (ctx.spec.tools) {
+    try {
+      const [{ buildToolset }, ws, lic] = await Promise.all([import('./js/toolset.js'), import('./js/web-search.js'), import('./js/license.js')]);
+      tools = buildToolset([ws.webSearchToolProvider(ws.webSearchOpts(settings, lic.isPro(license)))]);
+    } catch { /* fall back to no tools */ }
+  }
+
+  const streamNote = current;
+  cmdAbort = new AbortController();
+  setStatus('Running…');
+  let out = '';
+  const scroller = document.querySelector('.editor-scroll');
+  const render = () => {
+    if (current !== streamNote) return;
+    ta.value = head + out + tail;
+    autoGrow();
+    if (!$('n-panes').classList.contains('write')) updatePreview();
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  };
+  render(); // clear the command line immediately
+  try {
+    await deps.streamChat({
+      agent: { ...resolved, systemPrompt: ctx.spec.sys, maxTokens: 1800, temperature: 0.4 },
+      settings,
+      signal: cmdAbort.signal,
+      tools,
+      messages: [{ role: 'user', content: ctx.instruction }],
+      onDelta: (d) => { out += d; render(); },
+      onEvent: (ev) => { if (ev?.type === 'tool' && ev.phase === 'start') setStatus(`🔎 ${ev.name || 'tool'}…`); },
+    });
+  } catch (e) {
+    if (cmdAbort?.signal.aborted) { if (current === streamNote) { ta.value = head + out + tail; } toast('Stopped'); }
+    else toast(`Command error: ${e?.message || e}`);
+  } finally {
+    cmdAbort = null;
+    if (current === streamNote) { current.body = ta.value; updateWordCount(); dirty = true; await flushSave(); }
+  }
+  return true;
 }
 
 // ── wire up ───────────────────────────────────────────────────────────────────
@@ -591,6 +714,14 @@ function init() {
       ta.setRangeText('[]]', pos, pos, 'end');
       ta.selectionStart = ta.selectionEnd = pos + 1;
       onBodyInput();
+      return;
+    }
+    // Esc stops a running @command.
+    if (e.key === 'Escape' && cmdAbort) { e.preventDefault(); cmdAbort.abort(); return; }
+    // Enter on an "@command instruction" line runs it (instead of a newline).
+    if (e.key === 'Enter' && !e.shiftKey && !cmdAbort && currentCommandLine()) {
+      e.preventDefault();
+      runNoteCommand();
       return;
     }
     // ↑ at the very start of the body hops back to the title.
