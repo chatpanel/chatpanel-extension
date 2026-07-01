@@ -77,10 +77,12 @@ function renderList(query = '') {
   items.innerHTML = '';
   for (const n of filtered) {
     const el = document.createElement('div');
-    el.className = 'nitem' + (current && n.id === current.id ? ' active' : '');
+    const running = noteJobs.has(n.id);
+    el.className = 'nitem' + (current && n.id === current.id ? ' active' : '') + (running ? ' running' : '');
     const tags = (n.tags || []).slice(0, 3).map((t) => `<span class="nitem-tag">#${escapeHtml(t)}</span>`).join(' ');
+    const runBadge = running ? '<span class="nitem-run" title="A note command is running…">⏳</span> ' : '';
     el.innerHTML =
-      `<div class="nitem-title">${highlight(n.title || 'Untitled note', q)}</div>` +
+      `<div class="nitem-title">${runBadge}${highlight(n.title || 'Untitled note', q)}</div>` +
       `<div class="nitem-snippet">${highlight(n.snippet || 'Empty note', q)}</div>` +
       `<div class="nitem-meta"><span>${relTime(n.updatedAt)}</span>${tags}</div>`;
     el.onclick = () => openNote(n.id);
@@ -143,8 +145,16 @@ function startTagInput(addBtn) {
 }
 
 async function openNote(id, preloaded = null) {
-  if (agentAbort) agentAbort.abort(); // stop any in-flight generation before switching
-  await flushSave();
+  if (agentAbort) agentAbort.abort(); // stop any in-flight @agent generation before switching
+  // @insert/@command jobs are deliberately NOT aborted here — they run in the
+  // background keyed by note id and persist their result on completion.
+  const outJob = current && noteJobs.get(current.id);
+  if (outJob) {
+    dirty = false;            // the job owns this note's body — don't flush the transient progress block
+    await persistJobBody(outJob); // snapshot the partial output so a switch/reload loses nothing
+  } else {
+    await flushSave();
+  }
   current = preloaded || await getNote(id);
   if (!current) return;
   $('n-blank').classList.add('hidden');
@@ -160,6 +170,9 @@ async function openNote(id, preloaded = null) {
   $('n-when').textContent = current.updatedAt ? `Edited ${relTime(current.updatedAt)}` : '';
   setStatus('');
   history.replaceState(null, '', `#${encodeURIComponent(id)}`);
+  const inJob = noteJobs.get(current.id);
+  if (inJob) attachEditorToJob(inJob); // reopening a note with a running job re-attaches its live progress
+  else $('n-body').readOnly = false;
   renderList($('n-search').value);
 }
 
@@ -361,6 +374,44 @@ async function agentDeps() {
   const [p, s, l] = await Promise.all([import('./js/providers.js'), import('./js/store.js'), import('./js/license.js')]);
   _agentDeps = { streamChat: p.streamChat, getSettings: s.getSettings, getTarget: s.getTarget, resolveTarget: s.resolveTarget, getLicense: l.getLicense, canUseAgent: l.canUseAgent };
   return _agentDeps;
+}
+
+// ── model router bridge — appoint the right model to each swarm role ──────────────
+// The router (cowriter-router.js) is pure/portable; this thin bridge normalizes the
+// user's endpoints+agents into candidates and hands back a ready-to-stream agent per
+// role. Cheap for the Editor's constant proofreading, stronger for Writer/Researcher.
+const SWARM_ROLES = {
+  editor: { id: 'editor', prefer: 'cheap' },
+  researcher: { id: 'researcher', prefer: 'balanced' },
+  writer: { id: 'writer', prefer: 'strong' },
+};
+let _router = null;
+function swarmOverrides() {
+  try { return JSON.parse(localStorage.getItem('chatpanel.notes.cowriter.roles') || '{}'); } catch { return {}; }
+}
+function candidateModel(ag, settings) {
+  return ag.model || (ag.endpointId && (settings.endpoints || []).find((e) => e.id === ag.endpointId)?.model) || ag.bridgeAgent || '';
+}
+function swarmCandidates(deps, settings, license) {
+  const out = [];
+  for (const ep of settings.endpoints || []) {
+    if (ep?.model) out.push({ id: ep.id, name: ep.name || ep.model, kind: ep.kind || 'openai', model: ep.model, usable: deps.canUseAgent(license, settings, ep) });
+  }
+  for (const ag of settings.agents || []) {
+    const model = candidateModel(ag, settings);
+    if (!model) continue;
+    out.push({ id: ag.id, name: ag.name || ag.bridgeAgent || model, kind: ag.kind || 'bridge', bridgeAgent: ag.bridgeAgent, model, usable: deps.canUseAgent(license, settings, ag) });
+  }
+  return out;
+}
+// → { resolved, mode, label } for a role, or null. Falls back to the active agent so a
+// single-model user still gets every co-writer.
+async function roleAgent(deps, settings, license, roleId) {
+  if (!_router) _router = await import('./js/cowriter-router.js');
+  const appt = _router.appoint(SWARM_ROLES[roleId], swarmCandidates(deps, settings, license), { overrides: swarmOverrides() });
+  const target = appt ? deps.getTarget(settings, appt.id) : deps.getTarget(settings, settings.activeAgentId);
+  if (!target || !deps.canUseAgent(license, settings, target)) return null;
+  return { resolved: deps.resolveTarget(target, settings), mode: appt?.mode || 'api', label: target.name || appt?.model || '' };
 }
 
 const AGENT_SPECS = {
@@ -613,14 +664,94 @@ function currentCommandLine() {
   return { spec, instruction, start: lineStart + m.index, end }; // replace from the @ to line end
 }
 
-let cmdAbort = null;
+// ── @insert / @command background jobs ──────────────────────────────────────────
+// An @command (e.g. `@insert …`) runs as a BACKGROUND job keyed by note id — it is
+// NOT tied to the open editor. Switching notes no longer kills it: the job keeps
+// streaming, persists its result to the note store on completion (so it lands even
+// if you never reopen the note), and RE-ATTACHES its live progress to the editor
+// whenever its note is opened. Each job streams a rich activity trace (model, tool
+// calls, partial output) so it's always obvious what's happening.
+const noteJobs = new Map(); // noteId -> job
+
+function compactInput(input) {
+  try {
+    if (input == null) return '';
+    const s = typeof input === 'string' ? input : JSON.stringify(input);
+    const flat = s.replace(/\s+/g, ' ').trim();
+    return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat;
+  } catch { return ''; }
+}
+
+const JOB_ICON = { starting: '⏳', thinking: '💭', tool: '🔎', writing: '✍️' };
+
+// What the note's body should hold once the job is finished (or dropped): the
+// produced output, or — if it errored before producing anything — the original
+// command line, so the user can retry rather than losing their instruction.
+function jobFinalMid(job) {
+  if (job.error && !job.out.trim()) return job.commandText;
+  return job.out;
+}
+
+// The transient, human-readable progress block shown IN the note while a job runs:
+// a status header (icon · model · what it's doing) + a tool-call trace + the
+// partial output streaming in beneath it. Both are visible at once — the old code
+// showed the placeholder OR the tokens, so progress vanished the moment text began.
+function jobProgressText(job) {
+  if (job.done) return jobFinalMid(job);
+  const icon = JOB_ICON[job.status] || '⏳';
+  const header = `${icon} @${job.cmd} · ${job.modelLabel} · ${job.statusText}`;
+  const steps = job.steps.map((s) => {
+    const mark = s.status === 'error' ? '✗' : (s.done ? '✓' : '…');
+    const arg = s.input != null ? ` ${compactInput(s.input)}` : '';
+    return `   • ${s.tool}${arg} ${mark}`;
+  });
+  return [header, ...steps].join('\n') + (job.out ? `\n\n${job.out}` : '');
+}
+
+// Mirror a running job into the editor — ONLY when its note is the open one. Keyed
+// by note id (not object identity), so reopening the same note re-attaches even
+// though getNote() returns a fresh record.
+let _jobRaf = null;
+function renderJob(job) {
+  if (current?.id !== job.noteId) return;
+  const ta = $('n-body');
+  ta.value = job.head + jobProgressText(job) + job.tail;
+  autoGrow();
+  if (!$('n-panes').classList.contains('write')) updatePreview();
+  const scroller = document.querySelector('.editor-scroll');
+  if (scroller) scroller.scrollTop = scroller.scrollHeight;
+}
+function scheduleJobRender(job) {
+  if (current?.id !== job.noteId || _jobRaf) return;
+  _jobRaf = requestAnimationFrame(() => { _jobRaf = null; renderJob(job); });
+}
+
+// Re-attach the editor to an already-running job (from openNote).
+function attachEditorToJob(job) {
+  $('n-body').readOnly = true;
+  renderJob(job);
+}
+
+// Persist a job's current body to the store — id-keyed, so it works whether or not
+// the note is open. On completion the result lands even for a note you never reopen.
+async function persistJobBody(job) {
+  const rec = current?.id === job.noteId ? current : await getNote(job.noteId);
+  if (!rec) return;
+  const body = job.head + jobFinalMid(job) + job.tail;
+  const saved = await saveNote({ id: rec.id, title: rec.title, body, tags: rec.tags, createdAt: rec.createdAt });
+  Object.assign(rec, saved, { body });
+  updateEntry(rec);
+  renderList($('n-search').value);
+}
+
 async function runNoteCommand() {
   const ctx = currentCommandLine();
-  if (!ctx || cmdAbort || !current) return false;
+  if (!ctx || !current || noteJobs.has(current.id)) return false; // one job per note
   closeAc();
   const ta = $('n-body');
   const head = ta.value.slice(0, ctx.start);
   const tail = ta.value.slice(ctx.end);
+  const commandText = ta.value.slice(ctx.start, ctx.end);
 
   let deps;
   try { deps = await agentDeps(); } catch { toast('Agent unavailable'); return true; }
@@ -640,51 +771,55 @@ async function runNoteCommand() {
     } catch { /* fall back to no tools */ }
   }
 
-  const streamNote = current;
-  cmdAbort = new AbortController();
-  ta.readOnly = true;
-  let out = '';
-  // A live in-note placeholder so it's obvious work is happening (esp. during the
-  // silent web-search phase), replaced the instant tokens start streaming.
-  let progress = `⏳ @${ctx.spec.cmd} — starting…`;
-  const scroller = document.querySelector('.editor-scroll');
-  const render = () => {
-    if (current !== streamNote) return;
-    ta.value = head + (out || `${progress}`) + tail;
-    autoGrow();
-    if (!$('n-panes').classList.contains('write')) updatePreview();
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  const job = {
+    noteId: current.id, cmd: ctx.spec.cmd, instruction: ctx.instruction,
+    head, tail, commandText, out: '', steps: [],
+    status: 'starting', statusText: 'starting…',
+    modelLabel: targetAgent.name || resolved.model || resolved.bridgeAgent || 'agent',
+    abort: new AbortController(), done: false, error: null,
   };
-  render(); // replace the command line with the progress line immediately
+  noteJobs.set(job.noteId, job);
+  ta.readOnly = true;
+  renderJob(job);                    // swap the command line for the live progress block
+  renderList($('n-search').value);   // show the running badge in the list
   try {
     await deps.streamChat({
       agent: { ...resolved, systemPrompt: ctx.spec.sys, maxTokens: 1800, temperature: 0.4 },
       settings,
-      signal: cmdAbort.signal,
+      signal: job.abort.signal,
       tools,
-      messages: [{ role: 'user', content: ctx.instruction }],
-      onDelta: (d) => { out += d; render(); },
+      messages: [{ role: 'user', content: job.instruction }],
+      onDelta: (d) => { job.out += d; job.status = 'writing'; job.statusText = 'writing…'; scheduleJobRender(job); },
       onEvent: (ev) => {
-        if (ev?.type === 'tool' && ev.phase === 'start') progress = `🔎 ${ev.name === 'web_search' ? 'Searching the web' : (ev.name || 'tool')}…`;
-        else if (ev?.type === 'tool' && ev.phase === 'done') progress = '✍️ Writing…';
-        else if (ev?.type === 'reasoning') progress = '💭 Thinking…';
-        if (!out) render();
+        if (ev?.type === 'tool' && ev.phase === 'start') {
+          job.status = 'tool';
+          job.statusText = ev.name === 'web_search' ? 'searching the web…' : `${ev.name || 'tool'}…`;
+          job.steps.push({ tool: ev.name || 'tool', input: ev.input, callId: ev.callId, done: false });
+        } else if (ev?.type === 'tool' && ev.phase === 'done') {
+          const step = ev.callId ? job.steps.find((s) => s.callId === ev.callId) : job.steps[job.steps.length - 1];
+          if (step) { step.done = true; step.status = ev.status; step.result = ev.result; }
+          job.status = 'writing'; job.statusText = 'writing…';
+        } else if (ev?.type === 'reasoning') {
+          job.status = 'thinking'; job.statusText = 'thinking…';
+        }
+        scheduleJobRender(job);
       },
     });
   } catch (e) {
-    if (!cmdAbort?.signal.aborted) toast(`Command error: ${e?.message || e}`);
+    if (!job.abort.signal.aborted) { job.error = e?.message || String(e); toast(`Command error: ${job.error}`); }
   } finally {
-    const aborted = cmdAbort?.signal.aborted;
-    cmdAbort = null;
-    ta.readOnly = false;
-    if (current === streamNote) {
-      if (!out.trim()) ta.value = head + tail; // produced nothing → drop the placeholder
-      current.body = ta.value;
+    const aborted = job.abort.signal.aborted;
+    job.done = true;
+    noteJobs.delete(job.noteId);
+    await persistJobBody(job); // lands the result even if the note is no longer open
+    if (current?.id === job.noteId) {
+      $('n-body').readOnly = false;
+      renderJob(job); // collapse the progress block down to the final output
+      current.body = $('n-body').value;
       updateWordCount();
-      dirty = true;
-      await flushSave();
       setStatus(aborted ? '' : 'Saved', !aborted);
     }
+    renderList($('n-search').value); // clear the running badge
   }
   return true;
 }
@@ -726,7 +861,7 @@ function currentParagraph() {
 }
 
 async function runCowriter() {
-  if (!cwEnabled || !current || cmdAbort || agentAbort) return;
+  if (!cwEnabled || !current || noteJobs.has(current.id) || agentAbort) return;
   const para = currentParagraph();
   if (para.text.trim().length < 12) return;
   const gen = ++cwGen;
@@ -736,11 +871,10 @@ async function runCowriter() {
     deps = await agentDeps();
   } catch { return; }
   const settings = await deps.getSettings();
-  const targetAgent = deps.getTarget(settings, settings.activeAgentId);
-  if (!targetAgent) return;
   const license = await deps.getLicense();
-  if (!deps.canUseAgent(license, settings, targetAgent)) return;
-  const resolved = deps.resolveTarget(targetAgent, settings);
+  const editor = await roleAgent(deps, settings, license, 'editor'); // routed → cheapest usable model
+  if (!editor) return;
+  const resolved = editor.resolved;
   const sys = 'You are a meticulous copy-editor. Fix ONLY clear spelling, typo, and grammar mistakes in the text. Change as LITTLE as possible — never rewrite, rephrase, restructure, or change wording, style, or meaning. Preserve ALL markdown, punctuation, and line breaks exactly. Return ONLY the corrected text, nothing else.';
   let corrected = '';
   try {
@@ -876,10 +1010,11 @@ function init() {
       onBodyInput();
       return;
     }
-    // Esc stops a running @command.
-    if (e.key === 'Escape' && cmdAbort) { e.preventDefault(); cmdAbort.abort(); return; }
+    // Esc stops the @command running on THIS note (jobs on other notes keep going).
+    const openJob = current && noteJobs.get(current.id);
+    if (e.key === 'Escape' && openJob) { e.preventDefault(); openJob.abort.abort(); return; }
     // Enter on an "@command instruction" line runs it (instead of a newline).
-    if (e.key === 'Enter' && !e.shiftKey && !cmdAbort && currentCommandLine()) {
+    if (e.key === 'Enter' && !e.shiftKey && !openJob && currentCommandLine()) {
       e.preventDefault();
       runNoteCommand();
       return;
