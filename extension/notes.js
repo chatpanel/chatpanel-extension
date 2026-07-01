@@ -1203,7 +1203,7 @@ async function draftAhead() {
       settings,
       signal: writerAbort.signal,
       messages: [{ role: 'user', content: writerTail(before) }],
-      onDelta: (d) => { if (gen === writerGen) { out += d; renderGhost(from, out); showGhostHint('Drafting…'); } },
+      onDelta: (d) => { if (gen === writerGen) { out += d; renderGhost(from, out); } }, // hint already shown; anchor is fixed at `from`
     });
   } catch (e) {
     if (!writerAbort.signal.aborted) toast(`Writer error: ${e?.message || e}`);
