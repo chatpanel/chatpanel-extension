@@ -9,11 +9,24 @@
 // warm-sync, gateway search and MCP as everything else — that's the whole point of
 // keeping them in the extension rather than a separate app.
 
-import { uid } from './store.js';
 import { encryptJSON, decryptJSON, isEncrypted } from './meeting-crypto.js';
+
+// Same id shape as store.js's uid(), inlined so the notes page never pulls in the
+// whole store.js module graph (oauth, zip, meetings…) on load — that was the bulk of
+// the page's cold start.
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 const K_NINDEX = 'chatpanel:noteIndex';
 export const noteKey = (id) => `chatpanel:note:${id}`;
+
+// A short preview kept IN the index, so the list renders from one decrypt instead of
+// decrypting every note body. Skips the first line (the title).
+function snippetOf(body) {
+  const b = String(body || '');
+  const nl = b.indexOf('\n');
+  const rest = nl >= 0 ? b.slice(nl + 1) : '';
+  return rest.replace(/[#*_`>~]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 110);
+}
 
 // First non-empty line becomes the title, stripped of markdown heading/emphasis
 // marks. Falls back to "Untitled note".
@@ -59,6 +72,7 @@ async function writeNote(rec) {
   const entry = {
     id: rec.id,
     title: rec.title,
+    snippet: snippetOf(rec.body),
     tags: Array.isArray(rec.tags) ? rec.tags : [],
     createdAt: rec.createdAt,
     updatedAt: rec.updatedAt,

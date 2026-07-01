@@ -1190,9 +1190,14 @@ function maybeWarmSync({ immediate = false } = {}) {
   const ws = state.settings?.ui?.warmSearch;
   if (!ws?.enabled || !ws.url) return;
   clearTimeout(_warmSyncTimer);
+  // Warm sync decrypts the full corpus to build upserts — heavy. Never let it
+  // compete with first paint or typing: wait, THEN run it only when the main thread
+  // is idle (requestIdleCallback), with a timeout so it still runs on a busy tab.
   _warmSyncTimer = setTimeout(() => {
-    syncHistoryToGateway(ws.url).then((r) => { if (r && !r.ok && !r.skipped) console.debug('[chatpanel] warm sync:', r.error); });
-  }, immediate ? 400 : 5000);
+    const run = () => syncHistoryToGateway(ws.url).then((r) => { if (r && !r.ok && !r.skipped) console.debug('[chatpanel] warm sync:', r.error); });
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 8000 });
+    else run();
+  }, immediate ? 1500 : 5000);
 }
 
 async function send() {
