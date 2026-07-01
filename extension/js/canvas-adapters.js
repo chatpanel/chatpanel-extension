@@ -17,6 +17,7 @@
 // (see sidepanel.js `pageToolProvider`), so the spec never reaches a Free client.
 
 import { cdpKeyChord } from './page-actions-cdp.js';
+import { applyIconShorthand } from './drawio-icons.js';
 
 // --------------------------------------------------------------------------
 // Excalidraw (excalidraw.com)
@@ -556,16 +557,21 @@ const DRAWIO_FORMAT =
   '(x,y = top-left; y grows downward).\n' +
   'Nodes — give each an `id` so edges can reference it:\n' +
   '- { id, type:"rectangle"|"rounded"|"ellipse"|"diamond"|"text", x, y, width, height, text?, ' +
-  'fillColor?, strokeColor? }\n' +
+  'fillColor?, strokeColor?, icon? }  (icon = a cloud-icon shorthand, see below)\n' +
   'Edges (connectors between two nodes):\n' +
   '- { type:"edge", source:<nodeId>, target:<nodeId>, text? }\n' +
   'Colors are hex (e.g. "#d5e8d4"). To UPDATE an existing cell, reuse its id (from read_canvas).\n' +
-  'OFFICIAL ICONS (AWS / GCP / Azure / UML …): set a full draw.io `style` on the node — it ' +
-  'overrides the shape defaults. AWS example (size ~78×78): "sketch=0;html=1;aspect=fixed;' +
-  'verticalLabelPosition=bottom;verticalAlign=top;align=center;shape=mxgraph.aws4.resourceIcon;' +
-  'resIcon=mxgraph.aws4.ec2;" — use the real mxgraph.aws4.* resIcon names (ec2, s3, rds, lambda, ' +
-  'vpc, cloudfront, route_53, elastic_load_balancing, cloudwatch, …). So for an AWS diagram, emit ' +
-  'icon nodes with these styles instead of plain colored boxes.\n' +
+  'OFFICIAL ICONS — the easy way: give the node an `icon` shorthand "<provider>:<name>" and ' +
+  'ChatPanel expands it to the correct draw.io style + colour (default size 78×78). Use these ' +
+  'instead of plain colored boxes for cloud diagrams. AWS shorthands (icon:"aws:<name>"): ec2, ' +
+  'lambda, ecs, eks, fargate, s3, ebs, efs, glacier, rds, dynamodb, aurora, elasticache, redshift, ' +
+  'vpc, cloudfront, route53, elb, alb, apigateway, cloudwatch, cloudformation, iam, kms, cognito, ' +
+  'waf, secretsmanager, sqs, sns, eventbridge, stepfunctions, sagemaker, bedrock, glue, athena, ' +
+  'kinesis, emr, amplify, ecr, user, client. Any other AWS service works too (the name maps to ' +
+  'mxgraph.aws4.*). Other clouds: "gcp:<name>", "azure:<name>", "k8s:<name>". Example icon node: ' +
+  '{ "id":"web", "icon":"aws:ec2", "x":160, "y":80, "text":"Web tier" }.\n' +
+  'ADVANCED: instead of `icon`, set a full draw.io `style` verbatim (overrides shape defaults), e.g. ' +
+  '"shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;aspect=fixed;…".\n' +
   'Example — a two-box flow:\n' +
   '[ {"id":"a","type":"rounded","x":160,"y":80,"width":120,"height":60,"text":"Start","fillColor":"#d5e8d4"},' +
   ' {"id":"b","type":"rectangle","x":160,"y":220,"width":120,"height":60,"text":"Process"},' +
@@ -853,7 +859,9 @@ const drawioAdapter = {
   },
   async run(tabId, name, input, { cdp = false } = {}) {
     if (name === 'read_canvas') return this._op(tabId, { op: 'read' });
-    const elements = Array.isArray(input?.elements) ? input.elements : [];
+    // Resolve any icon shorthand ("aws:ec2", "gcp:compute_engine") into the full mxGraph
+    // style before injection, so the model doesn't need the exact resIcon names.
+    const elements = (Array.isArray(input?.elements) ? input.elements : []).map(applyIconShorthand);
     const native = typeof input?.native === 'string' ? input.native : undefined;
     const r = await this._op(tabId, { op: 'insert', elements, native });
     if (!r.ok) return r;
