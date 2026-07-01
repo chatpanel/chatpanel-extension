@@ -892,7 +892,8 @@ let cwGen = 0;
 let cwSuggestions = [];
 let boardSuggestions = []; // the swarm's shared suggestion queue (Connector links, etc.) rendered alongside Editor fixes
 let _cwDiff = null;
-let cwModel = ''; // provenance: the model the Editor last used
+let _lintMod = null; // deterministic Editor pre-pass (cowriter-lint.js)
+let cwModel = ''; // provenance: the model (or "deterministic pass") the Editor last used
 const cwDismissed = new Set();
 const boardDismissed = new Set();
 
@@ -927,11 +928,28 @@ async function runCowriter() {
   const para = currentParagraph();
   if (para.text.trim().length < 12) return;
   const gen = ++cwGen;
-  let deps;
+  const ta = $('n-body');
+  const offset = (edits, base) => edits.map((e) => ({ ...e, start: e.start + base, end: e.end + base, key: _cwDiff.editKey(e) })).filter((e) => !cwDismissed.has(e.key));
+  const finish = (n, free) => { renderCowriter(); if (n) logActivity('Editor', `${n} fix${n === 1 ? '' : 'es'}${free ? ' (free)' : ''}`); setSwarmState('editor', 'idle', n ? `${n} fix${n === 1 ? '' : 'es'}` : ''); };
+
+  // Deterministic pass FIRST — mechanical fixes for free. Only spend a token if it's clean.
   try {
     if (!_cwDiff) _cwDiff = await import('./js/cowriter-diff.js');
-    deps = await agentDeps();
+    if (!_lintMod) _lintMod = await import('./js/cowriter-lint.js');
   } catch { return; }
+  const lint = _lintMod.lintText(para.text);
+  if (lint.length) {
+    const idx0 = ta.value.indexOf(para.text);
+    if (idx0 < 0) return;
+    cwModel = 'deterministic pass';
+    cwSuggestions = offset(lint, idx0);
+    return finish(cwSuggestions.length, true); // saved a token
+  }
+
+  // Clean of mechanical errors → spend a (budgeted) token on the model for subtle grammar.
+  if (!budgetOk()) { setSwarmState('editor', 'idle', 'rate cap'); return; }
+  let deps;
+  try { deps = await agentDeps(); } catch { return; }
   const settings = await deps.getSettings();
   const license = await deps.getLicense();
   const editor = await roleAgent(deps, settings, license, 'editor'); // routed → cheapest usable model
@@ -943,6 +961,7 @@ async function runCowriter() {
   const sys = 'You are a meticulous copy-editor. Fix ONLY clear spelling, typo, and grammar mistakes in the text. Change as LITTLE as possible — never rewrite, rephrase, restructure, or change wording, style, or meaning. Preserve ALL markdown, punctuation, and line breaks exactly. Return ONLY the corrected text, nothing else.';
   let corrected = '';
   setSwarmState('editor', 'working');
+  budgetSpend();
   try {
     corrected = await deps.streamChat({
       agent: { ...resolved, model: resolved.autocompleteModel || resolved.model, systemPrompt: sys, maxTokens: Math.min(1200, Math.ceil(para.text.length / 2) + 200), temperature: 0 },
@@ -952,15 +971,10 @@ async function runCowriter() {
     });
   } catch { setSwarmState('editor', 'idle'); return; }
   if (gen !== cwGen || !current || !cwEnabled) return; // superseded / disabled / note switched
-  const ta = $('n-body');
   const idx = ta.value.indexOf(para.text); // relocate (user may have edited above); bail if it moved
   if (idx < 0) { setSwarmState('editor', 'idle'); return; }
-  cwSuggestions = _cwDiff.filterTypoEdits(_cwDiff.wordDiff(para.text, corrected.trim()))
-    .map((e) => ({ ...e, start: e.start + idx, end: e.end + idx, key: _cwDiff.editKey(e) }))
-    .filter((e) => !cwDismissed.has(e.key));
-  renderCowriter();
-  if (cwSuggestions.length) logActivity('Editor', `${cwSuggestions.length} fix${cwSuggestions.length === 1 ? '' : 'es'} offered`);
-  setSwarmState('editor', 'idle', cwSuggestions.length ? `${cwSuggestions.length} fix${cwSuggestions.length === 1 ? '' : 'es'}` : '');
+  cwSuggestions = offset(_cwDiff.filterTypoEdits(_cwDiff.wordDiff(para.text, corrected.trim())), idx);
+  finish(cwSuggestions.length, false);
 }
 
 function renderCowriter() {
@@ -1317,6 +1331,8 @@ async function draftAhead() {
   const license = await deps.getLicense();
   const writer = await roleAgent(deps, settings, license, 'writer'); // strong, routed
   if (!writer) return toast('Set up a model in ChatPanel settings first');
+  if (!budgetOk()) return toast('Swarm rate cap reached — try again in a moment');
+  budgetSpend();
 
   // Research handoff — ground the Writer in what the Researcher gathered.
   const grounding = researchCards.length
@@ -1418,9 +1434,14 @@ async function renderSwarmMenu() {
     row.appendChild(sel);
     menu.appendChild(row);
   }
+  const meter = document.createElement('div');
+  meter.className = 'swarm-meter';
+  const used = budgetUsed();
+  meter.innerHTML = `<span>Spend this minute</span><b class="${used >= swarmBudget.capPerMin ? 'over' : ''}">${used} / ${swarmBudget.capPerMin}</b><span>model calls</span>`;
+  menu.appendChild(meter);
   const hint = document.createElement('div');
   hint.className = 'agent-hint';
-  hint.textContent = 'Auto = the router picks by role (cheap → strong). Override to pin a model.';
+  hint.textContent = 'Auto = the router picks by role (cheap → strong). Free work (deterministic edits, retrieval) never counts against spend.';
   menu.appendChild(hint);
 }
 function setRoleOverride(roleId, candId) {
@@ -1450,6 +1471,17 @@ function setGear(g) {
   renderSwarmStatus();
   if ($('n-swarm-menu') && !$('n-swarm-menu').classList.contains('hidden')) renderSwarmMenu();
 }
+// Visible spend guardrail — a rolling per-minute cap on swarm MODEL calls. Free work
+// (the deterministic Editor pass, retrieval-only Researcher/Connector) never counts;
+// over the cap, the token-spending members skip until the window clears.
+const swarmBudget = { calls: [], capPerMin: 20 };
+function budgetOk() {
+  const now = Date.now();
+  swarmBudget.calls = swarmBudget.calls.filter((t) => now - t < 60000);
+  return swarmBudget.calls.length < swarmBudget.capPerMin;
+}
+function budgetSpend() { swarmBudget.calls.push(Date.now()); }
+function budgetUsed() { const now = Date.now(); return swarmBudget.calls.filter((t) => now - t < 60000).length; }
 function setSwarmState(role, state, info = '') {
   if (!swarm[role]) return;
   swarm[role] = { state, info };
@@ -1572,6 +1604,8 @@ async function runFactcheck() {
   const license = await deps.getLicense();
   const fc = await roleAgent(deps, settings, license, 'factcheck');
   if (!fc) return;
+  if (!budgetOk()) { setSwarmState('factcheck', 'idle', 'rate cap'); return; }
+  budgetSpend();
   let redaction = null;
   try { redaction = deps.buildRedaction?.({ settings, license }); } catch { /* redaction off */ }
   setSwarmState('factcheck', 'working');
