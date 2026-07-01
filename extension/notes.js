@@ -96,8 +96,16 @@ function setMode(mode) {
   for (const b of $('n-mode').children) b.classList.toggle('active', b.dataset.mode === mode);
   localStorage.setItem('chatpanel.notes.mode', mode);
   if (mode !== 'write') updatePreview();
+  if (mode !== 'read') autoGrow();
 }
 function updatePreview() { $('n-preview').innerHTML = renderMarkdown($('n-body').value); }
+// Grow the textarea to fit its content so text always flows to the footer (never
+// clips), and the page scrolls as a whole rather than nesting a tiny inner scroll.
+function autoGrow() {
+  const ta = $('n-body');
+  ta.style.height = 'auto';
+  ta.style.height = `${ta.scrollHeight}px`;
+}
 function updateWordCount() {
   const words = ($('n-body').value.trim().match(/\S+/g) || []).length;
   $('n-words').textContent = words ? `${words} word${words === 1 ? '' : 's'}` : '';
@@ -147,6 +155,7 @@ async function openNote(id, preloaded = null) {
   suggestTags();
   updatePreview();
   updateWordCount();
+  autoGrow();
   $('n-when').textContent = current.updatedAt ? `Edited ${relTime(current.updatedAt)}` : '';
   setStatus('');
   history.replaceState(null, '', `#${encodeURIComponent(id)}`);
@@ -218,6 +227,7 @@ function applyFmt(fmt) {
   }
 }
 function onBodyInput() {
+  autoGrow();
   if (!$('n-panes').classList.contains('write')) updatePreview();
   updateWordCount();
   scheduleSave();
@@ -360,7 +370,15 @@ async function runAgentAction(kind) {
   setAgentBusy(true);
   setStatus('Thinking…');
   let out = '';
-  const render = () => { if (current !== streamNote) return; ta.value = head + out + tail; if (!$('n-panes').classList.contains('write')) updatePreview(); ta.scrollTop = ta.scrollHeight; };
+  const scroller = document.querySelector('.editor-scroll');
+  const follow = kind === 'continue' || kind === 'summarize'; // appends → keep the tail in view
+  const render = () => {
+    if (current !== streamNote) return;
+    ta.value = head + out + tail;
+    autoGrow();
+    if (!$('n-panes').classList.contains('write')) updatePreview();
+    if (follow && scroller) scroller.scrollTop = scroller.scrollHeight;
+  };
   try {
     await deps.streamChat({
       agent: { ...resolved, systemPrompt: spec.sys, maxTokens: spec.max, temperature: 0.5 },
@@ -430,6 +448,18 @@ function init() {
 
   for (const b of $('n-mode').children) b.onclick = () => setMode(b.dataset.mode);
   for (const b of $('n-fmt').children) b.onclick = () => applyFmt(b.dataset.fmt);
+
+  // Rendered-markdown links: external URLs carry the target in data-href (no live
+  // href, to dodge Chrome's speculative preload), so open them via a click handler.
+  $('n-preview').addEventListener('click', (e) => {
+    const a = e.target.closest?.('a.md-link[data-href], a[href]');
+    if (!a) return;
+    const url = a.getAttribute('data-href') || a.getAttribute('href');
+    if (!url || url.startsWith('#')) return;
+    e.preventDefault();
+    if (/^(https?:|mailto:)/i.test(url)) window.open(url, '_blank', 'noopener,noreferrer');
+    else if (/^chrome-extension:/i.test(url)) chrome.tabs.create({ url });
+  });
 
   // Agent menu: click to open; click while streaming = stop. Menu items run actions.
   $('n-agent').onclick = (e) => {
