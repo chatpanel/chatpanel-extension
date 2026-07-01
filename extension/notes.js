@@ -1834,6 +1834,22 @@ function researchQuery() {
   const para = currentParagraph().text.trim();
   return [board.intent, title, para].filter(Boolean).join('\n').trim().slice(0, 500);
 }
+// Content-bearing terms of the query — drop stop-words, command tokens and short words, so
+// relevance is judged on what the note is actually ABOUT, not "can/you/my/plan".
+const RESEARCH_STOP = new Set(('the a an and or but for to of in on at by with from as is are was were be been being this that these those it its i you your my me we our they them he she his her can could would should will shall may might do does did done get got make made just like about into over under out up down off not no yes plan planning day today check please help note notes write writing').split(/\s+/));
+function salientTerms(q) {
+  const out = new Set();
+  for (const w of String(q || '').toLowerCase().match(/[a-z0-9][a-z0-9'-]{3,}/g) || []) {
+    if (!RESEARCH_STOP.has(w)) out.add(w);
+  }
+  return out;
+}
+// A card is "related" only if its title/snippet shares a salient term with the query.
+function relatesToQuery(card, salient) {
+  const hay = `${card.title || ''} ${card.snippet || ''}`.toLowerCase();
+  for (const t of salient) if (hay.includes(t)) return true;
+  return false;
+}
 function setResearchStatus(t) { const el = $('n-research-status'); if (el) el.textContent = t || ''; }
 function clearResearch() {
   researchGen++; researchCards = []; researchBusy = false; researchQuestion = '';
@@ -1859,7 +1875,11 @@ async function runResearch({ web = false, question = '' } = {}) {
   setResearchStatus(web ? 'Searching your workspace and the web…' : 'Finding related material…');
   renderResearch(); // reveal the shelf with a working state immediately
 
-  // Local lane — free, always. Related notes/chats/meetings from the user's own history.
+  // Local lane — free, always. Related notes/chats/meetings from the user's own history,
+  // GROUNDED in what you're writing: the ranker returns its top-N even on a query of common
+  // words, so gate results to those that actually share a salient term with the query —
+  // otherwise unrelated past notes surface. Empty is better than irrelevant.
+  const salient = salientTerms(q);
   let cards = [];
   try {
     if (!_ragMod) _ragMod = await import('./js/history-rag.js');
@@ -1867,7 +1887,8 @@ async function runResearch({ web = false, question = '' } = {}) {
     cards = results
       .filter((r) => r.sourceId !== `note:${current.id}`)
       .map((r) => ({ kind: sourceKind(r.sourceId), title: r.title || 'Untitled', url: r.url, snippet: researchSnippet(r.text), key: r.url || r.sourceId }))
-      .filter((c) => !researchDismissed.has(c.key));
+      .filter((c) => !researchDismissed.has(c.key))
+      .filter((c) => salient.size && relatesToQuery(c, salient)); // grounded: must share a salient term
   } catch { /* local lane is best-effort */ }
   if (gen !== researchGen) return;
 
