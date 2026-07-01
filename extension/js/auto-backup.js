@@ -54,37 +54,6 @@ function bytesToBase64(bytes) {
   return btoa(bin);
 }
 
-// The SW does the export + compress + encrypt (it has chrome.storage; an offscreen
-// document does NOT). The offscreen doc's ONLY job is URL.createObjectURL, which a
-// service worker lacks — so we hand it the (already-compressed) payload and get a
-// blob: URL back, sidestepping the base64 data: URL size ceiling. Idempotent.
-async function ensureOffscreen() {
-  if (await chrome.offscreen.hasDocument?.()) return;
-  try {
-    await chrome.offscreen.createDocument({
-      url: 'offscreen.html',
-      reasons: ['BLOBS'],
-      justification: 'Build the backup file as a blob URL (service workers cannot create object URLs).',
-    });
-  } catch (e) {
-    // Racing creators can throw "already exists" — tolerate it.
-    if (!String(e?.message || e).includes('Only a single offscreen')) throw e;
-  }
-}
-
-// Revoke the blob URL once the download settles, then close the offscreen doc so
-// its memory (the whole backup Blob) is freed. Best-effort.
-function releaseAfterDownload(downloadId, url) {
-  const onChanged = (delta) => {
-    if (delta.id !== downloadId || !delta.state) return;
-    const s = delta.state.current;
-    if (s !== 'complete' && s !== 'interrupted') return;
-    chrome.downloads.onChanged.removeListener(onChanged);
-    chrome.runtime.sendMessage({ type: 'cp-backup-revoke', url }).catch(() => {});
-    chrome.offscreen.closeDocument?.().catch(() => {});
-  };
-  chrome.downloads.onChanged.addListener(onChanged);
-}
 
 // Delete our own backup files in the OTHER format (regex fragment for the
 // extension) across every weekday slot — so switching encryption on doesn't leave
@@ -146,28 +115,12 @@ export async function runAutoBackup({ force = false } = {}) {
     const filename = `${FOLDER}/${slot}.${ext}`;
 
     // A data: URL downloads SILENTLY with saveAs:false — that's how auto-backup has
-    // always written unattended, and now that compression keeps payloads small it's
-    // the default again. A blob: URL from the offscreen doc can trip Chrome's "Save
-    // as" dialog, so it's used ONLY as the oversize fallback past the data: ceiling.
+    // always written unattended (a 141 MB file wrote fine this way). A blob: URL from
+    // an offscreen doc, by contrast, trips Chrome's "Save as" dialog, so we DON'T use
+    // it: build the data: URL right here regardless of size.
     const b64 = payload.b64 || bytesToBase64(new TextEncoder().encode(payload.text));
-    let bytes = Math.floor((b64.length * 3) / 4);
-    const DATAURL_MAX = 48 * 1024 * 1024; // ~48MB base64 ≈ 36MB file — safely silent
-    if (b64.length <= DATAURL_MAX) {
-      await chrome.downloads.download({ url: `data:${payload.mime};base64,${b64}`, filename, conflictAction: 'overwrite', saveAs: false });
-    } else {
-      try {
-        await ensureOffscreen();
-        const built = await chrome.runtime.sendMessage({ type: 'cp-blob-url', ...payload });
-        if (!built?.url) throw new Error(built?.error || 'offscreen unavailable');
-        bytes = built.bytes || bytes;
-        const downloadId = await chrome.downloads.download({ url: built.url, filename, conflictAction: 'overwrite', saveAs: false });
-        releaseAfterDownload(downloadId, built.url); // revoke + close offscreen when it settles
-      } catch {
-        // Last resort: attempt the data: URL anyway (may fail if truly huge, but
-        // better than nothing — the error surfaces via lastError).
-        await chrome.downloads.download({ url: `data:${payload.mime};base64,${b64}`, filename, conflictAction: 'overwrite', saveAs: false });
-      }
-    }
+    const bytes = Math.floor((b64.length * 3) / 4);
+    await chrome.downloads.download({ url: `data:${payload.mime};base64,${b64}`, filename, conflictAction: 'overwrite', saveAs: false });
 
     // Remove any backups in the OTHER format so a plaintext .zip can't linger on
     // disk after the user turns encryption on (and vice versa). chrome.downloads
