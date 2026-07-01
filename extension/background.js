@@ -9,6 +9,7 @@
 
 import { revalidate } from './js/license.js';
 import { persistMeeting, getLatestSessionRecord } from './js/store-meetings.js';
+import { captureToInbox } from './js/store-notes.js';
 import { runAutoBackup, syncBackupAlarm, BACKUP_ALARM } from './js/auto-backup.js';
 
 const REVALIDATE_ALARM = 'chatpanel-revalidate-license';
@@ -30,6 +31,14 @@ chrome.runtime.onInstalled.addListener(() => {
         contexts: ['page', 'selection', 'link'],
       },
       () => void chrome.runtime.lastError, // consume any benign duplicate on reload races
+    );
+    chrome.contextMenus.create(
+      {
+        id: 'chatpanel-clip',
+        title: 'Save selection to ChatPanel note',
+        contexts: ['selection'],
+      },
+      () => void chrome.runtime.lastError,
     );
   });
 
@@ -58,7 +67,29 @@ chrome.alarms.onAlarm.addListener((a) => {
 
 // Open the panel and hand it the click target. The panel listens for
 // `chrome.runtime.onMessage` and seeds a new message with the selection / link.
+// Brief toolbar-badge confirmation (no notifications permission needed).
+function flashBadge(text, color = '#5b5bf0') {
+  try {
+    chrome.action.setBadgeBackgroundColor({ color });
+    chrome.action.setBadgeText({ text });
+    setTimeout(() => chrome.action.setBadgeText({ text: '' }).catch(() => {}), 1500);
+  } catch {
+    /* no toolbar action — ignore */
+  }
+}
+
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  // Highlight → Inbox note. Captures the quote + a scroll-to-text source link.
+  if (info.menuItemId === 'chatpanel-clip') {
+    try {
+      await captureToInbox({ text: info.selectionText || '', sourceUrl: info.pageUrl || tab?.url || '', sourceTitle: tab?.title || '' });
+      flashBadge('✓', '#15a34a');
+    } catch (e) {
+      console.warn('[chatpanel] clip capture failed', e);
+      flashBadge('!', '#dc2626');
+    }
+    return;
+  }
   if (info.menuItemId !== 'chatpanel-ask') return;
   try {
     if (tab?.windowId != null) await chrome.sidePanel.open({ windowId: tab.windowId });

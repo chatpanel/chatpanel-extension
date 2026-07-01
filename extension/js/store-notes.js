@@ -159,3 +159,34 @@ export function noteToMarkdown(note) {
   const title = (note?.title || '').trim() || deriveTitle(body);
   return body.trim().startsWith('#') ? body : `# ${title}\n\n${body}`;
 }
+
+// ── Capture (highlight → note) ─────────────────────────────────────────────────
+// A #:~:text= fragment so clicking the source jumps back to the exact text on the
+// page. A short prefix anchor is enough and keeps the URL tidy.
+function textFragmentUrl(url, text) {
+  const clean = String(text || '').trim().replace(/\s+/g, ' ');
+  if (!url || !clean) return url || '';
+  try {
+    return `${url}#:~:text=${encodeURIComponent(clean.length > 60 ? clean.slice(0, 60) : clean)}`;
+  } catch {
+    return url;
+  }
+}
+function formatClip({ text, sourceUrl, sourceTitle }) {
+  const quote = String(text || '').trim().split('\n').map((l) => `> ${l}`).join('\n');
+  const href = textFragmentUrl(sourceUrl, text);
+  const src = href ? `\n\n— [${sourceTitle || sourceUrl}](${href})` : '';
+  return `${quote}${src}`.trim();
+}
+
+export const INBOX_NOTE_ID = 'inbox';
+
+// Append a highlighted snippet to the Inbox note (newest on top), creating it if
+// needed. Frictionless capture from the web / chats / meetings; triage later.
+export async function captureToInbox({ text, sourceUrl = '', sourceTitle = '' }) {
+  if (!String(text || '').trim()) return null;
+  const clip = formatClip({ text, sourceUrl, sourceTitle });
+  const existing = await getNote(INBOX_NOTE_ID);
+  const body = existing ? `${clip}\n\n---\n\n${existing.body}` : clip;
+  return saveNote({ id: INBOX_NOTE_ID, title: '📥 Inbox', body, tags: existing?.tags?.length ? existing.tags : ['inbox'], createdAt: existing?.createdAt });
+}

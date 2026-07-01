@@ -452,6 +452,18 @@ function init() {
     else if (k === 'i' && document.activeElement === $('n-body')) { e.preventDefault(); applyFmt('italic'); }
   });
   window.addEventListener('beforeunload', flushSave);
+
+  // Keep the list fresh when notes change elsewhere (e.g. a web highlight → Inbox in
+  // another tab). Debounced; refreshes only the LIST, never the open editor.
+  let extRefreshTimer = null;
+  if (chrome.storage?.onChanged) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !Object.keys(changes).some((k) => k.startsWith('chatpanel:note'))) return;
+      clearTimeout(extRefreshTimer);
+      extRefreshTimer = setTimeout(async () => { await reloadIndex(); renderList($('n-search').value); }, 400);
+    });
+  }
+
   setMode(localStorage.getItem('chatpanel.notes.mode') || 'write');
 }
 

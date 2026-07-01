@@ -19,6 +19,7 @@ globalThis.chrome = {
 const {
   getNoteIndex, getNote, saveNote, createNote, deleteNote, clearAllNotes,
   exportNotes, importNotes, noteToMarkdown, deriveTitle, noteKey,
+  captureToInbox, INBOX_NOTE_ID,
 } = await import('../extension/js/store-notes.js');
 const { isEncrypted } = await import('../extension/js/meeting-crypto.js');
 
@@ -88,6 +89,20 @@ const { isEncrypted } = await import('../extension/js/meeting-crypto.js');
   assert.equal(deriveTitle(''), 'Untitled note');
   assert.equal(noteToMarkdown({ title: 'T', body: 'plain body' }), '# T\n\nplain body');
   assert.equal(noteToMarkdown({ body: '# Already\n\nx' }), '# Already\n\nx', 'no double title');
+}
+
+// 6) captureToInbox: one Inbox note, newest clip on top, quoted, with a scroll-to link.
+{
+  await clearAllNotes();
+  await captureToInbox({ text: 'first clip', sourceUrl: 'https://example.com/a', sourceTitle: 'Page A' });
+  await captureToInbox({ text: 'second clip', sourceUrl: 'https://example.com/b', sourceTitle: 'Page B' });
+  const inbox = await getNote(INBOX_NOTE_ID);
+  assert.equal(inbox.title, '📥 Inbox');
+  assert.ok(inbox.body.indexOf('second clip') < inbox.body.indexOf('first clip'), 'newest clip on top');
+  assert.match(inbox.body, /> second clip/, 'quoted');
+  assert.match(inbox.body, /#:~:text=/, 'source link carries a scroll-to-text fragment');
+  assert.equal((await getNoteIndex()).length, 1, 'all clips land in the single Inbox note');
+  assert.equal((await captureToInbox({ text: '   ' })), null, 'empty selection is a no-op');
 }
 
 console.log('store-notes tests passed');
