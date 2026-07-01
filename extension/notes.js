@@ -234,6 +234,7 @@ function onBodyInput() {
   scheduleSave();
   scheduleSuggest();
   maybeAutocomplete();
+  scheduleCowriter();
 }
 
 // ── agent beside you: local topic extraction → tag suggestions (no LLM) ──────────
@@ -688,6 +689,143 @@ async function runNoteCommand() {
   return true;
 }
 
+// ── Editor co-writer — Phase 1 of the swarm ──────────────────────────────────────
+// Watches on a typing pause, asks a cheap model to fix ONLY typos/grammar, diffs its
+// output to precise one-click fixes, and shows them in an ambient strip. Opt-in
+// (cost + control). All heavy deps are lazy-loaded — nothing on the page load path.
+let cwEnabled = localStorage.getItem('chatpanel.notes.cowriter') === '1';
+let cwTimer = null;
+let cwGen = 0;
+let cwSuggestions = [];
+let _cwDiff = null;
+const cwDismissed = new Set();
+
+function scheduleCowriter() {
+  if (!cwEnabled) return;
+  if (cwSuggestions.length) clearCowriterUI(); // stale as the user types; recompute on pause
+  clearTimeout(cwTimer);
+  cwTimer = setTimeout(runCowriter, 1400);
+}
+function clearCowriterUI() {
+  cwSuggestions = [];
+  const el = $('n-cowriter');
+  el.innerHTML = '';
+  el.classList.add('hidden');
+}
+
+// The paragraph the cursor sits in (blank-line delimited).
+function currentParagraph() {
+  const ta = $('n-body');
+  const v = ta.value;
+  const pos = ta.selectionStart;
+  const b = v.lastIndexOf('\n\n', pos - 1);
+  const start = b < 0 ? 0 : b + 2;
+  const n = v.indexOf('\n\n', pos);
+  const end = n < 0 ? v.length : n;
+  return { text: v.slice(start, end), start };
+}
+
+async function runCowriter() {
+  if (!cwEnabled || !current || cmdAbort || agentAbort) return;
+  const para = currentParagraph();
+  if (para.text.trim().length < 12) return;
+  const gen = ++cwGen;
+  let deps;
+  try {
+    if (!_cwDiff) _cwDiff = await import('./js/cowriter-diff.js');
+    deps = await agentDeps();
+  } catch { return; }
+  const settings = await deps.getSettings();
+  const targetAgent = deps.getTarget(settings, settings.activeAgentId);
+  if (!targetAgent) return;
+  const license = await deps.getLicense();
+  if (!deps.canUseAgent(license, settings, targetAgent)) return;
+  const resolved = deps.resolveTarget(targetAgent, settings);
+  const sys = 'You are a meticulous copy-editor. Fix ONLY clear spelling, typo, and grammar mistakes in the text. Change as LITTLE as possible — never rewrite, rephrase, restructure, or change wording, style, or meaning. Preserve ALL markdown, punctuation, and line breaks exactly. Return ONLY the corrected text, nothing else.';
+  let corrected = '';
+  try {
+    corrected = await deps.streamChat({
+      agent: { ...resolved, model: resolved.autocompleteModel || resolved.model, systemPrompt: sys, maxTokens: Math.min(1200, Math.ceil(para.text.length / 2) + 200), temperature: 0 },
+      settings,
+      messages: [{ role: 'user', content: para.text }],
+    });
+  } catch { return; }
+  if (gen !== cwGen || !current || !cwEnabled) return; // superseded / disabled / note switched
+  const ta = $('n-body');
+  const idx = ta.value.indexOf(para.text); // relocate (user may have edited above); bail if it moved
+  if (idx < 0) return;
+  cwSuggestions = _cwDiff.filterTypoEdits(_cwDiff.wordDiff(para.text, corrected.trim()))
+    .map((e) => ({ ...e, start: e.start + idx, end: e.end + idx, key: _cwDiff.editKey(e) }))
+    .filter((e) => !cwDismissed.has(e.key));
+  renderCowriter();
+}
+
+function renderCowriter() {
+  const el = $('n-cowriter');
+  el.innerHTML = '';
+  if (!cwSuggestions.length) { el.classList.add('hidden'); return; }
+  const label = document.createElement('span');
+  label.className = 'cw-label';
+  label.textContent = '✍️ Co-writer';
+  el.appendChild(label);
+  for (const s of cwSuggestions.slice(0, 8)) {
+    const chip = document.createElement('button');
+    chip.className = 'cw-fix';
+    chip.title = 'Apply fix';
+    chip.innerHTML = `<s>${escapeHtml(s.before.trim() || '∅')}</s><span class="cw-arrow">→</span><b>${escapeHtml(s.after.trim() || '∅')}</b>`;
+    chip.onclick = () => applyCowriterFix(s);
+    el.appendChild(chip);
+  }
+  if (cwSuggestions.length > 1) {
+    const all = document.createElement('button');
+    all.className = 'cw-all';
+    all.textContent = 'Apply all';
+    all.onclick = applyAllCowriter;
+    el.appendChild(all);
+  }
+  const x = document.createElement('button');
+  x.className = 'cw-x';
+  x.title = 'Dismiss';
+  x.textContent = '✕';
+  x.onclick = () => { cwSuggestions.forEach((s) => cwDismissed.add(s.key)); clearCowriterUI(); };
+  el.appendChild(x);
+  el.classList.remove('hidden');
+}
+
+function commitCowriterBody() {
+  current.body = $('n-body').value;
+  autoGrow();
+  if (!$('n-panes').classList.contains('write')) updatePreview();
+  updateWordCount();
+  dirty = true;
+  scheduleSave();
+}
+function applyCowriterFix(s) {
+  const ta = $('n-body');
+  ta.value = ta.value.slice(0, s.start) + s.after + ta.value.slice(s.end);
+  const delta = s.after.length - (s.end - s.start);
+  cwSuggestions = cwSuggestions.filter((x) => x !== s).map((x) => (x.start > s.start ? { ...x, start: x.start + delta, end: x.end + delta } : x));
+  commitCowriterBody();
+  renderCowriter();
+}
+function applyAllCowriter() {
+  const ta = $('n-body');
+  ta.value = _cwDiff.applyEdits(ta.value, cwSuggestions);
+  cwSuggestions = [];
+  commitCowriterBody();
+  clearCowriterUI();
+  toast('Fixes applied');
+}
+function setCowriter(on) {
+  cwEnabled = on;
+  localStorage.setItem('chatpanel.notes.cowriter', on ? '1' : '0');
+  const btn = $('n-cw-toggle');
+  btn.classList.toggle('on', on);
+  btn.title = on ? 'Co-writer: on — proofreads as you write' : 'Co-writer: off';
+  if (on) scheduleCowriter();
+  else clearCowriterUI();
+}
+
 // ── wire up ───────────────────────────────────────────────────────────────────
 function init() {
   $('n-new').onclick = newNote;
@@ -792,6 +930,10 @@ function init() {
   };
   for (const b of $('n-agent-menu').querySelectorAll('button[data-act]')) b.onclick = () => runAgentAction(b.dataset.act);
   document.addEventListener('click', closeAgentMenu);
+
+  // Editor co-writer toggle (opt-in; persisted).
+  $('n-cw-toggle').onclick = () => setCowriter(!cwEnabled);
+  setCowriter(cwEnabled);
 
   document.addEventListener('keydown', (e) => {
     const mod = e.metaKey || e.ctrlKey;

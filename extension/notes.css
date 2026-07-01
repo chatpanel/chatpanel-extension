@@ -175,6 +175,21 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .backlink:hover { text-decoration: underline; }
 .backlink .bl-snip { color: var(--faint); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Editor co-writer */
+.cw-toggle { width: 32px; height: 32px; border: 1px solid transparent; background: transparent; color: var(--muted); border-radius: 8px; cursor: pointer; font-size: 15px; }
+.cw-toggle:hover { background: var(--field); color: var(--text); }
+.cw-toggle.on { color: var(--accent); background: var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.cowriter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 40px; border-top: 1px solid var(--border); background: linear-gradient(var(--accent-weak), transparent); }
+.cw-label { font-size: 11.5px; font-weight: 700; color: var(--accent); letter-spacing: .01em; }
+.cw-fix { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12.5px; cursor: pointer; border: 1px solid var(--border-strong); background: var(--card); color: var(--text); border-radius: 999px; padding: 3px 11px; }
+.cw-fix:hover { border-color: var(--accent); }
+.cw-fix s { color: var(--muted); text-decoration-color: var(--faint); }
+.cw-fix .cw-arrow { color: var(--faint); }
+.cw-fix b { color: var(--accent); font-weight: 600; }
+.cw-all { font: inherit; font-size: 12px; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 999px; padding: 3px 11px; }
+.cw-x { margin-left: auto; width: 24px; height: 24px; border: 0; background: transparent; color: var(--muted); cursor: pointer; border-radius: 6px; font-size: 12px; }
+.cw-x:hover { background: var(--field); color: var(--text); }
+
 .editor-foot { display: flex; justify-content: space-between; padding: 8px 40px; border-top: 1px solid var(--border); color: var(--faint); font-size: 12px; background: var(--card); }
 
 /* Reading typography (rendered markdown) */
