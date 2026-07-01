@@ -85,3 +85,30 @@ export function stepIcon(s) {
   if (/^bash$/i.test(s.tool)) return '⌘';
   return '🔧';
 }
+
+// ── #skill mentions (pure) ─────────────────────────────────────────────────────
+// Pull a "#[Skill Name]" mention out of a note command/task instruction. Returns the
+// skill name (or '') and the instruction with the token removed.
+export function parseSkillMention(instruction) {
+  const s = String(instruction || '');
+  const m = s.match(/#\[([^\]\n]+)\]/);
+  if (!m) return { name: '', text: s.trim() };
+  return { name: m[1].trim(), text: s.replace(m[0], '').replace(/[ \t]{2,}/g, ' ').trim() };
+}
+// Merge a skill's saved prompt with the user's task: substitute {{input}} placeholders
+// when present, else append the task under the prompt.
+export function mergeSkillPrompt(prompt, task) {
+  const p = String(prompt || '');
+  const t = String(task || '');
+  if (/{{\s*input[^}]*}}/i.test(p)) return p.replace(/{{\s*input[^}]*}}/gi, t);
+  return p ? (t ? `${p}\n\n${t}` : p) : t;
+}
+// Resolve a skill by display name (exact, then contains) from settings.skills.
+export function findSkillByName(skills, name) {
+  const q = String(name || '').trim().toLowerCase();
+  if (!q) return null;
+  const list = Array.isArray(skills) ? skills : [];
+  return list.find((s) => String(s?.name || s?.title || '').toLowerCase() === q)
+    || list.find((s) => String(s?.name || s?.title || '').toLowerCase().includes(q))
+    || null;
+}

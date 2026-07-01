@@ -14,6 +14,7 @@ import {
   relTime, escapeHtml, highlight, escapeMdText, tagify, snippetOf,
   KIND_ICON, sourceKind, researchSnippet,
   JOB_ICON, compactInput, prettyTools, toolTitle, stepIcon,
+  parseSkillMention, mergeSkillPrompt, findSkillByName,
 } from './js/notes-util.js';
 import {
   SWARM_ROLES, SWARM_ROLE_META, swarmOverrides, swarmCandidates, roleAgent, getRouter,
@@ -569,12 +570,13 @@ function downloadCurrent() {
 let _agentDeps = null;
 async function agentDeps() {
   if (_agentDeps) return _agentDeps;
-  const [p, s, l, t] = await Promise.all([import('./js/providers.js'), import('./js/store.js'), import('./js/license.js'), import('./js/turn-tools.js')]);
+  const [p, s, l, t, sk] = await Promise.all([import('./js/providers.js'), import('./js/store.js'), import('./js/license.js'), import('./js/turn-tools.js'), import('./js/skill-runtime.js')]);
   _agentDeps = {
     streamChat: p.streamChat, checkBridge: p.checkBridge,
     getSettings: s.getSettings, getTarget: s.getTarget, resolveTarget: s.resolveTarget,
-    getLicense: l.getLicense, canUseAgent: l.canUseAgent,
+    getLicense: l.getLicense, canUseAgent: l.canUseAgent, can: l.can,
     buildTurnTools: t.buildTurnTools, buildRedaction: t.buildRedaction,
+    skillRunFromSkill: sk.skillRunFromSkill,
   };
   return _agentDeps;
 }
@@ -885,6 +887,19 @@ async function maybeAutocomplete() {
     ac.index = 0;
     return renderAc();
   }
+  // # skills — insert a "#[Skill]" mention to scope a command/agent task to a saved skill.
+  const hash = currentHashQuery();
+  if (hash && mentionSkills.length) {
+    const q = hash.word.toLowerCase();
+    const items = mentionSkills.filter((s) => !q || s.name.toLowerCase().includes(q)).slice(0, 8);
+    if (items.length) {
+      ac.mode = 'skill';
+      ac.range = hash;
+      ac.items = items.map((s) => ({ skill: true, name: s.name }));
+      ac.index = 0;
+      return renderAc();
+    }
+  }
   // / command palette (agent actions)
   const slash = currentSlashQuery();
   if (slash) {
@@ -903,13 +918,14 @@ function renderAc() {
   if (!ac.range) return closeAc();
   el.innerHTML = '';
   if (!ac.items.length) {
-    if (ac.mode === 'cmd' || ac.mode === 'slash') return closeAc();
+    if (ac.mode === 'cmd' || ac.mode === 'slash' || ac.mode === 'skill') return closeAc();
     el.innerHTML = '<div class="ac-empty">No match — keep typing to name a new link</div>';
   } else {
     ac.items.forEach((it, i) => {
       const d = document.createElement('div');
       d.className = 'ac-item' + (i === ac.index ? ' sel' : '');
-      if (ac.mode === 'cmd' && it.agent) d.innerHTML = `<span class="ac-badge agent">@${escapeHtml(it.name)}</span><span class="ac-title">assign a task to this agent</span>`;
+      if (ac.mode === 'skill') d.innerHTML = `<span class="ac-badge skill-tag">#${escapeHtml(it.name)}</span><span class="ac-title">use this skill for the command/task</span>`;
+      else if (ac.mode === 'cmd' && it.agent) d.innerHTML = `<span class="ac-badge agent">@${escapeHtml(it.name)}</span><span class="ac-title">assign a task to this agent</span>`;
       else if (ac.mode === 'cmd') d.innerHTML = `<span class="ac-badge cmd">@${it.cmd}</span><span class="ac-title">${escapeHtml(it.hint)}</span>`;
       else if (ac.mode === 'slash') d.innerHTML = `<span class="ac-badge slash">${it.icon}</span><span class="ac-title"><b>${escapeHtml(it.label)}</b> — ${escapeHtml(it.hint)}</span>`;
       else d.innerHTML = `<span class="ac-badge ${it.type}">${it.type}</span><span class="ac-title">${escapeHtml(it.title)}</span>`;
@@ -950,6 +966,14 @@ function acceptAc() {
     closeAc();
     onBodyInput();
     it.run();
+    return;
+  }
+  if (ac.mode === 'skill') {
+    if (!it) return closeAc();
+    // Replace the typed "#word" (the # is at start-1) with a "#[Skill]" mention.
+    ta.setRangeText(`#[${it.name}] `, ac.range.start - 1, ac.range.end, 'end');
+    closeAc();
+    onBodyInput();
     return;
   }
   const title = it ? it.title : ac.range.query; // allow a new (unmatched) link name too
@@ -1002,6 +1026,17 @@ function currentSlashQuery() {
   const pos = ta.selectionStart;
   const line = ta.value.slice(ta.value.lastIndexOf('\n', pos - 1) + 1, pos);
   const m = line.match(/(?:^|\s)\/(\w*)$/);
+  if (!m) return null;
+  return { word: m[1], start: pos - m[1].length, end: pos };
+}
+// The "#word" being typed (line-start or after whitespace) — the skill picker. Won't
+// fire on a markdown heading ("# " has a space, breaking \w*).
+function currentHashQuery() {
+  const ta = $('n-body');
+  if (ta.selectionStart !== ta.selectionEnd) return null;
+  const pos = ta.selectionStart;
+  const line = ta.value.slice(ta.value.lastIndexOf('\n', pos - 1) + 1, pos);
+  const m = line.match(/(?:^|\s)#(\w*)$/);
   if (!m) return null;
   return { word: m[1], start: pos - m[1].length, end: pos };
 }
@@ -1226,11 +1261,13 @@ async function runNoteCommand() {
   if (!deps.canUseAgent(license, settings, targetAgent)) { toast('That agent needs ChatPanel Pro'); return true; }
   const resolved = deps.resolveTarget(targetAgent, settings);
 
+  // A "#[Skill]" mention in the instruction scopes the tools + folds in the skill's prompt.
+  const skill = resolveSkillMention(ctx.instruction, settings, license, deps);
   await runNoteJob({
     deps, settings, license, targetAgent, resolved, head, tail, commandText,
-    cmdLabel: ctx.spec.cmd, systemPrompt: ctx.spec.sys, instruction: ctx.instruction,
-    armToolset: !!ctx.spec.tools,
-    versionLabel: `@${ctx.spec.cmd} · ${targetAgent.name || resolved.model || 'agent'}`,
+    cmdLabel: ctx.spec.cmd, systemPrompt: ctx.spec.sys, instruction: skill.instruction,
+    armToolset: !!ctx.spec.tools, skillRun: skill.skillRun,
+    versionLabel: `@${ctx.spec.cmd}${skill.skillLabel ? ` #${skill.skillLabel}` : ''} · ${targetAgent.name || resolved.model || 'agent'}`,
   });
   return true;
 }
@@ -1243,7 +1280,7 @@ async function runNoteCommand() {
 async function runNoteJob({
   deps, settings, license, targetAgent, resolved,
   head, tail, commandText, cmdLabel, systemPrompt, instruction,
-  makeExtraProviders = null, armToolset = true, maxTokens = 1800, temperature = 0.4, versionLabel,
+  makeExtraProviders = null, armToolset = true, maxTokens = 1800, temperature = 0.4, versionLabel, skillRun = null,
 }) {
   const ta = $('n-body');
   const job = {
@@ -1257,7 +1294,7 @@ async function runNoteJob({
   // SAME way the side panel is (web + history + MCP, per-Notes overrides) + any extras.
   let tools = null;
   const extraProviders = makeExtraProviders ? makeExtraProviders(job) : [];
-  if (armToolset || extraProviders.length) {
+  if (armToolset || extraProviders.length || skillRun) {
     try {
       const bridge = await deps.checkBridge(settings.bridgeUrl).catch(() => ({ ok: false }));
       const nt = settings.ui?.notes?.tools || {};
@@ -1267,6 +1304,7 @@ async function runNoteJob({
         includeWebSearch: armToolset && nt.webSearch !== false,
         includeMcp: armToolset && nt.mcp !== false,
         includeHistory: armToolset && nt.history !== false,
+        skillRun, // a #skill mention scopes tools + adds its guidance
         extraProviders,
       });
     } catch { /* fall back to no tools */ }
@@ -1359,14 +1397,28 @@ async function runAgentTask(mention) {
     + '- note_create to put content in a NEW note when it belongs on its own;\n'
     + '- note_edit to revise the user\'s EXISTING text in THIS note (exact find/replace).\n'
     + 'Your streamed text is inserted where the task was written — use it for the main answer, tools for side effects. Output clean GitHub-flavored markdown, no preamble or meta commentary.';
+  // Honor a "#[Skill]" mention in the task (scoped tools + the skill's prompt).
+  const skill = resolveSkillMention(mention.task, settings, license, deps);
   await runNoteJob({
     deps, settings, license, targetAgent, resolved, head, tail, commandText,
-    cmdLabel: `@${targetAgent.name || 'agent'}`, systemPrompt: sys, instruction: mention.task,
-    armToolset: true, maxTokens: 2400,
+    cmdLabel: `@${targetAgent.name || 'agent'}`, systemPrompt: sys, instruction: skill.instruction,
+    armToolset: true, maxTokens: 2400, skillRun: skill.skillRun,
     makeExtraProviders: (job) => [makeNoteTools(job)],
-    versionLabel: `@${targetAgent.name || 'agent'} · task`,
+    versionLabel: `@${targetAgent.name || 'agent'}${skill.skillLabel ? ` #${skill.skillLabel}` : ''} · task`,
   });
   return true;
+}
+
+// Resolve a "#[Skill]" mention in an instruction: strip the token, and if it names a
+// configured skill, merge the skill's saved prompt with the task + return its skillRun
+// (tool scope). Unknown skill → just the cleaned instruction, no skillRun.
+function resolveSkillMention(instruction, settings, license, deps) {
+  const { name, text } = parseSkillMention(instruction);
+  if (!name) return { instruction: text, skillRun: null, skillLabel: '' };
+  const skill = findSkillByName(settings.skills, name);
+  if (!skill) return { instruction: text, skillRun: null, skillLabel: '' };
+  const skillRun = deps.skillRunFromSkill(skill, { includeMeetings: !!deps.can?.(license, 'liveMeetings') });
+  return { instruction: mergeSkillPrompt(skill.prompt, text), skillRun, skillLabel: skill.name || skill.title || name };
 }
 
 // Resolve a mentioned target by NAME (endpoints + agents), exact first, then contains,
@@ -1949,9 +2001,10 @@ let autoAbort = null;
 let autoGen = 0;
 let autocompleteCfg = { enabled: false, agentId: '' };
 let mentionTargets = []; // [{ name }] configured agents/endpoints, for the @ picker & @mention
+let mentionSkills = [];  // [{ name }] configured skills, for the # picker
 
-// Cheap direct read of the (plaintext) settings object for the @ picker's agent list —
-// must NOT pull the agent graph onto the load path.
+// Cheap direct reads of the (plaintext) settings object for the @ / # pickers — must
+// NOT pull the agent graph onto the load path.
 async function loadMentionTargets() {
   try {
     const s = (await chrome.storage.local.get('chatpanel:settings'))['chatpanel:settings'] || {};
@@ -1962,7 +2015,8 @@ async function loadMentionTargets() {
       if (name && !seen.has(name.toLowerCase())) { seen.add(name.toLowerCase()); out.push({ name }); }
     }
     mentionTargets = out;
-  } catch { mentionTargets = []; }
+    mentionSkills = (s.skills || []).filter((sk) => sk && (sk.name || sk.title)).map((sk) => ({ name: sk.name || sk.title }));
+  } catch { mentionTargets = []; mentionSkills = []; }
 }
 
 async function loadAutocompleteCfg() {

@@ -387,6 +387,7 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .ac-badge.chat { color: var(--accent); border-color: #33407a; } .ac-badge.meeting { color: #b8860b; } .ac-badge.note { color: #8b5cf6; }
 .ac-badge.cmd { color: #fff; background: var(--accent); border-color: var(--accent); }
 .ac-badge.agent { color: var(--accent); background: var(--accent-weak); border-color: var(--accent); text-transform: none; letter-spacing: 0; }
+.ac-badge.skill-tag { color: #b45309; background: rgba(245, 200, 66, .18); border-color: rgba(245, 200, 66, .5); text-transform: none; letter-spacing: 0; }
 .ac-badge.slash { font-size: 13px; padding: 1px 5px; border-color: transparent; background: var(--field); }
 .ac-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .ac-empty { padding: 9px 11px; color: var(--faint); font-size: 12.5px; }
