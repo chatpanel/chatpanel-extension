@@ -145,27 +145,28 @@ export async function runAutoBackup({ force = false } = {}) {
     const slot = `chatpanel-backup-${WEEKDAYS[new Date().getDay()]}`;
     const filename = `${FOLDER}/${slot}.${ext}`;
 
-    // Primary: an offscreen document turns the payload into a blob: URL (no data:
-    // URL size ceiling). Fallback: a data: URL built right here — reliable now
-    // that compression keeps payloads small. Either way the same file lands.
-    let bytes = 0;
-    let downloaded = false;
-    try {
-      await ensureOffscreen();
-      const built = await chrome.runtime.sendMessage({ type: 'cp-blob-url', ...payload });
-      if (built?.url) {
-        bytes = built.bytes || 0;
+    // A data: URL downloads SILENTLY with saveAs:false — that's how auto-backup has
+    // always written unattended, and now that compression keeps payloads small it's
+    // the default again. A blob: URL from the offscreen doc can trip Chrome's "Save
+    // as" dialog, so it's used ONLY as the oversize fallback past the data: ceiling.
+    const b64 = payload.b64 || bytesToBase64(new TextEncoder().encode(payload.text));
+    let bytes = Math.floor((b64.length * 3) / 4);
+    const DATAURL_MAX = 48 * 1024 * 1024; // ~48MB base64 ≈ 36MB file — safely silent
+    if (b64.length <= DATAURL_MAX) {
+      await chrome.downloads.download({ url: `data:${payload.mime};base64,${b64}`, filename, conflictAction: 'overwrite', saveAs: false });
+    } else {
+      try {
+        await ensureOffscreen();
+        const built = await chrome.runtime.sendMessage({ type: 'cp-blob-url', ...payload });
+        if (!built?.url) throw new Error(built?.error || 'offscreen unavailable');
+        bytes = built.bytes || bytes;
         const downloadId = await chrome.downloads.download({ url: built.url, filename, conflictAction: 'overwrite', saveAs: false });
         releaseAfterDownload(downloadId, built.url); // revoke + close offscreen when it settles
-        downloaded = true;
+      } catch {
+        // Last resort: attempt the data: URL anyway (may fail if truly huge, but
+        // better than nothing — the error surfaces via lastError).
+        await chrome.downloads.download({ url: `data:${payload.mime};base64,${b64}`, filename, conflictAction: 'overwrite', saveAs: false });
       }
-    } catch {
-      /* fall through to the data: URL path */
-    }
-    if (!downloaded) {
-      const b64 = payload.b64 || bytesToBase64(new TextEncoder().encode(payload.text));
-      bytes = Math.floor((b64.length * 3) / 4);
-      await chrome.downloads.download({ url: `data:${payload.mime};base64,${b64}`, filename, conflictAction: 'overwrite', saveAs: false });
     }
 
     // Remove any backups in the OTHER format so a plaintext .zip can't linger on
