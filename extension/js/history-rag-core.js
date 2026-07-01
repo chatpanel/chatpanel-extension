@@ -186,6 +186,16 @@ function diversifyResults(results, limit) {
     .map((r, rank) => ({ ...r, rank: rank + 1 }));
 }
 
+// Mild multiplicative recency prior. ~+30% for something just now, decaying with a
+// ~45-day half-life toward +0% — enough to tie-break toward fresh, not to swamp BM25.
+const RECENCY_HALFLIFE_DAYS = 45;
+const RECENCY_MAX_BOOST = 0.3;
+function recencyFactor(date) {
+  if (!date) return 1;
+  const ageDays = Math.max(0, (Date.now() - date) / 86400000);
+  return 1 + RECENCY_MAX_BOOST * Math.exp(-ageDays / RECENCY_HALFLIFE_DAYS);
+}
+
 export function searchHistorySources(sources, query, options = {}) {
   const limit = clampInt(options.limit, 8, 1, 30);
   const scoped = scopedSources(sources, options.scope || 'all', options.includeMeetings !== false);
@@ -222,6 +232,10 @@ export function searchHistorySources(sources, query, options = {}) {
       // transcripts that only repeat common words.
       score += subjectBoost(chunk, qTerms, idx.idf, field);
       score += meetingIntentBoost(chunk, profile, field);
+      // Mild recency prior (opt-in): nudge fresh chats/meetings up without letting age
+      // override relevance. A gentle exponential decay, so a slightly-less-relevant but
+      // much newer item can edge out a stale one, but a strong match still wins.
+      if (options.recency) score *= recencyFactor(chunk?.date);
       return { ...chunk, score };
     });
   return diversifyResults(ranked, limit);

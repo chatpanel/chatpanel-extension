@@ -173,37 +173,104 @@ export function meetingSource(entry, rec, notes = '', topics = null) {
   };
 }
 
+// Source cache. Decrypting + building the source list is the expensive part at scale
+// (a year of chats/meetings), and the SAME set is re-loaded on every history search.
+// Cache the built sources in memory and invalidate when the underlying conversation/
+// meeting storage changes (cross-document via chrome.storage.onChanged). Gated on
+// onChanged being available, so unit tests (which mock storage.local but not the event
+// stream) always load fresh and stay deterministic. A persistent/disk tier can layer
+// on top of this later.
+// TTL-bounded so we DON'T pin a year of decrypted chats/meetings in RAM. The cache
+// only survives a burst of back-to-back searches; after SRC_CACHE_TTL_MS of no use it
+// is dropped and the memory is freed. That keeps searches fast without ChatPanel
+// sitting on a large heap between queries.
+const SRC_CACHE_TTL_MS = 60_000;
+const _srcCache = { chats: null, meetings: null, at: 0, timer: null };
+let _srcCacheWired = false;
+let _srcCacheable = false;
+
+function releaseSrcCache() {
+  _srcCache.chats = null;
+  _srcCache.meetings = null;
+  _srcCache.at = 0;
+  if (_srcCache.timer) { clearTimeout(_srcCache.timer); _srcCache.timer = null; }
+}
+
+function wireSourceCache() {
+  if (_srcCacheWired) return _srcCacheable;
+  _srcCacheWired = true;
+  const oc = globalThis.chrome?.storage?.onChanged;
+  if (oc?.addListener) {
+    oc.addListener((changes, area) => {
+      if (area && area !== 'local') return;
+      for (const key of Object.keys(changes || {})) {
+        if (/^chatpanel:(conv|chat)/i.test(key)) _srcCache.chats = null;
+        if (/^chatpanel:meeting/i.test(key)) _srcCache.meetings = null;
+      }
+    });
+    _srcCacheable = true;
+  }
+  return _srcCacheable;
+}
+
+// Reset the idle-release timer after a use; when it fires, drop the corpus from memory.
+function touchSrcCacheTTL() {
+  _srcCache.at = Date.now();
+  if (_srcCache.timer) clearTimeout(_srcCache.timer);
+  _srcCache.timer = setTimeout(releaseSrcCache, SRC_CACHE_TTL_MS);
+  _srcCache.timer?.unref?.(); // don't keep a Node process alive on this (tests/CLI)
+}
+
+// Force a fresh reload on the next call (belt-and-suspenders for callers that mutate
+// storage without going through the normal write paths).
+export function invalidateHistorySourceCache() { releaseSrcCache(); }
+
+async function loadChatSources() {
+  const out = [];
+  const index = await getIndex();
+  for (const entry of index || []) {
+    try {
+      const conv = await getConversation(entry.id);
+      const source = conversationSource(entry, conv);
+      if (source?.text) out.push(source);
+    } catch (e) {
+      console.warn('[chatpanel] history source load failed for chat', entry?.id, e);
+    }
+  }
+  return out;
+}
+
+async function loadMeetingSources() {
+  const out = [];
+  const index = await getMeetingIndex();
+  for (const entry of index || []) {
+    try {
+      const rec = await getMeeting(entry.id);
+      const notes = await getMeetingNotes(entry.id).catch(() => '');
+      const topics = await getMeetingTopics(entry.id).catch(() => null);
+      const source = meetingSource(entry, rec, notes, topics);
+      if (source?.text) out.push(source);
+    } catch (e) {
+      console.warn('[chatpanel] history source load failed for meeting', entry?.id, e);
+    }
+  }
+  return out;
+}
+
 export async function loadHistorySources({ includeChats = true, includeMeetings = false } = {}) {
+  const cacheable = wireSourceCache();
+  // Drop a stale burst before reusing, so an idle cache can't serve old data.
+  if (cacheable && _srcCache.at && Date.now() - _srcCache.at > SRC_CACHE_TTL_MS) releaseSrcCache();
   const sources = [];
-
   if (includeChats) {
-    const index = await getIndex();
-    for (const entry of index || []) {
-      try {
-        const conv = await getConversation(entry.id);
-        const source = conversationSource(entry, conv);
-        if (source?.text) sources.push(source);
-      } catch (e) {
-        console.warn('[chatpanel] history source load failed for chat', entry?.id, e);
-      }
-    }
+    if (cacheable) { if (!_srcCache.chats) _srcCache.chats = await loadChatSources(); sources.push(..._srcCache.chats); }
+    else sources.push(...(await loadChatSources()));
   }
-
   if (includeMeetings) {
-    const index = await getMeetingIndex();
-    for (const entry of index || []) {
-      try {
-        const rec = await getMeeting(entry.id);
-        const notes = await getMeetingNotes(entry.id).catch(() => '');
-        const topics = await getMeetingTopics(entry.id).catch(() => null);
-        const source = meetingSource(entry, rec, notes, topics);
-        if (source?.text) sources.push(source);
-      } catch (e) {
-        console.warn('[chatpanel] history source load failed for meeting', entry?.id, e);
-      }
-    }
+    if (cacheable) { if (!_srcCache.meetings) _srcCache.meetings = await loadMeetingSources(); sources.push(..._srcCache.meetings); }
+    else sources.push(...(await loadMeetingSources()));
   }
-
+  if (cacheable) touchSrcCacheTTL();
   return sources;
 }
 
@@ -230,6 +297,7 @@ export async function retrieveHistory(
     loadSources = loadHistorySources,
     mode = 'best',
     field = 'all',
+    recency = true,
   } = {},
 ) {
   const q = String(query || '').trim();
@@ -242,6 +310,7 @@ export async function retrieveHistory(
       limit: clampInt(limit, DEFAULT_RESULT_LIMIT, 1, 30),
       mode,
       field,
+      recency, // mild freshness prior (default on for the model's history search)
     })
     : [];
   return {
