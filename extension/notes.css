@@ -226,6 +226,24 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .ghost-hint { position: fixed; z-index: 60; font-size: 11px; font-weight: 600; color: var(--accent); background: var(--elev); border: 1px solid var(--border-strong); border-radius: 6px; padding: 2px 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .16); pointer-events: none; white-space: nowrap; }
 .ghost-hint.hidden { display: none; }
 
+/* Swarm team panel — the model router made visible: role → appointed model + override. */
+.swarm-menu { right: 0; left: auto; min-width: 272px; padding: 7px; }
+.swarm-title { font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); padding: 3px 6px 7px; }
+.swarm-row { padding: 7px 6px; border-radius: 9px; }
+.swarm-row:hover { background: var(--field); }
+.swarm-role { display: flex; align-items: center; gap: 9px; }
+.swarm-ico { font-size: 14px; }
+.swarm-role-txt { display: flex; flex-direction: column; line-height: 1.25; }
+.swarm-role-txt b { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.swarm-role-txt span { font-size: 11px; color: var(--muted); }
+.swarm-tier { margin-left: auto; font-size: 10px; font-weight: 700; padding: 1px 8px; border-radius: 999px; text-transform: capitalize; }
+.tier-cheap { color: #0a7d3f; background: rgba(16, 185, 129, .15); }
+.tier-balanced { color: var(--accent); background: var(--accent-weak); }
+.tier-strong { color: #b4530a; background: rgba(234, 88, 12, .15); }
+.tier-subagent { color: #7c3aed; background: rgba(124, 58, 237, .15); }
+.swarm-select { width: 100%; margin-top: 7px; font: inherit; font-size: 12px; padding: 5px 7px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--card); color: var(--text); cursor: pointer; }
+.swarm-select:hover { border-color: var(--accent); }
+
 .editor-foot { display: flex; justify-content: space-between; padding: 8px 40px; border-top: 1px solid var(--border); color: var(--faint); font-size: 12px; background: var(--card); }
 
 /* Reading typography (rendered markdown) */

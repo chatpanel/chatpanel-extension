@@ -1216,6 +1216,60 @@ async function draftAhead() {
   }
 }
 
+// ── Swarm team panel — Phase 4b: the model router, made visible & controllable ────
+// Shows each role, the model the router APPOINTED (with its tier / subagent mode), and
+// a dropdown to pin an override. Reuses swarmCandidates + the pure router; overrides
+// persist to the same key roleAgent() already reads, so pinning takes effect instantly.
+const SWARM_ROLE_META = [
+  { id: 'editor', icon: '✍️', name: 'Editor', desc: 'Proofreads as you type' },
+  { id: 'researcher', icon: '🔎', name: 'Researcher', desc: 'Finds related material' },
+  { id: 'writer', icon: '✨', name: 'Writer', desc: 'Drafts ahead on ⌘↵' },
+];
+async function renderSwarmMenu() {
+  const menu = $('n-swarm-menu');
+  let deps, settings, license, cands, overrides;
+  try {
+    deps = await agentDeps();
+    settings = await deps.getSettings();
+    license = await deps.getLicense();
+    cands = swarmCandidates(deps, settings, license).filter((c) => c.usable !== false);
+    overrides = swarmOverrides();
+    if (!_router) _router = await import('./js/cowriter-router.js');
+  } catch { menu.innerHTML = '<div class="agent-hint">Set up a model in ChatPanel settings first</div>'; return; }
+  if (!cands.length) { menu.innerHTML = '<div class="agent-hint">Add a model in ChatPanel settings to use the co-writer swarm.</div>'; return; }
+  menu.innerHTML = '<div class="swarm-title">Co-writer team</div>';
+  for (const role of SWARM_ROLE_META) {
+    const appt = _router.appoint(SWARM_ROLES[role.id], cands, { overrides });
+    const tier = appt?.mode === 'subagent' ? 'subagent' : (appt?.tier || SWARM_ROLES[role.id].prefer);
+    const pinned = overrides[role.id] && cands.some((c) => c.id === overrides[role.id]) ? overrides[role.id] : '';
+    const row = document.createElement('div');
+    row.className = 'swarm-row';
+    row.innerHTML =
+      `<div class="swarm-role"><span class="swarm-ico">${role.icon}</span>` +
+      `<div class="swarm-role-txt"><b>${role.name}</b><span>${escapeHtml(role.desc)}</span></div>` +
+      `<span class="swarm-tier tier-${escapeHtml(tier)}">${escapeHtml(tier)}</span></div>`;
+    const sel = document.createElement('select');
+    sel.className = 'swarm-select';
+    sel.innerHTML = `<option value="">${escapeHtml(appt ? `Auto → ${appt.name || appt.model}` : 'Auto')}</option>`
+      + cands.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name || c.model)}</option>`).join('');
+    sel.value = pinned;
+    sel.onchange = () => setRoleOverride(role.id, sel.value);
+    row.appendChild(sel);
+    menu.appendChild(row);
+  }
+  const hint = document.createElement('div');
+  hint.className = 'agent-hint';
+  hint.textContent = 'Auto = the router picks by role (cheap → strong). Override to pin a model.';
+  menu.appendChild(hint);
+}
+function setRoleOverride(roleId, candId) {
+  const o = swarmOverrides();
+  if (candId) o[roleId] = candId; else delete o[roleId];
+  localStorage.setItem('chatpanel.notes.cowriter.roles', JSON.stringify(o));
+  renderSwarmMenu();
+  toast(candId ? 'Role pinned' : 'Role back to auto');
+}
+
 // ── wire up ───────────────────────────────────────────────────────────────────
 function init() {
   $('n-new').onclick = newNote;
@@ -1354,6 +1408,17 @@ function init() {
     $('n-research').classList.add('collapsed');
     $('n-research-collapse').textContent = '▸';
   }
+
+  // Swarm team panel (⚙) — open shows the router's appointments + per-role overrides.
+  $('n-swarm').onclick = (e) => {
+    e.stopPropagation();
+    const menu = $('n-swarm-menu');
+    const willOpen = menu.classList.contains('hidden');
+    menu.classList.toggle('hidden');
+    if (willOpen) renderSwarmMenu();
+  };
+  $('n-swarm-menu').addEventListener('click', (e) => e.stopPropagation()); // keep open while choosing
+  document.addEventListener('click', () => $('n-swarm-menu').classList.add('hidden'));
 
   document.addEventListener('keydown', (e) => {
     const mod = e.metaKey || e.ctrlKey;
