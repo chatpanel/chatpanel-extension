@@ -803,6 +803,9 @@ async function runNoteCommand() {
   if (ctx.spec.tools) {
     try {
       const bridge = await deps.checkBridge(settings.bridgeUrl).catch(() => ({ ok: false }));
+      // Per-Notes tool overrides (Settings → Notes): unchecked forces a tool off for
+      // note commands only; checked (default) follows the global ChatPanel setting.
+      const nt = settings.ui?.notes?.tools || {};
       tools = await deps.buildTurnTools({
         resolvedAgent: resolved,
         settings,
@@ -810,6 +813,9 @@ async function runNoteCommand() {
         bridgeUrl: settings.bridgeUrl,
         bridgeAvailable: !!bridge?.ok,
         userText: ctx.instruction,
+        includeWebSearch: nt.webSearch !== false,
+        includeMcp: nt.mcp !== false,
+        includeHistory: nt.history !== false,
       });
     } catch { /* fall back to no tools */ }
   }
@@ -1475,6 +1481,7 @@ function init() {
   $('n-copy').onclick = copyCurrent;
   $('n-download').onclick = downloadCurrent;
   $('n-ask').onclick = askAboutNote;
+  $('n-settings').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#notes') });
 
   // Collapsible list rail → full-width editor. Persisted.
   const collapseBtn = $('n-collapse');

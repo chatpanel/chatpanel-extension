@@ -102,6 +102,7 @@ async function init() {
   renderMcpServers();
   renderSkills();
   renderPrefs();
+  setupNotesPrefs();
   renderLicense();
   wireGateway();
   renderGateway();
@@ -148,6 +149,61 @@ function wireTabs() {
   });
 }
 const K_SETTINGS_TAB = 'chatpanel:settingsTab';
+
+// --------------------------------------------------------------------------
+// Notes tab — the notes editor's own preferences. Editor view + co-writer live
+// in localStorage (shared across every extension page, the same source the notes
+// editor reads, so it picks changes up on next load). The @insert tool overrides
+// live in settings.ui.notes so buildTurnTools can honor them per surface.
+// --------------------------------------------------------------------------
+const NOTES_MODE_KEY = 'chatpanel.notes.mode';
+const NOTES_COWRITER_KEY = 'chatpanel.notes.cowriter';
+
+function setupNotesPrefs() {
+  const mode = $('notes-default-mode');
+  if (mode) {
+    const cur = localStorage.getItem(NOTES_MODE_KEY);
+    mode.value = ['write', 'split', 'read'].includes(cur) ? cur : 'write';
+    mode.onchange = () => localStorage.setItem(NOTES_MODE_KEY, mode.value);
+  }
+  const cw = $('notes-cowriter-enabled');
+  if (cw) {
+    cw.checked = localStorage.getItem(NOTES_COWRITER_KEY) === '1';
+    cw.onchange = () => localStorage.setItem(NOTES_COWRITER_KEY, cw.checked ? '1' : '0');
+  }
+  // Per-Notes @insert tool overrides — checked (default) follows the global setting;
+  // unchecked forces the tool OFF for note commands only.
+  const nt = settings.ui?.notes?.tools || {};
+  const bindTool = (id, key) => {
+    const el = $(id);
+    if (!el) return;
+    el.checked = nt[key] !== false;
+    el.onchange = () => {
+      settings.ui = settings.ui || {};
+      settings.ui.notes = settings.ui.notes || {};
+      settings.ui.notes.tools = { ...(settings.ui.notes.tools || {}), [key]: el.checked };
+      saveSettings(settings);
+    };
+  };
+  bindTool('notes-tool-websearch', 'webSearch');
+  bindTool('notes-tool-mcp', 'mcp');
+  bindTool('notes-tool-history', 'history');
+  // Cross-links: switch tabs in-page (reuse the tab button) rather than reopen.
+  const jump = (btnId, tab) => {
+    const b = $(btnId);
+    if (!b) return;
+    b.onclick = () => {
+      const t = document.querySelector(`.tab[data-tab="${tab}"]`);
+      if (t) { t.click(); window.scrollTo({ top: 0 }); }
+      else chrome.tabs.create({ url: chrome.runtime.getURL(`settings.html#${tab}`) });
+    };
+  };
+  jump('notes-open-agents', 'agents');
+  jump('notes-open-privacy', 'privacy');
+  jump('notes-open-backup', 'license');
+  const dash = $('open-notes-dashboard');
+  if (dash) dash.onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('notes.html') });
+}
 
 // --------------------------------------------------------------------------
 // Model picker: custom combobox that filters in an anchored popup while still

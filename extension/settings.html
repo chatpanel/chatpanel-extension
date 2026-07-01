@@ -19,6 +19,7 @@
           <button class="tab" data-tab="agents"><span class="tab-ico">🤖</span> Agents</button>
           <button class="tab" data-tab="mcp"><span class="tab-ico">🛠</span> Tools</button>
           <button class="tab" data-tab="skills"><span class="tab-ico">🎓</span> Skills</button>
+          <button class="tab" data-tab="notes"><span class="tab-ico">✎</span> Notes</button>
           <button class="tab" data-tab="meetings"><span class="tab-ico">🗓</span> Meetings</button>
           <button class="tab" data-tab="history"><span class="tab-ico">💬</span> History</button>
           <button class="tab" data-tab="privacy"><span class="tab-ico">🛡</span> Privacy</button>
@@ -293,6 +294,76 @@ npx @chatpanel/bridge</code></pre>
       </section>
 
       <!-- CHAT HISTORY -->
+      <!-- NOTES -->
+      <section class="panel hidden" data-panel="notes">
+        <div class="card">
+          <div class="card-head">
+            <h2>Notes <span class="sub">— your private, on-device writing workspace</span></h2>
+            <button id="open-notes-dashboard" class="btn primary" type="button">Open notes dashboard ↗</button>
+          </div>
+          <p class="muted">
+            Notes are encrypted on your device and searchable alongside your chats and meetings.
+            These preferences apply to the notes editor and its AI commands.
+          </p>
+          <div class="row" style="gap:6px;margin-top:4px"><label>Default view <span class="sub">— how a note opens</span></label>
+            <select id="notes-default-mode" style="max-width:180px">
+              <option value="write">Write</option>
+              <option value="split">Split (write + preview)</option>
+              <option value="read">Read</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Co-writer <span class="sub">— a small model team that drafts, fixes &amp; researches as you write</span></h2>
+            <div class="card-actions">
+              <label class="check"><input type="checkbox" id="notes-cowriter-enabled" /> Enabled</label>
+            </div>
+          </div>
+          <p class="muted">
+            When on, an editor fixes typos/grammar on a pause, a researcher surfaces related material, and
+            a writer drafts ahead on <code>⌘↵</code>. Off by default — it makes model calls as you type.
+            Pick a model per role from the <strong>⚙ team</strong> button in the note editor's footer.
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Note commands <span class="sub">— <code>@insert</code>, <code>@table</code>, <code>@list</code>, <code>@summarize</code>, <code>@translate</code></span></h2>
+          </div>
+          <p class="muted">
+            Type <code>@insert &lt;instruction&gt;</code> on a line to generate or fetch content and drop it into the
+            note. Commands use your <strong>active ChatPanel model</strong> and run in the background — switch
+            notes freely while they work.
+          </p>
+          <div class="card-actions" style="margin-top:2px">
+            <button id="notes-open-agents" class="btn" type="button">Change model in Agents ↗</button>
+            <button id="notes-open-privacy" class="btn" type="button">Privacy &amp; redaction ↗</button>
+          </div>
+          <div style="margin-top:12px" class="sub">Tools these commands may use <span class="sub">— uncheck to limit notes to the model's own knowledge; checked follows your global ChatPanel setting.</span></div>
+          <label class="check" style="margin-top:6px"><input type="checkbox" id="notes-tool-websearch" /> Web search <span class="sub">— fetch live results for @insert/@table/@list</span></label>
+          <label class="check" style="margin-top:6px"><input type="checkbox" id="notes-tool-mcp" /> MCP tool servers <span class="sub">— your connected external tools</span></label>
+          <label class="check" style="margin-top:6px"><input type="checkbox" id="notes-tool-history" /> History search <span class="sub">— search your own notes, chats &amp; meetings</span></label>
+          <p class="muted" style="margin-top:10px">
+            🛡 Content is redacted per your <strong>Privacy</strong> settings before it leaves your device.
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Backup &amp; storage <span class="sub">— notes ride your ChatPanel backup</span></h2>
+          </div>
+          <p class="muted">
+            Notes are included in your encrypted export and (Pro) daily auto-backup to disk — configured in
+            the <strong>Account</strong> tab.
+          </p>
+          <div class="card-actions">
+            <button id="notes-open-backup" class="btn" type="button">Backup &amp; data ↗</button>
+          </div>
+        </div>
+      </section>
+
       <section class="panel hidden" data-panel="history">
         <div class="card">
           <div class="card-head">
