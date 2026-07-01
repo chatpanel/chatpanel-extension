@@ -32,7 +32,7 @@ import {
   enableMeetingCaptions,
   getMeetingRecord,
 } from './js/context.js';
-import { captureSearch, webSearchOpts, webSearchToolProvider } from './js/web-search.js';
+import { captureSearch, webSearchOpts } from './js/web-search.js';
 import { getSuggestions, getMeetingSuggestions, FALLBACK_SUGGESTIONS } from './js/suggestions.js';
 import { syncHistoryToGateway } from './js/warm-sync.js';
 import {
@@ -55,17 +55,15 @@ import { renderMarkdown } from './js/markdown.js';
 import { combineSystemPrompt, sourceCitationSystem } from './js/tool-hints.js';
 import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
 import { createVault } from './js/pii-redact.js';
-import { redactionEnabled, setPiiEntitlement, redactOnce, restore as restorePii, redactionFromSettings } from './js/pii-pipeline.js';
+import { setPiiEntitlement, redactOnce, restore as restorePii, redactionFromSettings } from './js/pii-pipeline.js';
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
 import { assistPrompt } from './js/assist.js';
 import { PAGE_TOOL_SPECS, makePageToolExecutor, PAGE_AUTOMATION_SYSTEM } from './js/page-tools.js';
 import { detectCanvasAdapter } from './js/canvas-adapters.js';
-import { buildToolset } from './js/toolset.js';
-import { narrowToolset, isLocalToolSpec } from './js/tool-select.js';
-import { getMcpProviders } from './js/mcp-manager.js';
+import { buildTurnTools, buildRedaction } from './js/turn-tools.js';
 import { upsertMeetingChatAttachment } from './js/meeting-chat-context.js';
-import { historyToolProvider, inferHistoryScopeFromQuery, parseHistoryCommand, retrieveHistory } from './js/history-rag.js';
-import { filterMcpServersForSkill, skillRunFromSkill, skillToolSystem } from './js/skill-runtime.js';
+import { inferHistoryScopeFromQuery, parseHistoryCommand, retrieveHistory } from './js/history-rag.js';
+import { skillRunFromSkill } from './js/skill-runtime.js';
 import { slashCommandInsert, slashCommandItems } from './js/slash-commands.js';
 import {
   HISTORY_CONTEXT_MODES,
@@ -78,7 +76,6 @@ import {
   DEFAULT_AUTO_TOOL_CAP,
   cancelledToolResult,
   normalizeMcpTurnMode,
-  shouldExposeMcpForTurn,
 } from './js/tool-policy.js';
 import { paginateEntries, rankConversationEntries } from './js/conversation-search.js';
 import { rankMeetingEntries } from './js/meeting-search.js';
@@ -275,97 +272,37 @@ async function pageToolProvider(resolvedAgent) {
   return { specs, execute: guardedExecute, system };
 }
 
-// Build the full toolset for a turn: page-action tools + any configured MCP
-// servers, merged into one { specs, execute, system }. MCP tools run in THIS
-// (in-extension) tool loop for API agents, AND relayed to bridge/CLI agents
-// (Claude Code, Codex, custom) through the bridge — so MCP servers configured
-// once in ChatPanel work with EVERY agent. Returns undefined when nothing armed.
+// Build the full toolset for a turn. The side-panel-specific part — page-action
+// tools (they need a live web tab + confirm dialogs) — is assembled here; the
+// portable part (history + web-search + MCP + narrowing) is delegated to the
+// shared `buildTurnTools` capability, which the Notes dashboard also calls, so the
+// two can never drift. Returns undefined when nothing is armed.
 async function toolsetFor(
   resolvedAgent,
   { historyRag = null, skillRun = null, mcpMode = MCP_TURN_MODES.AUTO, userText = '', attachments = [] } = {},
 ) {
-  const providers = [];
   const page = await pageToolProvider(resolvedAgent);
-  if (page) providers.push(page);
-  // History tools: read-only, locally-executed search over the user's own chats
-  // and (Pro) meetings. Exposed on EVERY turn by default so the agent can search
-  // whenever IT decides — including follow-up turns — not just the turn where
-  // /history was typed. "Always on" stays per-turn safe: the bridge creates and
-  // tears down the MCP session per /chat (and API models run the tool loop
-  // in-extension), so this is never a persistent server, just specs armed on each
-  // turn's ephemeral session. The user can disable via ui.historyTools.
-  // history.enabled (/history or the auto-history setting) no longer gates
-  // availability — it only flips `explicit`, which adds a stronger "use these
-  // tools now" directive.
   const history = historyRag || skillRun?.history || null;
-  if (resolvedAgent && state.settings?.ui?.historyTools !== false) {
-    providers.push(historyToolProvider({
-      includeMeetings: can(state.license, 'liveMeetings'),
-      explicit: !!history?.enabled,
-      // Expose meeting_live_transcript only while a meeting is actually capturing,
-      // so the model can pull fresh captions instead of reaching for a browser it
-      // doesn't have. Reads the in-memory record (newer than the persisted copy).
-      liveReader: (state.liveMeeting && can(state.license, 'liveMeetings')) ? getLiveMeetingRecord : null,
-      // Route history_search through the local gateway's warm index (fused with
-      // the in-browser results) only when the user opted in. Off → HOT-only.
-      warm: warmSearchConfig(),
-    }));
-  }
-
-  // Web search tool — exposed on EVERY turn (like history tools) so the model can
-  // decide to search on its own, e.g. a follow-up "how about microsoft?" fires a
-  // web_search without the user typing /search. Locally executed; no tab needed.
-  // Same provider reaches bridge CLIs (relayed) and the gateway. Off via settings.
-  if (resolvedAgent && state.settings.ui?.webSearch?.enabled !== false) {
-    providers.push(webSearchToolProvider(webSearchOpts(state.settings, isPro(state.license))));
-  }
-
-  // MCP servers — Free uses the first FREE_LIMITS.mcpServers by list position
-  // (matching the Settings lock); Pro is unlimited. Soft client gate, consistent
-  // with our other Free ceilings. A server is usable if it has an http url OR a
-  // local command (stdio, run via the bridge).
-  const turnMcpMode = normalizeMcpTurnMode(mcpMode);
-  const includeMcp = shouldExposeMcpForTurn({ turnMcpMode, skillRun, userText, attachments });
-  const all = state.settings.mcpServers || [];
-  const limit = isPro(state.license) ? Infinity : FREE_LIMITS.mcpServers;
-  const isSet = (s) => s?.enabled !== false && (s?.url || s?.command);
-  let usable = includeMcp ? all.slice(0, limit).filter(isSet) : [];
-  if (includeMcp && skillRun && turnMcpMode !== MCP_TURN_MODES.ON) {
-    usable = filterMcpServersForSkill(usable, skillRun);
-  }
-  if (resolvedAgent && usable.length) {
-    const enabledCount = all.filter(isSet).length;
-    if (enabledCount > usable.length) {
-      console.info(`[chatpanel] Free plan: using ${usable.length}/${enabledCount} MCP servers (Pro = unlimited)`);
-    }
-    const mcps = await getMcpProviders(usable, {
-      bridgeUrl: state.settings.bridgeUrl,
-      bridgeAvailable: !!state.bridge?.ok,
-      onError: (s, e) => {
-        console.warn('[chatpanel] MCP server failed:', s.name || s.url || s.command, e.message);
-        toast(`🔌 MCP “${s.name || s.url || s.command}” unavailable: ${e.message}`, 2600);
-      },
-    });
-    providers.push(...mcps);
-  }
-  let toolset = buildToolset(providers);
-  // Cap MCP tools per turn so dozens of enabled servers don't bloat the prompt /
-  // slow the model. Local page/history tools are always kept; remote MCP tools
-  // beyond the cap are dropped by lexical relevance to this turn's message.
-  //   AUTO → narrow to the top-K relevant by default (the point of "auto").
-  //   ON   → arm everything, unless the user set an explicit ui.maxToolsPerTurn.
-  // A user-set ui.maxToolsPerTurn always wins.
-  const userCap = Number(state.settings?.ui?.maxToolsPerTurn) || 0;
-  const cap = userCap || (turnMcpMode === MCP_TURN_MODES.AUTO ? DEFAULT_AUTO_TOOL_CAP : 0);
-  if (toolset && cap) toolset = narrowToolset(toolset, userText, { cap, keep: isLocalToolSpec });
-  const systemSkillRun =
-    turnMcpMode === MCP_TURN_MODES.ON && skillRun
-      ? { ...skillRun, mcp: { mode: 'default', serverIds: [] } }
-      : skillRun;
-  const skillSystem = skillToolSystem(systemSkillRun, usable);
-  if (!toolset && skillSystem) return { specs: [], execute: async () => '', system: skillSystem };
-  if (toolset && skillSystem) toolset.system = [skillSystem, toolset.system].filter(Boolean).join('\n\n');
-  return toolset;
+  return buildTurnTools({
+    resolvedAgent,
+    settings: state.settings,
+    license: state.license,
+    bridgeUrl: state.settings.bridgeUrl,
+    bridgeAvailable: !!state.bridge?.ok,
+    userText,
+    attachments,
+    mcpMode,
+    skillRun,
+    history,
+    // Expose meeting_live_transcript only while a meeting is actually capturing.
+    liveReader: (state.liveMeeting && can(state.license, 'liveMeetings')) ? getLiveMeetingRecord : null,
+    // Page-action tools are side-panel-only — prepended verbatim.
+    extraProviders: page ? [page] : [],
+    onMcpError: (s, e) => {
+      console.warn('[chatpanel] MCP server failed:', s.name || s.url || s.command, e.message);
+      toast(`🔌 MCP “${s.name || s.url || s.command}” unavailable: ${e.message}`, 2600);
+    },
+  });
 }
 
 function runProfileForTurn(conv, assistant) {
@@ -1634,10 +1571,9 @@ async function runStream(agent, assistant, conv) {
       systemWithSummary(resolved.systemPrompt, conv),
       sourceCitationSystem(),
     );
-    const piiCfg = state.settings?.ui?.piiRedaction;
-    const redaction = redactionEnabled(piiCfg)
-      ? { vault: piiVaultFor(conv.id), cfg: piiCfg, isPro: isPro(state.license), entities: [], detect: piiCfg?.mode === 'model' }
-      : null;
+    // Reversible PII vault is per-conversation, so a placeholder stays stable turn
+    // to turn — pass it into the shared redaction capability.
+    const redaction = buildRedaction({ settings: state.settings, license: state.license, vault: piiVaultFor(conv.id) });
     await streamChat({
       agent: { ...resolved, systemPrompt },
       messages: messagesForModel(conv, assistant),
