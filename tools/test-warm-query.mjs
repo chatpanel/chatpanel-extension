@@ -1,6 +1,16 @@
 // WARM query: RRF fusion + gateway search fail-safety.
 import assert from 'node:assert/strict';
-import { fuseRRF, fuseHistoryResults, searchGateway } from '../extension/js/warm-query.js';
+import { fuseRRF, fuseHistoryResults, searchGateway, capHotSources } from '../extension/js/warm-query.js';
+
+// 0) capHotSources: no-op unless warm AND over cap; keeps the most recent by date.
+{
+  const src = Array.from({ length: 10 }, (_, i) => ({ id: 's' + i, date: i })); // date 0..9
+  assert.equal(capHotSources(src, { cap: 3, warm: false }), src, 'warm off → identity (no cap)');
+  assert.equal(capHotSources(src, { cap: 20, warm: true }), src, 'under cap → identity');
+  const capped = capHotSources(src, { cap: 3, warm: true });
+  assert.deepEqual(capped.map((s) => s.id), ['s9', 's8', 's7'], 'keeps the 3 most recent');
+  assert.equal(src.length, 10, 'original array untouched');
+}
 
 // 1) RRF rewards ids ranked highly across lists; k dampens single-list dominance.
 {

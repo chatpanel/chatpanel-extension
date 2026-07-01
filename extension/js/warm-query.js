@@ -30,6 +30,18 @@ export async function searchGateway(gatewayUrl, query, { limit = 12, signal, fet
   }
 }
 
+// WARM eviction: bound the in-browser (HOT) index to the most recent `cap` sources
+// so the worker doesn't hold a whole year of transcripts in memory. Only when warm
+// is the safety net (`warm` truthy) — warm covers the older tail, and the caller's
+// resolveSource() reconstitutes any warm-only match from the full source list, so
+// recall is preserved. Without warm we must index everything, so this is a no-op
+// then. Returns the same array when no cap is needed (identity → cheap cache key).
+export function capHotSources(sources, { cap = 1500, warm = false } = {}) {
+  const list = Array.isArray(sources) ? sources : [];
+  if (!warm || !cap || list.length <= cap) return list;
+  return [...list].sort((a, b) => (b.date || 0) - (a.date || 0)).slice(0, cap);
+}
+
 // Reciprocal Rank Fusion over N ranked id-lists. score(id) = Σ 1/(k + rank),
 // rank 0-based. k dampens the weight of top ranks so a single list can't dominate.
 // Returns [{id, score}] sorted desc, optionally capped to `limit`.

@@ -11,7 +11,12 @@ import {
   searchHistorySources,
 } from './history-rag-core.js';
 import { rankHistorySources } from './search-engine.js';
-import { searchGateway, fuseHistoryResults } from './warm-query.js';
+import { searchGateway, fuseHistoryResults, capHotSources } from './warm-query.js';
+
+// Cap the browser-side (HOT) index to the most-recent N sources when warm search is
+// on — warm holds the tail. Coarse memory bound (count, not bytes); only bites for
+// users with very large histories, and never when warm is off (no recall net).
+const HOT_SOURCE_CAP = 1500;
 
 export { relatedHistorySources };
 
@@ -315,8 +320,10 @@ export async function retrieveHistory(
   const wantLimit = clampInt(limit, DEFAULT_RESULT_LIMIT, 1, 30);
   // When fusing, pull a deeper HOT candidate pool so WARM can reorder within it.
   const hotLimit = warm?.url ? Math.min(30, Math.max(wantLimit, 20)) : wantLimit;
+  // Memory cap: index only the recent tail in the browser when warm is the net.
+  const hotSources = capHotSources(sources, { cap: HOT_SOURCE_CAP, warm: !!warm?.url });
   let results = q
-    ? await rankHistorySources(sources, q, {
+    ? await rankHistorySources(hotSources, q, {
       scope: scopeForSearch,
       includeMeetings: !!includeMeetings,
       limit: hotLimit,
