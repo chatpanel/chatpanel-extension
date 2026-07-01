@@ -188,6 +188,27 @@ function setupNotesPrefs() {
   bindTool('notes-tool-websearch', 'webSearch');
   bindTool('notes-tool-mcp', 'mcp');
   bindTool('notes-tool-history', 'history');
+  // Inline autocomplete — on/off + which configured agent/model predicts (empty = the
+  // active agent). Stored under settings.ui.notes.autocomplete; the notes page reads it.
+  const acCfg = settings.ui?.notes?.autocomplete || {};
+  const acEn = $('notes-ac-enabled');
+  const acModel = $('notes-ac-model');
+  if (acModel) {
+    acModel.innerHTML = '';
+    const add = (val, label) => { const o = document.createElement('option'); o.value = val; o.textContent = label; acModel.appendChild(o); };
+    add('', 'Active agent (default)');
+    for (const ep of settings.endpoints || []) if (ep?.model) add(ep.id, ep.name || ep.model);
+    for (const ag of settings.agents || []) add(ag.id, ag.name || ag.bridgeAgent || 'Agent');
+    acModel.value = acCfg.agentId || '';
+  }
+  const saveAc = () => {
+    settings.ui = settings.ui || {};
+    settings.ui.notes = settings.ui.notes || {};
+    settings.ui.notes.autocomplete = { enabled: !!(acEn && acEn.checked), agentId: (acModel && acModel.value) || '' };
+    saveSettings(settings);
+  };
+  if (acEn) { acEn.checked = !!acCfg.enabled; acEn.onchange = saveAc; }
+  if (acModel) acModel.onchange = saveAc;
   // Cross-links: switch tabs in-page (reuse the tab button) rather than reopen.
   const jump = (btnId, tab) => {
     const b = $(btnId);

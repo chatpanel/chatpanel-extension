@@ -444,6 +444,7 @@ function onBodyInput() {
   scheduleSave();
   scheduleSuggest();
   maybeAutocomplete();
+  scheduleAutocomplete(); // inline AI ghost prediction on a typing pause (opt-in)
   scheduleCowriter();
   scheduleResearch();
 }
@@ -1743,6 +1744,7 @@ let writerGen = 0;
 let writerAbort = null;
 let ghost = null;          // { from, to } range of the pending suggestion in n-body
 let ghostApplying = false; // true while WE mutate the textarea (so input handlers ignore it)
+let ghostAuthor = HUMAN;   // who authored the pending ghost — attributed to the ledger on accept
 
 function ghostHintEl() {
   let el = document.getElementById('n-ghost-hint');
@@ -1768,6 +1770,7 @@ function clearGhost({ remove = false } = {}) {
   }
   if (ghost) setSwarmState('writer', 'idle');
   ghost = null;
+  ghostAuthor = HUMAN;
   hideGhostHint();
 }
 function renderGhost(from, text) {
@@ -1783,14 +1786,20 @@ function acceptGhost() {
   if (!ghost) return;
   const ta = $('n-body');
   ta.selectionStart = ta.selectionEnd = ghost.to; // collapse to end — keep the text
+  const author = ghostAuthor;
   ghost = null;
+  ghostAuthor = HUMAN;
   hideGhostHint();
   setSwarmState('writer', 'idle');
-  logActivity('Writer', 'draft accepted');
+  // Provenance: the accepted draft was written by the AI — attribute it + snapshot.
+  recordEdit({ author, discrete: true });
+  pushVersion(author, author);
+  logActivity(author.startsWith('Autocomplete') ? 'Autocomplete' : 'Writer', 'draft accepted');
   current.body = ta.value;
   autoGrow();
   if (!$('n-panes').classList.contains('write')) updatePreview();
   updateWordCount();
+  renderHistory();
   dirty = true;
   scheduleSave();
   ta.focus();
@@ -1800,6 +1809,82 @@ function writerTail(before) {
   const title = ($('n-title').value || '').trim();
   const tail = before.length > 1600 ? `…${before.slice(-1600)}` : before;
   return (title ? `# ${title}\n\n` : '') + tail;
+}
+
+// ── Inline autocomplete — as-you-type ghost prediction (opt-in; model in Notes settings)
+// A short continuation predicted on a typing pause, shown as selected ghost text: Tab
+// accepts (attributed to the model in the ledger), Esc / any keystroke dismisses. Reuses
+// the Writer's ghost machinery; fires only at the very END of the note to stay simple
+// and safe. Off by default; the model is chosen in Settings → Notes.
+let autoTimer = null;
+let autoAbort = null;
+let autoGen = 0;
+let autocompleteCfg = { enabled: false, agentId: '' };
+
+async function loadAutocompleteCfg() {
+  // Cheap direct read of the (plaintext) settings object — must NOT pull the agent
+  // graph onto the notes load path; the heavy deps load lazily only when a prediction
+  // actually fires (runAutocomplete → agentDeps).
+  try {
+    const got = await chrome.storage.local.get('chatpanel:settings');
+    autocompleteCfg = got['chatpanel:settings']?.ui?.notes?.autocomplete || { enabled: false, agentId: '' };
+  } catch { autocompleteCfg = { enabled: false, agentId: '' }; }
+}
+function cancelAutocomplete() {
+  clearTimeout(autoTimer);
+  autoGen++;
+  if (autoAbort) { autoAbort.abort(); autoAbort = null; }
+}
+function scheduleAutocomplete() {
+  if (!autocompleteCfg.enabled) return;
+  cancelAutocomplete();
+  autoTimer = setTimeout(runAutocomplete, 650);
+}
+// Keep it short: at most the first sentence / line of what the model returns.
+function clipCompletion(s) {
+  let t = (s || '').replace(/^\s+/, '');
+  const nl = t.indexOf('\n'); if (nl >= 0) t = t.slice(0, nl);
+  const m = t.match(/^.*?[.!?](\s|$)/); if (m) t = m[0];
+  return t.replace(/\s+$/, '');
+}
+async function runAutocomplete() {
+  if (!autocompleteCfg.enabled || !current) return;
+  const ta = $('n-body');
+  if (ta.readOnly || ghost || writerAbort || agentAbort || ac.open || noteJobs.has(current.id)) return;
+  const from = ta.selectionStart;
+  if (from !== ta.selectionEnd || from !== ta.value.length) return; // a collapsed cursor at the very end
+  const before = ta.value.slice(0, from);
+  if (before.trim().length < 12) return;                            // need some context
+  const gen = ++autoGen;
+  let deps; try { deps = await agentDeps(); } catch { return; }
+  const settings = await deps.getSettings();
+  const target = deps.getTarget(settings, autocompleteCfg.agentId || settings.activeAgentId);
+  if (!target) return;
+  const license = await deps.getLicense();
+  if (!deps.canUseAgent(license, settings, target)) return;
+  const resolved = deps.resolveTarget(target, settings);
+  const model = resolved.autocompleteModel || resolved.model;
+  const label = `Autocomplete · ${target.name || model || 'model'}`;
+  const sys = 'You are an inline writing autocomplete. Continue the note from EXACTLY where it stops with a SHORT continuation — a few words up to one sentence. Match the voice and markdown. Output ONLY the text to append: no quotes, no preamble, no repetition of prior text. If nothing sensible follows, output nothing.';
+  autoAbort = new AbortController();
+  let out = '';
+  try {
+    await deps.streamChat({
+      agent: { ...resolved, model, systemPrompt: sys, maxTokens: 48, temperature: 0.1 },
+      settings,
+      signal: autoAbort.signal,
+      messages: [{ role: 'user', content: writerTail(before) }],
+      onDelta: (d) => { out += d; },
+    });
+  } catch { return; } finally { autoAbort = null; }
+  // Show only if nothing changed while we waited (still valid, caret still at the end).
+  if (gen !== autoGen || ghost || writerAbort || ta.readOnly) return;
+  if (ta.selectionStart !== from || ta.value.length !== from) return;
+  const clip = clipCompletion(out);
+  if (!clip) return;
+  ghostAuthor = label;
+  renderGhost(from, clip);
+  showGhostHint('Tab ↹ accept · Esc dismiss');
 }
 async function draftAhead() {
   if (!current || ghost || writerAbort || agentAbort || noteJobs.has(current.id)) return;
@@ -1830,6 +1915,7 @@ async function draftAhead() {
   try { redaction = deps.buildRedaction?.({ settings, license }); } catch { /* redaction off */ }
 
   writerAbort = new AbortController();
+  ghostAuthor = `Writer · ${writer.resolved.model || writer.resolved.bridgeAgent || 'model'}`;
   // NB: no readOnly — setRangeText() throws on a readOnly textarea. Typing is blocked
   // instead by the keydown guard (which swallows keys while writerAbort is set).
   setStatus('Drafting…');
@@ -2443,11 +2529,15 @@ function init() {
   let extRefreshTimer = null;
   if (chrome.storage?.onChanged) {
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local' || !Object.keys(changes).some((k) => k.startsWith('chatpanel:note'))) return;
+      if (area !== 'local') return;
+      // Pick up an autocomplete on/off or model change made in the Settings tab.
+      if (changes['chatpanel:settings']) loadAutocompleteCfg();
+      if (!Object.keys(changes).some((k) => k.startsWith('chatpanel:note'))) return;
       clearTimeout(extRefreshTimer);
       extRefreshTimer = setTimeout(async () => { await reloadIndex(); renderList($('n-search').value); }, 400);
     });
   }
+  loadAutocompleteCfg(); // inline-autocomplete on/off + model (Settings → Notes)
 
   setMode(localStorage.getItem('chatpanel.notes.mode') || 'write');
 }
