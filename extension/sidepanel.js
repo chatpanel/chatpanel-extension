@@ -1433,7 +1433,9 @@ async function send() {
     autoGrow();
     suggestSuppressed = false;
     $('skill-suggest').classList.add('hidden');
-    state.attachments = [];
+    // Note references are STICKY across turns (a live doc you keep discussing); every
+    // other attachment is turn-scoped. The model re-reads the latest via the note tool.
+    state.attachments = (state.attachments || []).filter((a) => a.sourceNoteId);
     state.pendingSkillRun = null;
     renderContextBar();
 
@@ -3225,7 +3227,12 @@ async function attachStoredNoteToChat(id) {
   const { getNote, noteToMarkdown } = await import('./js/store-notes.js');
   const note = await getNote(id);
   if (!note) { toast('Note not found'); return; }
-  const text = noteToMarkdown(note).slice(0, 40000);
+  // A LIVE reference: the current snapshot for immediacy, plus the note id + an
+  // instruction so the model re-reads the latest with history_get_source and
+  // correlates with related notes/chats/meetings via history_search on every turn.
+  const body = noteToMarkdown(note).slice(0, 40000);
+  const text =
+    `The user is working in their note "${note.title || 'Note'}" (source id: note:${id}). It is LIVE — to read its current content on any turn (it may have changed), call history_get_source with sourceId "note:${id}". Use history_search to find related notes, chats and meetings. Current snapshot:\n\n${body}`;
   state.attachments = (state.attachments || []).filter((a) => a.sourceNoteId !== id);
   state.attachments.push({
     id: `note_${id}_${Date.now()}`,
@@ -3238,7 +3245,7 @@ async function attachStoredNoteToChat(id) {
   });
   renderContextBar();
   $('input')?.focus();
-  toast('Note attached — ask your question');
+  toast('Note attached (live) — ask away; it stays for follow-ups');
 }
 
 // Attach the viewed meeting's transcript as context and focus the composer, so the
