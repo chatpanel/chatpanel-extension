@@ -153,6 +153,7 @@ async function openNote(id, preloaded = null) {
   $('n-body').value = current.body || '';
   renderTags(current.tags || []);
   suggestTags();
+  renderBacklinks(current.title);
   updatePreview();
   updateWordCount();
   autoGrow();
@@ -301,6 +302,43 @@ async function removeCurrent() {
   renderList($('n-search').value);
   toast('Note deleted');
 }
+// Notes that link TO the current one (via [[Title]]) — computed from the index, no
+// body decrypts. Existing notes gain links the next time they're saved.
+function renderBacklinks(title) {
+  const el = $('n-backlinks');
+  el.innerHTML = '';
+  const t = (title || '').toLowerCase();
+  const refs = t ? list.filter((e) => e.id !== current?.id && (e.links || []).some((l) => l.toLowerCase() === t)) : [];
+  if (!refs.length) return;
+  const lbl = document.createElement('div');
+  lbl.className = 'backlinks-label';
+  lbl.textContent = `↩ Linked from ${refs.length} note${refs.length === 1 ? '' : 's'}`;
+  el.appendChild(lbl);
+  for (const r of refs) {
+    const b = document.createElement('button');
+    b.className = 'backlink';
+    b.innerHTML = `${escapeHtml(r.title || 'Untitled note')} <span class="bl-snip">${escapeHtml(r.snippet || '')}</span>`;
+    b.onclick = () => openNote(r.id);
+    el.appendChild(b);
+  }
+}
+
+// Hand this note to the side-panel composer as context, then open the panel — the
+// same handoff meetings use ("Ask about this meeting").
+async function askAboutNote() {
+  if (!current) return;
+  await flushSave();
+  await chrome.storage.local.set({ 'chatpanel:attachNoteId': current.id });
+  try {
+    const win = await chrome.windows.getCurrent();
+    await chrome.sidePanel.open({ windowId: win.id });
+    chrome.runtime.sendMessage({ type: 'attach-note', id: current.id }).catch(() => {}); // if already open
+    toast('Opened ChatPanel — ask away');
+  } catch {
+    toast('Open the ChatPanel side panel to continue');
+  }
+}
+
 function copyCurrent() {
   if (!current) return;
   navigator.clipboard.writeText(noteToMarkdown(current)).then(() => toast('Copied as Markdown'), () => toast('Copy failed'));
@@ -513,6 +551,7 @@ function init() {
   $('n-delete').onclick = removeCurrent;
   $('n-copy').onclick = copyCurrent;
   $('n-download').onclick = downloadCurrent;
+  $('n-ask').onclick = askAboutNote;
 
   // Collapsible list rail → full-width editor. Persisted.
   const collapseBtn = $('n-collapse');

@@ -28,6 +28,19 @@ function snippetOf(body) {
   return rest.replace(/[#*_`>~]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 110);
 }
 
+// The [[Title]] links a note contains — kept in the index so backlinks compute
+// without decrypting every body.
+function extractLinks(body) {
+  const out = [];
+  const re = /\[\[([^[\]\n]+)\]\]/g;
+  let m;
+  while ((m = re.exec(String(body || '')))) {
+    const t = m[1].trim();
+    if (t && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
 // First non-empty line becomes the title, stripped of markdown heading/emphasis
 // marks. Falls back to "Untitled note".
 export function deriveTitle(body) {
@@ -74,6 +87,7 @@ async function writeNote(rec) {
     title: rec.title,
     snippet: snippetOf(rec.body),
     tags: Array.isArray(rec.tags) ? rec.tags : [],
+    links: extractLinks(rec.body),
     createdAt: rec.createdAt,
     updatedAt: rec.updatedAt,
     chars: (rec.body || '').length,

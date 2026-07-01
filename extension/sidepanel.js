@@ -552,6 +552,13 @@ async function init() {
       await chrome.storage.local.remove('chatpanel:openConversationId');
       await openConversation(cid);
     }
+    // Handoff from the Notes page "Ask about this note" button.
+    const an = await chrome.storage.local.get('chatpanel:attachNoteId');
+    const anid = an['chatpanel:attachNoteId'];
+    if (anid) {
+      await chrome.storage.local.remove('chatpanel:attachNoteId');
+      await attachStoredNoteToChat(anid);
+    }
   } catch { /* no handoff pending */ }
   // Keep the "recording" indicator + live-meeting cache fresh even when Live notes
   // is off and the user isn't switching tabs (so it clears soon after a call ends).
@@ -568,6 +575,9 @@ async function init() {
     } else if (msg?.type === 'attach-meeting' && msg.id && can(state.license, 'liveMeetings')) {
       chrome.storage.local.remove('chatpanel:attachMeetingId').catch(() => {});
       attachStoredMeetingToChat(msg.id);
+    } else if (msg?.type === 'attach-note' && msg.id) {
+      chrome.storage.local.remove('chatpanel:attachNoteId').catch(() => {});
+      attachStoredNoteToChat(msg.id);
     } else if (msg?.type === 'open-meeting' && msg.id && can(state.license, 'liveMeetings')) {
       chrome.storage.local.remove('chatpanel:openMeetingId').catch(() => {});
       $('meetings-drawer').classList.remove('hidden');
@@ -3207,6 +3217,28 @@ async function attachStoredMeetingToChat(id) {
   if (!rec) { toast('Meeting not found'); return; }
   const notes = await getMeetingNotes(id).catch(() => '');
   attachMeetingToChat(rec, notes);
+}
+
+// Attach a note as chat context (handoff from the Notes page "Ask" button). Reuses
+// the generic 'page' attachment kind, so context-building + the context bar just work.
+async function attachStoredNoteToChat(id) {
+  const { getNote, noteToMarkdown } = await import('./js/store-notes.js');
+  const note = await getNote(id);
+  if (!note) { toast('Note not found'); return; }
+  const text = noteToMarkdown(note).slice(0, 40000);
+  state.attachments = (state.attachments || []).filter((a) => a.sourceNoteId !== id);
+  state.attachments.push({
+    id: `note_${id}_${Date.now()}`,
+    kind: 'page',
+    title: `📝 ${note.title || 'Note'}`,
+    url: chrome.runtime.getURL(`notes.html#${encodeURIComponent(id)}`),
+    text,
+    chars: text.length,
+    sourceNoteId: id,
+  });
+  renderContextBar();
+  $('input')?.focus();
+  toast('Note attached — ask your question');
 }
 
 // Attach the viewed meeting's transcript as context and focus the composer, so the
