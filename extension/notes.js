@@ -119,6 +119,7 @@ function toggleTaskCheckbox(n) {
     lines[li] = m[1] + (m[2].toLowerCase() === 'x' ? ' ' : 'x') + m[3];
     ta.value = lines.join('\n');
     current.body = ta.value;
+    recordEdit({ discrete: true }); // a checkbox toggle is one undo step
     updatePreview();
     updateWordCount();
     scheduleSave(true);
@@ -187,6 +188,7 @@ async function openNote(id, preloaded = null) {
   $('n-editor').classList.remove('hidden');
   $('n-title').value = current.title || '';
   $('n-body').value = current.body || '';
+  histReset(current.body || ''); // undo history is per note — start fresh on switch
   renderTags(current.tags || []);
   suggestTags();
   renderBacklinks(current.title);
@@ -276,8 +278,75 @@ function applyFmt(fmt) {
     default: break;
   }
 }
+// ── Undo / redo history ──────────────────────────────────────────────────────────
+// The editor rewrites `textarea.value` programmatically all over (streaming @insert,
+// co-writer fixes, formatting, checkbox toggle, note switching) — every direct set
+// wipes the browser's native undo stack, so ⌘Z did nothing. This is our own history:
+// typing coalesces into word/pause-sized steps; anything that bypassed recording is
+// captured at undo-time (flush), so ONE keydown hook covers every mutation site.
+let undoStack = [];
+let redoStack = [];
+let histPrev = { value: '', start: 0, end: 0 }; // the value as of the last recorded checkpoint
+let histAt = 0;
+let histCoalescing = false;
+const HIST_MAX = 500;
+
+function histReset(value) {
+  undoStack = []; redoStack = [];
+  histPrev = { value: value || '', start: 0, end: 0 };
+  histAt = 0; histCoalescing = false;
+}
+// Record the pre-change checkpoint if the body changed. Consecutive single-char
+// typing within 500ms coalesces into one step; a big delta (paste/insert/format/
+// @insert output) or a `discrete` caller always starts a fresh step.
+function recordEdit({ discrete = false } = {}) {
+  const ta = $('n-body');
+  if (ta.value === histPrev.value) { histPrev.start = ta.selectionStart; histPrev.end = ta.selectionEnd; return; }
+  const now = Date.now();
+  const smallDelta = Math.abs(ta.value.length - histPrev.value.length) <= 2;
+  const newStep = discrete || !histCoalescing || (now - histAt > 500) || !smallDelta;
+  if (newStep) {
+    undoStack.push(histPrev);
+    if (undoStack.length > HIST_MAX) undoStack.shift();
+    redoStack = [];
+  }
+  histPrev = { value: ta.value, start: ta.selectionStart, end: ta.selectionEnd };
+  histAt = now;
+  histCoalescing = !discrete;
+}
+function applyHistState(s) {
+  const ta = $('n-body');
+  ta.value = s.value;
+  try { ta.setSelectionRange(s.start, s.end); } catch { /* out of range */ }
+  histPrev = { value: s.value, start: s.start, end: s.end };
+  histCoalescing = false;
+  if (current) current.body = s.value;
+  autoGrow();
+  updateWordCount();
+  if (!$('n-panes').classList.contains('write')) updatePreview();
+  scheduleSave();
+  ta.focus();
+}
+function undoEdit() {
+  const ta = $('n-body');
+  if (ta.readOnly) return;              // a command is running — leave the body alone
+  recordEdit({ discrete: true });        // flush any edit that bypassed recording
+  if (!undoStack.length) return;
+  redoStack.push({ value: ta.value, start: ta.selectionStart, end: ta.selectionEnd });
+  applyHistState(undoStack.pop());
+}
+function redoEdit() {
+  const ta = $('n-body');
+  if (ta.readOnly) return;
+  if (ta.value !== histPrev.value) { recordEdit({ discrete: true }); return; } // a fresh edit invalidates redo
+  if (!redoStack.length) return;
+  undoStack.push({ value: ta.value, start: ta.selectionStart, end: ta.selectionEnd });
+  applyHistState(redoStack.pop());
+}
+
 function onBodyInput() {
   if (ghostApplying) { autoGrow(); return; }     // our own ghost mutation — no autosave / swarm triggers
+  recordEdit();                                   // checkpoint for undo (coalesced while typing)
   if (ghost) { ghost = null; hideGhostHint(); }   // user edited around a pending ghost → drop the stale state
   autoGrow();
   if (!$('n-panes').classList.contains('write')) updatePreview();
@@ -2133,6 +2202,20 @@ function init() {
     const mod = e.metaKey || e.ctrlKey;
     if (!mod) return;
     const k = e.key.toLowerCase();
+    // Undo / redo for the note body — our own history (native ⌘Z is dead because the
+    // editor rewrites the body programmatically). Handled at document level so it works
+    // in read mode too (the body textarea is hidden there). The title & search fields
+    // keep their native undo.
+    if (k === 'z' || k === 'y') {
+      // Only drive the note-body history when the body (or a non-text element, e.g. in
+      // read mode) is focused — any OTHER text field (title, search, tag/intent inputs)
+      // keeps its native undo.
+      const el = document.activeElement;
+      if (el && el !== $('n-body') && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      e.preventDefault();
+      if (k === 'y' || e.shiftKey) redoEdit(); else undoEdit();
+      return;
+    }
     if (k === 'n') { e.preventDefault(); newNote(); }
     else if (k === 'k') { e.preventDefault(); $('n-search').focus(); }
     else if (k === 's') { e.preventDefault(); flushSave(); toast('Saved'); }
