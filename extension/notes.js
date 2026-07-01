@@ -171,6 +171,7 @@ async function openNote(id, preloaded = null) {
   lastQuestion = '';
   lastAutoDraft = '';
   lastFactSentence = '';
+  lastTitleChecked = '';
   board.log = [];
   loadIntent(); // this note's saved intent → guides the swarm + shows in the strip
   updatePreview();
@@ -964,7 +965,7 @@ function scheduleCowriter() {
   if (!cwEnabled) return;
   if (cwSuggestions.length) clearCowriterUI(); // stale as the user types; recompute on pause
   clearTimeout(cwTimer);
-  cwTimer = setTimeout(runCowriter, 1400);
+  cwTimer = setTimeout(() => { runCowriter(); runTitleCheck(); }, 1400);
 }
 function clearCowriterUI() {
   cwSuggestions = [];
@@ -986,13 +987,28 @@ function currentParagraph() {
   return { text: v.slice(start, end), start };
 }
 
+// Spans of [[wikilinks]] in a block — the Editor must never "fix" a typo inside one
+// (it would break the link target). Also lets us skip link-only paragraphs entirely.
+function linkSpans(text) {
+  const spans = []; const re = /\[\[[^\]]*\]\]/g; let m;
+  while ((m = re.exec(text))) spans.push([m.index, m.index + m[0].length]);
+  return spans;
+}
 async function runCowriter() {
   if (!cwEnabled || !current || noteJobs.has(current.id) || agentAbort) return;
   const para = currentParagraph();
   if (para.text.trim().length < 12) return;
+  // Skip paragraphs that are essentially just a link / code / URL — nothing to copy-edit,
+  // and any "fix" would land inside a [[wikilink]] and corrupt it.
+  const prose = para.text.replace(/\[\[[^\]]*\]\]/g, '').replace(/`[^`]*`/g, '').replace(/https?:\/\/\S+/g, '');
+  if (prose.replace(/[^A-Za-z]/g, '').length < 8) return;
   const gen = ++cwGen;
   const ta = $('n-body');
-  const offset = (edits, base) => edits.map((e) => ({ ...e, start: e.start + base, end: e.end + base, key: _cwDiff.editKey(e) })).filter((e) => !cwDismissed.has(e.key));
+  const spans = linkSpans(para.text);
+  const offset = (edits, base) => edits
+    .filter((e) => !spans.some(([s, en]) => e.start < en && e.end > s)) // never edit inside a [[wikilink]]
+    .map((e) => ({ ...e, start: e.start + base, end: e.end + base, key: _cwDiff.editKey(e) }))
+    .filter((e) => !cwDismissed.has(e.key));
   const finish = (n, free) => { renderCowriter(); if (n) logActivity('Editor', `${n} fix${n === 1 ? '' : 'es'}${free ? ' (free)' : ''}`); setSwarmState('editor', 'idle', n ? `${n} fix${n === 1 ? '' : 'es'}` : ''); };
 
   // Deterministic pass FIRST — mechanical fixes for free. Only spend a token if it's clean.
@@ -1038,6 +1054,70 @@ async function runCowriter() {
   if (idx < 0) { setSwarmState('editor', 'idle'); return; }
   cwSuggestions = offset(_cwDiff.filterTypoEdits(_cwDiff.wordDiff(para.text, corrected.trim())), idx);
   finish(cwSuggestions.length, false);
+}
+
+// The Editor also proofreads the TITLE (people notice title typos most). Deterministic
+// pass first, then the cheap model; fixes land as chips in the shared queue.
+let titleGen = 0;
+let lastTitleChecked = '';
+async function runTitleCheck() {
+  if (!cwEnabled || !current) return;
+  const title = ($('n-title').value || '').trim();
+  if (title.length < 6 || title === lastTitleChecked) return;
+  try {
+    if (!_cwDiff) _cwDiff = await import('./js/cowriter-diff.js');
+    if (!_lintMod) _lintMod = await import('./js/cowriter-lint.js');
+  } catch { return; }
+  const lintEdits = _lintMod.lintText(title);
+  if (lintEdits.length) { lastTitleChecked = title; return offerTitleFixes(lintEdits, 'deterministic pass'); }
+  if (!budgetOk()) return;
+  const gen = ++titleGen;
+  let deps;
+  try { deps = await agentDeps(); } catch { return; }
+  const settings = await deps.getSettings();
+  const license = await deps.getLicense();
+  const editor = await roleAgent(deps, settings, license, 'editor');
+  if (!editor) return;
+  let redaction = null;
+  try { redaction = deps.buildRedaction?.({ settings, license }); } catch { /* redaction off */ }
+  budgetSpend();
+  let corrected = '';
+  try {
+    corrected = await deps.streamChat({
+      agent: { ...editor.resolved, model: editor.resolved.autocompleteModel || editor.resolved.model, systemPrompt: 'Fix ONLY clear spelling/typo mistakes in this short note title. Change as little as possible; keep the wording. Return ONLY the corrected title, nothing else.', maxTokens: 60, temperature: 0 },
+      settings, redaction,
+      messages: [{ role: 'user', content: title }],
+    });
+  } catch { return; }
+  if (gen !== titleGen || !current) return;
+  lastTitleChecked = title;
+  offerTitleFixes(_cwDiff.filterTypoEdits(_cwDiff.wordDiff(title, corrected.trim())), editor.resolved.model || 'model');
+}
+function offerTitleFixes(edits, model) {
+  boardSuggestions = boardSuggestions.filter((s) => s.role !== 'title');
+  let n = 0;
+  for (const e of edits) {
+    const key = `title:${e.before}=>${e.after}`;
+    if (boardDismissed.has(key)) continue;
+    n += 1;
+    boardSuggestions.push({
+      role: 'title', icon: '✍️', key,
+      html: `<s>${escapeHtml(e.before.trim() || '∅')}</s>→<b>${escapeHtml(e.after.trim() || '∅')}</b> <span class="cw-hand">title</span>`,
+      title: `Fix the title · via ${escapeHtml(model)} (Editor)`,
+      apply: () => applyTitleFix(e),
+    });
+  }
+  if (n) { renderCowriter(); logActivity('Editor', `title: ${n} fix${n === 1 ? '' : 'es'}`); }
+}
+function applyTitleFix(e) {
+  const t = $('n-title');
+  const i = t.value.indexOf(e.before);
+  if (i < 0) return;
+  t.value = t.value.slice(0, i) + e.after + t.value.slice(i + e.before.length);
+  lastTitleChecked = t.value.trim();
+  updateWordCount();
+  scheduleSave();
+  toast('Title fixed');
 }
 
 function renderCowriter() {
@@ -1584,8 +1664,11 @@ function setIntent(v) {
   renderSwarmStatus();
 }
 function logActivity(who, what) {
-  board.log.unshift({ who, what, at: Date.now() });
+  const head = board.log[0];
+  if (head && head.who === who && head.what === what) { head.at = Date.now(); head.n = (head.n || 1) + 1; return; } // collapse repeats
+  board.log.unshift({ who, what, at: Date.now(), n: 1 });
   if (board.log.length > 30) board.log.length = 30;
+  renderSwarmStatus();
 }
 // The away-timeline: click the status strip to see what the team did while you wrote.
 function timelineEl() {
@@ -1603,8 +1686,16 @@ function toggleTimeline() {
   const el = timelineEl();
   if (!el.classList.contains('hidden')) return el.classList.add('hidden');
   if (!board.log.length) return toast('No swarm activity yet');
-  el.innerHTML = '<div class="tl-title">Swarm activity</div>' + board.log.map((e) =>
-    `<div class="tl-row"><span class="tl-who">${escapeHtml(e.who)}</span><span class="tl-what">${escapeHtml(e.what)}</span><span class="tl-when">${escapeHtml(relTime(e.at))}</span></div>`).join('');
+  el.innerHTML = '<div class="tl-title">Swarm activity · click a row to open it</div>' + board.log.map((e, i) =>
+    `<div class="tl-row" data-i="${i}"><span class="tl-who">${escapeHtml(e.who)}</span><span class="tl-what">${escapeHtml(e.what)}${e.n > 1 ? ` ·×${e.n}` : ''}</span><span class="tl-when">${escapeHtml(relTime(e.at))}</span></div>`).join('');
+  el.querySelectorAll('.tl-row').forEach((row) => {
+    const e = board.log[+row.dataset.i];
+    row.onclick = () => {
+      el.classList.add('hidden');
+      if (/Researcher/.test(e.who)) { $('n-body').focus(); runResearch({ web: false }); } // re-surface what it found
+      else { $('n-cowriter').scrollIntoView({ block: 'nearest' }); } // fixes/links live in the strip
+    };
+  });
   el.classList.remove('hidden');
   const strip = $('n-swarm-status').getBoundingClientRect();
   const r = el.getBoundingClientRect();
@@ -1788,7 +1879,7 @@ function init() {
   applyCollapsed(collapsed);
   collapseBtn.onclick = () => { collapsed = !collapsed; localStorage.setItem('chatpanel.notes.railCollapsed', collapsed ? '1' : '0'); applyCollapsed(collapsed); };
 
-  $('n-title').addEventListener('input', () => { updateWordCount(); scheduleSave(); });
+  $('n-title').addEventListener('input', () => { updateWordCount(); scheduleSave(); scheduleCowriter(); });
   // Enter / ↓ in the title drops into the body (title is single-line).
   $('n-title').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === 'ArrowDown') {
