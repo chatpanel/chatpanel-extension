@@ -617,6 +617,84 @@ async function runAgentAction(kind) {
   }
 }
 
+// Plan-in-a-new-note: select some text (or a line) → the agent spins off a NEW note,
+// links THIS note to it, drafts a researched plan into it (tools + PII harness + the
+// activity widget), and hands it to the swarm (intent set, co-writer on) to keep working.
+async function planInNewNote(explicitTopic) {
+  closeAgentMenu();
+  if (!current || agentAbort) return;
+  const ta = $('n-body');
+  const [s0, s1] = [ta.selectionStart, ta.selectionEnd];
+  const topic = (explicitTopic || ta.value.slice(s0, s1) || currentLine().text || current.title || '').trim();
+  if (topic.length < 3) return toast('Select the text you want planned, or type /plan <topic>');
+
+  let deps;
+  try { deps = await agentDeps(); } catch { return toast('Agent unavailable'); }
+  const settings = await deps.getSettings();
+  const targetAgent = deps.getTarget(settings, settings.activeAgentId);
+  if (!targetAgent) return toast('Set up a model in ChatPanel settings first');
+  const license = await deps.getLicense();
+  if (!deps.canUseAgent(license, settings, targetAgent)) return toast('That agent needs ChatPanel Pro');
+  const resolved = deps.resolveTarget(targetAgent, settings);
+
+  // 1) Create the plan note; 2) replace the selection in THIS note with a link to it.
+  const clean = topic.replace(/[#*_`>~[\]]/g, '').replace(/\s+/g, ' ').trim();
+  const title = `Plan: ${clean.slice(0, 60)}`;
+  const plan = await createNote({ title, body: '' });
+  ta.setRangeText(`[[${title}]]`, s0, s1, 'end');
+  onBodyInput();
+  await flushSave(); // persist the link in the source note before we switch away
+
+  // 3) Open the plan note and set it up for the swarm.
+  updateEntry(plan);
+  await openNote(plan.id, plan);
+  const planNote = current;
+  setIntent(`Plan: ${clean}`);
+  if (!cwEnabled) setCowriter(true);
+
+  // 4) Draft a researched plan into it — tools armed, PII-wrapped, activity in the widget.
+  agentAbort = new AbortController();
+  setAgentBusy(true);
+  setStatus('Planning…');
+  const act = makeSwarmActivity(plan.id, '🧭 Planner', resolved.model || resolved.bridgeAgent || 'model', false);
+  let tools = null; let redaction = null;
+  try {
+    const bridge = await deps.checkBridge?.(settings.bridgeUrl).catch(() => ({ ok: false }));
+    tools = await deps.buildTurnTools?.({ resolvedAgent: resolved, settings, license, bridgeUrl: settings.bridgeUrl, bridgeAvailable: !!bridge?.ok, userText: topic });
+  } catch { /* no tools */ }
+  try { redaction = deps.buildRedaction?.({ settings, license }); act.trace && (act.trace.redacted = !!redaction); } catch { /* redaction off */ }
+  const sys = 'You are a planning assistant. Produce a clear, ACTIONABLE plan in GitHub-flavored markdown for the topic below: a one-line intro, then `##` sections, with `- [ ]` checkboxes for concrete steps and owners/dates where known. If tools are available, research to ground it and cite sources as markdown links. Output ONLY the plan markdown.';
+  let out = '';
+  const render = () => { if (current === planNote) { ta.value = out || '⏳ planning…'; autoGrow(); if (!$('n-panes').classList.contains('write')) updatePreview(); } };
+  render();
+  try {
+    await deps.streamChat({
+      agent: { ...resolved, systemPrompt: sys, maxTokens: 1400, temperature: 0.5 },
+      settings, tools, redaction, signal: agentAbort.signal,
+      messages: [{ role: 'user', content: `Topic to plan:\n${topic}` }],
+      onDelta: (d) => { out += d; render(); },
+      onEvent: act.onEvent,
+    });
+    act.done();
+  } catch (e) {
+    act.done();
+    if (!agentAbort?.signal.aborted) toast(`Planner error: ${e?.message || e}`);
+  } finally {
+    agentAbort = null;
+    setAgentBusy(false);
+    setStatus('');
+    if (current === planNote) {
+      current.body = ta.value;
+      autoGrow();
+      updateWordCount();
+      dirty = true;
+      await flushSave();
+    }
+    logActivity('Planner', 'drafted a plan');
+    toast('Plan note created — the swarm is on it');
+  }
+}
+
 // ── [[ wiki-link autocomplete (deterministic — links notes / chats / meetings) ────
 let _crossTargets = null; // chat + meeting titles, lazy-loaded once (off the load path)
 async function linkTargets() {
@@ -1488,13 +1566,19 @@ function renderResearch() {
   if (!shelf || !wrap) return;
   $('n-research-count').textContent = researchCards.length ? String(researchCards.length) : '';
   wrap.innerHTML = '';
-  if (researchQuestion) { // Researcher → Writer handoff for a "?" the orchestrator caught
+  if (researchQuestion) { // Researcher → Writer handoff — inline OR a spun-off note, your call
     const h = document.createElement('button');
     h.className = 'rcard-answer';
-    h.title = 'Hand off to the Writer — draft an answer grounded in these sources';
-    h.innerHTML = `✍️ Draft an answer <span class="ra-q">“${escapeHtml(researchQuestion.slice(0, 56))}”</span>`;
+    h.title = 'Draft the answer INLINE here, grounded in these sources';
+    h.innerHTML = `✍️ Draft inline <span class="ra-q">“${escapeHtml(researchQuestion.slice(0, 44))}”</span>`;
     h.onclick = () => draftAnswer();
     wrap.appendChild(h);
+    const n = document.createElement('button');
+    n.className = 'rcard-answer alt';
+    n.title = 'Spin this off into a NEW linked note the swarm plans out';
+    n.innerHTML = '🧭 New note';
+    n.onclick = () => planInNewNote(researchQuestion);
+    wrap.appendChild(n);
   }
   if (!researchCards.length) {
     const empty = document.createElement('div');
@@ -2104,6 +2188,15 @@ function init() {
         runResearch({ question: rm[1].trim(), web: true });
         return;
       }
+      // "/plan <topic>" → spin the topic off into a new, linked plan note (vs inline).
+      const pm = rline.text.match(/^\/plan\s+(.{2,})$/i);
+      if (pm) {
+        e.preventDefault();
+        ta.setRangeText('', rline.start, rline.end, 'end');
+        onBodyInput();
+        planInNewNote(pm[1].trim());
+        return;
+      }
     }
     // Enter on an "@command instruction" line runs it (instead of a newline).
     if (e.key === 'Enter' && !e.shiftKey && !openJob && currentCommandLine()) {
@@ -2163,7 +2256,7 @@ function init() {
     if (agentAbort) { agentAbort.abort(); return; }
     $('n-agent-menu').classList.toggle('hidden');
   };
-  for (const b of $('n-agent-menu').querySelectorAll('button[data-act]')) b.onclick = () => runAgentAction(b.dataset.act);
+  for (const b of $('n-agent-menu').querySelectorAll('button[data-act]')) b.onclick = () => (b.dataset.act === 'plannote' ? planInNewNote() : runAgentAction(b.dataset.act));
   document.addEventListener('click', closeAgentMenu);
 
   // Co-writer swarm toggle (opt-in; persisted). Announce only on user action, not load.
