@@ -143,6 +143,7 @@ async function openNote(id, preloaded = null) {
   $('n-title').value = current.title || '';
   $('n-body').value = current.body || '';
   renderTags(current.tags || []);
+  suggestTags();
   updatePreview();
   updateWordCount();
   $('n-when').textContent = current.updatedAt ? `Edited ${relTime(current.updatedAt)}` : '';
@@ -219,6 +220,52 @@ function onBodyInput() {
   if (!$('n-panes').classList.contains('write')) updatePreview();
   updateWordCount();
   scheduleSave();
+  scheduleSuggest();
+}
+
+// ── agent beside you: local topic extraction → tag suggestions (no LLM) ──────────
+const tagify = (s) => String(s).toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+let suggestTimer = null;
+let _topicFn = null; // lazily loaded — keeps topic-extraction OFF the page load path
+function scheduleSuggest() {
+  clearTimeout(suggestTimer);
+  suggestTimer = setTimeout(suggestTags, 1400);
+}
+async function suggestTags() {
+  const el = $('n-suggest');
+  if (!current) { el.innerHTML = ''; return; }
+  if (!_topicFn) {
+    try { _topicFn = (await import('./js/topic-extraction.js')).fallbackTopicItems; }
+    catch { return; }
+  }
+  if (!current) return; // could have changed while importing
+  const have = new Set((current.tags || []).map((t) => t.toLowerCase()));
+  const picks = [];
+  for (const cand of _topicFn($('n-body').value || '', 8)) {
+    const tag = tagify(cand);
+    if (!tag || tag.length < 3 || have.has(tag)) continue;
+    if (picks.some((p) => p.includes(tag) || tag.includes(p))) continue; // drop overlaps
+    picks.push(tag);
+    if (picks.length >= 4) break;
+  }
+  el.innerHTML = '';
+  if (!picks.length) return;
+  const label = document.createElement('span');
+  label.className = 'suggest-label';
+  label.textContent = 'Suggested';
+  el.appendChild(label);
+  for (const tag of picks) {
+    const b = document.createElement('button');
+    b.className = 'suggest-chip';
+    b.textContent = `+ ${tag}`;
+    b.onclick = () => {
+      current.tags = [...(current.tags || []), tag];
+      renderTags(current.tags);
+      scheduleSave(true);
+      suggestTags();
+    };
+    el.appendChild(b);
+  }
 }
 
 // ── actions ─────────────────────────────────────────────────────────────────
