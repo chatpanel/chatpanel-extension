@@ -499,9 +499,11 @@ async function newNote() {
   await flushSave();
   const rec = await createNote({ body: '' });
   updateEntry(rec);
-  openNote(rec.id, rec);
-  setMode('write', false); // a blank note always opens in edit mode (don't change the saved default)
-  $('n-title').focus();
+  await openNote(rec.id, rec);           // finish editor setup before we place the cursor
+  setMode('write', false);               // a blank note always opens in edit mode (don't change the saved default)
+  const title = $('n-title');
+  title.focus();
+  title.setSelectionRange(title.value.length, title.value.length); // cursor in the title, ready to type
 }
 async function removeCurrent() {
   if (!current) return;
@@ -2809,6 +2811,18 @@ function init() {
     else if (k === 'k') { e.preventDefault(); $('n-search').focus(); }
     else if (k === 's') { e.preventDefault(); flushSave(); toast('Saved'); }
     else if (e.key === '\\') { e.preventDefault(); collapseBtn.click(); }
+    // ⌘A in Read mode: select only the rendered note text (not the whole window — nav,
+    // list, toolbar…). Fields keep their native select-all.
+    else if (k === 'a' && $('n-panes').classList.contains('read')) {
+      const el = document.activeElement;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      e.preventDefault();
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      const r = document.createRange();
+      r.selectNodeContents($('n-preview'));
+      sel.addRange(r);
+    }
     else if (k === 'b' && document.activeElement === $('n-body')) { e.preventDefault(); applyFmt('bold'); }
     else if (k === 'i' && document.activeElement === $('n-body')) { e.preventDefault(); applyFmt('italic'); }
   });
