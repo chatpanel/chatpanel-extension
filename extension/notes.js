@@ -135,6 +135,7 @@ function startTagInput(addBtn) {
 }
 
 async function openNote(id, preloaded = null) {
+  if (agentAbort) agentAbort.abort(); // stop any in-flight generation before switching
   await flushSave();
   current = preloaded || await getNote(id);
   if (!current) return;
@@ -302,6 +303,89 @@ function downloadCurrent() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// ── agent actions (LLM) — everything model-related is LAZY-LOADED, so providers.js
+//    and the store/license graph never touch the notes page load path ─────────────
+let _agentDeps = null;
+async function agentDeps() {
+  if (_agentDeps) return _agentDeps;
+  const [p, s, l] = await Promise.all([import('./js/providers.js'), import('./js/store.js'), import('./js/license.js')]);
+  _agentDeps = { streamChat: p.streamChat, getSettings: s.getSettings, getTarget: s.getTarget, resolveTarget: s.resolveTarget, getLicense: l.getLicense, canUseAgent: l.canUseAgent };
+  return _agentDeps;
+}
+
+const AGENT_SPECS = {
+  continue: { sys: "You are a writing assistant continuing the user's note. Match their voice, tone and markdown style, and continue naturally from where the text stops. Output ONLY the continuation — no preamble, no repeating prior text.", max: 700 },
+  summarize: { sys: 'Summarize the text concisely in GitHub-flavored markdown — a few tight bullets or a short paragraph. Output ONLY the summary.', max: 500 },
+  tasks: { sys: 'Convert the text into a GitHub-flavored markdown checklist: one actionable item per line as "- [ ] item". Output ONLY the checklist.', max: 700 },
+  improve: { sys: 'Rewrite the text to be clearer and more concise while preserving its meaning, tone and markdown formatting. Output ONLY the rewritten text.', max: 1000 },
+};
+
+let agentAbort = null;
+function setAgentBusy(busy) {
+  const btn = $('n-agent');
+  btn.classList.toggle('busy', busy);
+  btn.textContent = busy ? '⏹ Stop' : '✨ Agent';
+  $('n-body').readOnly = busy;
+}
+function closeAgentMenu() { $('n-agent-menu').classList.add('hidden'); }
+
+async function runAgentAction(kind) {
+  closeAgentMenu();
+  if (!current || agentAbort) return;
+  const spec = AGENT_SPECS[kind];
+  const ta = $('n-body');
+  const body = ta.value;
+  const [s0, s1] = [ta.selectionStart, ta.selectionEnd];
+  const sel = body.slice(s0, s1);
+
+  // Frame WHERE the streamed output lands (head + output + tail) per action.
+  let target, head, tail;
+  if (kind === 'continue') { target = body; head = body + (body && !/\s$/.test(body) ? '\n\n' : ''); tail = ''; }
+  else if (kind === 'summarize') { target = sel || body; head = body.replace(/\s+$/, '') + '\n\n## Summary\n\n'; tail = ''; }
+  else if (kind === 'tasks') { if (!sel.trim()) return toast('Select some text to turn into tasks'); target = sel; head = body.slice(0, s0); tail = body.slice(s1); }
+  else if (kind === 'improve') { target = sel || body; if (sel) { head = body.slice(0, s0); tail = body.slice(s1); } else { head = ''; tail = ''; } }
+  if (!target || !target.trim()) return toast('Nothing to work with yet');
+
+  let deps;
+  try { deps = await agentDeps(); } catch { return toast('Agent unavailable'); }
+  const settings = await deps.getSettings();
+  const targetAgent = deps.getTarget(settings, settings.activeAgentId);
+  if (!targetAgent) return toast('Set up a model in ChatPanel settings first');
+  const license = await deps.getLicense();
+  if (!deps.canUseAgent(license, settings, targetAgent)) return toast('That agent needs ChatPanel Pro — pick your free model or upgrade');
+  const resolved = deps.resolveTarget(targetAgent, settings);
+
+  const streamNote = current; // guard against the user switching notes mid-stream
+  agentAbort = new AbortController();
+  setAgentBusy(true);
+  setStatus('Thinking…');
+  let out = '';
+  const render = () => { if (current !== streamNote) return; ta.value = head + out + tail; if (!$('n-panes').classList.contains('write')) updatePreview(); ta.scrollTop = ta.scrollHeight; };
+  try {
+    await deps.streamChat({
+      agent: { ...resolved, systemPrompt: spec.sys, maxTokens: spec.max, temperature: 0.5 },
+      settings,
+      signal: agentAbort.signal,
+      messages: [{ role: 'user', content: target }],
+      onDelta: (d) => { out += d; render(); },
+    });
+  } catch (e) {
+    if (agentAbort?.signal.aborted) toast('Stopped');
+    else toast(`Agent error: ${e?.message || e}`);
+  } finally {
+    const aborted = agentAbort?.signal.aborted;
+    agentAbort = null;
+    setAgentBusy(false);
+    if (current === streamNote) {
+      current.body = head + out + tail;
+      updateWordCount();
+      dirty = true;
+      await flushSave();
+      if (!aborted) setStatus('Saved', true);
+    }
+  }
+}
+
 // ── wire up ───────────────────────────────────────────────────────────────────
 function init() {
   $('n-new').onclick = newNote;
@@ -328,6 +412,15 @@ function init() {
 
   for (const b of $('n-mode').children) b.onclick = () => setMode(b.dataset.mode);
   for (const b of $('n-fmt').children) b.onclick = () => applyFmt(b.dataset.fmt);
+
+  // Agent menu: click to open; click while streaming = stop. Menu items run actions.
+  $('n-agent').onclick = (e) => {
+    e.stopPropagation();
+    if (agentAbort) { agentAbort.abort(); return; }
+    $('n-agent-menu').classList.toggle('hidden');
+  };
+  for (const b of $('n-agent-menu').querySelectorAll('button[data-act]')) b.onclick = () => runAgentAction(b.dataset.act);
+  document.addEventListener('click', closeAgentMenu);
 
   document.addEventListener('keydown', (e) => {
     const mod = e.metaKey || e.ctrlKey;
