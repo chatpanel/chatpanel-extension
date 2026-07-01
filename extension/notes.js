@@ -413,11 +413,12 @@ async function runAgentAction(kind) {
   const follow = kind === 'continue' || kind === 'summarize'; // appends → keep the tail in view
   const render = () => {
     if (current !== streamNote) return;
-    ta.value = head + out + tail;
+    ta.value = head + (out || '⏳ thinking…') + tail;
     autoGrow();
     if (!$('n-panes').classList.contains('write')) updatePreview();
     if (follow && scroller) scroller.scrollTop = scroller.scrollHeight;
   };
+  render(); // show the placeholder immediately so it's clear something is happening
   try {
     await deps.streamChat({
       agent: { ...resolved, systemPrompt: spec.sys, maxTokens: spec.max, temperature: 0.5 },
@@ -434,7 +435,11 @@ async function runAgentAction(kind) {
     agentAbort = null;
     setAgentBusy(false);
     if (current === streamNote) {
-      current.body = head + out + tail;
+      const finalBody = out.trim() ? head + out + tail : body; // nothing produced → restore original
+      ta.value = finalBody;
+      current.body = finalBody;
+      autoGrow();
+      if (!$('n-panes').classList.contains('write')) updatePreview();
       updateWordCount();
       dirty = true;
       await flushSave();
@@ -578,7 +583,8 @@ const NOTE_COMMANDS = [
   { cmd: 'summarize', label: 'Summarize', hint: 'summarize a topic', tools: false, sys: 'Summarize the requested topic concisely in markdown. Output ONLY the summary.' },
   { cmd: 'translate', label: 'Translate', hint: 'translate to a language', tools: false, sys: 'Translate the requested text to the requested language, preserving markdown. Output ONLY the translation.' },
 ];
-const NOTE_CMD_RE = new RegExp(`^@(${NOTE_COMMANDS.map((c) => c.cmd).join('|')})\\b\\s*(.*)$`, 'i');
+// Matches @command anywhere on the line (not just at the start) so it works mid-note.
+const NOTE_CMD_RE = new RegExp(`@(${NOTE_COMMANDS.map((c) => c.cmd).join('|')})\\b[ \\t]*(.*)$`, 'i');
 
 // The @word being typed at the cursor (start of line or after whitespace), or null.
 function currentAtQuery() {
@@ -594,16 +600,16 @@ function currentAtQuery() {
 // The runnable "@command instruction" on the cursor's line, or null.
 function currentCommandLine() {
   const ta = $('n-body');
-  const start = ta.value.lastIndexOf('\n', ta.selectionStart - 1) + 1;
+  const lineStart = ta.value.lastIndexOf('\n', ta.selectionStart - 1) + 1;
   let end = ta.value.indexOf('\n', ta.selectionStart);
   if (end < 0) end = ta.value.length;
-  const line = ta.value.slice(start, end);
+  const line = ta.value.slice(lineStart, end);
   const m = line.match(NOTE_CMD_RE);
   if (!m) return null;
   const spec = NOTE_COMMANDS.find((c) => c.cmd === m[1].toLowerCase());
   const instruction = (m[2] || '').trim();
   if (!spec || !instruction) return null;
-  return { spec, instruction, start, end };
+  return { spec, instruction, start: lineStart + m.index, end }; // replace from the @ to line end
 }
 
 let cmdAbort = null;
@@ -635,17 +641,20 @@ async function runNoteCommand() {
 
   const streamNote = current;
   cmdAbort = new AbortController();
-  setStatus('Running…');
+  ta.readOnly = true;
   let out = '';
+  // A live in-note placeholder so it's obvious work is happening (esp. during the
+  // silent web-search phase), replaced the instant tokens start streaming.
+  let progress = `⏳ @${ctx.spec.cmd} — starting…`;
   const scroller = document.querySelector('.editor-scroll');
   const render = () => {
     if (current !== streamNote) return;
-    ta.value = head + out + tail;
+    ta.value = head + (out || `${progress}`) + tail;
     autoGrow();
     if (!$('n-panes').classList.contains('write')) updatePreview();
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   };
-  render(); // clear the command line immediately
+  render(); // replace the command line with the progress line immediately
   try {
     await deps.streamChat({
       agent: { ...resolved, systemPrompt: ctx.spec.sys, maxTokens: 1800, temperature: 0.4 },
@@ -654,14 +663,27 @@ async function runNoteCommand() {
       tools,
       messages: [{ role: 'user', content: ctx.instruction }],
       onDelta: (d) => { out += d; render(); },
-      onEvent: (ev) => { if (ev?.type === 'tool' && ev.phase === 'start') setStatus(`🔎 ${ev.name || 'tool'}…`); },
+      onEvent: (ev) => {
+        if (ev?.type === 'tool' && ev.phase === 'start') progress = `🔎 ${ev.name === 'web_search' ? 'Searching the web' : (ev.name || 'tool')}…`;
+        else if (ev?.type === 'tool' && ev.phase === 'done') progress = '✍️ Writing…';
+        else if (ev?.type === 'reasoning') progress = '💭 Thinking…';
+        if (!out) render();
+      },
     });
   } catch (e) {
-    if (cmdAbort?.signal.aborted) { if (current === streamNote) { ta.value = head + out + tail; } toast('Stopped'); }
-    else toast(`Command error: ${e?.message || e}`);
+    if (!cmdAbort?.signal.aborted) toast(`Command error: ${e?.message || e}`);
   } finally {
+    const aborted = cmdAbort?.signal.aborted;
     cmdAbort = null;
-    if (current === streamNote) { current.body = ta.value; updateWordCount(); dirty = true; await flushSave(); }
+    ta.readOnly = false;
+    if (current === streamNote) {
+      if (!out.trim()) ta.value = head + tail; // produced nothing → drop the placeholder
+      current.body = ta.value;
+      updateWordCount();
+      dirty = true;
+      await flushSave();
+      setStatus(aborted ? '' : 'Saved', !aborted);
+    }
   }
   return true;
 }
