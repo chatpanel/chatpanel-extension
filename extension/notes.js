@@ -182,6 +182,7 @@ async function openNote(id, preloaded = null) {
   const inJob = noteJobs.get(current.id);
   if (inJob) attachEditorToJob(inJob); // reopening a note with a running job re-attaches its live progress
   else $('n-body').readOnly = false;
+  renderActivity(); // re-attach this note's persisted command-activity trace (or hide it)
   renderList($('n-search').value);
 }
 
@@ -692,12 +693,12 @@ function currentCommandLine() {
 // calls, partial output) so it's always obvious what's happening.
 const noteJobs = new Map(); // noteId -> job
 
-function compactInput(input) {
+function compactInput(input, max = 60) {
   try {
     if (input == null) return '';
     const s = typeof input === 'string' ? input : JSON.stringify(input);
     const flat = s.replace(/\s+/g, ' ').trim();
-    return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat;
+    return flat.length > max ? `${flat.slice(0, max)}…` : flat;
   } catch { return ''; }
 }
 
@@ -711,27 +712,15 @@ function jobFinalMid(job) {
   return job.out;
 }
 
-// The transient, human-readable progress block shown IN the note while a job runs:
-// a status header (icon · model · what it's doing) + a tool-call trace + the
-// partial output streaming in beneath it. Both are visible at once — the old code
-// showed the placeholder OR the tokens, so progress vanished the moment text began.
+// What shows IN the note while a command runs: just the streaming output as it
+// arrives, or a single-line placeholder before the first token. The full tool trace
+// (model, armed tools, each call + its result) lives in the persistent activity
+// panel below the editor — not stuffed into the note body.
 function jobProgressText(job) {
   if (job.done) return jobFinalMid(job);
+  if (job.out) return job.out;
   const icon = JOB_ICON[job.status] || '⏳';
-  const lines = [`${icon} @${job.cmd} · ${job.modelLabel} · ${job.statusText}`];
-  // Show the toolset that's ARMED for this turn up front (what's supplied), plus
-  // whether PII redaction is on — not just the tools that happen to fire.
-  const meta = [];
-  if (job.tools.length) meta.push(`🧰 ${job.tools.length} tool${job.tools.length === 1 ? '' : 's'}: ${prettyTools(job.tools)}`);
-  if (job.redacted) meta.push('🛡 PII redaction on');
-  if (meta.length) lines.push(`   ${meta.join('   ')}`);
-  // Each tool call the model actually makes, with its argument and status.
-  for (const s of job.steps) {
-    const mark = s.status === 'error' ? '✗' : (s.done ? '✓' : '…');
-    const arg = s.input != null ? ` ${compactInput(s.input)}` : '';
-    lines.push(`   • ${s.tool}${arg} ${mark}`);
-  }
-  return lines.join('\n') + (job.out ? `\n\n${job.out}` : '');
+  return `${icon} @${job.cmd} — ${job.statusText}`;
 }
 
 // Compact, readable tool names for the armed-toolset line (MCP tools are namespaced
@@ -768,6 +757,75 @@ function attachEditorToJob(job) {
   $('n-body').readOnly = true;
   renderJob(job);
 }
+
+// ── Command activity panel — the persistent tool-call trace (per note) ────────────
+// "Which tools ran and what they returned" lives HERE, not in the note body, and
+// SURVIVES completion + note switches — so a wrong result (e.g. the wrong meeting)
+// stays inspectable. Mirrors the chat panel's tool cards. Keyed by note id; the live
+// job IS the activity while running, and its final state persists after.
+const noteActivity = new Map();       // noteId -> activity (the job, live or finished)
+const activityCollapsed = new Set();  // noteIds the user has collapsed
+
+function toolTitle(name) {
+  const m = /^mcp_(.+?)__(.+)$/.exec(name || '');
+  return m ? `${m[1]} / ${m[2]}` : (name || 'tool');
+}
+function stepIcon(s) {
+  if (s.tool === 'web_search') return '🌐';
+  if (/^mcp_/.test(s.tool)) return '🔌';
+  if (/^history_/.test(s.tool)) return '🗂';
+  return '🔧';
+}
+
+let _actRaf = null;
+function scheduleActivityRender() {
+  if (_actRaf) return;
+  _actRaf = requestAnimationFrame(() => { _actRaf = null; renderActivity(); });
+}
+function renderActivity() {
+  const panel = $('n-activity');
+  if (!panel) return;
+  const a = current && noteActivity.get(current.id);
+  if (!a) { panel.classList.add('hidden'); return; }
+  panel.classList.toggle('collapsed', activityCollapsed.has(current.id));
+  $('n-activity-cmd').textContent = `@${a.cmd}`;
+  $('n-activity-model').textContent = a.modelLabel || '';
+  const statusEl = $('n-activity-status');
+  const running = !a.done;
+  statusEl.classList.toggle('running', running);
+  statusEl.textContent = running
+    ? (a.statusText || 'working…')
+    : (a.error ? `error: ${a.error}` : `${a.steps.length} tool call${a.steps.length === 1 ? '' : 's'}`);
+  $('n-activity-pii').classList.toggle('hidden', !a.redacted);
+  $('n-activity-armed').textContent = a.tools.length ? `armed: ${prettyTools(a.tools)}` : '';
+  const wrap = $('n-activity-cards');
+  wrap.innerHTML = '';
+  if (!a.steps.length) {
+    const empty = document.createElement('div');
+    empty.className = 'activity-armed';
+    empty.textContent = running ? 'Waiting for the model to call a tool…' : 'No tools were called — answered from the model’s own knowledge.';
+    wrap.appendChild(empty);
+  }
+  for (const s of a.steps) {
+    const state = s.status === 'error' ? 'err' : (s.done ? 'ok' : 'run');
+    const mark = s.status === 'error' ? '✗' : (s.done ? '✓' : '…');
+    const arg = s.input != null ? compactInput(s.input, 240) : '';
+    const res = s.result != null ? String(s.result) : '';
+    const card = document.createElement('div');
+    card.className = `acard ${state}`;
+    card.innerHTML =
+      `<div class="acard-top"><span class="acard-ico">${stepIcon(s)}</span>` +
+      `<span class="acard-name">${escapeHtml(toolTitle(s.tool))}</span>` +
+      `<span class="acard-mark">${mark}</span></div>` +
+      (arg ? `<div class="acard-arg"><code>${escapeHtml(arg)}</code></div>` : '') +
+      (res ? `<details class="acard-res"><summary>result (${res.length} chars)</summary><pre>${escapeHtml(res.slice(0, 4000))}${res.length > 4000 ? '\n…(truncated)' : ''}</pre></details>` : '');
+    wrap.appendChild(card);
+  }
+  panel.classList.remove('hidden');
+}
+// The activity panel only earns its space when a command armed tools; a plain
+// summarize/translate (no tools) leaves it hidden.
+function recordActivity(job) { if (job.tools.length || job.steps.length) noteActivity.set(job.noteId, job); }
 
 // Persist a job's current body to the store — id-keyed, so it works whether or not
 // the note is open. On completion the result lands even for a note you never reopen.
@@ -836,8 +894,10 @@ async function runNoteCommand() {
     abort: new AbortController(), done: false, error: null,
   };
   noteJobs.set(job.noteId, job);
+  recordActivity(job);               // the persistent tool-call trace panel
   ta.readOnly = true;
-  renderJob(job);                    // swap the command line for the live progress block
+  renderJob(job);                    // swap the command line for the live output/placeholder
+  renderActivity();                  // open the activity panel with the armed toolset
   renderList($('n-search').value);   // show the running badge in the list
   try {
     await deps.streamChat({
@@ -847,7 +907,7 @@ async function runNoteCommand() {
       tools,
       redaction,
       messages: [{ role: 'user', content: job.instruction }],
-      onDelta: (d) => { job.out += d; job.status = 'writing'; job.statusText = 'writing…'; scheduleJobRender(job); },
+      onDelta: (d) => { job.out += d; job.status = 'writing'; job.statusText = 'writing…'; scheduleJobRender(job); scheduleActivityRender(); },
       onEvent: (ev) => {
         if (ev?.type === 'tool' && ev.phase === 'start') {
           job.status = 'tool';
@@ -860,7 +920,9 @@ async function runNoteCommand() {
         } else if (ev?.type === 'reasoning') {
           job.status = 'thinking'; job.statusText = 'thinking…';
         }
+        recordActivity(job);       // a tool fired → make sure the panel is tracking this run
         scheduleJobRender(job);
+        scheduleActivityRender();
       },
     });
   } catch (e) {
@@ -876,6 +938,7 @@ async function runNoteCommand() {
       current.body = $('n-body').value;
       updateWordCount();
       setStatus(aborted ? '' : 'Saved', !aborted);
+      renderActivity(); // the trace persists, now showing final results
     }
     renderList($('n-search').value); // clear the running badge
   }
@@ -1702,6 +1765,17 @@ function init() {
   $('n-download').onclick = downloadCurrent;
   $('n-ask').onclick = askAboutNote;
   $('n-settings').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#notes') });
+  $('n-activity-collapse').onclick = () => {
+    if (!current) return;
+    if (activityCollapsed.has(current.id)) activityCollapsed.delete(current.id); else activityCollapsed.add(current.id);
+    renderActivity();
+  };
+  $('n-activity-clear').onclick = () => {
+    if (!current) return;
+    if (noteJobs.has(current.id)) return toast('Still running — stop it first (Esc)');
+    noteActivity.delete(current.id);
+    renderActivity();
+  };
 
   // Collapsible list rail → full-width editor. Persisted.
   const collapseBtn = $('n-collapse');
