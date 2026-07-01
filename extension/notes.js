@@ -887,8 +887,11 @@ let cwEnabled = localStorage.getItem('chatpanel.notes.cowriter') === '1';
 let cwTimer = null;
 let cwGen = 0;
 let cwSuggestions = [];
+let boardSuggestions = []; // the swarm's shared suggestion queue (Connector links, etc.) rendered alongside Editor fixes
 let _cwDiff = null;
+let cwModel = ''; // provenance: the model the Editor last used
 const cwDismissed = new Set();
+const boardDismissed = new Set();
 
 function scheduleCowriter() {
   if (!cwEnabled) return;
@@ -898,6 +901,7 @@ function scheduleCowriter() {
 }
 function clearCowriterUI() {
   cwSuggestions = [];
+  boardSuggestions = [];
   const el = $('n-cowriter');
   el.innerHTML = '';
   el.classList.add('hidden');
@@ -930,6 +934,7 @@ async function runCowriter() {
   const editor = await roleAgent(deps, settings, license, 'editor'); // routed → cheapest usable model
   if (!editor) return;
   const resolved = editor.resolved;
+  cwModel = resolved.autocompleteModel || resolved.model || resolved.bridgeAgent || 'model'; // provenance
   let redaction = null;
   try { redaction = deps.buildRedaction?.({ settings, license }); } catch { /* redaction off */ }
   const sys = 'You are a meticulous copy-editor. Fix ONLY clear spelling, typo, and grammar mistakes in the text. Change as LITTLE as possible — never rewrite, rephrase, restructure, or change wording, style, or meaning. Preserve ALL markdown, punctuation, and line breaks exactly. Return ONLY the corrected text, nothing else.';
@@ -958,17 +963,26 @@ async function runCowriter() {
 function renderCowriter() {
   const el = $('n-cowriter');
   el.innerHTML = '';
-  if (!cwSuggestions.length) { el.classList.add('hidden'); return; }
+  if (!cwSuggestions.length && !boardSuggestions.length) { el.classList.add('hidden'); return; }
   const label = document.createElement('span');
   label.className = 'cw-label';
   label.textContent = '✍️ Co-writer';
   el.appendChild(label);
-  for (const s of cwSuggestions.slice(0, 8)) {
+  for (const s of cwSuggestions.slice(0, 6)) {
     const chip = document.createElement('button');
     chip.className = 'cw-fix';
-    chip.title = 'Apply fix';
+    chip.title = cwModel ? `Apply fix · via ${cwModel} (Editor)` : 'Apply fix'; // provenance
     chip.innerHTML = `<s>${escapeHtml(s.before.trim() || '∅')}</s><span class="cw-arrow">→</span><b>${escapeHtml(s.after.trim() || '∅')}</b>`;
     chip.onclick = () => applyCowriterFix(s);
+    el.appendChild(chip);
+  }
+  // The shared suggestion queue — other roles (Connector links, …), each carrying provenance.
+  for (const s of boardSuggestions.slice(0, 5)) {
+    const chip = document.createElement('button');
+    chip.className = `cw-sug cw-${s.role}`;
+    chip.title = s.title || '';
+    chip.innerHTML = `<span class="cw-ico">${s.icon}</span>${s.html}`;
+    chip.onclick = () => { s.apply(); boardSuggestions = boardSuggestions.filter((x) => x !== s); renderCowriter(); };
     el.appendChild(chip);
   }
   if (cwSuggestions.length > 1) {
@@ -982,7 +996,7 @@ function renderCowriter() {
   x.className = 'cw-x';
   x.title = 'Dismiss';
   x.textContent = '✕';
-  x.onclick = () => { cwSuggestions.forEach((s) => cwDismissed.add(s.key)); clearCowriterUI(); };
+  x.onclick = () => { cwSuggestions.forEach((s) => cwDismissed.add(s.key)); boardSuggestions.forEach((s) => boardDismissed.add(s.key)); clearCowriterUI(); };
   el.appendChild(x);
   el.classList.remove('hidden');
 }
@@ -1010,6 +1024,49 @@ function applyAllCowriter() {
   commitCowriterBody();
   clearCowriterUI();
   toast('Fixes applied');
+}
+
+// ── Connector — token-free: link new topics/entities to your existing docs ─────────
+// On a typing pause it matches phrases in the current paragraph against your existing
+// note/chat/meeting titles and suggests a [[wikilink]] for each unlinked mention. No
+// model call — pure title matching against linkTargets(). Feeds the suggestion queue.
+let connectorGen = 0;
+let _connectMod = null;
+async function runConnector() {
+  if (!cwEnabled || !current) return;
+  const para = currentParagraph();
+  if (para.text.trim().length < 12) return;
+  const gen = ++connectorGen;
+  let targets;
+  try {
+    if (!_connectMod) _connectMod = await import('./js/cowriter-connect.js');
+    targets = await linkTargets();
+  } catch { return; }
+  if (gen !== connectorGen || !cwEnabled || !current) return;
+  const text = para.text;
+  const hits = _connectMod.connectorMatches(text, targets, {
+    selfTitle: current.title || '',
+    linked: _connectMod.existingLinks(text),
+    dismissed: boardDismissed,
+  });
+  boardSuggestions = boardSuggestions.filter((s) => s.role !== 'connector').concat(hits.map((h) => ({
+    role: 'connector', icon: '🔗', key: `link:${h.title.toLowerCase()}`,
+    html: `<b>[[${escapeHtml(h.title)}]]</b>`,
+    title: `Link “${h.mention}” to your existing “${h.title}” · Connector (your workspace)`,
+    apply: () => applyConnector(h),
+  })));
+  if (hits.length) logActivity('Connector', `${hits.length} link${hits.length === 1 ? '' : 's'} suggested`);
+  setSwarmState('connector', 'idle', hits.length ? `${hits.length} link${hits.length === 1 ? '' : 's'}` : '');
+  renderCowriter();
+}
+function applyConnector(h) {
+  const ta = $('n-body');
+  const i = ta.value.indexOf(h.mention);
+  if (i < 0 || ta.value.slice(i - 2, i) === '[[') return; // moved/edited, or already linked
+  ta.value = `${ta.value.slice(0, i)}[[${h.mention}]]${ta.value.slice(i + h.mention.length)}`;
+  commitCowriterBody();
+  logActivity('Connector', `linked “${h.title}”`);
+  toast('Linked');
 }
 function setCowriter(on, announce = false) {
   cwEnabled = on;
@@ -1371,6 +1428,7 @@ const swarm = {
   editor: { state: 'idle', info: '' },      // idle | working | 'N fixes'
   researcher: { state: 'idle', info: '' },  // idle | working | 'N found'
   writer: { state: 'idle', info: '' },      // idle | working | 'draft ready'
+  connector: { state: 'idle', info: '' },   // idle | 'N links'
 };
 function setSwarmState(role, state, info = '') {
   if (!swarm[role]) return;
@@ -1391,7 +1449,8 @@ function renderSwarmStatus() {
     (board.intent ? `<span class="ss ss-intent" title="This note's goal — guides the Writer & Researcher">🎯 <span class="ss-info">${escapeHtml(board.intent.slice(0, 48))}</span></span>` : '')
     + chip('✍️', swarm.editor, 'Editor — proofreads as you type')
     + chip('🔎', swarm.researcher, 'Researcher — finds related material')
-    + chip('✨', swarm.writer, 'Writer — ⌘↵ to draft ahead');
+    + chip('✨', swarm.writer, 'Writer — ⌘↵ to draft ahead')
+    + chip('🔗', swarm.connector, 'Connector — links new topics to your docs');
 }
 
 // ── The blackboard — shared intent + activity log the whole swarm reads (Phase 4) ──
@@ -1456,7 +1515,7 @@ function autoResearch() {
   const line = currentLine().text.trim();
   const isQuestion = /\?\s*$/.test(line) && line.split(/\s+/).length >= 3;
   if (isQuestion) { if (line !== lastQuestion) { lastQuestion = line; runResearch({ question: line }); } }
-  else runResearch(); // generic related-material for the current section
+  else { runResearch(); runConnector(); } // related-material + link new topics to your docs
 }
 
 // Researcher → Writer handoff: draft an answer to the question the Researcher just
