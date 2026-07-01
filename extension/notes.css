@@ -363,6 +363,7 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .ac-badge { font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; padding: 2px 6px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); flex: none; }
 .ac-badge.chat { color: var(--accent); border-color: #33407a; } .ac-badge.meeting { color: #b8860b; } .ac-badge.note { color: #8b5cf6; }
 .ac-badge.cmd { color: #fff; background: var(--accent); border-color: var(--accent); }
+.ac-badge.slash { font-size: 13px; padding: 1px 5px; border-color: transparent; background: var(--field); }
 .ac-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .ac-empty { padding: 9px 11px; color: var(--faint); font-size: 12.5px; }
 /* wiki links in the rendered note */

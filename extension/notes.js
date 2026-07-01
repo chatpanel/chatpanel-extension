@@ -767,6 +767,16 @@ async function maybeAutocomplete() {
     ac.index = 0;
     return renderAc();
   }
+  // / command palette (agent actions)
+  const slash = currentSlashQuery();
+  if (slash) {
+    ac.mode = 'slash';
+    ac.range = slash;
+    const q = slash.word.toLowerCase();
+    ac.items = SLASH_ACTIONS.filter((a) => !q || a.key.startsWith(q) || a.label.toLowerCase().includes(q));
+    ac.index = 0;
+    return renderAc();
+  }
   closeAc();
 }
 
@@ -775,15 +785,15 @@ function renderAc() {
   if (!ac.range) return closeAc();
   el.innerHTML = '';
   if (!ac.items.length) {
-    if (ac.mode === 'cmd') return closeAc();
+    if (ac.mode === 'cmd' || ac.mode === 'slash') return closeAc();
     el.innerHTML = '<div class="ac-empty">No match — keep typing to name a new link</div>';
   } else {
     ac.items.forEach((it, i) => {
       const d = document.createElement('div');
       d.className = 'ac-item' + (i === ac.index ? ' sel' : '');
-      d.innerHTML = ac.mode === 'cmd'
-        ? `<span class="ac-badge cmd">@${it.cmd}</span><span class="ac-title">${escapeHtml(it.hint)}</span>`
-        : `<span class="ac-badge ${it.type}">${it.type}</span><span class="ac-title">${escapeHtml(it.title)}</span>`;
+      if (ac.mode === 'cmd') d.innerHTML = `<span class="ac-badge cmd">@${it.cmd}</span><span class="ac-title">${escapeHtml(it.hint)}</span>`;
+      else if (ac.mode === 'slash') d.innerHTML = `<span class="ac-badge slash">${it.icon}</span><span class="ac-title"><b>${escapeHtml(it.label)}</b> — ${escapeHtml(it.hint)}</span>`;
+      else d.innerHTML = `<span class="ac-badge ${it.type}">${it.type}</span><span class="ac-title">${escapeHtml(it.title)}</span>`;
       d.onmousedown = (e) => { e.preventDefault(); ac.index = i; acceptAc(); };
       el.appendChild(d);
     });
@@ -810,6 +820,15 @@ function acceptAc() {
     ta.setRangeText(`@${it.cmd} `, ac.range.start - 1, ac.range.end, 'end');
     closeAc();
     onBodyInput();
+    return;
+  }
+  if (ac.mode === 'slash') {
+    if (!it) return closeAc();
+    // Remove the "/word" (the / is at start-1), then run the action on its natural target.
+    ta.setRangeText('', ac.range.start - 1, ac.range.end, 'end');
+    closeAc();
+    onBodyInput();
+    it.run();
     return;
   }
   const title = it ? it.title : ac.range.query; // allow a new (unmatched) link name too
@@ -840,6 +859,28 @@ function currentAtQuery() {
   const pos = ta.selectionStart;
   const line = ta.value.slice(ta.value.lastIndexOf('\n', pos - 1) + 1, pos);
   const m = line.match(/(?:^|\s)@(\w*)$/);
+  if (!m) return null;
+  return { word: m[1], start: pos - m[1].length, end: pos };
+}
+
+// ── "/" command palette — agent actions on the note / selection ───────────────────
+// Each acts on its natural target (selection, current line, or note) so the SAME
+// content can go inline OR into a new note depending on which you pick.
+const SLASH_ACTIONS = [
+  { key: 'plan', icon: '🧭', label: 'Plan in a new note', hint: 'spin this into a linked plan note the swarm works', run: () => planInNewNote() },
+  { key: 'continue', icon: '✍️', label: 'Continue writing', hint: 'draft inline from here', run: () => runAgentAction('continue') },
+  { key: 'research', icon: '🔎', label: 'Research this', hint: 'find related notes, chats & the web', run: () => runResearch({ web: true }) },
+  { key: 'tasks', icon: '☑️', label: 'Turn into tasks', hint: 'selection → checklist', run: () => runAgentAction('tasks') },
+  { key: 'summarize', icon: '📋', label: 'Summarize', hint: 'a tight summary', run: () => runAgentAction('summarize') },
+  { key: 'improve', icon: '✨', label: 'Improve writing', hint: 'rewrite clearer', run: () => runAgentAction('improve') },
+];
+// The "/word" being typed at the cursor (line-start or after whitespace), or null.
+function currentSlashQuery() {
+  const ta = $('n-body');
+  if (ta.selectionStart !== ta.selectionEnd) return null;
+  const pos = ta.selectionStart;
+  const line = ta.value.slice(ta.value.lastIndexOf('\n', pos - 1) + 1, pos);
+  const m = line.match(/(?:^|\s)\/(\w*)$/);
   if (!m) return null;
   return { word: m[1], start: pos - m[1].length, end: pos };
 }
