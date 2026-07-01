@@ -407,7 +407,25 @@ function init() {
   collapseBtn.onclick = () => { collapsed = !collapsed; localStorage.setItem('chatpanel.notes.railCollapsed', collapsed ? '1' : '0'); applyCollapsed(collapsed); };
 
   $('n-title').addEventListener('input', () => { updateWordCount(); scheduleSave(); });
+  // Enter / ↓ in the title drops into the body (title is single-line).
+  $('n-title').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const b = $('n-body');
+      b.focus();
+      b.setSelectionRange(0, 0);
+    }
+  });
   $('n-body').addEventListener('input', onBodyInput);
+  // ↑ at the very start of the body hops back to the title.
+  $('n-body').addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowUp' && $('n-body').selectionStart === 0 && $('n-body').selectionEnd === 0) {
+      e.preventDefault();
+      const t = $('n-title');
+      t.focus();
+      t.setSelectionRange(t.value.length, t.value.length);
+    }
+  });
   $('n-search').addEventListener('input', (e) => renderList(e.target.value));
 
   for (const b of $('n-mode').children) b.onclick = () => setMode(b.dataset.mode);
