@@ -10,6 +10,14 @@ import {
   getNoteIndex, getNote, createNote, saveNote, deleteNote, noteToMarkdown,
 } from './js/store-notes.js';
 import { renderMarkdown } from './js/markdown.js';
+import {
+  relTime, escapeHtml, highlight, escapeMdText, tagify, snippetOf,
+  KIND_ICON, sourceKind, researchSnippet,
+  JOB_ICON, compactInput, prettyTools, toolTitle, stepIcon,
+} from './js/notes-util.js';
+import {
+  SWARM_ROLES, SWARM_ROLE_META, swarmOverrides, swarmCandidates, roleAgent, getRouter,
+} from './js/notes-swarm-router.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -19,25 +27,7 @@ let dirty = false;
 let saveTimer = null;
 
 // ── utilities ─────────────────────────────────────────────────────────────────
-function relTime(ts) {
-  if (!ts) return '';
-  const s = Math.max(0, (Date.now() - ts) / 1000);
-  if (s < 60) return 'just now';
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  if (s < 604800) return `${Math.floor(s / 86400)}d ago`;
-  return new Date(ts).toLocaleDateString();
-}
-function escapeHtml(s) {
-  return String(s || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-}
-function highlight(text, q) {
-  const t = escapeHtml(text);
-  if (!q) return t;
-  const i = text.toLowerCase().indexOf(q.toLowerCase());
-  if (i < 0) return t;
-  return escapeHtml(text.slice(0, i)) + '<mark>' + escapeHtml(text.slice(i, i + q.length)) + '</mark>' + escapeHtml(text.slice(i + q.length));
-}
+// Pure helpers (relTime/escapeHtml/highlight/snippetOf/…) live in js/notes-util.js.
 let toastTimer = null;
 function toast(msg) {
   const el = $('n-toast');
@@ -58,12 +48,6 @@ function updateEntry(rec) {
     tags: rec.tags || [], createdAt: rec.createdAt, updatedAt: rec.updatedAt, chars: (rec.body || '').length,
   };
   list = [entry, ...list.filter((e) => e.id !== rec.id)];
-}
-function snippetOf(body) {
-  const b = String(body || '');
-  const nl = b.indexOf('\n');
-  const rest = nl >= 0 ? b.slice(nl + 1) : '';
-  return rest.replace(/[#*_`>~]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 110);
 }
 
 function renderList(query = '') {
@@ -189,6 +173,12 @@ async function openNote(id, preloaded = null) {
   $('n-title').value = current.title || '';
   $('n-body').value = current.body || '';
   histReset(current.body || ''); // undo history is per note — start fresh on switch
+  // Provenance ledger: adopt the stored one, or seed existing content as authored by
+  // You (tracking starts now). Keep it length-consistent with the body.
+  const bodyLen = (current.body || '').length;
+  current.attribution = normalizeAttribution(current.attribution, bodyLen, current.updatedAt || 0);
+  current.versions = Array.isArray(current.versions) ? current.versions : [];
+  renderHistory();
   renderTags(current.tags || []);
   suggestTags();
   renderBacklinks(current.title);
@@ -232,7 +222,7 @@ async function flushSave() {
   dirty = false;
   current.title = $('n-title').value;
   current.body = $('n-body').value;
-  const saved = await saveNote({ id: current.id, title: current.title, body: current.body, tags: current.tags, createdAt: current.createdAt });
+  const saved = await saveNote({ id: current.id, title: current.title, body: current.body, tags: current.tags, createdAt: current.createdAt, attribution: current.attribution, versions: current.versions });
   Object.assign(current, saved); // pick up derived title + updatedAt
   updateEntry(current);
   $('n-when').textContent = `Edited ${relTime(current.updatedAt)}`;
@@ -296,13 +286,73 @@ function histReset(value) {
   histPrev = { value: value || '', start: 0, end: 0 };
   histAt = 0; histCoalescing = false;
 }
-// Record the pre-change checkpoint if the body changed. Consecutive single-char
-// typing within 500ms coalesces into one step; a big delta (paste/insert/format/
-// @insert output) or a `discrete` caller always starts a fresh step.
-function recordEdit({ discrete = false } = {}) {
+// ── Provenance ledger — who (human / which agent) wrote each run, + versions ───────
+// Attribution is a run-list `[{ len, author, at }]` summing to body.length, so it
+// shifts naturally as text is inserted/deleted (no absolute offsets to fix up). Each
+// committed edit attributes only its CHANGED span (found by a prefix/suffix diff) to
+// its author; untouched text keeps its prior authorship.
+const HUMAN = 'You';
+function blankAttribution(len, author = HUMAN, at = 0) { return len > 0 ? [{ len, author, at }] : []; }
+// The minimal replaced range: [start,end) of `prev` became `insLen` new chars in `next`.
+function diffRange(prev, next) {
+  const max = Math.min(prev.length, next.length);
+  let s = 0; while (s < max && prev[s] === next[s]) s++;
+  let e = 0; while (e < max - s && prev[prev.length - 1 - e] === next[next.length - 1 - e]) e++;
+  return { start: s, end: prev.length - e, insLen: next.length - s - e };
+}
+function mergeRuns(runs) {
+  const out = [];
+  for (const r of runs) {
+    if (!r.len) continue;
+    const last = out[out.length - 1];
+    if (last && last.author === r.author && last.at === r.at) last.len += r.len;
+    else out.push({ len: r.len, author: r.author, at: r.at });
+  }
+  return out;
+}
+function spliceAttribution(runs, start, end, insLen, author, at) {
+  const before = [], after = [];
+  let pos = 0;
+  for (const r of runs) {
+    const rStart = pos, rEnd = pos + r.len;
+    if (rEnd <= start) before.push(r);
+    else if (rStart >= end) after.push(r);
+    else {
+      if (rStart < start) before.push({ len: start - rStart, author: r.author, at: r.at });
+      if (rEnd > end) after.push({ len: rEnd - end, author: r.author, at: r.at });
+    }
+    pos = rEnd;
+  }
+  return mergeRuns([...before, ...(insLen ? [{ len: insLen, author, at }] : []), ...after]);
+}
+function applyAttribution(runs, prev, next, author, at) {
+  const cur = Array.isArray(runs) && runs.length ? runs : blankAttribution(prev.length);
+  const { start, end, insLen } = diffRange(prev, next);
+  if (start === end && !insLen) return cur; // no change
+  return spliceAttribution(cur, start, end, insLen, author, at);
+}
+function attributionSummary(runs) {
+  const by = new Map();
+  let total = 0;
+  for (const r of runs || []) { by.set(r.author, (by.get(r.author) || 0) + r.len); total += r.len; }
+  return { by: [...by.entries()].map(([author, chars]) => ({ author, chars })).sort((a, b) => b.chars - a.chars), total };
+}
+// Adopt a stored ledger only if it still matches the body length (a note edited by an
+// older build, or imported, won't have one) — otherwise seed the whole body as You.
+function normalizeAttribution(runs, bodyLen, at) {
+  if (Array.isArray(runs) && runs.length && runs.reduce((n, r) => n + (r.len || 0), 0) === bodyLen) return mergeRuns(runs);
+  return blankAttribution(bodyLen, HUMAN, at);
+}
+
+// Record the pre-change checkpoint if the body changed, AND attribute the changed
+// span to `author`. Consecutive single-char typing within 500ms coalesces into one
+// undo step; a big delta (paste/insert/format/@insert output) or `discrete` starts a
+// fresh step.
+function recordEdit({ discrete = false, author = HUMAN } = {}) {
   const ta = $('n-body');
   if (ta.value === histPrev.value) { histPrev.start = ta.selectionStart; histPrev.end = ta.selectionEnd; return; }
   const now = Date.now();
+  if (current) current.attribution = applyAttribution(current.attribution, histPrev.value, ta.value, author, now);
   const smallDelta = Math.abs(ta.value.length - histPrev.value.length) <= 2;
   const newStep = discrete || !histCoalescing || (now - histAt > 500) || !smallDelta;
   if (newStep) {
@@ -314,13 +364,103 @@ function recordEdit({ discrete = false } = {}) {
   histAt = now;
   histCoalescing = !discrete;
 }
+
+// A labelled, restorable snapshot of the note (body + its attribution), capped.
+function pushVersion(by, label) {
+  if (!current) return;
+  current.versions = Array.isArray(current.versions) ? current.versions : [];
+  const body = $('n-body').value;
+  const last = current.versions[current.versions.length - 1];
+  if (last && last.body === body) return; // nothing new since the last snapshot
+  current.versions.push({ body, attribution: current.attribution || blankAttribution(body.length), at: Date.now(), by, label: label || by });
+  if (current.versions.length > 40) current.versions.shift();
+}
+
+// ── History panel — authorship summary + version snapshots (revert) ───────────────
+function authorClass(author) { return author === HUMAN ? 'av-human' : 'av-ai'; }
+function renderHistorySummary() {
+  const panel = $('n-history');
+  if (!panel || panel.classList.contains('hidden')) return;
+  const sum = attributionSummary(current?.attribution || []);
+  $('n-history-summary').textContent = sum.total
+    ? sum.by.map((b) => `${b.author} ${Math.round((b.chars / sum.total) * 100)}%`).join(' · ')
+    : '';
+  if ($('n-history-attrib-view').classList.contains('shown')) renderAttribView();
+}
+// The "who wrote what" view — the note's text, each run tinted + titled by author/time.
+function renderAttribView() {
+  const el = $('n-history-attrib-view');
+  const body = $('n-body').value;
+  const runs = normalizeAttribution(current?.attribution, body.length, current?.updatedAt || 0);
+  let pos = 0;
+  const parts = [];
+  for (const r of runs) {
+    const seg = body.slice(pos, pos + r.len); pos += r.len;
+    parts.push(`<span class="av-seg ${authorClass(r.author)}" title="${escapeHtml(r.author)} · ${escapeHtml(relTime(r.at))}">${escapeHtml(seg)}</span>`);
+  }
+  el.innerHTML = parts.join('') || '<span class="history-empty">Empty note.</span>';
+}
+function renderHistory() {
+  const panel = $('n-history');
+  if (!panel || panel.classList.contains('hidden')) return;
+  renderHistorySummary();
+  const wrap = $('n-history-versions');
+  wrap.innerHTML = '';
+  const vers = current?.versions || [];
+  if (!vers.length) {
+    wrap.innerHTML = '<div class="history-empty">No versions yet. One is captured on each AI action; “＋ Save version” snapshots your current draft. Restore rolls the note back (itself undoable).</div>';
+    return;
+  }
+  for (let i = vers.length - 1; i >= 0; i--) {
+    const v = vers[i];
+    const row = document.createElement('div');
+    row.className = 'hrow';
+    row.innerHTML =
+      `<span class="hrow-by ${authorClass(v.by)}">${escapeHtml(v.label || v.by)}</span>` +
+      `<span class="hrow-when">${escapeHtml(relTime(v.at))}</span>` +
+      `<span class="hrow-len">${v.body.length} chars</span>` +
+      '<button class="hrow-restore">Restore</button>';
+    row.querySelector('.hrow-restore').onclick = () => restoreVersion(i);
+    wrap.appendChild(row);
+  }
+}
+function restoreVersion(idx) {
+  if (!current) return;
+  if (noteJobs.has(current.id)) return toast('A command is running — stop it first (Esc)');
+  const v = current.versions?.[idx];
+  if (!v) return;
+  const ta = $('n-body');
+  if (ta.value === v.body) return toast('Already at this version');
+  pushVersion(HUMAN, 'Before restore'); // so the restore itself is reversible from the list
+  undoStack.push(histPrev);              // and undoable with ⌘Z
+  if (undoStack.length > HIST_MAX) undoStack.shift();
+  redoStack = [];
+  ta.value = v.body;
+  current.body = v.body;
+  current.attribution = normalizeAttribution(v.attribution, v.body.length, v.at);
+  histPrev = { value: v.body, start: v.body.length, end: v.body.length };
+  histCoalescing = false;
+  try { ta.setSelectionRange(v.body.length, v.body.length); } catch { /* noop */ }
+  autoGrow();
+  updateWordCount();
+  if (!$('n-panes').classList.contains('write')) updatePreview();
+  scheduleSave(true);
+  renderHistory();
+  toast('Restored');
+}
 function applyHistState(s) {
   const ta = $('n-body');
+  const oldBody = ta.value;
   ta.value = s.value;
   try { ta.setSelectionRange(s.start, s.end); } catch { /* out of range */ }
   histPrev = { value: s.value, start: s.start, end: s.end };
   histCoalescing = false;
-  if (current) current.body = s.value;
+  if (current) {
+    // Undo/redo is a human action — re-attribute the reverted span to You so the
+    // ledger stays length-consistent with the body.
+    current.attribution = applyAttribution(current.attribution, oldBody, s.value, HUMAN, Date.now());
+    current.body = s.value;
+  }
   autoGrow();
   updateWordCount();
   if (!$('n-panes').classList.contains('write')) updatePreview();
@@ -346,10 +486,11 @@ function redoEdit() {
 
 function onBodyInput() {
   if (ghostApplying) { autoGrow(); return; }     // our own ghost mutation — no autosave / swarm triggers
-  recordEdit();                                   // checkpoint for undo (coalesced while typing)
+  recordEdit();                                   // checkpoint for undo + attribution (coalesced while typing)
   if (ghost) { ghost = null; hideGhostHint(); }   // user edited around a pending ghost → drop the stale state
   autoGrow();
   if (!$('n-panes').classList.contains('write')) updatePreview();
+  renderHistorySummary();                         // live authorship % when the panel is open (cheap; no-op if closed)
   updateWordCount();
   scheduleSave();
   scheduleSuggest();
@@ -359,7 +500,6 @@ function onBodyInput() {
 }
 
 // ── agent beside you: local topic extraction → tag suggestions (no LLM) ──────────
-const tagify = (s) => String(s).toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
 let suggestTimer = null;
 let _topicFn = null; // lazily loaded — keeps topic-extraction OFF the page load path
 function scheduleSuggest() {
@@ -489,47 +629,8 @@ async function agentDeps() {
   return _agentDeps;
 }
 
-// ── model router bridge — appoint the right model to each swarm role ──────────────
-// The router (cowriter-router.js) is pure/portable; this thin bridge normalizes the
-// user's endpoints+agents into candidates and hands back a ready-to-stream agent per
-// role. Cheap for the Editor's constant proofreading, stronger for Writer/Researcher.
-const SWARM_ROLES = {
-  editor: { id: 'editor', prefer: 'cheap' },
-  researcher: { id: 'researcher', prefer: 'balanced' },
-  writer: { id: 'writer', prefer: 'strong' },
-  factcheck: { id: 'factcheck', prefer: 'strong' },
-};
-let _router = null;
-function swarmOverrides() {
-  try { return JSON.parse(localStorage.getItem('chatpanel.notes.cowriter.roles') || '{}'); } catch { return {}; }
-}
-function candidateModel(ag, settings) {
-  return ag.model || (ag.endpointId && (settings.endpoints || []).find((e) => e.id === ag.endpointId)?.model) || ag.bridgeAgent || '';
-}
-function swarmCandidates(deps, settings, license) {
-  const out = [];
-  for (const ep of settings.endpoints || []) {
-    if (ep?.model) out.push({ id: ep.id, name: ep.name || ep.model, kind: ep.kind || 'openai', model: ep.model, enabled: ep.enabled !== false, usable: deps.canUseAgent(license, settings, ep) });
-  }
-  for (const ag of settings.agents || []) {
-    const model = candidateModel(ag, settings);
-    if (!model) continue;
-    out.push({ id: ag.id, name: ag.name || ag.bridgeAgent || model, kind: ag.kind || 'bridge', bridgeAgent: ag.bridgeAgent, model, enabled: ag.enabled !== false, usable: deps.canUseAgent(license, settings, ag) });
-  }
-  return out;
-}
-// → { resolved, mode, label } for a role, or null. Falls back to the active agent so a
-// single-model user still gets every co-writer.
-async function roleAgent(deps, settings, license, roleId) {
-  if (!_router) _router = await import('./js/cowriter-router.js');
-  // Never route to a DISABLED model (enabled:false is "hidden from pickers"); appoint()
-  // further drops license-gated ones (usable:false).
-  const cands = swarmCandidates(deps, settings, license).filter((c) => c.enabled !== false);
-  const appt = _router.appoint(SWARM_ROLES[roleId], cands, { overrides: swarmOverrides() });
-  const target = appt ? deps.getTarget(settings, appt.id) : deps.getTarget(settings, settings.activeAgentId);
-  if (!target || !deps.canUseAgent(license, settings, target)) return null;
-  return { resolved: deps.resolveTarget(target, settings), mode: appt?.mode || 'api', label: target.name || appt?.model || '' };
-}
+// The model-router bridge (SWARM_ROLES / swarmCandidates / roleAgent / getRouter) lives
+// in js/notes-swarm-router.js — a portable, DI'd primitive with no editor state.
 
 const AGENT_SPECS = {
   continue: { sys: "You are a writing assistant continuing the user's note. Match their voice, tone and markdown style, and continue naturally from where the text stops. Output ONLY the continuation — no preamble, no repeating prior text.", max: 700 },
@@ -969,17 +1070,6 @@ function currentCommandLine() {
 // calls, partial output) so it's always obvious what's happening.
 const noteJobs = new Map(); // noteId -> job
 
-function compactInput(input, max = 60) {
-  try {
-    if (input == null) return '';
-    const s = typeof input === 'string' ? input : JSON.stringify(input);
-    const flat = s.replace(/\s+/g, ' ').trim();
-    return flat.length > max ? `${flat.slice(0, max)}…` : flat;
-  } catch { return ''; }
-}
-
-const JOB_ICON = { starting: '⏳', thinking: '💭', tool: '🔎', writing: '✍️' };
-
 // What the note's body should hold once the job is finished (or dropped): the
 // produced output, or — if it errored before producing anything — the original
 // command line, so the user can retry rather than losing their instruction.
@@ -997,17 +1087,6 @@ function jobProgressText(job) {
   if (job.out) return job.out;
   const icon = JOB_ICON[job.status] || '⏳';
   return `${icon} @${job.cmd} — ${job.statusText}`;
-}
-
-// Compact, readable tool names for the armed-toolset line (MCP tools are namespaced
-// `mcp_<server>__<tool>` — show just server/tool), capped so the line stays short.
-function prettyTools(names) {
-  const pretty = names.map((n) => {
-    const m = /^mcp_(.+?)__(.+)$/.exec(n);
-    return m ? `${m[1]}/${m[2]}` : n;
-  });
-  const shown = pretty.slice(0, 6).join(', ');
-  return pretty.length > 6 ? `${shown}, +${pretty.length - 6} more` : shown;
 }
 
 // Mirror a running job into the editor — ONLY when its note is the open one. Keyed
@@ -1041,21 +1120,6 @@ function attachEditorToJob(job) {
 // job IS the activity while running, and its final state persists after.
 const noteActivity = new Map();       // noteId -> activity (the job, live or finished)
 const activityCollapsed = new Set();  // noteIds the user has collapsed
-
-function toolTitle(name) {
-  if (/^task$/i.test(name)) return 'subagent';
-  const m = /^mcp_(.+?)__(.+)$/.exec(name || '');
-  return m ? `${m[1]} / ${m[2]}` : (name || 'tool');
-}
-function stepIcon(s) {
-  if (/^task$/i.test(s.tool)) return '🪆'; // a spawned subagent
-  if (/search/i.test(s.tool)) return '🌐';
-  if (/^mcp_/.test(s.tool)) return '🔌';
-  if (/^history_/.test(s.tool)) return '🗂';
-  if (/^(read|write|edit|glob|grep|ls)$/i.test(s.tool)) return '📄';
-  if (/^bash$/i.test(s.tool)) return '⌘';
-  return '🔧';
-}
 
 let _actRaf = null;
 function scheduleActivityRender() {
@@ -1149,7 +1213,7 @@ async function persistJobBody(job) {
   const rec = current?.id === job.noteId ? current : await getNote(job.noteId);
   if (!rec) return;
   const body = job.head + jobFinalMid(job) + job.tail;
-  const saved = await saveNote({ id: rec.id, title: rec.title, body, tags: rec.tags, createdAt: rec.createdAt });
+  const saved = await saveNote({ id: rec.id, title: rec.title, body, tags: rec.tags, createdAt: rec.createdAt, attribution: rec.attribution, versions: rec.versions });
   Object.assign(rec, saved, { body });
   updateEntry(rec);
   renderList($('n-search').value);
@@ -1261,15 +1325,21 @@ async function runNoteCommand() {
     const aborted = job.abort.signal.aborted;
     job.done = true;
     noteJobs.delete(job.noteId);
-    await persistJobBody(job); // lands the result even if the note is no longer open
     if (current?.id === job.noteId) {
       $('n-body').readOnly = false;
       renderJob(job); // collapse the progress block down to the final output
+      // Provenance: attribute the produced text to the agent + snapshot a restore point.
+      if (!aborted && !job.error) {
+        recordEdit({ author: job.modelLabel, discrete: true });
+        pushVersion(job.modelLabel, `@${job.cmd} · ${job.modelLabel}`);
+      }
       current.body = $('n-body').value;
       updateWordCount();
       setStatus(aborted ? '' : 'Saved', !aborted);
       renderActivity(); // the trace persists, now showing final results
+      renderHistory();
     }
+    await persistJobBody(job); // lands the result (+ ledger) even if the note isn't open
     renderList($('n-search').value); // clear the running badge
   }
   return true;
@@ -1581,23 +1651,12 @@ let researchTimer = null;
 let researchQuestion = ''; // set when the affordance orchestrator triggered research for a "?" line
 let _ragMod = null;
 const researchDismissed = new Set();
-const KIND_ICON = { note: '📝', meeting: '👥', chat: '💬', web: '🌐' };
 
 function researchQuery() {
   // Intent + title + the section around the cursor — a strong, cheap relevance signal.
   const title = ($('n-title').value || '').trim();
   const para = currentParagraph().text.trim();
   return [board.intent, title, para].filter(Boolean).join('\n').trim().slice(0, 500);
-}
-function sourceKind(sourceId = '') {
-  if (sourceId.startsWith('note:')) return 'note';
-  if (sourceId.startsWith('meeting:')) return 'meeting';
-  return 'chat';
-}
-function researchSnippet(text = '') {
-  return String(text)
-    .replace(/^(NOTE|CHAT|MEETING):.*$/gim, '').replace(/^(Date|Tags):.*$/gim, '')
-    .replace(/\s+/g, ' ').trim().slice(0, 140);
 }
 function setResearchStatus(t) { const el = $('n-research-status'); if (el) el.textContent = t || ''; }
 function clearResearch() {
@@ -1724,7 +1783,6 @@ function openResearch(c) {
   if (/^https?:/i.test(c.url)) window.open(c.url, '_blank', 'noopener,noreferrer');
   else chrome.tabs?.create?.({ url: c.url });
 }
-function escapeMdText(s) { return String(s || '').replace(/[[\]]/g, '\\$&'); }
 
 // ── Writer co-writer — Phase 3 of the swarm ──────────────────────────────────────
 // Draft-ahead "ghost text". On ⌘/Ctrl+Enter the strong (routed) Writer model continues
@@ -1858,22 +1916,16 @@ async function draftAhead() {
 // Shows each role, the model the router APPOINTED (with its tier / subagent mode), and
 // a dropdown to pin an override. Reuses swarmCandidates + the pure router; overrides
 // persist to the same key roleAgent() already reads, so pinning takes effect instantly.
-const SWARM_ROLE_META = [
-  { id: 'editor', icon: '✍️', name: 'Editor', desc: 'Proofreads as you type' },
-  { id: 'researcher', icon: '🔎', name: 'Researcher', desc: 'Finds related material' },
-  { id: 'writer', icon: '✨', name: 'Writer', desc: 'Drafts ahead on ⌘↵' },
-  { id: 'factcheck', icon: '⚠️', name: 'Fact-checker', desc: 'Flags shaky claims (Focus)' },
-];
 async function renderSwarmMenu() {
   const menu = $('n-swarm-menu');
-  let deps, settings, license, cands, overrides;
+  let deps, settings, license, cands, overrides, router;
   try {
     deps = await agentDeps();
     settings = await deps.getSettings();
     license = await deps.getLicense();
     cands = swarmCandidates(deps, settings, license); // ALL configured models (enabled + disabled)
     overrides = swarmOverrides();
-    if (!_router) _router = await import('./js/cowriter-router.js');
+    router = await getRouter();
   } catch { menu.innerHTML = '<div class="agent-hint">Set up a model in ChatPanel settings first</div>'; return; }
   if (!cands.length) { menu.innerHTML = '<div class="agent-hint">Add a model in ChatPanel settings to use the co-writer swarm.</div>'; return; }
   // Only ENABLED + license-usable models are actually routable; disabled ones are shown
@@ -1903,7 +1955,7 @@ async function renderSwarmMenu() {
   intentWrap.appendChild(intentIn);
   menu.appendChild(intentWrap);
   for (const role of SWARM_ROLE_META) {
-    const appt = _router.appoint(SWARM_ROLES[role.id], pickable, { overrides }); // route only among enabled+usable
+    const appt = router.appoint(SWARM_ROLES[role.id], pickable, { overrides }); // route only among enabled+usable
     const tier = appt?.mode === 'subagent' ? 'subagent' : (appt?.tier || SWARM_ROLES[role.id].prefer);
     const pinned = overrides[role.id] && pickable.some((c) => c.id === overrides[role.id]) ? overrides[role.id] : ''; // a disabled pin → falls back to Auto
     const row = document.createElement('div');
@@ -2376,6 +2428,24 @@ function init() {
     $('n-research').classList.add('collapsed');
     $('n-research-collapse').textContent = '▸';
   }
+
+  // History panel (🕓) — authorship ledger + version snapshots you can revert to.
+  $('n-history-btn').onclick = () => {
+    const p = $('n-history');
+    const show = p.classList.contains('hidden');
+    p.classList.toggle('hidden', !show);
+    if (show) renderHistory();
+  };
+  $('n-history-collapse').onclick = () => $('n-history').classList.add('hidden');
+  $('n-history-save').onclick = () => { pushVersion(HUMAN, 'Manual save'); scheduleSave(true); renderHistory(); toast('Version saved'); };
+  $('n-history-attrib').onclick = () => {
+    const v = $('n-history-attrib-view');
+    const show = !v.classList.contains('shown');
+    v.classList.toggle('shown', show);
+    v.classList.toggle('hidden', !show);
+    $('n-history-attrib').classList.toggle('on', show);
+    if (show) renderAttribView();
+  };
 
   // Swarm team panel (⚙) — open shows the router's appointments + per-role overrides.
   $('n-swarm').onclick = (e) => {

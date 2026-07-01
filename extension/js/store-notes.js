@@ -113,6 +113,10 @@ export async function saveNote(note) {
     tags: Array.isArray(note.tags) ? note.tags : [],
     createdAt: note.createdAt || now,
     updatedAt: now,
+    // Provenance ledger: who (human / which agent) wrote each run of the body, and
+    // labelled version snapshots to revert to. Carried verbatim when provided.
+    ...(Array.isArray(note.attribution) ? { attribution: note.attribution } : {}),
+    ...(Array.isArray(note.versions) ? { versions: note.versions } : {}),
   });
 }
 

@@ -73,6 +73,7 @@
             </div>
             <button id="n-cw-toggle" class="cw-toggle" title="Co-writer — proofread as you write">✍️</button>
             <button id="n-research-btn" class="cw-toggle" title="Research — find related notes, chats & the web">🔎</button>
+            <button id="n-history-btn" class="cw-toggle" title="History — who wrote what, and versions to revert to">🕓</button>
             <div class="agent-wrap">
               <button id="n-swarm" class="cw-toggle" title="Co-writer team — pick a model per role" aria-haspopup="menu">⚙</button>
               <div id="n-swarm-menu" class="agent-menu swarm-menu hidden" role="menu"></div>
@@ -121,6 +122,19 @@
             </div>
             <div id="n-activity-armed" class="activity-armed"></div>
             <div id="n-activity-cards" class="activity-cards"></div>
+          </div>
+          <div id="n-history" class="history hidden" aria-label="Version history and authorship">
+            <div class="history-head">
+              <span class="history-name">🕓 History</span>
+              <span id="n-history-summary" class="history-summary"></span>
+              <div class="history-tools">
+                <button id="n-history-attrib" class="research-web" title="Show who wrote what">👤 Who wrote what</button>
+                <button id="n-history-save" class="research-web" title="Snapshot the current draft as a version">＋ Save version</button>
+                <button id="n-history-collapse" class="research-collapse" title="Close">▾</button>
+              </div>
+            </div>
+            <div id="n-history-attrib-view" class="attrib-view hidden"></div>
+            <div id="n-history-versions" class="history-versions"></div>
           </div>
           <div id="n-cowriter" class="cowriter hidden"></div>
           <div class="editor-foot">
