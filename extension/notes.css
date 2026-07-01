@@ -267,6 +267,13 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .rcard-answer { flex: 0 0 auto; align-self: stretch; display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; border: 1px solid var(--accent); background: var(--accent-weak); color: var(--accent); border-radius: 10px; padding: 6px 12px; }
 .rcard-answer:hover { background: var(--accent); color: #fff; }
 .rcard-answer .ra-q { font-weight: 400; opacity: .8; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-gear { display: flex; gap: 4px; padding: 2px 6px 8px; }
+.sg-opt { flex: 1; font: inherit; font-size: 12px; cursor: pointer; border: 1px solid var(--border-strong); background: var(--card); color: var(--muted); border-radius: 8px; padding: 5px 8px; }
+.sg-opt:hover { border-color: var(--accent); color: var(--text); }
+.sg-opt.on { border-color: var(--accent); background: var(--accent-weak); color: var(--accent); font-weight: 600; }
+.ss-focus { color: #b4530a; font-weight: 700; }
+.cw-factcheck { border-color: #e0a43a; }
+.cw-factcheck b, .cw-factcheck { color: #b4530a; }
 .swarm-intent { display: block; padding: 4px 6px 8px; }
 .swarm-intent > span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .swarm-intent-in { width: 100%; font: inherit; font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--card); color: var(--text); }

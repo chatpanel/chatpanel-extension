@@ -169,6 +169,8 @@ async function openNote(id, preloaded = null) {
   clearResearch(); // drop the previous note's research shelf (re-runs on the next typing pause)
   resetSwarmState(); // fresh note → the team starts idle
   lastQuestion = '';
+  lastAutoDraft = '';
+  lastFactSentence = '';
   board.log = [];
   loadIntent(); // this note's saved intent → guides the swarm + shows in the strip
   updatePreview();
@@ -400,6 +402,7 @@ const SWARM_ROLES = {
   editor: { id: 'editor', prefer: 'cheap' },
   researcher: { id: 'researcher', prefer: 'balanced' },
   writer: { id: 'writer', prefer: 'strong' },
+  factcheck: { id: 'factcheck', prefer: 'strong' },
 };
 let _router = null;
 function swarmOverrides() {
@@ -1360,6 +1363,7 @@ const SWARM_ROLE_META = [
   { id: 'editor', icon: '✍️', name: 'Editor', desc: 'Proofreads as you type' },
   { id: 'researcher', icon: '🔎', name: 'Researcher', desc: 'Finds related material' },
   { id: 'writer', icon: '✨', name: 'Writer', desc: 'Drafts ahead on ⌘↵' },
+  { id: 'factcheck', icon: '⚠️', name: 'Fact-checker', desc: 'Flags shaky claims (Focus)' },
 ];
 async function renderSwarmMenu() {
   const menu = $('n-swarm-menu');
@@ -1374,6 +1378,14 @@ async function renderSwarmMenu() {
   } catch { menu.innerHTML = '<div class="agent-hint">Set up a model in ChatPanel settings first</div>'; return; }
   if (!cands.length) { menu.innerHTML = '<div class="agent-hint">Add a model in ChatPanel settings to use the co-writer swarm.</div>'; return; }
   menu.innerHTML = '<div class="swarm-title">Co-writer team</div>';
+  // Two gears — Ambient (quiet, suggest-only) vs Focus (drafts sections + fact-checks).
+  const gearRow = document.createElement('div');
+  gearRow.className = 'swarm-gear';
+  gearRow.innerHTML =
+    `<button class="sg-opt ${swarmGear === 'ambient' ? 'on' : ''}" data-g="ambient" title="Quiet — suggestions only, cheap/free members">🌙 Ambient</button>`
+    + `<button class="sg-opt ${swarmGear === 'focus' ? 'on' : ''}" data-g="focus" title="Active — drafts sections on the spot + runs the Fact-checker">⚡ Focus</button>`;
+  gearRow.querySelectorAll('.sg-opt').forEach((b) => { b.onclick = () => setGear(b.dataset.g); });
+  menu.appendChild(gearRow);
   // Shared intent — this note's goal; guides the Writer & Researcher.
   const intentWrap = document.createElement('label');
   intentWrap.className = 'swarm-intent';
@@ -1429,7 +1441,15 @@ const swarm = {
   researcher: { state: 'idle', info: '' },  // idle | working | 'N found'
   writer: { state: 'idle', info: '' },      // idle | working | 'draft ready'
   connector: { state: 'idle', info: '' },   // idle | 'N links'
+  factcheck: { state: 'idle', info: '' },   // idle | working | 'N flags' (Focus only)
 };
+let swarmGear = localStorage.getItem('chatpanel.notes.gear') || 'ambient'; // 'ambient' | 'focus'
+function setGear(g) {
+  swarmGear = g === 'focus' ? 'focus' : 'ambient';
+  localStorage.setItem('chatpanel.notes.gear', swarmGear);
+  renderSwarmStatus();
+  if ($('n-swarm-menu') && !$('n-swarm-menu').classList.contains('hidden')) renderSwarmMenu();
+}
 function setSwarmState(role, state, info = '') {
   if (!swarm[role]) return;
   swarm[role] = { state, info };
@@ -1446,11 +1466,13 @@ function renderSwarmStatus() {
   const chip = (icon, r, title) =>
     `<span class="ss ss-${r.state}" title="${title}"><span class="ss-dot"></span>${icon}${r.info ? ` <span class="ss-info">${escapeHtml(r.info)}</span>` : ''}</span>`;
   el.innerHTML =
-    (board.intent ? `<span class="ss ss-intent" title="This note's goal — guides the Writer & Researcher">🎯 <span class="ss-info">${escapeHtml(board.intent.slice(0, 48))}</span></span>` : '')
+    (swarmGear === 'focus' ? '<span class="ss ss-focus" title="Focus mode — the swarm drafts sections + fact-checks (set in ⚙)">⚡ Focus</span>' : '')
+    + (board.intent ? `<span class="ss ss-intent" title="This note's goal — guides the Writer & Researcher">🎯 <span class="ss-info">${escapeHtml(board.intent.slice(0, 48))}</span></span>` : '')
     + chip('✍️', swarm.editor, 'Editor — proofreads as you type')
     + chip('🔎', swarm.researcher, 'Researcher — finds related material')
     + chip('✨', swarm.writer, 'Writer — ⌘↵ to draft ahead')
-    + chip('🔗', swarm.connector, 'Connector — links new topics to your docs');
+    + chip('🔗', swarm.connector, 'Connector — links new topics to your docs')
+    + (swarmGear === 'focus' ? chip('⚠️', swarm.factcheck, 'Fact-checker — flags shaky claims') : '');
 }
 
 // ── The blackboard — shared intent + activity log the whole swarm reads (Phase 4) ──
@@ -1514,9 +1536,72 @@ function observe() {
   const t = currentLine().text.trim();
   const isQuestion = /\?\s*$/.test(t) && t.split(/\s+/).length >= 3;
   const aff = writerAffordance();
-  if (aff) addWriterNudge(aff); else removeWriterNudge();
+  // Focus mode actively drafts a section on the spot; Ambient just nudges.
+  if (aff) { if (swarmGear === 'focus' && aff.kind === 'section') autoDraft(aff); else addWriterNudge(aff); }
+  else removeWriterNudge();
   if (isQuestion) { if (t !== lastQuestion) { lastQuestion = t; runResearch({ question: t }); } }
   else { runResearch(); runConnector(); }
+  if (swarmGear === 'focus') runFactcheck(); // the reasoning-tier member only runs in Focus
+}
+let lastAutoDraft = '';
+function autoDraft(aff) {
+  const key = `${aff.kind}:${aff.at}`;
+  if (ghost || writerAbort || key === lastAutoDraft) { addWriterNudge(aff); return; } // never repeat a spot
+  lastAutoDraft = key;
+  const ta = $('n-body');
+  ta.focus();
+  ta.selectionStart = ta.selectionEnd = Math.min(aff.at, ta.value.length);
+  draftAhead();
+}
+
+// Fact-checker — Focus-only, reasoning-tier. Checks the last completed sentence in the
+// current paragraph against the rest of the note for unsupported / contradictory claims,
+// and flags it in the suggestion queue. Rate-limited by design: Focus-gated, once per
+// sentence, on the 2.6s idle — and it goes through the PII harness like every member.
+let factcheckGen = 0;
+let lastFactSentence = '';
+async function runFactcheck() {
+  if (!cwEnabled || !current || swarmGear !== 'focus' || noteJobs.has(current.id) || agentAbort || writerAbort) return;
+  const claim = ((currentParagraph().text.match(/[^.!?]+[.!?]+/g) || []).pop() || '').trim();
+  if (claim.length < 24 || claim === lastFactSentence) return;
+  lastFactSentence = claim;
+  const gen = ++factcheckGen;
+  let deps;
+  try { deps = await agentDeps(); } catch { return; }
+  const settings = await deps.getSettings();
+  const license = await deps.getLicense();
+  const fc = await roleAgent(deps, settings, license, 'factcheck');
+  if (!fc) return;
+  let redaction = null;
+  try { redaction = deps.buildRedaction?.({ settings, license }); } catch { /* redaction off */ }
+  setSwarmState('factcheck', 'working');
+  const sys = 'You are a careful fact-checker reviewing ONE claim from a note. Decide only if the claim is internally UNSUPPORTED or CONTRADICTS the rest of the note — do not judge outside facts. Reply with a single compact JSON object and nothing else: {"verdict":"ok"|"unsupported"|"contradiction","why":"<=12 words"}.';
+  let out = '';
+  try {
+    out = await deps.streamChat({
+      agent: { ...fc.resolved, systemPrompt: sys, maxTokens: 120, temperature: 0 },
+      settings, redaction,
+      messages: [{ role: 'user', content: `NOTE:\n${(current.body || '').slice(0, 4000)}\n\nCLAIM TO CHECK:\n${claim}` }],
+    });
+  } catch { setSwarmState('factcheck', 'idle'); return; }
+  if (gen !== factcheckGen || !cwEnabled) return;
+  let verdict = null;
+  try { verdict = JSON.parse((out.match(/\{[\s\S]*\}/) || ['{}'])[0]); } catch { /* non-JSON → treat as ok */ }
+  const bad = verdict && (verdict.verdict === 'unsupported' || verdict.verdict === 'contradiction');
+  if (bad) {
+    const key = `fact:${claim.slice(0, 48).toLowerCase()}`;
+    if (!boardDismissed.has(key)) {
+      boardSuggestions = boardSuggestions.filter((s) => s.key !== key).concat([{
+        role: 'factcheck', icon: '⚠️', key,
+        html: verdict.verdict === 'contradiction' ? 'Contradiction' : 'Unsupported',
+        title: `${escapeHtml(verdict.why || 'shaky claim')} · Fact-checker (${escapeHtml(fc.resolved.model || 'model')})`,
+        apply: () => { toast(verdict.why || 'Flagged claim'); boardDismissed.add(key); },
+      }]);
+      logActivity('Fact-checker', `${verdict.verdict}: ${(verdict.why || '').slice(0, 40)}`);
+    }
+  }
+  setSwarmState('factcheck', 'idle', bad ? '1 flag' : 'ok');
+  renderCowriter();
 }
 
 // What the cursor line affords the Writer: an empty outline item, a TODO marker, or a
