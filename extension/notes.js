@@ -168,6 +168,9 @@ async function openNote(id, preloaded = null) {
   renderBacklinks(current.title);
   clearResearch(); // drop the previous note's research shelf (re-runs on the next typing pause)
   resetSwarmState(); // fresh note → the team starts idle
+  lastQuestion = '';
+  board.log = [];
+  loadIntent(); // this note's saved intent → guides the swarm + shows in the strip
   updatePreview();
   updateWordCount();
   autoGrow();
@@ -942,6 +945,7 @@ async function runCowriter() {
     .map((e) => ({ ...e, start: e.start + idx, end: e.end + idx, key: _cwDiff.editKey(e) }))
     .filter((e) => !cwDismissed.has(e.key));
   renderCowriter();
+  if (cwSuggestions.length) logActivity('Editor', `${cwSuggestions.length} fix${cwSuggestions.length === 1 ? '' : 'es'} offered`);
   setSwarmState('editor', 'idle', cwSuggestions.length ? `${cwSuggestions.length} fix${cwSuggestions.length === 1 ? '' : 'es'}` : '');
 }
 
@@ -1022,15 +1026,16 @@ let researchGen = 0;
 let researchCards = [];
 let researchBusy = false;
 let researchTimer = null;
+let researchQuestion = ''; // set when the affordance orchestrator triggered research for a "?" line
 let _ragMod = null;
 const researchDismissed = new Set();
 const KIND_ICON = { note: '📝', meeting: '👥', chat: '💬', web: '🌐' };
 
 function researchQuery() {
-  // Title + the section around the cursor — a strong, cheap relevance signal.
+  // Intent + title + the section around the cursor — a strong, cheap relevance signal.
   const title = ($('n-title').value || '').trim();
   const para = currentParagraph().text.trim();
-  return `${title}\n${para}`.trim().slice(0, 500);
+  return [board.intent, title, para].filter(Boolean).join('\n').trim().slice(0, 500);
 }
 function sourceKind(sourceId = '') {
   if (sourceId.startsWith('note:')) return 'note';
@@ -1044,7 +1049,7 @@ function researchSnippet(text = '') {
 }
 function setResearchStatus(t) { const el = $('n-research-status'); if (el) el.textContent = t || ''; }
 function clearResearch() {
-  researchGen++; researchCards = []; researchBusy = false;
+  researchGen++; researchCards = []; researchBusy = false; researchQuestion = '';
   const el = $('n-research');
   if (el) { el.classList.add('hidden'); $('n-research-cards').innerHTML = ''; }
   setResearchStatus('');
@@ -1052,14 +1057,15 @@ function clearResearch() {
 function scheduleResearch() {
   if (!cwEnabled) return;               // the researcher rides the same swarm toggle
   clearTimeout(researchTimer);
-  researchTimer = setTimeout(() => runResearch(), 2600); // longer idle than the editor
+  researchTimer = setTimeout(() => autoResearch(), 2600); // longer idle than the editor
 }
 
-async function runResearch({ web = false } = {}) {
+async function runResearch({ web = false, question = '' } = {}) {
   if (!current) return;
-  const q = researchQuery();
+  researchQuestion = question; // a question-driven run offers a Writer handoff in the shelf
+  const q = question || researchQuery();
   if (!q) { if (web) toast('Write something to research first'); return; }
-  if (q.length < 16 && !web) return;
+  if (q.length < 16 && !web && !question) return;
   const gen = ++researchGen;
   researchBusy = true;
   setSwarmState('researcher', 'working');
@@ -1099,6 +1105,7 @@ async function runResearch({ web = false } = {}) {
   researchBusy = false;
   setResearchStatus('');
   renderResearch();
+  if (researchCards.length) logActivity('Researcher', question ? `answered “${question.slice(0, 40)}” · ${researchCards.length} sources` : `${researchCards.length} related`);
   setSwarmState('researcher', 'idle', researchCards.length ? `${researchCards.length} found` : '');
 }
 
@@ -1108,8 +1115,19 @@ function renderResearch() {
   if (!shelf || !wrap) return;
   $('n-research-count').textContent = researchCards.length ? String(researchCards.length) : '';
   wrap.innerHTML = '';
+  if (researchQuestion) { // Researcher → Writer handoff for a "?" the orchestrator caught
+    const h = document.createElement('button');
+    h.className = 'rcard-answer';
+    h.title = 'Hand off to the Writer — draft an answer grounded in these sources';
+    h.innerHTML = `✍️ Draft an answer <span class="ra-q">“${escapeHtml(researchQuestion.slice(0, 56))}”</span>`;
+    h.onclick = () => draftAnswer();
+    wrap.appendChild(h);
+  }
   if (!researchCards.length) {
-    wrap.innerHTML = `<div class="research-empty">${researchBusy ? 'Working…' : 'Nothing related yet — keep writing, or search the web.'}</div>`;
+    const empty = document.createElement('div');
+    empty.className = 'research-empty';
+    empty.textContent = researchBusy ? 'Working…' : (researchQuestion ? 'No sources found — the Writer can still answer.' : 'Nothing related yet — keep writing, or search the web.');
+    wrap.appendChild(empty);
     shelf.classList.remove('hidden');
     return;
   }
@@ -1203,6 +1221,7 @@ function acceptGhost() {
   ghost = null;
   hideGhostHint();
   setSwarmState('writer', 'idle');
+  logActivity('Writer', 'draft accepted');
   current.body = ta.value;
   autoGrow();
   if (!$('n-panes').classList.contains('write')) updatePreview();
@@ -1238,7 +1257,8 @@ async function draftAhead() {
     ? '\n\nRelated material you may draw on (only if genuinely useful — cite as [[title]] or [text](url)):\n'
       + researchCards.slice(0, 5).map((c) => `- ${c.title}${c.snippet ? ` — ${c.snippet}` : ''}`).join('\n')
     : '';
-  const sys = "You continue the user's note from where it stops. Match their voice, tone, and markdown style exactly. Write only the NEXT one or two sentences (or finish the current one) — concise, natural, no preamble, no repetition of prior text, no meta commentary. Output ONLY the continuation." + grounding;
+  const intentLine = board.intent ? `The note's goal (guide your writing toward it): ${board.intent}.\n\n` : '';
+  const sys = intentLine + "You continue the user's note from where it stops. Match their voice, tone, and markdown style exactly. Write only the NEXT one or two sentences (or finish the current one) — concise, natural, no preamble, no repetition of prior text, no meta commentary. Output ONLY the continuation." + grounding;
   let redaction = null;
   try { redaction = deps.buildRedaction?.({ settings, license }); } catch { /* redaction off */ }
 
@@ -1264,7 +1284,7 @@ async function draftAhead() {
     const aborted = writerAbort?.signal.aborted;
     writerAbort = null;
     setStatus('');
-    if (!aborted && gen === writerGen && out.trim()) { renderGhost(from, out.replace(/\s+$/, '')); showGhostHint('Tab ↹ accept · Esc dismiss'); setSwarmState('writer', 'idle', 'draft ready'); }
+    if (!aborted && gen === writerGen && out.trim()) { renderGhost(from, out.replace(/\s+$/, '')); showGhostHint('Tab ↹ accept · Esc dismiss'); setSwarmState('writer', 'idle', 'draft ready'); logActivity('Writer', 'drafted a continuation'); }
     else { clearGhost({ remove: true }); setSwarmState('writer', 'idle'); }
   }
 }
@@ -1291,6 +1311,19 @@ async function renderSwarmMenu() {
   } catch { menu.innerHTML = '<div class="agent-hint">Set up a model in ChatPanel settings first</div>'; return; }
   if (!cands.length) { menu.innerHTML = '<div class="agent-hint">Add a model in ChatPanel settings to use the co-writer swarm.</div>'; return; }
   menu.innerHTML = '<div class="swarm-title">Co-writer team</div>';
+  // Shared intent — this note's goal; guides the Writer & Researcher.
+  const intentWrap = document.createElement('label');
+  intentWrap.className = 'swarm-intent';
+  intentWrap.innerHTML = '<span>🎯 Working on</span>';
+  const intentIn = document.createElement('input');
+  intentIn.type = 'text';
+  intentIn.className = 'swarm-intent-in';
+  intentIn.placeholder = 'e.g. draft a launch plan…';
+  intentIn.maxLength = 200;
+  intentIn.value = board.intent;
+  intentIn.oninput = () => setIntent(intentIn.value);
+  intentWrap.appendChild(intentIn);
+  menu.appendChild(intentWrap);
   for (const role of SWARM_ROLE_META) {
     const appt = _router.appoint(SWARM_ROLES[role.id], cands, { overrides });
     const tier = appt?.mode === 'subagent' ? 'subagent' : (appt?.tier || SWARM_ROLES[role.id].prefer);
@@ -1349,9 +1382,88 @@ function renderSwarmStatus() {
   const chip = (icon, r, title) =>
     `<span class="ss ss-${r.state}" title="${title}"><span class="ss-dot"></span>${icon}${r.info ? ` <span class="ss-info">${escapeHtml(r.info)}</span>` : ''}</span>`;
   el.innerHTML =
-    chip('✍️', swarm.editor, 'Editor — proofreads as you type')
+    (board.intent ? `<span class="ss ss-intent" title="This note's goal — guides the Writer & Researcher">🎯 <span class="ss-info">${escapeHtml(board.intent.slice(0, 48))}</span></span>` : '')
+    + chip('✍️', swarm.editor, 'Editor — proofreads as you type')
     + chip('🔎', swarm.researcher, 'Researcher — finds related material')
     + chip('✨', swarm.writer, 'Writer — ⌘↵ to draft ahead');
+}
+
+// ── The blackboard — shared intent + activity log the whole swarm reads (Phase 4) ──
+// One place the members coordinate: the user's one-line INTENT (what this note is for —
+// guides the Writer & Researcher) and a rolling LOG of what each member did (the
+// timeline). Per-note, local-only — a working hint, not note content.
+const board = { intent: '', log: [] };
+function boardIntentKey() { return current ? `chatpanel.notes.intent.${current.id}` : ''; }
+function loadIntent() { board.intent = (current && localStorage.getItem(boardIntentKey())) || ''; }
+function setIntent(v) {
+  board.intent = String(v || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  const k = boardIntentKey();
+  if (k) { if (board.intent) localStorage.setItem(k, board.intent); else localStorage.removeItem(k); }
+  renderSwarmStatus();
+}
+function logActivity(who, what) {
+  board.log.unshift({ who, what, at: Date.now() });
+  if (board.log.length > 30) board.log.length = 30;
+}
+// The away-timeline: click the status strip to see what the team did while you wrote.
+function timelineEl() {
+  let el = document.getElementById('n-timeline');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'n-timeline';
+    el.className = 'timeline hidden';
+    el.addEventListener('click', (e) => e.stopPropagation());
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function toggleTimeline() {
+  const el = timelineEl();
+  if (!el.classList.contains('hidden')) return el.classList.add('hidden');
+  if (!board.log.length) return toast('No swarm activity yet');
+  el.innerHTML = '<div class="tl-title">Swarm activity</div>' + board.log.map((e) =>
+    `<div class="tl-row"><span class="tl-who">${escapeHtml(e.who)}</span><span class="tl-what">${escapeHtml(e.what)}</span><span class="tl-when">${escapeHtml(relTime(e.at))}</span></div>`).join('');
+  el.classList.remove('hidden');
+  const strip = $('n-swarm-status').getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  el.style.left = `${Math.round(Math.min(Math.max(8, strip.left + strip.width / 2 - r.width / 2), window.innerWidth - r.width - 8))}px`;
+  el.style.top = `${Math.round(strip.top - r.height - 8)}px`;
+}
+
+// The single line the cursor sits on (for affordance detection).
+function currentLine() {
+  const ta = $('n-body');
+  const v = ta.value; const pos = ta.selectionStart;
+  const s = v.lastIndexOf('\n', pos - 1) + 1;
+  let e = v.indexOf('\n', pos); if (e < 0) e = v.length;
+  return { text: v.slice(s, e), start: s, end: e };
+}
+
+// Affordance orchestrator — the single auto-research decision (debounced by
+// scheduleResearch). A finished question on the cursor line (ends in "?") wakes the
+// Researcher for THAT question — free local retrieval, then a Writer handoff to draft
+// the answer. Otherwise it surfaces material related to what you're writing. One
+// trigger, so the two never clobber each other.
+let lastQuestion = '';
+function autoResearch() {
+  if (!cwEnabled || !current || noteJobs.has(current.id)) return;
+  const line = currentLine().text.trim();
+  const isQuestion = /\?\s*$/.test(line) && line.split(/\s+/).length >= 3;
+  if (isQuestion) { if (line !== lastQuestion) { lastQuestion = line; runResearch({ question: line }); } }
+  else runResearch(); // generic related-material for the current section
+}
+
+// Researcher → Writer handoff: draft an answer to the question the Researcher just
+// gathered sources for. Reuses the ghost machinery — position the caret right after the
+// question and let the (research-grounded) Writer continue.
+async function draftAnswer() {
+  if (!lastQuestion || ghost || writerAbort) return;
+  const ta = $('n-body');
+  const i = ta.value.indexOf(lastQuestion);
+  if (i < 0) return;
+  ta.focus();
+  ta.selectionStart = ta.selectionEnd = i + lastQuestion.length; // caret right after the "?"
+  await draftAhead();
 }
 
 // ── wire up ───────────────────────────────────────────────────────────────────
@@ -1503,6 +1615,10 @@ function init() {
   };
   $('n-swarm-menu').addEventListener('click', (e) => e.stopPropagation()); // keep open while choosing
   document.addEventListener('click', () => $('n-swarm-menu').classList.add('hidden'));
+
+  // Status strip → the away-timeline of what the swarm did.
+  $('n-swarm-status').onclick = (e) => { e.stopPropagation(); toggleTimeline(); };
+  document.addEventListener('click', () => timelineEl().classList.add('hidden'));
 
   document.addEventListener('keydown', (e) => {
     const mod = e.metaKey || e.ctrlKey;

@@ -247,7 +247,7 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .editor-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 40px; border-top: 1px solid var(--border); color: var(--faint); font-size: 12px; background: var(--card); }
 
 /* Swarm status strip — live team state in the footer (Editor / Researcher / Writer). */
-.swarm-status { display: flex; align-items: center; gap: 10px; margin: 0 auto; }
+.swarm-status { display: flex; align-items: center; gap: 10px; margin: 0 auto; cursor: pointer; }
 .swarm-status:empty { display: none; }
 .ss { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--muted); }
 .ss-info { color: var(--faint); }
@@ -255,6 +255,27 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .ss-working { color: var(--accent); }
 .ss-working .ss-dot { background: var(--accent); animation: nitem-pulse 1.2s ease-in-out infinite; }
 .ss-idle .ss-info { color: var(--accent); }
+.ss-intent { color: var(--text); max-width: 220px; }
+.ss-intent .ss-info { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Researcher → Writer handoff chip in the shelf, + the note's intent input in ⚙. */
+.rcard-answer { flex: 0 0 auto; align-self: stretch; display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; border: 1px solid var(--accent); background: var(--accent-weak); color: var(--accent); border-radius: 10px; padding: 6px 12px; }
+.rcard-answer:hover { background: var(--accent); color: #fff; }
+.rcard-answer .ra-q { font-weight: 400; opacity: .8; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-intent { display: block; padding: 4px 6px 8px; }
+.swarm-intent > span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.swarm-intent-in { width: 100%; font: inherit; font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--card); color: var(--text); }
+.swarm-intent-in:focus { outline: none; border-color: var(--accent); }
+
+/* Away-timeline popover — what the swarm did, from the footer status strip. */
+.timeline { position: fixed; z-index: 60; min-width: 240px; max-width: 340px; max-height: 260px; overflow-y: auto; background: var(--elev); border: 1px solid var(--border); border-radius: 11px; box-shadow: 0 12px 34px rgba(0, 0, 0, .24); padding: 8px; }
+.timeline.hidden { display: none; }
+.tl-title { font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); padding: 2px 6px 7px; }
+.tl-row { display: flex; align-items: baseline; gap: 8px; padding: 5px 6px; border-radius: 6px; font-size: 12px; }
+.tl-row:hover { background: var(--field); }
+.tl-who { font-weight: 600; color: var(--accent); flex: none; }
+.tl-what { color: var(--text); flex: 1; }
+.tl-when { color: var(--faint); font-size: 11px; flex: none; }
 
 /* Reading typography (rendered markdown) */
 .md { color: var(--ink); font-size: 15.5px; line-height: 1.72; }
