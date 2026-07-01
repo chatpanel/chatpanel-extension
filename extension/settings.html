@@ -456,6 +456,11 @@ npx @chatpanel/bridge</code></pre>
           </label>
           <p class="muted tiny">Opt-in. Sends your <strong>decrypted</strong> chats &amp; meetings to your <em>local</em> gateway (on-device) so search scales past what the browser can hold. Off = search stays in-browser only.</p>
 
+          <label class="check" title="Hand your backup password to this local gateway so it can decrypt your daily encrypted backups and index them — the gateway then holds your full history even when ChatPanel isn't open. Stored encrypted on your machine; never leaves it.">
+            <input type="checkbox" id="gw-backup-key" /> Let this gateway decrypt &amp; index my daily backups
+          </label>
+          <p class="muted tiny">Sends your <strong>backup password</strong> (from the Backup section) to your <em>local</em> gateway so it can read your <code>.encrypted.json</code> backups and index them — full history available to the gateway/console/agents even when ChatPanel is closed. <span id="gw-backup-key-status"></span></p>
+
           <details class="gw-help" open>
             <summary>Install the Gateway &amp; use it as a model in ChatPanel</summary>
             <p class="muted sm"><strong>1 · Install it</strong> — runs as a background process and starts at login

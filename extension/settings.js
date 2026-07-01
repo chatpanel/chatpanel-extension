@@ -983,6 +983,50 @@ function renderGateway() {
       toast(warm.checked ? 'Indexing history to the gateway…' : 'Gateway search off');
     };
   }
+
+  wireBackupKeyHandoff();
+}
+
+// Backup key-handoff: send the daily-backup password to the LOCAL gateway so it can
+// decrypt + index the .encrypted.json backups (POST /v1/history/key). The checkbox
+// reflects the gateway's current key state (GET /v1/history/key). Loopback only.
+function wireBackupKeyHandoff() {
+  const box = $('gw-backup-key');
+  const status = $('gw-backup-key-status');
+  if (!box) return;
+  const gwUrl = () => normalizeGatewayUrl($('gw-url').value) || 'http://127.0.0.1:4320';
+  const say = (t) => { if (status) status.textContent = t ? ` ${t}` : ''; };
+
+  // Reflect whether the gateway already holds a key.
+  fetch(gwUrl() + '/v1/history/key').then((r) => r.json()).then((d) => { box.checked = !!d?.hasKey; }).catch(() => { box.checked = false; });
+
+  box.onchange = async () => {
+    say('');
+    try {
+      if (box.checked) {
+        const { passphrase } = await getBackupState();
+        if (!passphrase) {
+          box.checked = false;
+          say('⚠ Set an encrypted-backup password in the Backup section first.');
+          return;
+        }
+        const res = await fetch(gwUrl() + '/v1/history/key', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ passphrase }),
+        });
+        const d = await res.json();
+        if (!res.ok || d?.error) throw new Error(d?.error?.message || `gateway ${res.status}`);
+        say(`✓ Indexed ${d.ingested ?? 0} records${d.file ? ` from ${d.file.split('/').pop()}` : ''}.`);
+      } else {
+        await fetch(gwUrl() + '/v1/history/key', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ passphrase: '' }),
+        });
+        say('Key forgotten.');
+      }
+    } catch (e) {
+      box.checked = !box.checked; // revert on failure
+      say(`⚠ ${e.message || e} — is the gateway running?`);
+    }
+  };
 }
 
 // Build the detector dropdown: bundled NER, custom NER, each configured LOCAL
