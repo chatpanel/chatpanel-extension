@@ -51,9 +51,12 @@ export function fuseRRF(lists, { k = 60, limit = 0 } = {}) {
 // granularity (warm is one doc per source; hot may be several chunks per source),
 // then hot chunks are emitted in the fused source order. Warm-only ids that HOT
 // never returned are ignored here (no re-chunking) — a no-op while HOT holds the
-// full corpus, and the seam where eviction later resolves cold sources. Returns
-// re-ordered HOT results, capped to `limit`.
-export function fuseHistoryResults(hotResults, warmHits, { limit = 8 } = {}) {
+// full corpus. `resolveSource(id)` (optional) turns a WARM-only source id — one HOT
+// never returned (older than the browser index holds, or beyond its limit) — into a
+// displayable result, so the extension genuinely FALLS BACK to warm instead of
+// dropping those hits. Without it, warm-only ids are skipped. Returns re-ordered
+// results, capped to `limit`.
+export function fuseHistoryResults(hotResults, warmHits, { limit = 8, resolveSource = null } = {}) {
   const hot = Array.isArray(hotResults) ? hotResults : [];
   const warm = Array.isArray(warmHits) ? warmHits : [];
   if (!warm.length) return hot.slice(0, limit);
@@ -73,10 +76,20 @@ export function fuseHistoryResults(hotResults, warmHits, { limit = 8 } = {}) {
   const out = [];
   for (const { id, score } of fused) {
     const chunks = bySource.get(id);
-    if (!chunks) continue; // warm-only source HOT didn't return — skip (no re-chunk yet)
-    for (const c of chunks) {
-      out.push({ ...c, score }); // fused source score, applied to each of its chunks
-      if (out.length >= limit) return out;
+    if (chunks) {
+      for (const c of chunks) {
+        out.push({ ...c, score }); // fused source score, applied to each of its chunks
+        if (out.length >= limit) return out;
+      }
+      continue;
+    }
+    // WARM-only: resolve it to a result if we can, else skip.
+    if (resolveSource) {
+      const r = resolveSource(id);
+      if (r) {
+        out.push({ ...r, score, warmOnly: true });
+        if (out.length >= limit) return out;
+      }
     }
   }
   return out;

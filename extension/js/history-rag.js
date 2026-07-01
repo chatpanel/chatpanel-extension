@@ -325,10 +325,23 @@ export async function retrieveHistory(
       recency, // mild freshness prior (default on for the model's history search)
     }, { version: historySourcesVersion() })
     : [];
-  if (q && warm?.url && results.length) {
-    // Fail-safe: any gateway hiccup returns [] and HOT stands unchanged.
+  if (q && warm?.url) {
+    // Fail-safe: any gateway hiccup returns [] and HOT stands unchanged. Note we no
+    // longer require HOT to have results — warm can answer alone when the browser
+    // index is empty/cold or doesn't hold the matching (older) source.
     const warmHits = await searchGateway(warm.url, q, { limit: 20 });
-    results = warmHits.length ? fuseHistoryResults(results, warmHits, { limit: wantLimit }) : results.slice(0, wantLimit);
+    if (warmHits.length) {
+      // Resolve WARM-only hits (sources HOT didn't return) back to results from the
+      // full local source list — the actual "fall back to warm" behavior.
+      const sourceById = new Map(sources.map((s) => [s.id, s]));
+      const resolveSource = (id) => {
+        const s = sourceById.get(id);
+        return s ? { sourceId: s.id, chunk: 0, title: s.title, date: s.date, url: s.url, text: s.text || s.contentText || '' } : null;
+      };
+      results = fuseHistoryResults(results, warmHits, { limit: wantLimit, resolveSource });
+    } else {
+      results = results.slice(0, wantLimit);
+    }
   } else {
     results = results.slice(0, wantLimit);
   }

@@ -33,6 +33,19 @@ import { fuseRRF, fuseHistoryResults, searchGateway } from '../extension/js/warm
   assert.deepEqual(fuseHistoryResults(hot, [], { limit: 8 }), hot);
 }
 
+// 2b) WARM-only fallback: a hit HOT never returned is resolved via resolveSource;
+// unresolvable warm ids are skipped.
+{
+  const hot = []; // browser index cold/empty
+  const warm = [{ id: 'meeting:99' }, { id: 'chat:missing' }];
+  const store = { 'meeting:99': { id: 'meeting:99', title: 'Old sync', date: 5, url: 'u', text: 'archived transcript' } };
+  const out = fuseHistoryResults(hot, warm, { limit: 8, resolveSource: (id) => store[id] ? { sourceId: id, chunk: 0, ...store[id] } : null });
+  assert.equal(out.length, 1, 'resolved the one known warm source, skipped the unknown');
+  assert.equal(out[0].sourceId, 'meeting:99');
+  assert.equal(out[0].warmOnly, true);
+  assert.equal(out[0].text, 'archived transcript');
+}
+
 // 4) searchGateway fails safe → [] on error, no URL, empty query.
 {
   assert.deepEqual(await searchGateway('', 'q', { fetchImpl: async () => ({ ok: true, json: async () => ({ results: [] }) }) }), []);
