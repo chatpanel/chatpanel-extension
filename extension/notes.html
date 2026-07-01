@@ -90,6 +90,7 @@
             </div>
             <div class="toolbar-right">
               <span id="n-status" class="save-status"></span>
+              <button id="n-side-toggle" class="icon-btn" title="Toggle assistant panel (⌘/)" aria-label="Toggle assistant panel">◧</button>
               <button id="n-ask" class="icon-btn" title="Ask ChatPanel about this note">💬</button>
               <button id="n-copy" class="icon-btn" title="Copy as Markdown">⧉</button>
               <button id="n-download" class="icon-btn" title="Download .md">⬇</button>
@@ -97,57 +98,67 @@
             </div>
           </div>
 
-          <div class="editor-scroll">
-            <input id="n-title" class="title-input" placeholder="Untitled note" spellcheck="false" />
-            <div id="n-tags" class="tags-row"></div>
-            <div id="n-suggest" class="suggest-row" aria-label="Suggested tags"></div>
-            <div class="panes" id="n-panes">
-              <textarea id="n-body" class="body-input" placeholder="Start writing…  Markdown supported." spellcheck="true"></textarea>
-              <div id="n-preview" class="preview md"></div>
-            </div>
-            <div id="n-backlinks" class="backlinks"></div>
-          </div>
-          <div id="n-research" class="research hidden" aria-label="Research shelf">
-            <div class="research-head">
-              <span class="research-name">🔎 Research</span>
-              <span id="n-research-count" class="research-count"></span>
-              <span id="n-research-status" class="research-status"></span>
-              <div class="research-tools">
-                <button id="n-research-web" class="research-web" title="Search the web for this section">🌐 Web</button>
-                <button id="n-research-collapse" class="research-collapse" title="Collapse">▾</button>
+          <div class="editor-body">
+            <div class="editor-scroll">
+              <input id="n-title" class="title-input" placeholder="Untitled note" spellcheck="false" />
+              <div id="n-tags" class="tags-row"></div>
+              <div id="n-suggest" class="suggest-row" aria-label="Suggested tags"></div>
+              <div class="panes" id="n-panes">
+                <textarea id="n-body" class="body-input" placeholder="Start writing…  Markdown supported." spellcheck="true"></textarea>
+                <div id="n-preview" class="preview md"></div>
               </div>
+              <div id="n-backlinks" class="backlinks"></div>
             </div>
-            <div id="n-research-cards" class="research-cards"></div>
-          </div>
-          <div id="n-activity" class="activity hidden" aria-label="Team activity">
-            <div class="activity-head">
-              <span class="activity-name">🧰 Team activity</span>
-              <span id="n-activity-status" class="activity-status"></span>
-              <div class="activity-tools">
-                <span id="n-activity-pii" class="activity-pii hidden" title="PII redaction on">🛡</span>
-                <button id="n-activity-clear" class="activity-x" title="Clear activity">✕</button>
-                <button id="n-activity-collapse" class="research-collapse" title="Collapse">▾</button>
+            <aside id="n-side" class="side" aria-label="Assistant panels">
+              <div class="side-tabs" role="tablist">
+                <button class="side-tab active" data-side="activity" role="tab" title="Team activity">🧰<span class="side-badge hidden" id="n-side-badge-activity"></span></button>
+                <button class="side-tab" data-side="research" role="tab" title="Research">🔎<span class="side-badge hidden" id="n-side-badge-research"></span></button>
+                <button class="side-tab" data-side="cowriter" role="tab" title="Co-writer">✍️<span class="side-badge hidden" id="n-side-badge-cowriter"></span></button>
+                <button class="side-tab" data-side="history" role="tab" title="History">🕓</button>
+                <button id="n-side-collapse" class="side-collapse" title="Collapse panel (⌘/)" aria-label="Collapse panel">⟩</button>
               </div>
-            </div>
-            <div id="n-activity-timeline" class="activity-timeline"></div>
-            <div id="n-activity-detail" class="activity-detail hidden"></div>
-            <div id="n-activity-armed" class="activity-armed"></div>
-            <div id="n-activity-cards" class="activity-cards"></div>
-          </div>
-          <div id="n-history" class="history hidden" aria-label="Version history and authorship">
-            <div class="history-head">
-              <span class="history-name">🕓 History</span>
-              <span id="n-history-summary" class="history-summary"></span>
-              <div class="history-tools">
-                <button id="n-history-attrib" class="research-web" title="Show who wrote what">👤 Who wrote what</button>
-                <button id="n-history-save" class="research-web" title="Snapshot the current draft as a version">＋ Save version</button>
-                <button id="n-history-collapse" class="research-collapse" title="Close">▾</button>
+              <div class="side-body">
+                <div id="n-research" class="research side-pane" role="tabpanel" aria-label="Research">
+                  <div class="research-head">
+                    <span class="research-name">🔎 Research</span>
+                    <span id="n-research-count" class="research-count"></span>
+                    <span id="n-research-status" class="research-status"></span>
+                    <div class="research-tools">
+                      <button id="n-research-web" class="research-web" title="Search the web for this section">🌐 Web</button>
+                    </div>
+                  </div>
+                  <div id="n-research-cards" class="research-cards"></div>
+                </div>
+                <div id="n-activity" class="activity side-pane tab-active" role="tabpanel" aria-label="Team activity">
+                  <div class="activity-head">
+                    <span class="activity-name">🧰 Team activity</span>
+                    <span id="n-activity-status" class="activity-status"></span>
+                    <div class="activity-tools">
+                      <span id="n-activity-pii" class="activity-pii hidden" title="PII redaction on">🛡</span>
+                      <button id="n-activity-clear" class="activity-x" title="Clear activity">✕</button>
+                    </div>
+                  </div>
+                  <div id="n-activity-timeline" class="activity-timeline"></div>
+                  <div id="n-activity-detail" class="activity-detail hidden"></div>
+                  <div id="n-activity-armed" class="activity-armed"></div>
+                  <div id="n-activity-cards" class="activity-cards"></div>
+                </div>
+                <div id="n-cowriter" class="cowriter side-pane"></div>
+                <div id="n-history" class="history side-pane" role="tabpanel" aria-label="Version history and authorship">
+                  <div class="history-head">
+                    <span class="history-name">🕓 History</span>
+                    <span id="n-history-summary" class="history-summary"></span>
+                    <div class="history-tools">
+                      <button id="n-history-attrib" class="research-web" title="Show who wrote what">👤 Who wrote what</button>
+                      <button id="n-history-save" class="research-web" title="Snapshot the current draft as a version">＋ Save version</button>
+                    </div>
+                  </div>
+                  <div id="n-history-attrib-view" class="attrib-view hidden"></div>
+                  <div id="n-history-versions" class="history-versions"></div>
+                </div>
               </div>
-            </div>
-            <div id="n-history-attrib-view" class="attrib-view hidden"></div>
-            <div id="n-history-versions" class="history-versions"></div>
+            </aside>
           </div>
-          <div id="n-cowriter" class="cowriter hidden"></div>
           <div class="editor-foot">
             <span id="n-words" class="words"></span>
             <span id="n-swarm-status" class="swarm-status" aria-label="Co-writer team status"></span>

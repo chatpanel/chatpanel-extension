@@ -100,6 +100,44 @@ function setAlign(a) {
   if (menu) for (const b of menu.querySelectorAll('button[data-align]')) b.classList.toggle('active', b.dataset.align === align);
 }
 function updatePreview() { $('n-preview').innerHTML = renderMarkdown($('n-body').value); }
+
+// ── Assistant sidebar — Team activity / Research / Co-writer / History as tabs ───────
+// The panels used to stack at the bottom and eat the document's vertical space; now they
+// live in a collapsible right sidebar, one visible tab at a time, with count badges.
+const SIDE_TABS = ['activity', 'research', 'cowriter', 'history'];
+const SIDE_PANE = { activity: 'n-activity', research: 'n-research', cowriter: 'n-cowriter', history: 'n-history' };
+let activeSide = 'activity';
+let sideCollapsed = false;
+
+function setSideTab(t, { open = true } = {}) {
+  if (!SIDE_TABS.includes(t)) t = 'activity';
+  activeSide = t;
+  localStorage.setItem('chatpanel.notes.sideTab', t);
+  if (open) setSideCollapsed(false);
+  for (const k of SIDE_TABS) { const el = $(SIDE_PANE[k]); if (el) el.classList.toggle('tab-active', k === t); }
+  document.querySelectorAll('#n-side .side-tab').forEach((b) => b.classList.toggle('active', b.dataset.side === t));
+  if (t === 'history') renderHistory();          // some panes skip work unless they're the active tab
+  else if (t === 'activity') renderActivity();
+  else if (t === 'research') renderResearch();
+  else refreshSideTabs();
+}
+function setSideCollapsed(c) {
+  sideCollapsed = !!c;
+  localStorage.setItem('chatpanel.notes.sideCollapsed', sideCollapsed ? '1' : '0');
+  $('n-side')?.classList.toggle('collapsed', sideCollapsed);
+  $('n-side-toggle')?.classList.toggle('on', !sideCollapsed);
+}
+function setSideBadge(t, n) {
+  const el = $(`n-side-badge-${t}`);
+  if (!el) return;
+  el.textContent = n ? String(n > 99 ? '99+' : n) : '';
+  el.classList.toggle('hidden', !n);
+}
+function refreshSideTabs() {
+  setSideBadge('research', researchCards.length);
+  setSideBadge('activity', board.log.length);
+  setSideBadge('cowriter', cwSuggestions.length + boardSuggestions.length);
+}
 // Toggle the Nth GitHub task item (`- [ ]`↔`- [x]`) in the source when its rendered
 // checkbox is clicked in read/split mode. Skips fenced code blocks so the index lines
 // up with the renderer's (which never emits checkboxes inside a code fence).
@@ -340,8 +378,7 @@ function pushVersion(by, label) {
 // ── History panel — authorship summary + version snapshots (revert) ───────────────
 function authorClass(author) { return author === HUMAN ? 'av-human' : 'av-ai'; }
 function renderHistorySummary() {
-  const panel = $('n-history');
-  if (!panel || panel.classList.contains('hidden')) return;
+  if (activeSide !== 'history') return; // only compute when the History tab is showing
   const sum = attributionSummary(current?.attribution || []);
   $('n-history-summary').textContent = sum.total
     ? sum.by.map((b) => `${b.author} ${Math.round((b.chars / sum.total) * 100)}%`).join(' · ')
@@ -362,8 +399,7 @@ function renderAttribView() {
   el.innerHTML = parts.join('') || '<span class="history-empty">Empty note.</span>';
 }
 function renderHistory() {
-  const panel = $('n-history');
-  if (!panel || panel.classList.contains('hidden')) return;
+  if (activeSide !== 'history') return; // only render when the History tab is showing
   renderHistorySummary();
   const wrap = $('n-history-versions');
   wrap.innerHTML = '';
@@ -1170,11 +1206,9 @@ function activityIcon(who) {
 function renderActivity() {
   const panel = $('n-activity');
   if (!panel) return;
+  refreshSideTabs();
   const a = current && noteActivity.get(current.id);
   const log = board.log;
-  if (!a && !log.length) { panel.classList.add('hidden'); return; }
-  panel.classList.toggle('collapsed', activityCollapsed.has(current?.id));
-
   const running = a && !a.done;
   const statusEl = $('n-activity-status');
   statusEl.classList.toggle('running', !!running);
@@ -1225,15 +1259,9 @@ function renderActivity() {
     detail.classList.add('hidden');
     $('n-activity-armed').textContent = '';
   }
-  panel.classList.remove('hidden');
 }
-// Reveal + expand the Team-activity panel (from the footer status strip).
-function revealActivity() {
-  if (current) activityCollapsed.delete(current.id);
-  renderActivity();
-  const p = $('n-activity');
-  if (p) { p.classList.remove('hidden'); p.scrollIntoView({ block: 'nearest' }); }
-}
+// Reveal the Team-activity tab (from the footer status strip / on a new job).
+function revealActivity() { setSideTab('activity'); }
 // The activity panel only earns its space when a command armed tools; a plain
 // summarize/translate (no tools) leaves it hidden.
 function recordActivity(job) { if (job.tools.length || job.steps.length) noteActivity.set(job.noteId, job); }
@@ -1376,7 +1404,7 @@ async function runNoteJob({
   recordActivity(job);
   ta.readOnly = true;
   renderJob(job);
-  renderActivity();
+  setSideTab('activity'); // surface the run in the sidebar
   renderList($('n-search').value);
   try {
     await deps.streamChat({
@@ -1712,7 +1740,11 @@ function applyTitleFix(e) {
 function renderCowriter() {
   const el = $('n-cowriter');
   el.innerHTML = '';
-  if (!cwSuggestions.length && !boardSuggestions.length) { el.classList.add('hidden'); return; }
+  if (!cwSuggestions.length && !boardSuggestions.length) {
+    el.innerHTML = '<div class="cw-empty">No suggestions yet. With the co-writer on, the Editor posts typo/grammar fixes and the Connector posts links here as you write.</div>';
+    refreshSideTabs();
+    return;
+  }
   const label = document.createElement('span');
   label.className = 'cw-label';
   label.textContent = '✍️ Co-writer';
@@ -1747,7 +1779,7 @@ function renderCowriter() {
   x.textContent = '✕';
   x.onclick = () => { cwSuggestions.forEach((s) => cwDismissed.add(s.key)); boardSuggestions.forEach((s) => boardDismissed.add(s.key)); clearCowriterUI(); };
   el.appendChild(x);
-  el.classList.remove('hidden');
+  refreshSideTabs();
 }
 
 function commitCowriterBody() {
@@ -1867,9 +1899,9 @@ function relatesToQuery(card, salient) {
 function setResearchStatus(t) { const el = $('n-research-status'); if (el) el.textContent = t || ''; }
 function clearResearch() {
   researchGen++; researchCards = []; researchBusy = false; researchQuestion = '';
-  const el = $('n-research');
-  if (el) { el.classList.add('hidden'); $('n-research-cards').innerHTML = ''; }
+  if ($('n-research-cards')) $('n-research-cards').innerHTML = '';
   setResearchStatus('');
+  refreshSideTabs();
 }
 function scheduleResearch() {
   if (!cwEnabled) return;               // the researcher rides the same swarm toggle
@@ -1956,7 +1988,7 @@ function renderResearch() {
     empty.className = 'research-empty';
     empty.textContent = researchBusy ? 'Working…' : (researchQuestion ? 'No sources found — the Writer can still answer.' : 'Nothing related yet — keep writing, or search the web.');
     wrap.appendChild(empty);
-    shelf.classList.remove('hidden');
+    refreshSideTabs();
     return;
   }
   for (const c of researchCards) {
@@ -1975,7 +2007,7 @@ function renderResearch() {
     card.querySelector('.rcard-x').onclick = () => { researchDismissed.add(c.key); researchCards = researchCards.filter((x) => x !== c); renderResearch(); };
     wrap.appendChild(card);
   }
-  shelf.classList.remove('hidden');
+  refreshSideTabs();
 }
 function insertResearch(c) {
   const ta = $('n-body');
@@ -2582,11 +2614,10 @@ function init() {
   $('n-download').onclick = downloadCurrent;
   $('n-ask').onclick = askAboutNote;
   $('n-settings').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#notes') });
-  $('n-activity-collapse').onclick = () => {
-    if (!current) return;
-    if (activityCollapsed.has(current.id)) activityCollapsed.delete(current.id); else activityCollapsed.add(current.id);
-    renderActivity();
-  };
+  // Assistant sidebar — tab switching + collapse.
+  document.querySelectorAll('#n-side .side-tab').forEach((b) => { b.onclick = () => setSideTab(b.dataset.side); });
+  $('n-side-collapse').onclick = () => setSideCollapsed(true);
+  $('n-side-toggle').onclick = () => setSideCollapsed(!sideCollapsed);
   $('n-activity-clear').onclick = () => {
     if (!current) return;
     if (noteJobs.has(current.id)) return toast('Still running — stop it first (Esc)');
@@ -2760,27 +2791,12 @@ function init() {
   $('n-cw-toggle').onclick = () => setCowriter(!cwEnabled, true);
   setCowriter(cwEnabled);
 
-  // Researcher: 🔎 runs research on demand (local + web). Shelf head repeats web + collapses.
-  $('n-research-btn').onclick = () => runResearch({ web: true });
-  $('n-research-web').onclick = () => runResearch({ web: true });
-  $('n-research-collapse').onclick = () => {
-    const collapsed = $('n-research').classList.toggle('collapsed');
-    localStorage.setItem('chatpanel.notes.researchCollapsed', collapsed ? '1' : '0');
-    $('n-research-collapse').textContent = collapsed ? '▸' : '▾';
-  };
-  if (localStorage.getItem('chatpanel.notes.researchCollapsed') === '1') {
-    $('n-research').classList.add('collapsed');
-    $('n-research-collapse').textContent = '▸';
-  }
+  // Researcher: 🔎 opens the Research tab and runs research on demand (local + web).
+  $('n-research-btn').onclick = () => { setSideTab('research'); runResearch({ web: true }); };
+  $('n-research-web').onclick = () => { setSideTab('research'); runResearch({ web: true }); };
 
-  // History panel (🕓) — authorship ledger + version snapshots you can revert to.
-  $('n-history-btn').onclick = () => {
-    const p = $('n-history');
-    const show = p.classList.contains('hidden');
-    p.classList.toggle('hidden', !show);
-    if (show) renderHistory();
-  };
-  $('n-history-collapse').onclick = () => $('n-history').classList.add('hidden');
+  // History (🕓) — authorship ledger + version snapshots (opens the History tab).
+  $('n-history-btn').onclick = () => setSideTab('history');
   $('n-history-save').onclick = () => { pushVersion(HUMAN, 'Manual save'); scheduleSave(true); renderHistory(); toast('Version saved'); };
   $('n-history-attrib').onclick = () => {
     const v = $('n-history-attrib-view');
@@ -2825,6 +2841,7 @@ function init() {
       return;
     }
     if (k === 'n') { e.preventDefault(); newNote(); }
+    else if (e.key === '/') { e.preventDefault(); setSideCollapsed(!sideCollapsed); }
     else if (k === 'k') { e.preventDefault(); $('n-search').focus(); }
     else if (k === 's') { e.preventDefault(); flushSave(); toast('Saved'); }
     else if (e.key === '\\') { e.preventDefault(); collapseBtn.click(); }
@@ -2863,6 +2880,8 @@ function init() {
 
   setMode(localStorage.getItem('chatpanel.notes.mode') || 'write');
   setAlign(localStorage.getItem(ALIGN_KEY) || 'justify');
+  setSideTab(localStorage.getItem('chatpanel.notes.sideTab') || 'activity', { open: false });
+  setSideCollapsed(localStorage.getItem('chatpanel.notes.sideCollapsed') === '1');
 }
 
 (async function start() {
