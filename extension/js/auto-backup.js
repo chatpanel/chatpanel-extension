@@ -84,7 +84,7 @@ export async function runAutoBackup({ force = false } = {}) {
       await patchBackupState({ lastError: 'Auto-backup is a Pro feature.' });
       return { ok: false, reason: 'not-pro' };
     }
-    // Export + hash in the SW (it has chrome.storage; the offscreen doc doesn't).
+    // Export + hash.
     const data = await exportAllData();
     if (!data.count && !data.meetingsCount) return { ok: false, reason: 'empty' };
     const hash = await sha256Hex(JSON.stringify(data));
@@ -95,9 +95,9 @@ export async function runAutoBackup({ force = false } = {}) {
       return { ok: true, skipped: true, count: data.count, meetingsCount: data.meetingsCount };
     }
 
-    // Build the payload here (compress-then-encrypt, or the deflate .zip). The
-    // encrypted envelope is already a JSON string so it crosses to the offscreen
-    // doc as `text` (no base64); the binary .zip crosses as base64.
+    // Build the payload (compress-then-encrypt, or the deflate .zip). The encrypted
+    // envelope is already a JSON string (used as-is for the data: URL); the binary
+    // .zip is base64'd.
     let payload, ext;
     if (state.passphrase) {
       const envelope = await encryptBackup(data, state.passphrase);
@@ -114,10 +114,11 @@ export async function runAutoBackup({ force = false } = {}) {
     const slot = `chatpanel-backup-${WEEKDAYS[new Date().getDay()]}`;
     const filename = `${FOLDER}/${slot}.${ext}`;
 
-    // A data: URL downloads SILENTLY with saveAs:false — that's how auto-backup has
-    // always written unattended (a 141 MB file wrote fine this way). A blob: URL from
-    // an offscreen doc, by contrast, trips Chrome's "Save as" dialog, so we DON'T use
-    // it: build the data: URL right here regardless of size.
+    // A data: URL downloads SILENTLY with saveAs:false at ANY size — that's how
+    // auto-backup has always written unattended (a 141 MB file wrote fine this way).
+    // We deliberately do NOT use chrome.downloads with a blob: URL: that trips
+    // Chrome's "Save as" dialog. If it still prompts, it's Chrome's global "Ask where
+    // to save each file before downloading" setting, which overrides saveAs.
     const b64 = payload.b64 || bytesToBase64(new TextEncoder().encode(payload.text));
     const bytes = Math.floor((b64.length * 3) / 4);
     await chrome.downloads.download({ url: `data:${payload.mime};base64,${b64}`, filename, conflictAction: 'overwrite', saveAs: false });
