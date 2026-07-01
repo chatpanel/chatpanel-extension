@@ -79,12 +79,12 @@ function renderList(query = '') {
 }
 
 // ── editor ───────────────────────────────────────────────────────────────────
-function setMode(mode) {
+function setMode(mode, persist = true) {
   const panes = $('n-panes');
   panes.classList.remove('write', 'split', 'read');
   panes.classList.add(mode);
   for (const b of $('n-mode').children) b.classList.toggle('active', b.dataset.mode === mode);
-  localStorage.setItem('chatpanel.notes.mode', mode);
+  if (persist) localStorage.setItem('chatpanel.notes.mode', mode); // don't clobber the saved default for a transient switch
   if (mode !== 'write') updatePreview();
   if (mode !== 'read') autoGrow();
 }
@@ -500,6 +500,7 @@ async function newNote() {
   const rec = await createNote({ body: '' });
   updateEntry(rec);
   openNote(rec.id, rec);
+  setMode('write', false); // a blank note always opens in edit mode (don't change the saved default)
   $('n-title').focus();
 }
 async function removeCurrent() {
