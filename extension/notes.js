@@ -1628,12 +1628,26 @@ async function runNoteCommand() {
   const head = ta.value.slice(0, ctx.start);
   const tail = ta.value.slice(ctx.end);
   const commandText = ta.value.slice(ctx.start, ctx.end);
-  ta.value = `${head}⏳ @${ctx.spec.cmd} — starting…${tail}`; // immediate ack
-  ta.readOnly = true;
-  mirrorToCm();
-  setStatus(`Running @${ctx.spec.cmd}…`);
+  const label = `@${ctx.spec.cmd}`;
+  // Same region path as @mentions in Live — the command's OUTPUT streams into a region where
+  // the command was (no global lock, animated widget); classic textarea placeholder in Source.
+  const useRegion = cmActive && !!cm;
+  const regionId = useRegion ? `job-${++_jobSeq}` : null;
+  if (useRegion) {
+    bodyReplaceRange('', ctx.start, ctx.end, ctx.start); // remove the "@cmd …" line — output replaces it
+    beginRegion(cm.view, regionId, label, ctx.start);
+  } else {
+    ta.value = `${head}⏳ ${label} — starting…${tail}`; // immediate ack + global lock
+    ta.readOnly = true;
+    mirrorToCm();
+  }
+  setStatus(`Running ${label}…`);
   setSideTab('activity');
-  const fail = (msg) => { ta.value = head + commandText + tail; ta.readOnly = false; mirrorToCm(); setStatus(''); bodyFocus(); toast(msg); _jobStarting = false; return true; };
+  const fail = (msg) => {
+    if (useRegion && cm) { finishRegion(cm.view, regionId); bodyReplaceRange(commandText, ctx.start, ctx.start, ctx.end); }
+    else { ta.value = head + commandText + tail; ta.readOnly = false; mirrorToCm(); }
+    setStatus(''); bodyFocus(); toast(msg); _jobStarting = false; return true;
+  };
   try {
     let deps;
     try { deps = await agentDeps(); } catch { return fail('Agent unavailable'); }
@@ -1648,7 +1662,7 @@ async function runNoteCommand() {
     await runNoteJob({
       deps, settings, license, targetAgent, resolved, head, tail, commandText,
       cmdLabel: ctx.spec.cmd, systemPrompt: ctx.spec.sys, instruction: skill.instruction,
-      armToolset: !!ctx.spec.tools, skillRun: skill.skillRun,
+      armToolset: !!ctx.spec.tools, skillRun: skill.skillRun, regionId,
       versionLabel: `@${ctx.spec.cmd}${skill.skillLabel ? ` #${skill.skillLabel}` : ''} · ${targetAgent.name || resolved.model || 'agent'}`,
     });
   } finally { _jobStarting = false; }
