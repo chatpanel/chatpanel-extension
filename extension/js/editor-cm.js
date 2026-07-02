@@ -77,18 +77,17 @@ class CheckboxWidget extends WidgetType {
   }
 }
 
-// GFM table (`| a | b |` + `|---|---|` + rows). The CM6 markdown base is GFM, so the parser
-// emits a `Table` node spanning the whole block — but live preview did nothing with it, so a
-// table showed as raw, unaligned pipes. Off the cursor, we replace the block with a real grid
-// (rendered via the same read-mode renderMarkdown, so both views match). Clicking it drops the
-// caret into the source and the whole block re-renders raw for editing (Obsidian-style).
-class TableWidget extends WidgetType {
-  constructor(md) { super(); this.md = md; }
-  eq(o) { return o.md === this.md; }
+// A whole block (GFM table, fenced code) rendered off-cursor via the SAME read-mode
+// renderMarkdown, so Live and Read match exactly — a table becomes a real grid, a ```code
+// fence becomes a styled <pre> with its fences hidden (was shown raw). Clicking drops the
+// caret into the source and the block re-renders raw for editing (Obsidian-style). renderMarkdown
+// HTML-escapes everything first, so this innerHTML is CSP-safe.
+class RenderedBlockWidget extends WidgetType {
+  constructor(md, cls) { super(); this.md = md; this.cls = cls; }
+  eq(o) { return o.md === this.md && o.cls === this.cls; }
   toDOM(view) {
     const wrap = document.createElement('div');
-    wrap.className = 'cm-table';
-    // renderMarkdown HTML-escapes every cell first, so this innerHTML is CSP-safe.
+    wrap.className = this.cls;
     wrap.innerHTML = renderMarkdown(this.md);
     wrap.addEventListener('mousedown', (e) => {
       if (e.target.closest('a, input')) return; // let links / task checkboxes work
@@ -101,7 +100,7 @@ class TableWidget extends WidgetType {
   ignoreEvent() { return true; } // our mousedown handles the caret; keep CM from double-acting
 }
 
-// The [firstLine, lastLine] a Table node covers, plus the doc offsets of those line bounds. A
+// The [firstLine, lastLine] a block node covers, plus the doc offsets of those line bounds. A
 // block node's `to` can sit at the start of the following (blank) line; back up so the widget
 // doesn't swallow it. Shared by the view-plugin scan and the block-decoration field below.
 function tableLineRange(state, node) {
@@ -141,7 +140,7 @@ export function scanMarkdown(state, ranges, cursorLine) {
           for (let n = first; n <= last; n++) out.push({ kind: 'line', from: state.doc.line(n).from, cls: 'cm-line-code' });
           return false; // skip children (no inner CodeMark concealing)
         }
-        // Table: rendered as a block widget by tableField when the cursor is elsewhere. On the
+        // Table: rendered as a block widget by blockField when the cursor is elsewhere. On the
         // cursor's own line-range we leave it raw (editable) but monospace-align it so the pipe
         // columns line up. Either way, don't descend — the block widget owns the whole span, and
         // concealing inner cell marks would overlap it.
@@ -224,14 +223,70 @@ export function linkTargetAt(state, pos) {
   return null;
 }
 
+// Inline citation markers <sup>[1]</sup> that the read-mode renderer (markdown.js) turns into
+// real superscripts. CM's markdown grammar leaves the raw <sup> tags as text, so Live mode
+// showed a literal "<sup>[1]</sup>". Mirror read mode: hide the two tags and superscript the
+// inner marker — EXCEPT on the cursor's own line, where raw syntax stays editable like every
+// other live-preview mark. Regex-based (not tree-based): the markers are inline HTML the
+// markdown grammar doesn't model as a citation. Inner shape matches markdown.js safeSupText.
+const SUP_RE = /<sup>([\s\d,\-[\]]{1,40})<\/sup>/gi;
+function scanCitations(state, ranges, cursorLine, out) {
+  for (const { from, to } of ranges) {
+    const text = state.doc.sliceString(from, to);
+    SUP_RE.lastIndex = 0;
+    let m;
+    while ((m = SUP_RE.exec(text))) {
+      const start = from + m.index;
+      const end = start + m[0].length;
+      if (state.doc.lineAt(start).number === cursorLine) continue; // editing this line → show raw
+      const innerFrom = start + 5; // after "<sup>"
+      const innerTo = end - 6;     // before "</sup>"
+      out.push({ kind: 'conceal', from: start, to: innerFrom });
+      out.push({ kind: 'sup', from: innerFrom, to: innerTo });
+      out.push({ kind: 'conceal', from: innerTo, to: end });
+    }
+  }
+}
+
+// Clicking a rendered citation <sup>[N]</sup> jumps to its source — like a footnote/bookmark.
+// citationNumberAt: the N under `pos` (or null). findSourceAnchor: the doc offset of the Sources
+// entry for N — scanned from the BOTTOM (the Sources list lives at the end) for a line that opens
+// with that number (`1.` / `[1]` / `1)` / `- [1]`), skipping the citation markers themselves.
+function citationNumberAt(state, pos) {
+  const line = state.doc.lineAt(pos);
+  const rel = pos - line.from;
+  SUP_RE.lastIndex = 0;
+  let m;
+  while ((m = SUP_RE.exec(line.text))) {
+    if (rel >= m.index && rel <= m.index + m[0].length) {
+      const num = (m[1].match(/\d+/) || [])[0];
+      return num ? Number(num) : null;
+    }
+  }
+  return null;
+}
+function findSourceAnchor(state, n) {
+  const re = new RegExp(`^\\s*(?:[-*]\\s+)?\\[?${n}\\]?[.):]?\\s`);
+  const doc = state.doc;
+  for (let ln = doc.lines; ln >= 1; ln--) {
+    const line = doc.line(ln);
+    if (/<sup>/i.test(line.text)) continue; // the citation marker line, not the source entry
+    if (re.test(line.text)) return line.from;
+  }
+  return null;
+}
+
 function buildDecorations(view) {
   const ranges = view.visibleRanges.length ? view.visibleRanges : [{ from: 0, to: view.state.doc.length }];
   const cursorLine = view.state.doc.lineAt(view.state.selection.main.head).number;
+  const descriptors = scanMarkdown(view.state, ranges, cursorLine);
+  scanCitations(view.state, ranges, cursorLine, descriptors);
   const deco = [];
-  for (const d of scanMarkdown(view.state, ranges, cursorLine)) {
+  for (const d of descriptors) {
     if (d.kind === 'line') deco.push(Decoration.line({ class: d.cls }).range(d.from));
     else if (d.kind === 'check') deco.push(Decoration.replace({ widget: new CheckboxWidget(d.checked) }).range(d.from, d.to));
     else if (d.kind === 'bullet') deco.push(Decoration.replace({ widget: new BulletWidget(d.glyph) }).range(d.from, d.to));
+    else if (d.kind === 'sup') deco.push(Decoration.mark({ class: 'cm-sup' }).range(d.from, d.to));
     else deco.push(Decoration.replace({}).range(d.from, d.to));
   }
   return Decoration.set(deco, true);
@@ -267,29 +322,33 @@ const ghostField = StateField.define({
   provide: (f) => EditorView.decorations.from(f),
 });
 
-// ── Table blocks ──────────────────────────────────────────────────────────────────
+// ── Rendered blocks (tables + fenced code) ──────────────────────────────────────────
 // Block (line-break-spanning) decorations MUST come from a state field, not a view plugin —
 // CM needs them before it computes the viewport, so livePreview can't provide them. This field
-// replaces each GFM Table (whose cursor is elsewhere) with a rendered <table>; when the caret is
-// inside the table's lines we skip it so scanMarkdown's `cm-line-table` shows the raw source.
-function buildTableDecos(state) {
+// replaces each GFM Table / fenced-code block (whose cursor is elsewhere) with its rendered
+// form; when the caret is inside the block's lines we skip it so scanMarkdown's `cm-line-table`
+// / `cm-line-code` shows the raw source for editing.
+// FencedCode only (```…```). Indented CodeBlocks stay raw — renderMarkdown only renders fences.
+const BLOCK_RENDER = { Table: 'cm-table', FencedCode: 'cm-codeblock' };
+function buildBlockDecos(state) {
   const cursorLine = state.doc.lineAt(state.selection.main.head).number;
   const deco = [];
   syntaxTree(state).iterate({
     enter: (node) => {
-      if (node.name !== 'Table') return;
+      const cls = BLOCK_RENDER[node.name];
+      if (!cls) return;
       const { firstLine, lastLine, from, to } = tableLineRange(state, node);
       if (cursorLine < firstLine || cursorLine > lastLine) {
-        deco.push(Decoration.replace({ widget: new TableWidget(state.doc.sliceString(from, to)), block: true }).range(from, to));
+        deco.push(Decoration.replace({ widget: new RenderedBlockWidget(state.doc.sliceString(from, to), cls), block: true }).range(from, to));
       }
       return false;
     },
   });
   return Decoration.set(deco, true);
 }
-const tableField = StateField.define({
-  create: (state) => buildTableDecos(state),
-  update: (deco, tr) => ((tr.docChanged || tr.selection) ? buildTableDecos(tr.state) : deco.map(tr.changes)),
+const blockField = StateField.define({
+  create: (state) => buildBlockDecos(state),
+  update: (deco, tr) => ((tr.docChanged || tr.selection) ? buildBlockDecos(tr.state) : deco.map(tr.changes)),
   provide: (f) => EditorView.decorations.from(f),
 });
 
@@ -307,7 +366,7 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
     syntaxHighlighting(HL),
     livePreview,
     ghostField, // tints an un-accepted AI draft so it never reads as committed text
-    tableField, // renders GFM tables as real grids (block decorations must be field-provided)
+    blockField, // renders GFM tables + fenced code as blocks (block decorations must be field-provided)
     agentRegionsExtension(), // multi-agent regions: remap + region-scoped lock + working widget
     // Our gesture/autocomplete handler must beat the default keymap (Tab=indent, Enter=newline),
     // so it runs at the HIGHEST precedence — otherwise Tab/Enter get consumed before we can
@@ -318,10 +377,22 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
     // editing — and only hijack a click that actually lands on a link, so other clicks still edit.
     EditorView.domEventHandlers({
       mousedown: (e, view) => {
-        if (e.button !== 0 || !onLink || e.metaKey || e.ctrlKey || e.altKey) return false;
+        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey) return false;
         const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
         if (pos == null) return false;
         if (view.state.doc.lineAt(pos).number === view.state.doc.lineAt(view.state.selection.main.head).number) return false;
+        // Citation <sup>[N]</sup> → jump to its Sources entry within the doc (footnote-style).
+        const n = citationNumberAt(view.state, pos);
+        if (n != null) {
+          const anchor = findSourceAnchor(view.state, n);
+          if (anchor != null) {
+            e.preventDefault();
+            view.dispatch({ selection: { anchor }, effects: EditorView.scrollIntoView(anchor, { y: 'center' }) });
+            view.focus();
+            return true;
+          }
+        }
+        if (!onLink) return false;
         const target = linkTargetAt(view.state, pos);
         if (!target) return false;
         e.preventDefault();

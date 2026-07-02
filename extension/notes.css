@@ -263,6 +263,13 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .cm-host .cm-table table { border-collapse: collapse; font-size: .92em; }
 .cm-host .cm-table th, .cm-host .cm-table td { border: 1px solid var(--border); padding: 6px 11px; text-align: left; }
 .cm-host .cm-table th { background: var(--field); font-weight: 650; }
+/* Fenced code rendered as a clean block off-cursor (fences hidden) — mirrors read-mode `.md pre`.
+   Click it to edit; the block re-renders raw (shaded cm-line-code with fences visible). */
+.cm-host .cm-codeblock { margin: .45em 0; cursor: text; }
+.cm-host .cm-codeblock pre { background: var(--field); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin: 0; overflow-x: auto; }
+.cm-host .cm-codeblock pre code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; background: none; border: 0; padding: 0; }
+/* Inline citation <sup>[N]</sup> — real superscript, and clickable (jumps to its Sources entry). */
+.cm-host .cm-sup { vertical-align: super; font-size: .72em; line-height: 0; color: var(--accent); cursor: pointer; }
 /* Editing a table (caret inside its lines): keep the raw markdown but monospace it so the pipe
    columns line up while you type. */
 .cm-host .cm-line.cm-line-table { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
