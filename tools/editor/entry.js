@@ -4,7 +4,7 @@
 // THAT file (lazy, on note-open) — it never imports node_modules at runtime. Re-export
 // only the API the Notes live-preview editor uses; add here + rebuild to grow it.
 export {
-  EditorState, EditorSelection, StateField, StateEffect, Compartment, RangeSetBuilder, Text,
+  EditorState, EditorSelection, StateField, StateEffect, Compartment, RangeSetBuilder, Text, Prec,
 } from '@codemirror/state';
 export {
   EditorView, Decoration, WidgetType, ViewPlugin, keymap, placeholder, drawSelection,

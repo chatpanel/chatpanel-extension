@@ -12,7 +12,7 @@
 // a browser.
 
 import {
-  EditorState, Compartment,
+  EditorState, Compartment, Prec,
   EditorView, Decoration, ViewPlugin, keymap, drawSelection, placeholder as cmPlaceholder,
   history, historyKeymap, defaultKeymap, indentWithTab,
   syntaxTree, HighlightStyle, syntaxHighlighting, indentOnInput,
@@ -95,13 +95,16 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
     markdown({ base: markdownLanguage }),
     syntaxHighlighting(HL),
     livePreview,
+    // Our gesture/autocomplete handler must beat the default keymap (Tab=indent, Enter=newline),
+    // so it runs at the HIGHEST precedence — otherwise Tab/Enter get consumed before we can
+    // accept an autocomplete item or submit a directed line. Returns true → CM won't also act.
+    Prec.highest(EditorView.domEventHandlers({ keydown: (e) => (onKey ? onKey(e) === true : false) })),
     keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
     editable.of(EditorView.editable.of(!readOnly)),
     EditorView.updateListener.of((u) => {
       if (u.docChanged && onChange) onChange(u.state.doc.toString(), u);
       if (u.selectionSet && !u.docChanged && onSelection) onSelection();
     }),
-    EditorView.domEventHandlers({ keydown: (e) => (onKey ? onKey(e) === true : false) }),
     EditorView.contentAttributes.of({ 'aria-label': 'Note body', spellcheck: 'true' }),
   ];
   if (placeholder) exts.push(cmPlaceholder(placeholder));
