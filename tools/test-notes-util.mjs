@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   relTime, escapeHtml, highlight, escapeMdText, tagify, snippetOf,
   sourceKind, researchSnippet, compactInput, prettyTools, toolTitle, stepIcon,
+  parseAgentMention, salientTerms, researchRelevance,
   parseSkillMention, mergeSkillPrompt, findSkillByName,
 } from '../extension/js/notes-util.js';
 
@@ -58,5 +59,32 @@ const skills = [{ name: 'Deep Research' }, { title: 'Legacy', prompt: 'x' }];
 assert.equal(findSkillByName(skills, 'deep research')?.name, 'Deep Research'); // exact, case-insensitive
 assert.equal(findSkillByName(skills, 'legacy')?.title, 'Legacy');             // matches title too
 assert.equal(findSkillByName(skills, 'nope'), null);
+
+// ── @agent mentions ──
+// The instruction may come AFTER the token…
+assert.deepEqual(parseAgentMention('@[Claude Code] update the plan'), { name: 'Claude Code', task: 'update the plan' });
+// …or BEFORE it (the natural "do X @person" pattern — this used to silently do nothing).
+assert.deepEqual(parseAgentMention('Update below plan with google maps links @[Claude Code]'),
+  { name: 'Claude Code', task: 'Update below plan with google maps links' });
+// …or wrap it (both sides join into one task).
+assert.deepEqual(parseAgentMention('Summarize this @[Writer] in three bullets'), { name: 'Writer', task: 'Summarize this in three bullets' });
+assert.deepEqual(parseAgentMention('no mention here'), { name: '', task: '' });
+assert.deepEqual(parseAgentMention('@[Agent]'), { name: 'Agent', task: '' }); // a bare mention has no runnable task
+
+// ── research relevance ──
+assert.deepEqual([...salientTerms('Plan: Lucerne Day Trip Plan')], ['lucerne', 'trip']); // stop-words + short words dropped
+assert.deepEqual([...salientTerms('the a I you can plan')], []); // all stop-words → nothing salient
+const trip = salientTerms('Plan: Lucerne Day Trip Plan'); // { lucerne, trip }
+// The reported bug: an unrelated past note ("Mt Shasta Road Trip Plan", which carried the
+// user's home address) surfaced because it shared ONE generic word ("trip"). It must not.
+assert.equal(researchRelevance({ title: 'Mt Shasta Road Trip Plan', snippet: 'home address …' }, trip), 0);
+// A note that shares the SPECIFIC term is kept, and scores higher than a two-generic match.
+assert.ok(researchRelevance({ title: 'Lucerne Old Town walking tour', snippet: '' }, trip) > 0);
+assert.ok(researchRelevance({ title: 'trip', snippet: 'trip' }, trip) === 0); // still just one distinct generic term
+assert.ok(researchRelevance({ title: 'morning trip', snippet: '' }, salientTerms('morning trip coffee')) > 0); // two shared terms is enough
+// Web results are query-driven, so one shared term is enough there (but a total miss is still dropped).
+assert.ok(researchRelevance({ title: 'Mt Shasta Trip', snippet: '' }, trip, { web: true }) > 0);
+assert.equal(researchRelevance({ title: 'Unrelated promo', snippet: 'buy now' }, trip, { web: true }), 0);
+assert.equal(researchRelevance({ title: 'anything' }, salientTerms('')), 0); // no salient terms → never related
 
 console.log('notes-util tests passed');

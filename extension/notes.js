@@ -14,6 +14,7 @@ import {
   relTime, escapeHtml, highlight, escapeMdText, tagify, snippetOf,
   KIND_ICON, sourceKind, researchSnippet,
   JOB_ICON, compactInput, prettyTools, toolTitle, stepIcon,
+  parseAgentMention, salientTerms, researchRelevance,
   parseSkillMention, mergeSkillPrompt, findSkillByName,
 } from './js/notes-util.js';
 import {
@@ -21,7 +22,7 @@ import {
 } from './js/notes-swarm-router.js';
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
 import {
-  HUMAN, blankAttribution, applyAttribution, attributionSummary, normalizeAttribution,
+  HUMAN, blankAttribution, mergeRuns, applyAttribution, attributionSummary, normalizeAttribution,
 } from './js/notes-provenance.js';
 
 const $ = (id) => document.getElementById(id);
@@ -203,6 +204,35 @@ function autoGrow() {
 function updateWordCount() {
   const words = ($('n-body').value.trim().match(/\S+/g) || []).length;
   $('n-words').textContent = words ? `${words} word${words === 1 ? '' : 's'}` : '';
+}
+
+// ── Streaming render helpers — smooth + scroll-anchored (shared by every AI write) ──
+// AI output streams token-by-token. To avoid flicker, coalesce paints to ONE per animation
+// frame; to avoid scroll-fighting, follow the stream's tail ONLY while the user is already
+// at the bottom (scroll up to read and it stops chasing you). Same approach as the side
+// panel chat. Reused by the delegated-agent job, the Writer, the planner and @commands.
+let _streamRaf = 0;
+let _followStream = true;
+let _lastScrollTop = 0;
+let _scrollWired = false;
+function editorScroll() { return document.querySelector('.editor-scroll'); }
+function wireStreamScroll() {
+  const sc = editorScroll();
+  if (_scrollWired || !sc) return;
+  _scrollWired = true;
+  sc.addEventListener('scroll', () => {
+    if (sc.scrollTop < _lastScrollTop - 2) _followStream = false;                          // scrolled up → let them read
+    else if (sc.scrollHeight - sc.scrollTop - sc.clientHeight < 24) _followStream = true;  // back at the bottom → follow again
+    _lastScrollTop = sc.scrollTop;
+  }, { passive: true });
+}
+function streamStart() { wireStreamScroll(); _followStream = true; const sc = editorScroll(); if (sc) _lastScrollTop = sc.scrollTop; }
+function streamFollow() { const sc = editorScroll(); if (sc && _followStream) { sc.scrollTop = sc.scrollHeight; _lastScrollTop = sc.scrollTop; } }
+function streamStop() { if (_streamRaf) { cancelAnimationFrame(_streamRaf); _streamRaf = 0; } }
+// Run `paint` at most once per frame; `paint` reads the latest streamed state when it fires.
+function scheduleStreamRender(paint) {
+  if (_streamRaf) return;
+  _streamRaf = requestAnimationFrame(() => { _streamRaf = 0; paint(); });
 }
 
 function renderTags(tags) {
@@ -684,6 +714,7 @@ async function agentDeps() {
 // The model-router bridge (SWARM_ROLES / swarmCandidates / roleAgent / getRouter) lives
 // in js/notes-swarm-router.js — a portable, DI'd primitive with no editor state.
 
+const AGENT_ACTION_LABEL = { continue: 'Continue writing', summarize: 'Summarize', tasks: 'Turn into tasks', improve: 'Improve writing' };
 const AGENT_SPECS = {
   continue: { sys: "You are a writing assistant continuing the user's note. Match their voice, tone and markdown style, and continue naturally from where the text stops. Output ONLY the continuation — no preamble, no repeating prior text.", max: 700 },
   summarize: { sys: 'Summarize the text concisely in GitHub-flavored markdown — a few tight bullets or a short paragraph. Output ONLY the summary.', max: 500 },
@@ -731,15 +762,14 @@ async function runAgentAction(kind) {
   setAgentBusy(true);
   setStatus('Thinking…');
   let out = '';
-  const scroller = document.querySelector('.editor-scroll');
-  const follow = kind === 'continue' || kind === 'summarize'; // appends → keep the tail in view
   const render = () => {
     if (current !== streamNote) return;
     ta.value = head + (out || '⏳ thinking…') + tail;
     autoGrow();
     if (!$('n-panes').classList.contains('write')) updatePreview();
-    if (follow && scroller) scroller.scrollTop = scroller.scrollHeight;
+    streamFollow();
   };
+  streamStart();
   render(); // show the placeholder immediately so it's clear something is happening
   try {
     await deps.streamChat({
@@ -747,7 +777,7 @@ async function runAgentAction(kind) {
       settings,
       signal: agentAbort.signal,
       messages: [{ role: 'user', content: target }],
-      onDelta: (d) => { out += d; render(); },
+      onDelta: (d) => { out += d; scheduleStreamRender(render); }, // one paint per frame — no flicker
     });
   } catch (e) {
     if (agentAbort?.signal.aborted) toast('Stopped');
@@ -756,9 +786,18 @@ async function runAgentAction(kind) {
     const aborted = agentAbort?.signal.aborted;
     agentAbort = null;
     setAgentBusy(false);
+    streamStop(); // drop any pending frame before the final commit
     if (current === streamNote) {
       const finalBody = out.trim() ? head + out + tail : body; // nothing produced → restore original
       ta.value = finalBody;
+      if (out.trim()) {
+        // Attribute the produced span to the model (NOT "You") and snapshot a revertible
+        // version — the same provenance the @mention path records. Without this the whole
+        // note normalizes back to "You", so the history reads "You 100%" for AI-written text.
+        const author = targetAgent.name || resolved.model || resolved.bridgeAgent || 'AI';
+        recordEdit({ author, discrete: true });
+        pushVersion(author, `${AGENT_ACTION_LABEL[kind] || kind} · ${author}`);
+      }
       current.body = finalBody;
       autoGrow();
       if (!$('n-panes').classList.contains('write')) updatePreview();
@@ -810,11 +849,12 @@ async function planInNewNote(explicitTopic) {
   //    elsewhere. Research tasks do web + history; write tasks use the Writer.
   agentAbort = new AbortController();
   setAgentBusy(true);
+  streamStart();
   setStatus('Planning…');
   const act = makeSwarmActivity(plan.id, '🧭 Planner', resolved.model || resolved.bridgeAgent || 'model', false);
   let redaction = null;
   try { redaction = deps.buildRedaction?.({ settings, license }); } catch { /* redaction off */ }
-  const renderPlan = () => { if (current === planNote) { ta.value = planBody(topic, planNote.tasks || []); autoGrow(); if (!$('n-panes').classList.contains('write')) updatePreview(); } };
+  const renderPlan = () => { if (current === planNote) { ta.value = planBody(topic, planNote.tasks || []); autoGrow(); if (!$('n-panes').classList.contains('write')) updatePreview(); streamFollow(); } };
 
   try {
     // Phase A — decompose (one model call → JSON sub-tasks, each assigned a role).
@@ -852,25 +892,51 @@ async function planInNewNote(explicitTopic) {
   } finally {
     agentAbort = null;
     setAgentBusy(false);
+    streamStop(); // drop any pending frame before the final commit
     setStatus('');
-    if (current === planNote) { current.body = ta.value; autoGrow(); updateWordCount(); dirty = true; await flushSave(); }
+    if (current === planNote) {
+      // The plan note started empty — its body was authored by the swarm. Attribute it per
+      // section (Planner scaffold, Researcher/Writer sections) instead of "You", and snapshot
+      // a version — so history is honest and the user's own later edits are tinted separately
+      // instead of the note reading "You 100%". Rebuild body + ledger from the SAME task state
+      // so their lengths can't drift (a mismatch would silently reseed the note back to "You").
+      const at = Date.now();
+      current.body = ta.value = planBody(topic, planNote.tasks || []);
+      planNote.attribution = planAttribution(topic, planNote.tasks || [], at);
+      pushVersion('Planner', 'Plan orchestrated');
+      histReset(ta.value); // resync the undo baseline to the plan body — the plan was written
+      // straight into `ta.value` (never through recordEdit), so without this the user's first
+      // keystroke would diff from an EMPTY baseline and re-attribute the whole plan to "You".
+      autoGrow(); updateWordCount(); dirty = true; await flushSave();
+    }
     const done = (planNote.tasks || []).filter((t) => t.done).length;
     logActivity('Planner', `plan complete · ${done}/${(planNote.tasks || []).length} sub-tasks`);
     toast(`Plan orchestrated — ${done} sub-tasks done`);
   }
 }
 
-// The plan note's body, rebuilt from the task state — a progress checklist that flips
-// live, then a section per sub-task filled by its assigned member.
-function planBody(goal, tasks) {
+// The plan note as LABELED segments — one source of truth for both the rendered body and
+// its authorship ledger, so they can't drift. The scaffold (title, live checklist, section
+// headings) is the Planner's; each filled section is authored by its member (Researcher
+// for research sub-tasks, Writer for the rest).
+function planParts(goal, tasks) {
   const done = tasks.filter((t) => t.done).length;
   const checklist = tasks.map((t, i) => `- [${t.done ? 'x' : ' '}] ${i + 1}. ${t.title}${t.working ? ' — _working…_' : ''}`).join('\n');
-  const sections = tasks.map((t, i) => {
+  const parts = [{ author: 'Planner', text: `# ${goal}\n\n**Plan** — ${done}/${tasks.length} sub-tasks done\n\n${checklist}\n\n---\n\n` }];
+  tasks.forEach((t, i) => {
     const who = t.role === 'research' ? 'Researcher' : 'Writer';
-    const body = t.output || (t.working ? `_⏳ ${who} working…_` : '_pending_');
-    return `## ${i + 1}. ${t.title}\n\n${body}`;
-  }).join('\n\n');
-  return `# ${goal}\n\n**Plan** — ${done}/${tasks.length} sub-tasks done\n\n${checklist}\n\n---\n\n${sections}\n`;
+    parts.push({ author: 'Planner', text: `## ${i + 1}. ${t.title}\n\n` });
+    parts.push({ author: t.output ? who : 'Planner', text: t.output || (t.working ? `_⏳ ${who} working…_` : '_pending_') });
+    parts.push({ author: 'Planner', text: i < tasks.length - 1 ? '\n\n' : '\n' });
+  });
+  return parts;
+}
+function planBody(goal, tasks) {
+  return planParts(goal, tasks).map((p) => p.text).join('');
+}
+// The authorship run-list matching planBody() exactly (sums to its length by construction).
+function planAttribution(goal, tasks, at) {
+  return mergeRuns(planParts(goal, tasks).map((p) => ({ len: p.text.length, author: p.author, at })));
 }
 
 // A research sub-task — token-free: history + WEB, formatted as cited bullets.
@@ -903,7 +969,7 @@ async function writeTaskMd(deps, settings, license, redaction, goal, task, act, 
     agent: { ...resolved, systemPrompt: sys, maxTokens: 700, temperature: 0.5 },
     settings, redaction, signal: agentAbort.signal,
     messages: [{ role: 'user', content: task.prompt || task.title }],
-    onDelta: (d) => { task.output += d; renderPlan(); },
+    onDelta: (d) => { task.output += d; scheduleStreamRender(renderPlan); }, // one paint per frame
     onEvent: act.onEvent,
   });
 }
@@ -1157,19 +1223,17 @@ function currentCommandLine() {
 }
 
 // An "@[Agent Name] task" mention on the cursor's line, or null — the bracket form lets
-// agent names contain spaces. Runs the named agent on the task (runAgentTask).
+// agent names contain spaces, and the instruction may sit BEFORE or AFTER the token
+// ("Update the plan @[Agent]" works, not just "@[Agent] update the plan"). Runs the
+// named agent on the task (runAgentTask); the WHOLE line is replaced by the Q&A.
 function currentMention() {
   const ta = $('n-body');
   const lineStart = ta.value.lastIndexOf('\n', ta.selectionStart - 1) + 1;
   let end = ta.value.indexOf('\n', ta.selectionStart);
   if (end < 0) end = ta.value.length;
-  const line = ta.value.slice(lineStart, end);
-  const m = line.match(/@\[([^\]\n]+)\]\s*(.*)$/);
-  if (!m) return null;
-  const name = m[1].trim();
-  const task = (m[2] || '').trim();
+  const { name, task } = parseAgentMention(ta.value.slice(lineStart, end));
   if (!name || !task) return null;
-  return { name, task, start: lineStart + m.index, end };
+  return { name, task, start: lineStart, end };
 }
 
 // ── @insert / @command background jobs ──────────────────────────────────────────
@@ -1211,8 +1275,7 @@ function renderJob(job) {
   ta.value = job.head + jobProgressText(job) + job.tail;
   autoGrow();
   if (!$('n-panes').classList.contains('write')) updatePreview();
-  const scroller = document.querySelector('.editor-scroll');
-  if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  streamFollow(); // stick to the tail only while the user is already at the bottom
 }
 function scheduleJobRender(job) {
   if (current?.id !== job.noteId || _jobRaf) return;
@@ -1454,6 +1517,7 @@ async function runNoteJob({
   noteJobs.set(job.noteId, job);
   recordActivity(job);
   ta.readOnly = true;
+  streamStart(); // begin scroll-anchoring for this run
   renderJob(job);
   setSideTab('activity'); // surface the run in the sidebar
   renderList($('n-search').value);
@@ -1936,21 +2000,12 @@ function researchQuery() {
   const para = currentParagraph().text.trim();
   return [board.intent, title, para].filter(Boolean).join('\n').trim().slice(0, 500);
 }
-// Content-bearing terms of the query — drop stop-words, command tokens and short words, so
-// relevance is judged on what the note is actually ABOUT, not "can/you/my/plan".
-const RESEARCH_STOP = new Set(('the a an and or but for to of in on at by with from as is are was were be been being this that these those it its i you your my me we our they them he she his her can could would should will shall may might do does did done get got make made just like about into over under out up down off not no yes plan planning day today check please help note notes write writing').split(/\s+/));
-function salientTerms(q) {
-  const out = new Set();
-  for (const w of String(q || '').toLowerCase().match(/[a-z0-9][a-z0-9'-]{3,}/g) || []) {
-    if (!RESEARCH_STOP.has(w)) out.add(w);
-  }
-  return out;
-}
-// A card is "related" only if its title/snippet shares a salient term with the query.
-function relatesToQuery(card, salient) {
-  const hay = `${card.title || ''} ${card.snippet || ''}`.toLowerCase();
-  for (const t of salient) if (hay.includes(t)) return true;
-  return false;
+// salientTerms + researchRelevance (the relevance gate) are pure — they live in
+// notes-util.js so the same "content-bearing terms only" scoring is testable and
+// reusable. We build a targeted web query from the note's title + salient terms so the
+// search isn't a raw sentence that drags in unrelated results.
+function webQuery(title, salient) {
+  return [title, [...salient].slice(0, 8).join(' ')].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().slice(0, 120);
 }
 function setResearchStatus(t) { const el = $('n-research-status'); if (el) el.textContent = t || ''; }
 function clearResearch() {
@@ -1985,12 +2040,17 @@ async function runResearch({ web = false, question = '' } = {}) {
   let cards = [];
   try {
     if (!_ragMod) _ragMod = await import('./js/history-rag.js');
-    const { results } = await _ragMod.retrieveHistory(q, { includeMeetings: true, limit: 6 });
+    const { results } = await _ragMod.retrieveHistory(q, { includeMeetings: true, limit: 8 });
     cards = results
       .filter((r) => r.sourceId !== `note:${current.id}`)
       .map((r) => ({ kind: sourceKind(r.sourceId), title: r.title || 'Untitled', url: r.url, snippet: researchSnippet(r.text), key: r.url || r.sourceId }))
       .filter((c) => !researchDismissed.has(c.key))
-      .filter((c) => salient.size && relatesToQuery(c, salient)); // grounded: must share a salient term
+      // Grounded: keep only cards that actually share enough with the query (two terms,
+      // or one specific one) and rank by that overlap. Empty is better than irrelevant.
+      .map((c) => ({ c, s: researchRelevance(c, salient) }))
+      .filter((x) => x.s > 0)
+      .sort((a, b) => b.s - a.s)
+      .map((x) => x.c);
   } catch { /* local lane is best-effort */ }
   if (gen !== researchGen) return;
 
@@ -2000,11 +2060,14 @@ async function runResearch({ web = false, question = '' } = {}) {
       const [ws, lic, store] = await Promise.all([import('./js/web-search.js'), import('./js/license.js'), import('./js/store.js')]);
       const settings = await store.getSettings();
       const license = await lic.getLicense();
-      const term = q.split('\n').filter(Boolean).pop() || q;
+      const term = webQuery(($('n-title').value || '').trim(), salient) || q.split('\n').filter(Boolean).pop() || q;
       const res = await ws.webSearch(term, ws.webSearchOpts(settings, lic.isPro(license)));
       if (gen !== researchGen) return;
-      for (const r of (res.results || []).slice(0, 5)) {
-        if (!researchDismissed.has(r.url)) cards.push({ kind: 'web', title: r.title || r.url, url: r.url, snippet: researchSnippet(r.text), key: r.url });
+      // Same relevance gate on web hits — a search backend still returns off-topic/promo
+      // results, and one shared query term is enough to keep the on-topic ones.
+      for (const r of (res.results || []).slice(0, 8)) {
+        const c = { kind: 'web', title: r.title || r.url, url: r.url, snippet: researchSnippet(r.text), key: r.url };
+        if (!researchDismissed.has(r.url) && researchRelevance(c, salient, { web: true }) > 0) cards.push(c);
       }
     } catch (e) { toast(e?.message ? `Web search: ${e.message}` : 'Web search unavailable'); }
   }
@@ -2255,6 +2318,10 @@ async function runAutocomplete() {
 }
 async function draftAhead() {
   if (!current || ghost || writerAbort || agentAbort || noteJobs.has(current.id)) return;
+  // A line that @mentions an agent is a DELEGATION, not a spot for the ambient Writer to
+  // continue — route ⌘↵ to that agent instead of drafting a continuation over the task.
+  const men = currentMention();
+  if (men) { runAgentTask(men); return; }
   const ta = $('n-body');
   const from = ta.selectionStart;
   const before = ta.value.slice(0, from);
@@ -2299,7 +2366,7 @@ async function draftAhead() {
       signal: writerAbort.signal,
       redaction, // the PII harness wraps the draft-ahead call too
       messages: [{ role: 'user', content: writerTail(before) }],
-      onDelta: (d) => { if (gen === writerGen) { out += d; renderGhost(from, out); } }, // hint already shown; anchor is fixed at `from`
+      onDelta: (d) => { if (gen === writerGen) { out += d; scheduleStreamRender(() => { if (gen === writerGen) renderGhost(from, out); }); } }, // one paint/frame; anchor fixed at `from`
       onEvent: act.onEvent,
     });
   } catch (e) {
@@ -2308,6 +2375,7 @@ async function draftAhead() {
     const aborted = writerAbort?.signal.aborted;
     act.done(aborted ? null : undefined);
     writerAbort = null;
+    streamStop(); // drop any pending frame before finalizing the ghost
     setStatus('');
     if (!aborted && gen === writerGen && out.trim()) { renderGhost(from, out.replace(/\s+$/, '')); showGhostHint('Tab ↹ accept · Esc dismiss'); setSwarmState('writer', 'idle', 'draft ready'); logActivity('Writer', 'drafted a continuation'); }
     else { clearGhost({ remove: true }); setSwarmState('writer', 'idle'); }
@@ -2526,10 +2594,13 @@ let lastQuestion = '';
 function observe() {
   if (!cwEnabled || !current || noteJobs.has(current.id)) return;
   const t = currentLine().text.trim();
-  // A directed command/mention line (@insert…, @[Agent] task, /plan…, @research…) is a
-  // task the user is composing for a specific agent — the ambient swarm must NOT research,
-  // draft or fact-check it (that's noise, and an auto-draft would swallow the Enter that
-  // runs the task). Enter handles these lines.
+  boardSuggestions = boardSuggestions.filter((s) => s.role !== 'mention'); // recomputed per line
+  // A directed task line — an @command/slash at the start, OR an "@[Agent] …" mention
+  // ANYWHERE on the line (the natural "do X @agent" form, not just "@agent do X"). The
+  // ambient swarm must NOT research/draft/fact-check it (noise, and an auto-draft would
+  // swallow the Enter that runs it). For a mention, surface a one-click Run (mirrors Enter).
+  const men = parseAgentMention(t);
+  if (men.name && men.task) { addMentionNudge(men.name); return; }
   if (/^[@/]/.test(t)) { removeWriterNudge(); return; }
   const isQuestion = /\?\s*$/.test(t) && t.split(/\s+/).length >= 3;
   const aff = writerAffordance();
@@ -2645,6 +2716,39 @@ function removeWriterNudge() {
     boardSuggestions = boardSuggestions.filter((s) => s.role !== 'writer');
     renderCowriter();
   }
+}
+
+// A one-click "Run @Agent" chip for a line that mentions an agent — the same task Enter
+// would run, for the user who reaches for a button instead. Also drops the Writer nudge,
+// since a mention line is a directed task, not a spot to auto-draft.
+function addMentionNudge(name) {
+  boardSuggestions = boardSuggestions.filter((s) => s.role !== 'writer');
+  const m = mentionForName(name);
+  if (m) {
+    const key = `run:${name}:${m.task.slice(0, 48).toLowerCase()}`;
+    if (!boardDismissed.has(key)) {
+      boardSuggestions.push({
+        role: 'mention', icon: '▶️', key,
+        html: `Run <b>@${escapeHtml(name)}</b>`,
+        title: `Assign this task to ${escapeHtml(name)} — it can research and edit the note (or press Enter)`,
+        apply: () => { const men = mentionForName(name); if (men) runAgentTask(men); else toast('That mention is no longer in the note'); },
+      });
+    }
+  }
+  renderCowriter();
+}
+// Locate a line carrying a runnable "@[name] task" mention → a full mention object with
+// start/end recomputed from the LIVE body, so a click still targets the right line after
+// the cursor moves or the text shifts.
+function mentionForName(name) {
+  const val = $('n-body').value;
+  let pos = 0;
+  for (const ln of val.split('\n')) {
+    const p = parseAgentMention(ln);
+    if (p.name === name && p.task) return { name: p.name, task: p.task, start: pos, end: pos + ln.length };
+    pos += ln.length + 1;
+  }
+  return null;
 }
 
 // Researcher → Writer handoff: draft an answer to the question the Researcher just
