@@ -432,6 +432,24 @@ function rebuildIndexes() {
   graph = buildGraph(ds.map((d) => ({ id: d.entry.id, title: d.conv.title, startedAt: d.entry.updatedAt, people: [], terms: d.terms })));
 }
 
+// --- omni (cross-source) search — lazy-loaded on first open ------------------
+function openOmni(query = '') {
+  import('./js/omni-search.js').then((m) => m.openOmni({
+    query,
+    currentType: 'chat',
+    onOpen: (r) => {
+      if (r.type === 'chat') { const id = r.sourceId.replace(/^chat:/, ''); if (store.has(id)) { select(id); return; } }
+      location.assign(r.url);
+    },
+  })).catch(() => { /* module load failed — no-op */ });
+}
+function wireOmni() {
+  $('omni-open')?.addEventListener('click', () => openOmni($('h-search').value || ''));
+  window.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); openOmni(); }
+  });
+}
+
 async function boot() {
   try { winId = (await chrome.windows.getCurrent()).id; } catch { /* ok */ }
   settings = await getSettings();
@@ -455,6 +473,7 @@ async function boot() {
   });
   $('h-graph-toggle').onclick = toggleGraph;
   $('h-settings').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html') });
+  wireOmni();
 
   const initialView = initialHistoryView(location.hash);
   if (initialView.view === 'chat' && store.has(initialView.id)) {

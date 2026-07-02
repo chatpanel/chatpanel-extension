@@ -19,6 +19,7 @@ import {
   markdown, markdownLanguage, tags as t,
 } from './vendor/codemirror.js';
 import { agentRegionsExtension, agentAuthorOf } from './notes-regions.js';
+import { renderMarkdown } from './markdown.js'; // reuse the read-mode renderer for live table blocks
 
 // Markdown token → CSS class (colors/weights live in notes.css so themes control them).
 const HL = HighlightStyle.define([
@@ -76,6 +77,41 @@ class CheckboxWidget extends WidgetType {
   }
 }
 
+// GFM table (`| a | b |` + `|---|---|` + rows). The CM6 markdown base is GFM, so the parser
+// emits a `Table` node spanning the whole block — but live preview did nothing with it, so a
+// table showed as raw, unaligned pipes. Off the cursor, we replace the block with a real grid
+// (rendered via the same read-mode renderMarkdown, so both views match). Clicking it drops the
+// caret into the source and the whole block re-renders raw for editing (Obsidian-style).
+class TableWidget extends WidgetType {
+  constructor(md) { super(); this.md = md; }
+  eq(o) { return o.md === this.md; }
+  toDOM(view) {
+    const wrap = document.createElement('div');
+    wrap.className = 'cm-table';
+    // renderMarkdown HTML-escapes every cell first, so this innerHTML is CSP-safe.
+    wrap.innerHTML = renderMarkdown(this.md);
+    wrap.addEventListener('mousedown', (e) => {
+      if (e.target.closest('a, input')) return; // let links / task checkboxes work
+      e.preventDefault();
+      view.dispatch({ selection: { anchor: view.posAtDOM(wrap) } });
+      view.focus();
+    });
+    return wrap;
+  }
+  ignoreEvent() { return true; } // our mousedown handles the caret; keep CM from double-acting
+}
+
+// The [firstLine, lastLine] a Table node covers, plus the doc offsets of those line bounds. A
+// block node's `to` can sit at the start of the following (blank) line; back up so the widget
+// doesn't swallow it. Shared by the view-plugin scan and the block-decoration field below.
+function tableLineRange(state, node) {
+  const firstLine = state.doc.lineAt(node.from).number;
+  const end = Math.min(node.to, state.doc.length);
+  let lastLine = state.doc.lineAt(end).number;
+  if (lastLine > firstLine && state.doc.line(lastLine).from === end) lastLine--;
+  return { firstLine, lastLine, from: state.doc.line(firstLine).from, to: state.doc.line(lastLine).to };
+}
+
 // PURE: given an EditorState (markdown), the ranges to scan, and the line the cursor is on,
 // decide which spans get a heading line-class and which formatting marks get hidden. Marks on
 // the CURSOR's line are left visible so the raw syntax stays editable when you're on it
@@ -104,6 +140,17 @@ export function scanMarkdown(state, ranges, cursorLine) {
           const last = state.doc.lineAt(Math.min(node.to, state.doc.length)).number;
           for (let n = first; n <= last; n++) out.push({ kind: 'line', from: state.doc.line(n).from, cls: 'cm-line-code' });
           return false; // skip children (no inner CodeMark concealing)
+        }
+        // Table: rendered as a block widget by tableField when the cursor is elsewhere. On the
+        // cursor's own line-range we leave it raw (editable) but monospace-align it so the pipe
+        // columns line up. Either way, don't descend — the block widget owns the whole span, and
+        // concealing inner cell marks would overlap it.
+        if (node.name === 'Table') {
+          const { firstLine, lastLine } = tableLineRange(state, node);
+          if (cursorLine >= firstLine && cursorLine <= lastLine) {
+            for (let n = firstLine; n <= lastLine; n++) out.push({ kind: 'line', from: state.doc.line(n).from, cls: 'cm-line-table' });
+          }
+          return false;
         }
         const onCursorLine = state.doc.lineAt(node.from).number === cursorLine;
         // Horizontal rule (`---` / `***` / `___`) → a real divider line; hide the marks (unless
@@ -135,6 +182,15 @@ export function scanMarkdown(state, ranges, cursorLine) {
           if (onCursorLine || node.to <= node.from) return;
           out.push({ kind: 'check', from: node.from, to: node.to, checked: /[xX]/.test(state.doc.sliceString(node.from, node.to)) });
           return;
+        }
+        // A URL node is concealed ONLY when it's the address of a [text](url) Link/Image — there
+        // the visible [text] label stands in for it. A BARE / pasted URL (or one inside literal
+        // parens) is also a URL node but has NO label, so concealing it would leave nothing (or an
+        // empty "()"). Keep those visible: they're styled as a link (cm-tok-link) and stay
+        // clickable via linkTargetAt. Same reasoning for a raw autolink.
+        if (node.name === 'URL') {
+          const parent = node.node?.parent?.name;
+          if (parent !== 'Link' && parent !== 'Image') return;
         }
         if (!CONCEAL.has(node.name) || node.to <= node.from) return;
         if (onCursorLine) return; // editing this line → show marks
@@ -211,10 +267,36 @@ const ghostField = StateField.define({
   provide: (f) => EditorView.decorations.from(f),
 });
 
+// ── Table blocks ──────────────────────────────────────────────────────────────────
+// Block (line-break-spanning) decorations MUST come from a state field, not a view plugin —
+// CM needs them before it computes the viewport, so livePreview can't provide them. This field
+// replaces each GFM Table (whose cursor is elsewhere) with a rendered <table>; when the caret is
+// inside the table's lines we skip it so scanMarkdown's `cm-line-table` shows the raw source.
+function buildTableDecos(state) {
+  const cursorLine = state.doc.lineAt(state.selection.main.head).number;
+  const deco = [];
+  syntaxTree(state).iterate({
+    enter: (node) => {
+      if (node.name !== 'Table') return;
+      const { firstLine, lastLine, from, to } = tableLineRange(state, node);
+      if (cursorLine < firstLine || cursorLine > lastLine) {
+        deco.push(Decoration.replace({ widget: new TableWidget(state.doc.sliceString(from, to)), block: true }).range(from, to));
+      }
+      return false;
+    },
+  });
+  return Decoration.set(deco, true);
+}
+const tableField = StateField.define({
+  create: (state) => buildTableDecos(state),
+  update: (deco, tr) => ((tr.docChanged || tr.selection) ? buildTableDecos(tr.state) : deco.map(tr.changes)),
+  provide: (f) => EditorView.decorations.from(f),
+});
+
 // Create the live-preview editor inside `parent`. Callbacks: onChange(value, update) on every
 // doc change, onSelection() on cursor moves, onKey(event)->true to mark a key handled (so CM
 // won't also act on it). Facade mirrors the textarea verbs the rest of Notes already uses.
-export function createLiveEditor({ parent, doc = '', readOnly = false, placeholder = '', onChange, onSelection, onKey, onLink } = {}) {
+export function createLiveEditor({ parent, doc = '', readOnly = false, placeholder = '', onChange, onSelection, onKey, onLink, onPaste } = {}) {
   const editable = new Compartment();
   const exts = [
     history(),
@@ -225,6 +307,7 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
     syntaxHighlighting(HL),
     livePreview,
     ghostField, // tints an un-accepted AI draft so it never reads as committed text
+    tableField, // renders GFM tables as real grids (block decorations must be field-provided)
     agentRegionsExtension(), // multi-agent regions: remap + region-scoped lock + working widget
     // Our gesture/autocomplete handler must beat the default keymap (Tab=indent, Enter=newline),
     // so it runs at the HIGHEST precedence — otherwise Tab/Enter get consumed before we can
@@ -245,6 +328,9 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
         onLink(target);
         return true;
       },
+      // Paste a bare URL → let the host upgrade it to [Title](url). onPaste calls preventDefault
+      // itself when it handles the paste (returning true); otherwise CM's normal paste runs.
+      paste: (e) => (onPaste ? onPaste(e) === true : false),
     }),
     keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
     editable.of(EditorView.editable.of(!readOnly)),

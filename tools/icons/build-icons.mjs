@@ -22,6 +22,7 @@ const ALIAS = {
   pageact:'mouse-pointer-click', click:'mouse-pointer-click', watch:'radar', monitor:'radar', monitors:'radar',
   alert:'bell', research:'telescope', 'collapse-list':'panel-left-close', 'expand-list':'panel-left-open',
   'panel-toggle':'panel-right', 'collapse-panel':'chevrons-right', 'expand-panel':'chevrons-left',
+  'collapse-side':'panel-right-close', 'expand-side':'panel-right-open', 'focus-mode':'maximize-2',
   checklist:'list-checks', tasks:'list-checks', bullets:'list', 'numbered-list':'list-todo',
   plan:'compass', continue:'pen-line', cowriter:'pen-line', pen:'pen',
   activity:'wrench', tools:'wrench', tool:'wrench', web:'globe', link:'link', who:'user', user:'user',

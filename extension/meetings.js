@@ -837,6 +837,24 @@ function showProGate() {
   if (up) up.onclick = () => subscribe('pro', { onActivated: () => location.reload() });
 }
 
+// --- omni (cross-source) search — lazy-loaded on first open ------------------
+function openOmni(query = '') {
+  import('./js/omni-search.js').then((m) => m.openOmni({
+    query,
+    currentType: 'meeting',
+    onOpen: (r) => {
+      if (r.type === 'meeting') { const id = r.sourceId.replace(/^meeting:/, ''); if (store.has(id)) { select(id); return; } }
+      location.assign(r.url);
+    },
+  })).catch(() => { /* module load failed — no-op */ });
+}
+function wireOmni() {
+  $('omni-open')?.addEventListener('click', () => openOmni($('m-search').value || ''));
+  window.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); openOmni(); }
+  });
+}
+
 async function boot() {
   const license = await getLicense();
   if (!can(license, 'liveMeetings')) { showProGate(); return; }
@@ -867,6 +885,7 @@ async function boot() {
     renderList(); if (inGraph) showGraphView(); else if (current?.tab === 'topic-graph') renderTopicGraph();
   });
   $('m-graph-toggle').onclick = toggleGraph;
+  wireOmni();
   $('m-import').onclick = () => $('m-import-file').click();
   $('m-import-file').onchange = (e) => { const fs = e.target.files; if (fs && fs.length) importFiles(fs); e.target.value = ''; };
   $('m-settings').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#meetings') });

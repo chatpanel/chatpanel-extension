@@ -31,7 +31,7 @@ body {
 
 /* Header: [ nav ] [ omni-search ] [ actions ] */
 .hdr {
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 16px;
+  display: flex; justify-content: space-between; align-items: center; gap: 16px;
   height: 56px; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--card);
 }
 .count { color: var(--faint); font-weight: 500; font-size: 12px; margin-left: 1px; }
@@ -249,6 +249,15 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .cm-host .cm-line.cm-line-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; background: var(--field); }
 /* Task-list checkbox rendered in place of `[ ]`/`[x]` — flows inline with the item text. */
 .cm-host .cm-task-check { margin: 0 .45em 0 0; vertical-align: -0.06em; cursor: pointer; accent-color: var(--accent); }
+/* GFM table — rendered as a real grid when the cursor is elsewhere (click it to edit the
+   source, which re-renders the block raw). Mirrors the read-mode `.md table` look. */
+.cm-host .cm-table { margin: .35em 0; overflow-x: auto; cursor: text; }
+.cm-host .cm-table table { border-collapse: collapse; font-size: .92em; }
+.cm-host .cm-table th, .cm-host .cm-table td { border: 1px solid var(--border); padding: 6px 11px; text-align: left; }
+.cm-host .cm-table th { background: var(--field); font-weight: 650; }
+/* Editing a table (caret inside its lines): keep the raw markdown but monospace it so the pipe
+   columns line up while you type. */
+.cm-host .cm-line.cm-line-table { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
 
 /* Agent regions — a live span an agent is writing. Subtle tint + an animated "working" chip;
    the rest of the doc stays editable (only this region is locked). */
@@ -556,3 +565,60 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
   .panes.split { grid-template-columns: 1fr; }
   .title-input, .tags-row, .panes { padding-left: 18px; padding-right: 18px; }
 }
+
+/* ── Omni "search everything" trigger (header) ─────────────────────────────── */
+.omni-trigger { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border: 1px solid var(--border); background: var(--field); color: var(--muted); border-radius: 10px; cursor: pointer; font: inherit; font-weight: 500; font-size: 12.5px; }
+.omni-trigger:hover { border-color: var(--accent); color: var(--text); }
+.omni-trigger svg { width: 15px; height: 15px; }
+.omni-trigger kbd { font-size: 10.5px; color: var(--faint); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; background: var(--card); }
+@media (max-width: 760px) { .omni-trigger .omni-trigger-label, .omni-trigger kbd { display: none; } }
+
+/* ── Dashboard view (Notes overview: Topic graph / Related) ─────────────────── */
+.dash { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 14px 18px 4px; }
+.dash.hidden { display: none; }
+.dash-tabs { align-self: flex-start; margin-bottom: 12px; }
+.dash-tabs button { display: inline-flex; align-items: center; gap: 6px; }
+.dash-tabs button svg { width: 14px; height: 14px; }
+.dash-body { flex: 1; min-height: 0; overflow-y: auto; }
+.dash-pane.hidden { display: none; }
+.dash-empty { color: var(--muted); font-size: 13px; padding: 28px 8px; text-align: center; }
+#n-dash-graph { width: 100%; }
+
+/* ── Related cards (Research side pane + dashboard Related tab) ─────────────── */
+.related-notes { padding: 4px 14px 14px; }
+.related-notes.hidden { display: none; }
+.related-head { color: var(--faint); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin: 10px 0 8px; }
+.related-list { display: flex; flex-direction: column; gap: 7px; }
+.related-card { border: 1px solid var(--border); background: var(--card); border-radius: 9px; padding: 8px 10px; cursor: pointer; }
+.related-card:hover { border-color: var(--accent); background: var(--field); }
+.related-card-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 550; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.related-card-title svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.related-card-meta { color: var(--muted); font-size: 11.5px; margin-top: 3px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Relationship graph (notes.html doesn't load meetings.css) ──────────────── */
+.graph-host { width: 100%; min-height: 300px; }
+.graph-host.big { min-height: 520px; }
+svg .gedge { stroke: var(--border-strong); stroke-width: 1; opacity: .55; transition: opacity .15s ease; }
+svg .gnode { cursor: grab; }
+svg .gnode circle { stroke: var(--bg); stroke-width: 1.5; transition: filter .12s ease; fill: var(--accent); }
+svg .gnode.note circle { fill: var(--decision, #34d399); }
+svg .gnode.chat circle { fill: var(--question, #fbbf24); }
+svg .gnode.meeting circle { fill: var(--accent); }
+svg .gnode.focus circle { fill: var(--accent); stroke: var(--accent); stroke-width: 3; }
+svg .gnode text { fill: var(--text); font-size: 11px; font-family: -apple-system, sans-serif; pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; opacity: .86; transition: opacity .12s ease, fill .12s ease; }
+svg .gnode.label-hidden text { opacity: 0; }
+svg .gnode.label-visible text, svg .gnode:hover text { opacity: 1; }
+svg .gnode:hover circle { filter: brightness(1.2); }
+svg .gnode:hover text { fill: var(--accent); }
+svg .gnode.faded { opacity: .12; }
+svg .gedge.faded { opacity: .06; }
+
+/* Layout controls grouped in the editor toolbar (collapse list · focus · collapse panel) */
+.tb-group { display: inline-flex; align-items: center; gap: 2px; padding: 0 5px; margin: 0 3px; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+.tb-group .icon-btn.on { color: var(--accent); }
+
+/* Search-mode toggle in the list column — full-width segmented control, matching
+   the Chats/Meetings dashboards (the base .seg is a compact inline pill reused by
+   the editor + dashboard tabs, so scope the wide treatment to the list search). */
+.nlist-search .seg { display: flex; margin-top: 8px; border: 1px solid var(--border); }
+.nlist-search .seg button { flex: 1; text-align: center; padding: 6px 8px; font-weight: 550; }

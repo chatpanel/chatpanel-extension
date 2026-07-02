@@ -49,6 +49,7 @@ function toast(msg) {
 // ── list (index-only — no body decrypts) ────────────────────────────────────────
 async function reloadIndex() {
   list = await getNoteIndex(); // already newest-first
+  invalidateNotesIndex();      // list changed → the BM25 index is stale
 }
 function updateEntry(rec) {
   // Fold a just-saved record into the in-memory index and move it to the front.
@@ -57,20 +58,31 @@ function updateEntry(rec) {
     tags: rec.tags || [], createdAt: rec.createdAt, updatedAt: rec.updatedAt, chars: (rec.body || '').length,
   };
   list = [entry, ...list.filter((e) => e.id !== rec.id)];
+  invalidateNotesIndex();
 }
 
 function renderList(query = '') {
-  const q = query.trim().toLowerCase();
+  const raw = query.trim();
+  const q = raw.toLowerCase();
   const items = $('n-items');
-  const filtered = q
-    ? list.filter((n) => (n.title || '').toLowerCase().includes(q) || (n.snippet || '').toLowerCase().includes(q) || (n.tags || []).some((t) => t.toLowerCase().includes(q)))
-    : list;
+  let filtered;
+  if (!q) {
+    filtered = list;
+  } else if (nSearchMode === 'best' && nBm25 && _nIdxMod) {
+    // Ranked relevance (BM25 over title + tags + preview). Fall back to a forgiving
+    // substring pass when the ranker finds nothing (short/rare queries).
+    const byId = new Map(list.map((n) => [n.id, n]));
+    filtered = _nIdxMod.bm25Search(nBm25, raw).map((r) => byId.get(r.id)).filter(Boolean);
+    if (!filtered.length) filtered = list.filter((n) => noteSearchText(n).toLowerCase().includes(q));
+  } else {
+    filtered = list.filter((n) => noteSearchText(n).toLowerCase().includes(q));
+  }
   $('n-count').textContent = list.length ? `· ${list.length}` : '';
   $('n-empty-list').classList.toggle('hidden', list.length > 0);
   items.innerHTML = '';
   for (const n of filtered) {
     const el = document.createElement('div');
-    const running = noteHasJob(n.id);
+    const running = noteHasJob(n.id) || planners.has(n.id);
     el.className = 'nitem' + (current && n.id === current.id ? ' active' : '') + (running ? ' running' : '');
     const tags = (n.tags || []).slice(0, 3).map((t) => `<span class="nitem-tag">#${escapeHtml(t)}</span>`).join(' ');
     const runBadge = running ? '<span class="nitem-run" title="An agent is working on this note…" aria-label="Agent working"><span class="nitem-spin"></span></span> ' : '';
@@ -81,6 +93,170 @@ function renderList(query = '') {
     el.onclick = () => openNote(n.id);
     items.appendChild(el);
   }
+}
+
+// ── notes list search: Best match (BM25) / Exact text ────────────────────────
+// Parity with the Chats/Meetings list search. The BM25 index (meeting-index) is
+// lazy-built on the FIRST Best-match query and rebuilt when the list changes — so
+// notes first-paint pays nothing (the list renders substring-only until then).
+let nSearchMode = 'best';
+let _nIdxMod = null;   // lazily-imported meeting-index (BM25 + graph helpers)
+let nBm25 = null;      // built on demand; null = stale/needs rebuild
+const noteSearchText = (n) => `${n.title || ''}\n${(n.tags || []).join(' ')}\n${n.snippet || ''}`;
+function invalidateNotesIndex() { nBm25 = null; }
+async function ensureNotesIndexMod() {
+  if (!_nIdxMod) _nIdxMod = await import('./js/meeting-index.js');
+  return _nIdxMod;
+}
+async function ensureNotesIndex() {
+  if (nBm25) return nBm25;
+  const mod = await ensureNotesIndexMod();
+  nBm25 = mod.buildIndex(list.map((n) => ({ id: n.id, text: noteSearchText(n) })));
+  return nBm25;
+}
+function onNotesSearch(v) {
+  renderList(v);
+  // Best mode needs the ranker; build it once, then repaint with ranked order.
+  if (nSearchMode === 'best' && v.trim() && !nBm25) {
+    ensureNotesIndex().then(() => renderList($('n-search').value)).catch(() => { /* substring stays */ });
+  }
+}
+function setSearchMode(m) {
+  nSearchMode = m === 'exact' ? 'exact' : 'best';
+  for (const b of $('n-modes').children) b.classList.toggle('active', b.dataset.mode === nSearchMode);
+  onNotesSearch($('n-search').value);
+}
+
+// ── omni (cross-source) search — lazy-loaded on first open ───────────────────
+function openOmni(query = '') {
+  import('./js/omni-search.js').then((m) => m.openOmni({
+    query,
+    currentType: 'note',
+    onOpen: (r) => {
+      if (r.type === 'note') { openNote(r.sourceId.replace(/^note:/, '')); return; }
+      location.assign(r.url); // cross-page hit → navigate to that dashboard + item
+    },
+  })).catch(() => { /* module load failed — no-op */ });
+}
+
+// ── Notes dashboard: a tabbed corpus overview (Graph default + Related) ───────
+// Extensible shell — more tabs (Topics, Recent, Action items, Calendar) plug in
+// here later. Everything heavy (graph-view, BM25 graph model) is lazy-imported.
+let nDashOn = false;
+let nDashTab = 'graph';
+let _graphMod = null;
+async function openDash() {
+  nDashOn = true;
+  $('n-graph-toggle').classList.add('active');
+  $('n-dash').classList.remove('hidden');
+  $('n-blank').classList.add('hidden');
+  $('n-editor').classList.add('hidden');
+  await renderDash();
+}
+function closeDash() {
+  nDashOn = false;
+  $('n-graph-toggle').classList.remove('active');
+  $('n-dash').classList.add('hidden');
+  $('n-blank').classList.toggle('hidden', !!current);
+  $('n-editor').classList.toggle('hidden', !current);
+}
+async function toggleDash() { if (nDashOn) closeDash(); else await openDash(); }
+function setDashTab(tab) {
+  nDashTab = tab === 'related' ? 'related' : 'graph';
+  for (const b of $('n-dash').querySelectorAll('.dash-tabs button')) b.classList.toggle('active', b.dataset.dash === nDashTab);
+  $('n-dash-graph').classList.toggle('hidden', nDashTab !== 'graph');
+  $('n-dash-related').classList.toggle('hidden', nDashTab !== 'related');
+  renderDash();
+}
+// Build a cross-note relationship model from the lightweight index (title+tags+
+// preview) — no body decrypts, so the dashboard stays cheap.
+async function notesGraphModel() {
+  const mod = await ensureNotesIndexMod();
+  const model = list.map((n) => ({
+    id: n.id,
+    title: n.title || 'Untitled note',
+    people: [],
+    terms: mod.topTerms(noteSearchText(n), 8),
+  }));
+  const g = mod.buildGraph(model);
+  const seen = new Set();
+  const links = [];
+  const degree = new Map();
+  for (const m of model) {
+    for (const rel of g.relatedMeetings(m.id, { limit: 4 })) {
+      const key = m.id < rel.id ? `${m.id}|${rel.id}` : `${rel.id}|${m.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      links.push({ s: m.id, t: rel.id, weight: rel.weight });
+      degree.set(m.id, (degree.get(m.id) || 0) + 1);
+      degree.set(rel.id, (degree.get(rel.id) || 0) + 1);
+    }
+  }
+  return { model, links, degree, g };
+}
+async function renderDash() {
+  if (!list.length) {
+    $('n-dash-graph').innerHTML = '<div class="dash-empty">No notes yet — create one to see how they connect.</div>';
+    $('n-dash-related').innerHTML = '<div class="dash-empty">No notes yet.</div>';
+    return;
+  }
+  let built;
+  try { built = await notesGraphModel(); } catch { $('n-dash-graph').innerHTML = '<div class="dash-empty">Graph unavailable.</div>'; return; }
+  if (nDashTab === 'graph') {
+    try {
+      if (!_graphMod) _graphMod = await import('./js/graph-view.js');
+      const nodes = list.map((n) => ({ id: n.id, label: n.title || 'Untitled note', type: 'note' }));
+      _graphMod.drawGraph($('n-dash-graph'), nodes, built.links, (nd) => openNote(nd.id), (nd) => openNote(nd.id));
+    } catch { $('n-dash-graph').innerHTML = '<div class="dash-empty">Graph unavailable.</div>'; }
+  } else {
+    // Related tab: the most-connected notes (hubs) with their strongest links.
+    const byId = new Map(list.map((n) => [n.id, n]));
+    const hubs = [...built.degree.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+    const host = $('n-dash-related');
+    if (!hubs.length) { host.innerHTML = '<div class="dash-empty">No connections found yet — add tags or write more to link notes.</div>'; return; }
+    host.innerHTML = '';
+    for (const [id, deg] of hubs) {
+      const n = byId.get(id); if (!n) continue;
+      const rel = built.g.relatedMeetings(id, { limit: 3 }).map((r) => byId.get(r.id)?.title).filter(Boolean);
+      const card = document.createElement('div');
+      card.className = 'related-card';
+      card.innerHTML =
+        `<div class="related-card-title">${escapeHtml(n.title || 'Untitled note')}</div>` +
+        `<div class="related-card-meta">${deg} connection${deg === 1 ? '' : 's'}${rel.length ? ' · ' + rel.map((t) => escapeHtml(t)).join(', ') : ''}</div>`;
+      card.onclick = () => openNote(id);
+      host.appendChild(card);
+    }
+  }
+}
+
+// ── Related notes/chats/meetings for the OPEN note (Research side pane) ───────
+let _relatedFor = null;
+async function refreshRelated(noteId) {
+  if (!noteId || _relatedFor === noteId) return; // already showing this note's related
+  _relatedFor = noteId;
+  const host = $('n-related-list');
+  if (!host) return;
+  try {
+    if (!_ragMod) _ragMod = await import('./js/history-rag.js');
+    const sources = await _ragMod.loadHistorySources({ includeChats: true, includeMeetings: true, includeNotes: true });
+    if (_relatedFor !== noteId) return; // a newer note superseded this
+    const related = _ragMod.relatedHistorySources(sources, `note:${noteId}`, { limit: 6 });
+    $('n-related').classList.toggle('hidden', !related.length);
+    host.innerHTML = '';
+    for (const r of related) {
+      const kind = r.type === 'meeting' ? 'meetings' : r.type === 'chat' ? 'chat' : 'notes';
+      const card = document.createElement('div');
+      card.className = 'related-card';
+      card.innerHTML =
+        `<div class="related-card-title">${icon(kind)} ${escapeHtml(r.title || 'Untitled')}</div>` +
+        `<div class="related-card-meta">${escapeHtml(r.reason || '')}</div>`;
+      card.onclick = () => {
+        if (r.type === 'note') openNote(r.sourceId.replace(/^note:/, ''));
+        else if (r.url) location.assign(r.url);
+      };
+      host.appendChild(card);
+    }
+  } catch { /* related is best-effort */ }
 }
 
 // ── editor ───────────────────────────────────────────────────────────────────
@@ -144,6 +320,7 @@ async function ensureCm() {
     onSelection: onCmSelection,
     onKey: onCmKey,
     onLink: openEditorLink, // click a rendered [text](url) / [[wikilink]] in Live mode → open it
+    onPaste: onEditorPaste, // paste a bare URL → upgrade it to [Title](url) (Live mode)
   });
   return cm;
 }
@@ -192,6 +369,7 @@ function onCmChange(v, info = {}) {
   maybeAutocomplete();                           // @/[[/# dropdown, positioned via CM coords
   scheduleCowriter();
   scheduleResearch();
+  scheduleLinkify();
 }
 function onCmSelection() { maybeAutocomplete(); } // moving the caret updates/closes the dropdown
 // Route CM key events to the same gestures the textarea has. Return true = handled (CM won't
@@ -256,6 +434,7 @@ const SIDE_TABS = ['activity', 'research', 'cowriter', 'history'];
 const SIDE_PANE = { activity: 'n-activity', research: 'n-research', cowriter: 'n-cowriter', history: 'n-history' };
 let activeSide = 'activity';
 let sideCollapsed = false;
+let railCollapsed = false;
 
 function setSideTab(t, { open = true } = {}) {
   if (!SIDE_TABS.includes(t)) t = 'activity';
@@ -274,8 +453,35 @@ function setSideCollapsed(c) {
   sideCollapsed = !!c;
   localStorage.setItem('chatpanel.notes.sideCollapsed', sideCollapsed ? '1' : '0');
   $('n-side')?.classList.toggle('collapsed', sideCollapsed);
-  $('n-side-toggle')?.classList.toggle('on', !sideCollapsed);
+  const t = $('n-side-toggle');
+  if (t) {
+    t.classList.toggle('on', !sideCollapsed);
+    t.innerHTML = icon(sideCollapsed ? 'expand-side' : 'collapse-side'); // mirror the list toggle
+    t.title = sideCollapsed ? 'Show assistant panel (⌘/)' : 'Hide assistant panel (⌘/)';
+  }
+  updateBothBtn();
 }
+// List rail (left) collapse — mirror of the panel toggle. Persisted.
+function applyRailCollapsed(c) {
+  railCollapsed = !!c;
+  localStorage.setItem('chatpanel.notes.railCollapsed', railCollapsed ? '1' : '0');
+  $('n-layout')?.classList.toggle('rail-collapsed', railCollapsed);
+  const b = $('n-collapse');
+  if (b) {
+    b.innerHTML = icon(railCollapsed ? 'expand-list' : 'collapse-list');
+    b.title = railCollapsed ? 'Show list' : 'Hide list (⌘\\)';
+  }
+  updateBothBtn();
+}
+// The one-shot "focus mode" button reflects whether BOTH rails are hidden.
+function updateBothBtn() {
+  const b = $('n-collapse-both');
+  if (!b) return;
+  const both = railCollapsed && sideCollapsed;
+  b.classList.toggle('on', both);
+  b.title = both ? 'Show list & panel (⌘.)' : 'Focus — hide list & panel (⌘.)';
+}
+function setBothCollapsed(c) { applyRailCollapsed(c); setSideCollapsed(c); }
 function setSideBadge(t, n) {
   const el = $(`n-side-badge-${t}`);
   if (!el) return;
@@ -414,7 +620,9 @@ function startTagInput(addBtn) {
 }
 
 async function openNote(id, preloaded = null) {
-  if (agentAbort) agentAbort.abort(); // stop any in-flight @agent generation before switching
+  // Stop an in-flight inline @agent generation before switching — but a background PLANNER
+  // keeps orchestrating (it persists to its own note's store), like the region jobs below.
+  if (agentAbort && planners.size === 0) agentAbort.abort();
   if (writerAbort) writerAbort.abort();
   resolvePendingGhost(); // commit a finished Writer draft-ahead into the OLD note (drop ephemeral autocomplete) before flush
   // Jobs are NOT aborted on a note switch — they keep running. A REGION job (Live) streams into
@@ -439,6 +647,7 @@ async function openNote(id, preloaded = null) {
   if (cm) for (const r of activeRegions(cm.view.state)) finishRegion(cm.view, r.id);
   current = preloaded || await getNote(id);
   if (!current) return;
+  if (nDashOn) closeDash(); // leave the dashboard when a note opens
   $('n-blank').classList.add('hidden');
   $('n-editor').classList.remove('hidden');
   $('n-title').value = current.title || '';
@@ -474,10 +683,12 @@ async function openNote(id, preloaded = null) {
   const inJobs = jobsForNote(current.id);
   const inTextareaJob = inJobs.find((j) => !j.region);
   if (inTextareaJob) attachEditorToJob(inTextareaJob); // re-attach a textarea job's live progress
-  else $('n-body').readOnly = false;
+  else $('n-body').readOnly = planners.has(current.id); // a background planner still owns this note's body
+  if (planners.has(current.id)) setStatus('Planning…'); // reflect the background plan on return
   for (const j of inJobs) if (j.region && j.detached && !j.done) reattachRegionJob(j); // resume backgrounded agents live
   renderActivity(); // re-attach this note's persisted command-activity trace (or hide it)
   renderList($('n-search').value);
+  refreshRelated(current.id); // related notes/chats/meetings for the Research pane (best-effort, cached)
 }
 
 function setStatus(text, saved = false) {
@@ -739,6 +950,96 @@ function onBodyInput() {
   scheduleAutocomplete(); // inline AI ghost prediction on a typing pause (opt-in)
   scheduleCowriter();
   scheduleResearch();
+  scheduleLinkify();
+}
+
+// ── Auto-linkify bare URLs → [Title](url) ─────────────────────────────────────────────
+// A pasted OR typed bare http(s) URL gets its page <title> fetched (locally, via link-title.js —
+// no third-party service) and is rewritten to a readable [Title](url) link. Two triggers: an
+// explicit PASTE of a URL (immediate, below), and a URL that SETTLES while typing (a terminator
+// after it — so we never rewrite one that's still being typed). Model-free / key-free, so it runs
+// regardless of the co-writer toggle. Cached + span-revalidated + caret-preserving; if the title
+// can't be fetched it just leaves the bare URL (which the Live editor already renders clickable).
+const BARE_URL_RE = /^https?:\/\/[^\s<>()[\]]+$/i;               // a whole token that IS just a URL
+const URL_SCAN_RE = /https?:\/\/[^\s<>()[\]]+/gi;                // find URLs embedded in the text
+const linkifyTried = new Set(); // spans already handled/attempted this session (avoid re-runs/loops)
+let linkifyTimer = null;
+let _linkTitleMod = null;
+let _bridgeUrlForLinks = null;  // cached once — reading settings per keystroke would be wasteful
+
+function scheduleLinkify() { clearTimeout(linkifyTimer); linkifyTimer = setTimeout(() => scanAndLinkify().catch(() => {}), 900); }
+
+async function bridgeUrlForLinks() {
+  if (_bridgeUrlForLinks !== null) return _bridgeUrlForLinks;
+  // Don't pull the heavy providers module onto the linkify path just to read one URL — the bridge
+  // is an OPTIONAL provider (the direct local fetch works without it). If deps are already loaded,
+  // read it now; otherwise skip the bridge this time and warm the value in the background.
+  if (!_agentDeps) {
+    agentDeps().then((d) => d.getSettings()).then((s) => { _bridgeUrlForLinks = s?.bridgeUrl || ''; }).catch(() => {});
+    return '';
+  }
+  try { _bridgeUrlForLinks = (await _agentDeps.getSettings())?.bridgeUrl || ''; } catch { _bridgeUrlForLinks = ''; }
+  return _bridgeUrlForLinks;
+}
+
+// Replace the bare URL at [from,to) with [Title](url) once the title resolves. Guarded: bails if
+// the span no longer holds that exact URL (edited), if it's already a link's address, or if we
+// switched notes mid-fetch. Keeps the caret where it was relative to the edit.
+async function linkifyUrlSpan(url, from, to, noteId) {
+  let mod;
+  try { mod = _linkTitleMod || (_linkTitleMod = await import('./js/link-title.js')); } catch { return; }
+  const title = await mod.resolveLinkTitle(url, { bridgeUrl: await bridgeUrlForLinks() });
+  if (!title || !current || current.id !== noteId) return; // no title, or note switched → keep bare URL
+  let text = bodyText();
+  if (text.slice(from, to) !== url) {                    // span moved (edits during fetch) → re-find once
+    const idx = text.indexOf(url);
+    if (idx < 0 || text.slice(idx, idx + url.length) !== url) return;
+    from = idx; to = idx + url.length;
+  }
+  if (text[from - 1] === '(' && text[from - 2] === ']') return; // already the address of a [text](url) link
+  const md = `[${title}](${url})`;
+  const caret = bodyCursor();
+  const newCaret = caret >= to ? caret + (md.length - (to - from)) : (caret > from ? from + md.length : caret);
+  bodyReplaceRange(md, from, to, newCaret);
+  logActivity('Linker', `titled “${title.slice(0, 48)}”`);
+}
+
+// Typing trigger: on a pause, find the first SETTLED bare URL (terminated by whitespace/newline/
+// punctuation — not one still being typed at the very end) that isn't already a link, and upgrade it.
+async function scanAndLinkify() {
+  if (!current || $('n-body').readOnly || ghost || writerAbort) return;
+  const text = bodyText();
+  const noteId = current.id;
+  URL_SCAN_RE.lastIndex = 0;
+  let m;
+  while ((m = URL_SCAN_RE.exec(text))) {
+    let from = m.index, to = from + m[0].length, url = m[0];
+    while (to > from && /[.,;:!?'")\]]/.test(text[to - 1])) { to--; url = url.slice(0, -1); } // trim trailing punctuation
+    if (!url || (text[from - 1] === '(' && text[from - 2] === ']')) continue; // empty, or already a [text](url) address (literal parens are fine)
+    const next = text[to];
+    if (next === undefined || !/[\s)\].,;:!?]/.test(next)) continue; // not settled yet (still typing) → wait
+    if (linkifyTried.has(url)) continue;
+    linkifyTried.add(url);
+    linkifyUrlSpan(url, from, to, noteId);
+    break; // one per pass; the next input reschedules
+  }
+}
+
+// Paste trigger: pasting a whole bare URL upgrades it. With a selection, wrap it as the link text
+// ([selection](url)); otherwise drop the URL in and fetch its title. Works in both editor modes
+// (bodySel / bodyReplaceRange route to the textarea or CM). Returns true when it handled the paste.
+function onEditorPaste(e) {
+  const url = (e.clipboardData?.getData('text') || '').trim();
+  if (!BARE_URL_RE.test(url) || !current) return false;  // not a bare URL → let the normal paste happen
+  e.preventDefault();
+  const noteId = current.id;
+  const { start, end } = bodySel();
+  const selText = bodyText().slice(start, end);
+  if (selText) { bodyReplaceRange(`[${selText}](${url})`, start, end); return true; } // selection → link text
+  linkifyTried.delete(url);                               // a fresh explicit paste — allow a re-try
+  bodyReplaceRange(url, start, end, start + url.length);  // show the bare URL immediately…
+  linkifyUrlSpan(url, start, start + url.length, noteId); // …then upgrade to [Title](url) when it resolves
+  return true;
 }
 
 // ── agent beside you: local topic extraction → tag suggestions (no LLM) ──────────
@@ -1022,6 +1323,38 @@ async function runAgentAction(kind) {
   }
 }
 
+// Plan notes whose orchestration is running in the BACKGROUND (survives a note switch,
+// like the region jobs). Used for the list spinner + to keep the plan note read-only
+// while its swarm owns the body, and to spare the planner from openNote's abort.
+const planners = new Set();
+
+// Persist the plan straight to its STORE (by id) — whether or not it's the note on
+// screen — so switching away mid-plan never loses progress or the final result. When the
+// plan note IS open, also refresh the live editor. `finalize` snapshots a version and
+// hands the body back to the user (read-write, undo baseline resynced).
+async function persistPlan(plan, topic, tasks, { finalize = false } = {}) {
+  const at = Date.now();
+  const body = planBody(topic, tasks);
+  const rec = current?.id === plan.id ? current : await getNote(plan.id);
+  if (!rec) return;
+  const attribution = planAttribution(topic, tasks, at); // per-section authorship (Planner/Researcher/Writer)
+  let versions = Array.isArray(rec.versions) ? rec.versions : [];
+  if (finalize) {
+    const last = versions[versions.length - 1];
+    if (!last || last.body !== body) versions = [...versions, { body, attribution, at, by: 'Planner', label: 'Plan orchestrated' }].slice(-40);
+  }
+  const saved = await saveNote({ id: plan.id, title: rec.title, body, tags: rec.tags, createdAt: rec.createdAt, attribution, versions });
+  Object.assign(rec, saved, { body, attribution, versions });
+  updateEntry(rec);
+  renderList($('n-search').value);
+  if (current?.id === plan.id) {
+    $('n-body').value = body; autoGrow(); updateWordCount();
+    if (!$('n-panes').classList.contains('write')) updatePreview();
+    mirrorToCm(body);
+    if (finalize) { histReset(body); renderHistory(); $('n-body').readOnly = false; }
+  }
+}
+
 // Plan-in-a-new-note: select some text (or a line) → the agent spins off a NEW note,
 // links THIS note to it, drafts a researched plan into it (tools + PII harness + the
 // activity widget), and hands it to the swarm (intent set, co-writer on) to keep working.
@@ -1060,17 +1393,22 @@ async function planInNewNote(explicitTopic) {
   //    fill its section → check it off. Live, in the activity widget; body untouched
   //    elsewhere. Research tasks do web + history; write tasks use the Writer.
   agentAbort = new AbortController();
+  planners.add(plan.id);            // → survives note switches; shows the list working-indicator
+  renderList($('n-search').value);
   setAgentBusy(true);
   streamStart();
-  setStatus('Planning…');
+  const pstatus = (t) => { if (current?.id === plan.id) setStatus(t); }; // only touch the strip while the plan note is on screen
+  pstatus('Planning…');
   const act = makeSwarmActivity(plan.id, '🧭 Planner', resolved.model || resolved.bridgeAgent || 'model', false);
   let redaction = null;
   try { redaction = deps.buildRedaction?.({ settings, license }); } catch { /* redaction off */ }
-  const renderPlan = () => { if (current === planNote) { ta.value = planBody(topic, planNote.tasks || []); autoGrow(); if (!$('n-panes').classList.contains('write')) updatePreview(); streamFollow(); } };
+  // Live mirror into the editor — only while the plan note is the one on screen (by id, so it
+  // still works after you switch away and back). Durable writes go through persistPlan().
+  const renderPlan = () => { if (current?.id === plan.id) { ta.value = planBody(topic, planNote.tasks || []); autoGrow(); if (!$('n-panes').classList.contains('write')) updatePreview(); streamFollow(); } };
 
   try {
     // Phase A — decompose (one model call → JSON sub-tasks, each assigned a role).
-    setStatus('Decomposing the goal…');
+    pstatus('Decomposing the goal…');
     const dsys = 'You are a planning orchestrator. Break the goal into 3–6 concrete sub-tasks. For each, pick a role: "research" (needs facts, options, prices, or current info — it will web + history search) or "write" (drafting, structure, synthesis). Return ONLY compact JSON: {"tasks":[{"title":"short title","role":"research|write","prompt":"a focused instruction for this sub-task"}]}';
     let tasks = [];
     try {
@@ -1086,7 +1424,7 @@ async function planInNewNote(explicitTopic) {
     for (const t of tasks) {
       if (agentAbort?.signal.aborted) break;
       t.working = true;
-      setStatus(`${t.role === 'research' ? '🔎 Researching' : '✍️ Writing'}: ${t.title}`);
+      pstatus(`${t.role === 'research' ? '🔎 Researching' : '✍️ Writing'}: ${t.title}`);
       logActivity('Planner', `→ ${t.role}: ${t.title.slice(0, 40)}`);
       renderPlan();
       try {
@@ -1095,7 +1433,7 @@ async function planInNewNote(explicitTopic) {
       } catch (e) { if (agentAbort?.signal.aborted) break; t.output = `_error: ${e?.message || e}_`; }
       t.working = false; t.done = true;
       renderPlan();
-      if (current === planNote) { current.body = ta.value; dirty = true; await flushSave(); }
+      await persistPlan(plan, topic, planNote.tasks); // land each finished sub-task in the plan note's store, focused or not
     }
     act.done();
   } catch (e) {
@@ -1105,22 +1443,16 @@ async function planInNewNote(explicitTopic) {
     agentAbort = null;
     setAgentBusy(false);
     streamStop(); // drop any pending frame before the final commit
-    setStatus('');
-    if (current === planNote) {
-      // The plan note started empty — its body was authored by the swarm. Attribute it per
-      // section (Planner scaffold, Researcher/Writer sections) instead of "You", and snapshot
-      // a version — so history is honest and the user's own later edits are tinted separately
-      // instead of the note reading "You 100%". Rebuild body + ledger from the SAME task state
-      // so their lengths can't drift (a mismatch would silently reseed the note back to "You").
-      const at = Date.now();
-      current.body = ta.value = planBody(topic, planNote.tasks || []);
-      planNote.attribution = planAttribution(topic, planNote.tasks || [], at);
-      pushVersion('Planner', 'Plan orchestrated');
-      histReset(ta.value); // resync the undo baseline to the plan body — the plan was written
-      // straight into `ta.value` (never through recordEdit), so without this the user's first
-      // keystroke would diff from an EMPTY baseline and re-attribute the whole plan to "You".
-      autoGrow(); updateWordCount(); mirrorToCm(); dirty = true; await flushSave();
-    }
+    if (current?.id === plan.id) setStatus('');
+    // The plan note started empty — its body was authored by the swarm. Attribute it per
+    // section (Planner scaffold, Researcher/Writer sections) instead of "You", and snapshot a
+    // version — so history is honest and the user's own later edits are tinted separately. This
+    // lands in the plan note's STORE whether or not it's the note on screen (persistPlan), so
+    // switching away mid-plan can't lose the result; when it IS open, the editor + undo baseline
+    // are resynced too. Body + ledger are built from the SAME task state so lengths can't drift.
+    try { await persistPlan(plan, topic, planNote.tasks || [], { finalize: true }); } catch { /* best-effort */ }
+    planners.delete(plan.id);
+    renderList($('n-search').value);
     const done = (planNote.tasks || []).filter((t) => t.done).length;
     logActivity('Planner', `plan complete · ${done}/${(planNote.tasks || []).length} sub-tasks`);
     toast(`Plan orchestrated — ${done} sub-tasks done`);
@@ -1982,7 +2314,7 @@ async function runAgentTask(mention) {
     const resolved = deps.resolveTarget(targetAgent, settings);
     const sys = `You are "${targetAgent.name || 'the agent'}", completing a task INSIDE the user's note. Use your tools to do it well:\n`
       + '- research with web_search / history tools when you need facts or the user\'s own material;\n'
-      + '- note_create to put content in a NEW note when it belongs on its own;\n'
+      + '- note_create ONLY when a substantial, self-contained piece of content truly belongs in its own note — write inline by default, and NEVER create an empty note or one that just links back to this note;\n'
       + '- note_edit to revise the user\'s EXISTING text in THIS note (exact find/replace).\n'
       + 'Your streamed text is inserted where the task was written — use it for the main answer, tools for side effects. Output clean GitHub-flavored markdown, no preamble or meta commentary.';
     // Swarm awareness: if other named agents have sections/mentions in THIS note, tell the
@@ -2038,7 +2370,7 @@ function makeNoteTools(job) {
   const specs = [
     {
       name: 'note_create',
-      description: 'Create a NEW note with a markdown body (and optional title). Use for content that belongs in its own note, not inline. Returns the new note id + a notes.html#id link to reference as [markdown](link).',
+      description: 'Create a NEW note ONLY when a substantial, self-contained piece of content clearly belongs in its own note. Default to writing inline — do NOT create a note that is empty or whose body is just a link back to the current note (that call is rejected). `body` must be real markdown prose. Returns the new note id + a notes.html#id link to reference as [markdown](link).',
       parameters: { type: 'object', properties: { title: { type: 'string', description: 'Optional; first line is used if omitted.' }, body: { type: 'string', description: 'GitHub-flavored markdown.' } }, required: ['body'] },
     },
     {
@@ -2050,7 +2382,19 @@ function makeNoteTools(job) {
   const execute = async (name, input) => {
     try {
       if (name === 'note_create') {
-        const rec = await createNote({ title: String(input?.title || '').trim(), body: String(input?.body || '') });
+        const title = String(input?.title || '').trim();
+        const body = String(input?.body || '');
+        // Guard: never materialize an EMPTY or link-only note. The model otherwise calls
+        // note_create reflexively and leaves behind a blank note (or one whose whole body is
+        // just a [[backlink]] to the doc it's working on) — clutter the user never asked for.
+        // Require real prose: strip [[wikilinks]] + [text](url) links, then demand a letter/digit.
+        const prose = body
+          .replace(/\[\[[^\]\n]*\]\]/g, ' ')
+          .replace(/\[[^\]\n]*\]\([^)\s]*\)/g, ' ');
+        if (!/[\p{L}\p{N}]/u.test(prose)) {
+          return JSON.stringify({ error: 'Refusing to create an empty or link-only note. Put the actual content in `body` (real prose — not just a link back to this note), or write inline instead of calling note_create.' });
+        }
+        const rec = await createNote({ title, body });
         await reloadIndex();
         renderList($('n-search').value);
         if (current?.id === job.noteId) logActivity(job.modelLabel, `created “${rec.title}”`);
@@ -2822,8 +3166,10 @@ async function draftAhead(opts = {}) {
   ghostAuthor = `Writer · ${writer.resolved.model || writer.resolved.bridgeAgent || 'model'}`;
   // NB: no readOnly — setRangeText() throws on a readOnly textarea. Typing is blocked
   // instead by the keydown guard (which swallows keys while writerAbort is set).
-  setStatus('Drafting…');
-  showGhostHint('Drafting…');
+  // Name the model/agent doing the drafting so the status isn't anonymous (router-appointed).
+  const writerLabel = writer.label || writer.resolved.model || writer.resolved.bridgeAgent || 'model';
+  setStatus(`Drafting… · ${writerLabel}`);
+  showGhostHint(`${writerLabel} drafting…`);
   setSwarmState('writer', 'working');
   // If the Writer is a bridge agent, its tools/subagents stream into the activity widget
   // (not the note body). API models with no tools show nothing extra.
@@ -3375,16 +3721,11 @@ function init() {
     renderSwarmStatus();
   };
 
-  // Collapsible list rail → full-width editor. Persisted.
+  // Layout controls (bottom toolbar): collapse list · focus (both) · collapse panel.
   const collapseBtn = $('n-collapse');
-  const applyCollapsed = (c) => {
-    $('n-layout').classList.toggle('rail-collapsed', c);
-    collapseBtn.innerHTML = c ? icon('expand-list') : icon('collapse-list');
-    collapseBtn.title = c ? 'Show list' : 'Hide list (⌘\\)';
-  };
-  let collapsed = localStorage.getItem('chatpanel.notes.railCollapsed') === '1';
-  applyCollapsed(collapsed);
-  collapseBtn.onclick = () => { collapsed = !collapsed; localStorage.setItem('chatpanel.notes.railCollapsed', collapsed ? '1' : '0'); applyCollapsed(collapsed); };
+  applyRailCollapsed(localStorage.getItem('chatpanel.notes.railCollapsed') === '1');
+  collapseBtn.onclick = () => applyRailCollapsed(!railCollapsed);
+  $('n-collapse-both').onclick = () => setBothCollapsed(!(railCollapsed && sideCollapsed));
 
   $('n-title').addEventListener('input', () => { updateWordCount(); scheduleSave(); scheduleCowriter(); });
   // Enter / ↓ in the title drops into the body (title is single-line).
@@ -3398,6 +3739,7 @@ function init() {
     }
   });
   $('n-body').addEventListener('input', onBodyInput);
+  $('n-body').addEventListener('paste', onEditorPaste); // paste a bare URL → [Title](url) (classic mode)
   $('n-body').addEventListener('keydown', (e) => {
     const ta = $('n-body');
     // Dropdown navigation takes priority while open.
@@ -3495,7 +3837,11 @@ function init() {
     if (writerAbort) writerAbort.abort();
     clearGhost({ remove: true });
   });
-  $('n-search').addEventListener('input', (e) => renderList(e.target.value));
+  $('n-search').addEventListener('input', (e) => onNotesSearch(e.target.value));
+  for (const b of $('n-modes').children) b.onclick = () => setSearchMode(b.dataset.mode);
+  $('omni-open').onclick = () => openOmni($('n-search').value || '');
+  $('n-graph-toggle').onclick = toggleDash;
+  for (const b of $('n-dash').querySelectorAll('.dash-tabs button')) b.onclick = () => setDashTab(b.dataset.dash);
 
   for (const b of $('n-mode').children) b.onclick = () => setMode(b.dataset.mode);
   for (const b of $('n-fmt').children) b.onclick = () => applyFmt(b.dataset.fmt);
@@ -3598,9 +3944,11 @@ function init() {
     }
     if (k === 'n') { e.preventDefault(); newNote(); }
     else if (e.key === '/') { e.preventDefault(); setSideCollapsed(!sideCollapsed); }
-    else if (k === 'k') { e.preventDefault(); $('n-search').focus(); }
+    else if (k === 'k') { e.preventDefault(); openOmni($('n-search').value || ''); }
+    else if (k === 'f' && !e.shiftKey) { e.preventDefault(); $('n-search').focus(); }
     else if (k === 's') { e.preventDefault(); flushSave(); toast('Saved'); }
     else if (e.key === '\\') { e.preventDefault(); collapseBtn.click(); }
+    else if (e.key === '.') { e.preventDefault(); setBothCollapsed(!(railCollapsed && sideCollapsed)); }
     // ⌘A in Read mode: select only the rendered note text (not the whole window — nav,
     // list, toolbar…). Fields keep their native select-all.
     else if (k === 'a' && $('n-panes').classList.contains('read')) {
@@ -3650,5 +3998,5 @@ function init() {
   renderList('');
   const hashId = decodeURIComponent(location.hash.slice(1));
   if (hashId && list.some((n) => n.id === hashId)) openNote(hashId);
-  else if (list.length) openNote(list[0].id);
+  else if (list.length) openDash(); // land on the dashboard (graph) — like the Chats/Meetings pages
 })();

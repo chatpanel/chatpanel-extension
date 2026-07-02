@@ -7,14 +7,16 @@ export function combineSystemPrompt(...parts) {
 
 export function sourceCitationSystem({ compact = false } = {}) {
   if (compact) {
-    return 'Cite these sources inline with <sup>[1]</sup> and add a bottom "Sources" list with labels, links/IDs, and no invented links.';
+    return 'Cite these sources inline with <sup>[1]</sup> and add a bottom "Sources" list with labels and links: reuse any "Open in ChatPanel" link, derive a canonical URL from a returned ID (e.g. Wikipedia page ID → https://en.wikipedia.org/?curid=<id>), else give the ID/label. Never guess a URL you cannot derive.';
   }
   return [
     'Source citation policy:',
     'When your answer uses any attached, retrieved, searched, or tool-provided source, including MCP tools and history/search tools, cite the relevant claim inline with superscript markers like <sup>[1]</sup>.',
     'Finish with a "Sources" section listing each cited source once. Match the numbering used in the answer.',
-    'For each source, include the best available title/name and URL/link. If no URL is returned, include the source ID, page ID, tool name, search result label, or file/meeting/chat label so the user can find it.',
-    'Do not invent sources, links, page IDs, or titles. If a tool result does not return links, say that in the Sources entry instead of omitting the source.',
+    'For each source, include the best available title/name and URL/link. A ChatPanel history/note/meeting/chat result already carries an "Open in ChatPanel" chrome-extension:// link — reuse that exact link so the user can jump straight to the item.',
+    'If a tool returns a stable identifier for a known public source instead of a URL (e.g. a Wikipedia page ID, DOI, arXiv/PubMed ID, or a slug), build the canonical URL from it — for a Wikipedia page ID use https://en.wikipedia.org/?curid=<id> — and cite that. Deterministically constructing a URL from an ID the tool returned is derivation, not fabrication.',
+    'Only when no URL is present AND none can be derived, fall back to the source ID, page ID, tool name, search result label, or file/meeting/chat label so the user can still find it.',
+    'Do not invent sources, page IDs, or titles, and never guess a URL you cannot derive from a returned identifier.',
     'If you did not use sources beyond general reasoning, omit the Sources section.',
   ].join('\n');
 }

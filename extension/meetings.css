@@ -27,6 +27,13 @@ a { color: var(--accent); text-decoration: none; }
 .hdr .count { color: var(--muted); font-size: 13px; font-weight: 400; }
 .hdr-actions { display: flex; gap: 8px; align-items: center; }
 
+/* Omni "search everything" trigger — opens the cross-source modal (shared) */
+.omni-trigger { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border: 1px solid var(--border-strong); background: var(--field); color: var(--muted); border-radius: var(--radius-sm); cursor: pointer; font: inherit; font-weight: 500; font-size: 12.5px; }
+.omni-trigger:hover { border-color: var(--accent); color: var(--text); }
+.omni-trigger svg { width: 15px; height: 15px; }
+.omni-trigger kbd { font-size: 10.5px; color: var(--faint); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; background: var(--card); }
+@media (max-width: 720px) { .omni-trigger .omni-trigger-label, .omni-trigger kbd { display: none; } }
+
 /* Cross-page workspace nav (shared with the Notes page) */
 .topnav { display: inline-flex; background: var(--field, rgba(127, 127, 127, .10)); border-radius: 10px; padding: 3px; gap: 2px; }
 .topnav-item { text-decoration: none; color: var(--muted); font-size: 13px; font-weight: 500; padding: 6px 12px; border-radius: 8px; white-space: nowrap; transition: background .1s, color .1s; }

@@ -5047,11 +5047,13 @@ function wireMarkdownLinks() {
   if (document._mdLinksWired) return;
   document._mdLinksWired = true;
   const open = (e, active) => {
-    const a = e.target.closest?.('a.md-link[data-href]');
+    const a = e.target.closest?.('a.md-link');
     if (!a) return;
+    // External links carry the URL in data-href (no live href); internal note/chat/
+    // meeting deep links carry a live chrome-extension: href. Route both here.
+    const url = a.getAttribute('data-href') || a.getAttribute('href') || '';
+    if (!/^(https?:|chrome-extension:)/i.test(url)) return; // mailto: etc. → native href
     e.preventDefault();
-    const url = a.getAttribute('data-href');
-    if (!url) return;
     // A ChatPanel meeting citation (meetings.html#<id>) → open the meeting INSIDE the
     // panel instead of a new tab, so a cited source stays in context.
     const mm = /\/meetings\.html#(.+)$/.exec(url);

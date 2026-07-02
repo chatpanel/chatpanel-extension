@@ -14,12 +14,9 @@
         <a href="history.html" class="topnav-item" data-icon="menu">Chats</a>
         <a href="meetings.html" class="topnav-item" data-icon="meetings">Meetings</a>
       </nav>
-      <div class="omni">
-        <span class="omni-ico" data-icon="search"></span>
-        <input id="n-search" class="omni-input" placeholder="Search notes…" autocomplete="off" spellcheck="false" />
-      </div>
       <div class="hdr-actions">
-        <button id="n-collapse" class="icon-btn" title="Hide list (⌘\)" aria-label="Toggle list" data-icon="collapse-list"></button>
+        <button id="omni-open" class="omni-trigger" type="button" title="Search notes, chats & meetings (⌘K)"><span data-icon="search"></span><span class="omni-trigger-label">Search everything</span><kbd>⌘K</kbd></button>
+        <button id="n-graph-toggle" class="btn" type="button" title="Map how your notes connect" data-icon="graph">Graph</button>
         <button id="n-settings" class="btn ghost" type="button" title="Notes settings" data-icon="settings">Settings</button>
         <button id="n-new" class="btn primary" title="New note (⌘N)" data-icon="note-new">New</button>
       </div>
@@ -27,6 +24,13 @@
 
     <div class="layout" id="n-layout">
       <aside class="nlist">
+        <div class="nlist-search">
+          <input id="n-search" class="search" type="search" placeholder="Search notes…" autocomplete="off" spellcheck="false" />
+          <div class="seg" id="n-modes" role="tablist" aria-label="Search mode">
+            <button data-mode="best" class="active" type="button" title="Ranked relevance across title, tags & preview">Best match</button>
+            <button data-mode="exact" type="button" title="Literal substring match">Exact text</button>
+          </div>
+        </div>
         <div id="n-items" class="nitems"></div>
         <div id="n-empty-list" class="list-empty hidden">
           <p>No notes yet.</p>
@@ -36,6 +40,21 @@
 
       <main class="detail">
         <div id="n-rail-resizer" class="resizer rail-resizer" title="Drag to resize the list"></div>
+
+        <!-- Dashboard view — a tabbed overview of the whole notes corpus. Graph is the
+             default; Related surfaces notes that share topics. Extensible: more tabs
+             (Topics, Recent, Action items, Calendar) plug in here later. -->
+        <div id="n-dash" class="dash hidden">
+          <div class="dash-tabs seg" role="tablist" aria-label="Dashboard view">
+            <button data-dash="graph" class="active" type="button" role="tab" data-icon="graph">Topic graph</button>
+            <button data-dash="related" type="button" role="tab" data-icon="waypoints">Related</button>
+          </div>
+          <div class="dash-body">
+            <div id="n-dash-graph" class="dash-pane graph-host big" role="tabpanel"></div>
+            <div id="n-dash-related" class="dash-pane hidden" role="tabpanel"></div>
+          </div>
+        </div>
+
         <!-- Empty state -->
         <div id="n-blank" class="blank">
           <div class="blank-mark" data-icon="notes"></div>
@@ -91,7 +110,11 @@
             </div>
             <div class="toolbar-right">
               <span id="n-status" class="save-status"></span>
-              <button id="n-side-toggle" class="icon-btn" title="Toggle assistant panel (⌘/)" aria-label="Toggle assistant panel" data-icon="panel-toggle"></button>
+              <span class="tb-group" role="group" aria-label="Layout">
+                <button id="n-collapse" class="icon-btn" title="Hide list (⌘\)" aria-label="Toggle list" data-icon="collapse-list"></button>
+                <button id="n-collapse-both" class="icon-btn" title="Focus — hide list & panel (⌘.)" aria-label="Toggle both panels" data-icon="focus-mode"></button>
+                <button id="n-side-toggle" class="icon-btn" title="Hide assistant panel (⌘/)" aria-label="Toggle assistant panel" data-icon="collapse-side"></button>
+              </span>
               <button id="n-ask" class="icon-btn" title="Ask ChatPanel about this note" aria-label="Ask ChatPanel" data-icon="ask"></button>
               <button id="n-copy" class="icon-btn" title="Copy as Markdown" aria-label="Copy as Markdown" data-icon="copy"></button>
               <div class="export-wrap">
@@ -137,6 +160,10 @@
                     </div>
                   </div>
                   <div id="n-research-cards" class="research-cards"></div>
+                  <div id="n-related" class="related-notes">
+                    <div class="related-head">Related notes, chats &amp; meetings</div>
+                    <div id="n-related-list" class="related-list"></div>
+                  </div>
                 </div>
                 <div id="n-activity" class="activity side-pane tab-active" role="tabpanel" aria-label="Team activity">
                   <div class="activity-head">
