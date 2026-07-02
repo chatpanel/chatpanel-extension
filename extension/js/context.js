@@ -5,7 +5,7 @@
 // Attachments have the shape:
 //   { id, kind: 'page' | 'url' | 'selection' | 'meeting', title, url, text, chars }
 
-import { meetingPlatform, meetingToText } from './store-meetings.js';
+import { meetingPlatform, meetingToText, getMeeting } from './store-meetings.js';
 
 export { meetingPlatform };
 
@@ -63,7 +63,112 @@ export function extractReadable() {
   };
 }
 
+// --------------------------------------------------------------------------
+// Our own extension pages (notes / meetings / chat history)
+// --------------------------------------------------------------------------
+// Chrome forbids chrome.scripting.executeScript on chrome-extension:// pages, so
+// "read the current tab" can never work on notes.html / meetings.html /
+// history.html. We don't need it to: each of those pages carries its record id in
+// the URL hash (e.g. notes.html#<id>, written by notes.js), and we own the
+// storage — so we read the record straight from chrome.storage.local by id,
+// decrypt included. No content script, no host permission.
+
+// Which of our own dashboards is this tab, if any? Returns 'note' | 'meeting' |
+// 'chat' | null. Matched against our own extension origin so another extension's
+// same-named page can't spoof it.
+function ownPageKind(url) {
+  let base;
+  try {
+    base = chrome.runtime.getURL('');
+  } catch {
+    return null;
+  }
+  const u = String(url || '');
+  if (!base || !u.startsWith(base)) return null;
+  const path = u.slice(base.length).replace(/^\/+/, '');
+  if (path.startsWith('notes.html')) return 'note';
+  if (path.startsWith('meetings.html')) return 'meeting';
+  if (path.startsWith('history.html')) return 'chat';
+  return null;
+}
+
+// True if `url` is one of our own readable dashboard pages. The side panel uses
+// this to auto-include the open note/meeting/chat as context WITHOUT arming DOM
+// page-action tools on our own UI (those stay gated on http(s) tabs).
+export function isOwnDashboardUrl(url) {
+  return ownPageKind(url) !== null;
+}
+
+function hashId(url) {
+  const i = String(url || '').indexOf('#');
+  if (i < 0) return '';
+  const raw = String(url).slice(i + 1);
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function ownAttachment(kind, id, title, url, text) {
+  return {
+    id: `${kind}_${id}_${Date.now()}`,
+    kind: 'page',
+    title: title || kind,
+    url,
+    text: truncate(text),
+    chars: (text || '').length,
+  };
+}
+
+// Turn one of our own dashboard tabs into an attachment by reading its record from
+// storage by the tab's hash id. Returns null if `tab` isn't one of our pages (so
+// captureTab falls through to normal injection); throws a helpful message if it IS
+// our page but nothing is open / the record is missing. The heavy stores are
+// dynamic-imported here so they stay off the panel's first-paint graph.
+export async function captureOwnPage(tab) {
+  const kind = ownPageKind(tab?.url);
+  if (!kind) return null;
+  const label = kind === 'chat' ? 'chat' : kind;
+  const id = hashId(tab.url);
+  if (!id) throw new Error(`No ${label} is open in that tab yet — open one, then attach it.`);
+
+  // COLD-tier seam: when a record isn't in local (hot) storage, this is where a
+  // gateway/warm fetch by id would go once storage tiering ships. Today every
+  // record lives in chrome.storage.local, so a miss means it's genuinely gone.
+  if (kind === 'note') {
+    const { getNote, noteToMarkdown } = await import('./store-notes.js');
+    const rec = await getNote(id);
+    if (!rec) throw new Error(`That note isn't in local storage (id ${id}).`);
+    return ownAttachment('note', id, rec.title, tab.url, noteToMarkdown(rec));
+  }
+  if (kind === 'meeting') {
+    const rec = await getMeeting(id);
+    if (!rec) throw new Error(`That meeting isn't in local storage (id ${id}).`);
+    return ownAttachment('meeting', id, `🎙 ${rec.title || 'Meeting'}`, tab.url, meetingToText(rec));
+  }
+  const { getConversation, conversationToMarkdown } = await import('./store.js');
+  const conv = await getConversation(id);
+  if (!conv) throw new Error(`That chat isn't in local storage (id ${id}).`);
+  return ownAttachment('chat', id, conv.title, tab.url, conversationToMarkdown(conv));
+}
+
 export async function captureTab(tabId) {
+  // Our own extension pages can't be script-injected — read them from storage by
+  // their hash id instead. Any error from captureOwnPage (no record open, etc.)
+  // is intentional and surfaces to the caller; a failed chrome.tabs.get just falls
+  // through to the normal injection path below.
+  let tab = null;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    /* tab vanished or unavailable — fall through to injection */
+  }
+  if (tab) {
+    const own = await captureOwnPage(tab);
+    if (own) return own;
+  }
+
   let result;
   try {
     const [inj] = await chrome.scripting.executeScript({

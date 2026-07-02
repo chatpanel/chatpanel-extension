@@ -22,6 +22,7 @@
     "test:notes-util": "node tools/test-notes-util.mjs",
     "test:notes-swarm-router": "node tools/test-notes-swarm-router.mjs",
     "test:conversation-search": "node tools/test-conversation-search.mjs",
+    "test:context-own-page": "node tools/test-context-own-page.mjs",
     "test:history-state": "node tools/test-history-state.mjs",
     "test:history-search-modes": "node tools/test-history-search-modes.mjs",
     "test:history-rag-core": "node tools/test-history-rag-core.mjs",
