@@ -143,6 +143,7 @@ async function ensureCm() {
     onChange: onCmChange,
     onSelection: onCmSelection,
     onKey: onCmKey,
+    onLink: openEditorLink, // click a rendered [text](url) / [[wikilink]] in Live mode → open it
   });
   return cm;
 }
@@ -2491,9 +2492,12 @@ async function runResearch({ web = false, question = '' } = {}) {
   if (gen !== researchGen) return;
 
   // Web results first on an explicit web search (that's what the user asked for), then the
-  // grounded workspace hits. Dedup by key.
+  // grounded workspace hits. Dedup by key. A LOCAL-only refresh (web=false — e.g. the edit made
+  // when you Insert a card re-triggers the ambient researcher) must NOT drop the web results you
+  // were working with, so carry the existing (undismissed) web cards forward.
+  const priorWeb = web ? [] : researchCards.filter((c) => c.kind === 'web' && !researchDismissed.has(c.key));
   const seen = new Set();
-  researchCards = [...webCards, ...local].filter((c) => c.key && !seen.has(c.key) && seen.add(c.key)).slice(0, 10);
+  researchCards = [...webCards, ...priorWeb, ...local].filter((c) => c.key && !seen.has(c.key) && seen.add(c.key)).slice(0, 10);
   researchBusy = false;
   setResearchStatus('');
   renderResearch();
@@ -2561,6 +2565,23 @@ function openResearch(c) {
   if (page === 'notes.html' && hash) return openNote(decodeURIComponent(hash));
   if (/^https?:/i.test(c.url)) window.open(c.url, '_blank', 'noopener,noreferrer');
   else chrome.tabs?.create?.({ url: c.url });
+}
+// Open a link the Live (CM6) editor resolved from a click — a URL or a [[wikilink]] title.
+// Mirrors the Read/Split preview click handler so both surfaces behave the same.
+async function openEditorLink(target) {
+  if (!target) return;
+  if (target.kind === 'wikilink') {
+    const t = (await linkTargets()).find((x) => x.title.toLowerCase() === target.title.toLowerCase());
+    if (!t) return toast(`No document named "${target.title}" yet`);
+    const [page, hash] = t.url.split('#');
+    if (page === 'notes.html' && hash) openNote(decodeURIComponent(hash));
+    else chrome.tabs.create({ url: t.url });
+    return;
+  }
+  const url = target.url;
+  if (!url || url.startsWith('#')) return;
+  if (/^(https?:|mailto:)/i.test(url)) window.open(url, '_blank', 'noopener,noreferrer');
+  else if (/^chrome-extension:/i.test(url)) chrome.tabs.create({ url });
 }
 
 // ── Writer co-writer — Phase 3 of the swarm ──────────────────────────────────────

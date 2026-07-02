@@ -32,7 +32,7 @@ try {
 }
 
 const { EditorState, markdown, markdownLanguage } = await import('../extension/js/vendor/codemirror.js');
-const { scanMarkdown, createLiveEditor } = await import('../extension/js/editor-cm.js');
+const { scanMarkdown, createLiveEditor, linkTargetAt } = await import('../extension/js/editor-cm.js');
 
 const stateOf = (doc) => EditorState.create({ doc, extensions: [markdown({ base: markdownLanguage })] });
 const conceals = (state, cursorLine = -1) => scanMarkdown(state, [{ from: 0, to: state.doc.length }], cursorLine).filter((x) => x.kind === 'conceal');
@@ -65,6 +65,18 @@ function visible(doc, cs) {
 {
   const state = stateOf('See [Docs](https://example.com) now');
   assert.equal(visible(state.doc.toString(), conceals(state)), 'See Docs now');
+}
+
+// ── linkTargetAt: a click inside a [text](url) resolves to its URL; inside a [[wikilink]]
+//    resolves to the title; elsewhere → null (so ordinary clicks still edit) ──
+{
+  const doc = 'See [Docs](https://example.com) and [[My Note]] here';
+  const state = stateOf(doc);
+  const inLink = linkTargetAt(state, doc.indexOf('Docs') + 1);
+  assert.deepEqual(inLink, { kind: 'url', url: 'https://example.com' }, 'click in link text → its URL');
+  const inWiki = linkTargetAt(state, doc.indexOf('My Note') + 1);
+  assert.deepEqual(inWiki, { kind: 'wikilink', title: 'My Note' }, 'click in [[wikilink]] → its title');
+  assert.equal(linkTargetAt(state, doc.indexOf('here') + 1), null, 'click on plain text → null');
 }
 
 // ── unordered list: the -/*/+ marker renders as a real bullet (depth-aware); on the

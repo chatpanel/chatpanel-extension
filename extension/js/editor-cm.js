@@ -147,6 +147,27 @@ export function scanMarkdown(state, ranges, cursorLine) {
   return out;
 }
 
+// Resolve a click position to a link target so Live mode opens links (Read/Split mode already
+// does via its own handler). A markdown [text](url) / <autolink> → its URL; a [[wikilink]] on
+// the line → its title (the host resolves it to a note). Returns a descriptor or null.
+export function linkTargetAt(state, pos) {
+  for (let n = syntaxTree(state).resolveInner(pos, -1); n; n = n.parent) {
+    if (n.name === 'URL') return { kind: 'url', url: state.doc.sliceString(n.from, n.to) };
+    if (n.name === 'Link' || n.name === 'Image') {
+      const u = n.getChild('URL');
+      if (u) return { kind: 'url', url: state.doc.sliceString(u.from, u.to) };
+    }
+    if (n.name === 'Autolink' || n.name === 'URL') return { kind: 'url', url: state.doc.sliceString(n.from, n.to).replace(/^<|>$/g, '') };
+  }
+  const line = state.doc.lineAt(pos);
+  const re = /\[\[([^\]\n]+)\]\]/g; let m;
+  while ((m = re.exec(line.text))) {
+    const s = line.from + m.index;
+    if (pos >= s && pos <= s + m[0].length) return { kind: 'wikilink', title: m[1].trim() };
+  }
+  return null;
+}
+
 function buildDecorations(view) {
   const ranges = view.visibleRanges.length ? view.visibleRanges : [{ from: 0, to: view.state.doc.length }];
   const cursorLine = view.state.doc.lineAt(view.state.selection.main.head).number;
@@ -193,7 +214,7 @@ const ghostField = StateField.define({
 // Create the live-preview editor inside `parent`. Callbacks: onChange(value, update) on every
 // doc change, onSelection() on cursor moves, onKey(event)->true to mark a key handled (so CM
 // won't also act on it). Facade mirrors the textarea verbs the rest of Notes already uses.
-export function createLiveEditor({ parent, doc = '', readOnly = false, placeholder = '', onChange, onSelection, onKey } = {}) {
+export function createLiveEditor({ parent, doc = '', readOnly = false, placeholder = '', onChange, onSelection, onKey, onLink } = {}) {
   const editable = new Compartment();
   const exts = [
     history(),
@@ -209,6 +230,22 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
     // so it runs at the HIGHEST precedence — otherwise Tab/Enter get consumed before we can
     // accept an autocomplete item or submit a directed line. Returns true → CM won't also act.
     Prec.highest(EditorView.domEventHandlers({ keydown: (e) => (onKey ? onKey(e) === true : false) })),
+    // Click a rendered link → open it (Read/Split mode has its own handler; Live had none, so a
+    // click only placed the caret). Skip the line the cursor is on — its raw syntax is shown for
+    // editing — and only hijack a click that actually lands on a link, so other clicks still edit.
+    EditorView.domEventHandlers({
+      mousedown: (e, view) => {
+        if (e.button !== 0 || !onLink || e.metaKey || e.ctrlKey || e.altKey) return false;
+        const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
+        if (pos == null) return false;
+        if (view.state.doc.lineAt(pos).number === view.state.doc.lineAt(view.state.selection.main.head).number) return false;
+        const target = linkTargetAt(view.state, pos);
+        if (!target) return false;
+        e.preventDefault();
+        onLink(target);
+        return true;
+      },
+    }),
     keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
     editable.of(EditorView.editable.of(!readOnly)),
     EditorView.updateListener.of((u) => {
