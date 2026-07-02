@@ -114,12 +114,22 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
   return {
     view,
     get value() { return view.state.doc.toString(); },
-    // Replace the whole doc (used when opening a note / committing an AI result). Keeps the
-    // caret sane; `userEvent:'input.set'` lets the change listener tell programmatic sets apart.
+    // Set the doc to `v` with a MINIMAL change — skip the common prefix + suffix so a
+    // streaming append/edit dispatches a tiny change instead of replacing the whole doc.
+    // That's what keeps the live mirror flicker-free and the caret stable during AI writes.
+    // `userEvent:'input.set'` lets the change listener tell programmatic sets from user edits.
     setValue(v, { cursorToEnd = false } = {}) {
       const cur = view.state.doc.toString();
       if (v === cur) return;
-      dispatchChange({ changes: { from: 0, to: cur.length, insert: v }, selection: cursorToEnd ? { anchor: v.length } : undefined, userEvent: 'input.set', scrollIntoView: cursorToEnd });
+      const min = Math.min(cur.length, v.length);
+      let s = 0; while (s < min && cur.charCodeAt(s) === v.charCodeAt(s)) s++;
+      let e = 0; while (e < min - s && cur.charCodeAt(cur.length - 1 - e) === v.charCodeAt(v.length - 1 - e)) e++;
+      dispatchChange({
+        changes: { from: s, to: cur.length - e, insert: v.slice(s, v.length - e) },
+        selection: cursorToEnd ? { anchor: v.length } : undefined,
+        userEvent: 'input.set',
+        scrollIntoView: cursorToEnd,
+      });
     },
     getSelection() { const s = view.state.selection.main; return { start: s.from, end: s.to, head: s.head }; },
     setSelection(start, end = start) { dispatchChange({ selection: { anchor: start, head: end } }); },

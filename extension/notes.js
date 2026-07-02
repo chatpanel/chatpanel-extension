@@ -1351,6 +1351,9 @@ function currentMention() {
 // whenever its note is opened. Each job streams a rich activity trace (model, tool
 // calls, partial output) so it's always obvious what's happening.
 const noteJobs = new Map(); // noteId -> job
+let _jobStarting = false; // synchronous single-flight lock: a job is being set up (before it
+// registers in noteJobs). Without it, rapid Enter presses each pass the noteJobs guard during
+// the async model/bridge/tool setup and spawn DUPLICATE jobs (the "rewritten again and again").
 
 // What the note's body should hold once the job is finished (or dropped): the
 // produced output, or — if it errored before producing anything — the original
@@ -1550,30 +1553,37 @@ function noteCommandContext(head, tail) {
 
 async function runNoteCommand() {
   const ctx = currentCommandLine();
-  if (!ctx || !current || noteJobs.has(current.id)) return false; // one job per note
+  if (!ctx || !current || noteJobs.has(current.id) || _jobStarting) return false; // one job per note
+  _jobStarting = true;
   closeAc();
   const ta = $('n-body');
   const head = ta.value.slice(0, ctx.start);
   const tail = ta.value.slice(ctx.end);
   const commandText = ta.value.slice(ctx.start, ctx.end);
-
-  let deps;
-  try { deps = await agentDeps(); } catch { toast('Agent unavailable'); return true; }
-  const settings = await deps.getSettings();
-  const targetAgent = deps.getTarget(settings, settings.activeAgentId);
-  if (!targetAgent) { toast('Set up a model in ChatPanel settings first'); return true; }
-  const license = await deps.getLicense();
-  if (!deps.canUseAgent(license, settings, targetAgent)) { toast('That agent needs ChatPanel Pro'); return true; }
-  const resolved = deps.resolveTarget(targetAgent, settings);
-
-  // A "#[Skill]" mention in the instruction scopes the tools + folds in the skill's prompt.
-  const skill = resolveSkillMention(ctx.instruction, settings, license, deps);
-  await runNoteJob({
-    deps, settings, license, targetAgent, resolved, head, tail, commandText,
-    cmdLabel: ctx.spec.cmd, systemPrompt: ctx.spec.sys, instruction: skill.instruction,
-    armToolset: !!ctx.spec.tools, skillRun: skill.skillRun,
-    versionLabel: `@${ctx.spec.cmd}${skill.skillLabel ? ` #${skill.skillLabel}` : ''} · ${targetAgent.name || resolved.model || 'agent'}`,
-  });
+  ta.value = `${head}⏳ @${ctx.spec.cmd} — starting…${tail}`; // immediate ack
+  ta.readOnly = true;
+  mirrorToCm();
+  setStatus(`Running @${ctx.spec.cmd}…`);
+  setSideTab('activity');
+  const fail = (msg) => { ta.value = head + commandText + tail; ta.readOnly = false; mirrorToCm(); setStatus(''); bodyFocus(); toast(msg); _jobStarting = false; return true; };
+  try {
+    let deps;
+    try { deps = await agentDeps(); } catch { return fail('Agent unavailable'); }
+    const settings = await deps.getSettings();
+    const targetAgent = deps.getTarget(settings, settings.activeAgentId);
+    if (!targetAgent) return fail('Set up a model in ChatPanel settings first');
+    const license = await deps.getLicense();
+    if (!deps.canUseAgent(license, settings, targetAgent)) return fail('That agent needs ChatPanel Pro');
+    const resolved = deps.resolveTarget(targetAgent, settings);
+    // A "#[Skill]" mention in the instruction scopes the tools + folds in the skill's prompt.
+    const skill = resolveSkillMention(ctx.instruction, settings, license, deps);
+    await runNoteJob({
+      deps, settings, license, targetAgent, resolved, head, tail, commandText,
+      cmdLabel: ctx.spec.cmd, systemPrompt: ctx.spec.sys, instruction: skill.instruction,
+      armToolset: !!ctx.spec.tools, skillRun: skill.skillRun,
+      versionLabel: `@${ctx.spec.cmd}${skill.skillLabel ? ` #${skill.skillLabel}` : ''} · ${targetAgent.name || resolved.model || 'agent'}`,
+    });
+  } finally { _jobStarting = false; }
   return true;
 }
 
@@ -1686,38 +1696,49 @@ async function runNoteJob({
 // and run it as a background job. Its streamed output lands where the mention was; tool
 // actions create/edit notes on the side. All attributed to the agent + revertible.
 async function runAgentTask(mention) {
-  if (!current || noteJobs.has(current.id)) return true;
+  if (!current || noteJobs.has(current.id) || _jobStarting) return true;
+  _jobStarting = true;
   closeAc();
   const ta = $('n-body');
   const head = ta.value.slice(0, mention.start);
   const tail = ta.value.slice(mention.end);
   const commandText = ta.value.slice(mention.start, mention.end);
-  let deps;
-  try { deps = await agentDeps(); } catch { toast('Agent unavailable'); return true; }
-  const settings = await deps.getSettings();
-  const targetAgent = getTargetByName(settings, mention.name);
-  if (!targetAgent) { toast(`No configured agent named “${mention.name}”`); return true; }
-  const license = await deps.getLicense();
-  if (!deps.canUseAgent(license, settings, targetAgent)) { toast(`${targetAgent.name || 'That agent'} needs ChatPanel Pro`); return true; }
-  const resolved = deps.resolveTarget(targetAgent, settings);
-  const sys = `You are "${targetAgent.name || 'the agent'}", completing a task INSIDE the user's note. Use your tools to do it well:\n`
-    + '- research with web_search / history tools when you need facts or the user\'s own material;\n'
-    + '- note_create to put content in a NEW note when it belongs on its own;\n'
-    + '- note_edit to revise the user\'s EXISTING text in THIS note (exact find/replace).\n'
-    + 'Your streamed text is inserted where the task was written — use it for the main answer, tools for side effects. Output clean GitHub-flavored markdown, no preamble or meta commentary.';
-  // Honor a "#[Skill]" mention in the task (scoped tools + the skill's prompt).
-  const skill = resolveSkillMention(mention.task, settings, license, deps);
-  // Keep the user's question in the note (as a blockquote), with the agent's answer
-  // BELOW it — a readable Q&A trail, instead of the answer replacing the question.
   const question = (mention.task || '').split('\n').map((l) => `> ${l}`).join('\n');
-  await runNoteJob({
-    deps, settings, license, targetAgent, resolved, head, tail, commandText,
-    cmdLabel: `@${targetAgent.name || 'agent'}`, systemPrompt: sys, instruction: skill.instruction,
-    armToolset: true, maxTokens: 2400, skillRun: skill.skillRun,
-    answerPrefix: `${question}\n\n**${targetAgent.name || 'Agent'}:**\n\n`,
-    makeExtraProviders: (job) => [makeNoteTools(job)],
-    versionLabel: `@${targetAgent.name || 'agent'}${skill.skillLabel ? ` #${skill.skillLabel}` : ''} · task`,
-  });
+  // IMMEDIATE, deterministic ack — the instant Enter is pressed, before the (possibly slow)
+  // deps/bridge/tool setup, so it's obvious the request was taken and you don't press again.
+  ta.value = `${head}${question}\n\n**${mention.name}:**\n\n⏳ starting…${tail}`;
+  ta.readOnly = true;
+  mirrorToCm();
+  setStatus(`Sending to ${mention.name}…`);
+  setSideTab('activity');
+  const fail = (msg) => { ta.value = head + commandText + tail; ta.readOnly = false; mirrorToCm(); setStatus(''); bodyFocus(); toast(msg); _jobStarting = false; return true; };
+  try {
+    let deps;
+    try { deps = await agentDeps(); } catch { return fail('Agent unavailable'); }
+    const settings = await deps.getSettings();
+    const targetAgent = getTargetByName(settings, mention.name);
+    if (!targetAgent) return fail(`No configured agent named “${mention.name}”`);
+    const license = await deps.getLicense();
+    if (!deps.canUseAgent(license, settings, targetAgent)) return fail(`${targetAgent.name || 'That agent'} needs ChatPanel Pro`);
+    const resolved = deps.resolveTarget(targetAgent, settings);
+    const sys = `You are "${targetAgent.name || 'the agent'}", completing a task INSIDE the user's note. Use your tools to do it well:\n`
+      + '- research with web_search / history tools when you need facts or the user\'s own material;\n'
+      + '- note_create to put content in a NEW note when it belongs on its own;\n'
+      + '- note_edit to revise the user\'s EXISTING text in THIS note (exact find/replace).\n'
+      + 'Your streamed text is inserted where the task was written — use it for the main answer, tools for side effects. Output clean GitHub-flavored markdown, no preamble or meta commentary.';
+    // Honor a "#[Skill]" mention in the task (scoped tools + the skill's prompt).
+    const skill = resolveSkillMention(mention.task, settings, license, deps);
+    // Keep the user's question in the note (as a blockquote), with the agent's answer
+    // BELOW it — a readable Q&A trail, instead of the answer replacing the question.
+    await runNoteJob({
+      deps, settings, license, targetAgent, resolved, head, tail, commandText,
+      cmdLabel: `@${targetAgent.name || 'agent'}`, systemPrompt: sys, instruction: skill.instruction,
+      armToolset: true, maxTokens: 2400, skillRun: skill.skillRun,
+      answerPrefix: `${question}\n\n**${targetAgent.name || 'Agent'}:**\n\n`,
+      makeExtraProviders: (job) => [makeNoteTools(job)],
+      versionLabel: `@${targetAgent.name || 'agent'}${skill.skillLabel ? ` #${skill.skillLabel}` : ''} · task`,
+    });
+  } finally { _jobStarting = false; }
   return true;
 }
 
@@ -2143,16 +2164,16 @@ async function runResearch({ web = false, question = '' } = {}) {
   // words, so gate results to those that actually share a salient term with the query —
   // otherwise unrelated past notes surface. Empty is better than irrelevant.
   const salient = salientTerms(q);
-  let cards = [];
+  let local = [];
   try {
     if (!_ragMod) _ragMod = await import('./js/history-rag.js');
     const { results } = await _ragMod.retrieveHistory(q, { includeMeetings: true, limit: 8 });
-    cards = results
+    local = results
       .filter((r) => r.sourceId !== `note:${current.id}`)
       .map((r) => ({ kind: sourceKind(r.sourceId), title: r.title || 'Untitled', url: r.url, snippet: researchSnippet(r.text), key: r.url || r.sourceId }))
       .filter((c) => !researchDismissed.has(c.key))
-      // Grounded: keep only cards that actually share enough with the query (two terms,
-      // or one specific one) and rank by that overlap. Empty is better than irrelevant.
+      // Grounded: keep only workspace hits that actually share enough with the query (two
+      // terms, or one specific one) and rank by that overlap. Empty is better than irrelevant.
       .map((c) => ({ c, s: researchRelevance(c, salient) }))
       .filter((x) => x.s > 0)
       .sort((a, b) => b.s - a.s)
@@ -2160,27 +2181,31 @@ async function runResearch({ web = false, question = '' } = {}) {
   } catch { /* local lane is best-effort */ }
   if (gen !== researchGen) return;
 
-  // Web lane — on demand only (network + a Free daily quota); still token-free.
+  // Web lane — on demand only (network + a Free daily quota); still token-free. The query is
+  // built from the note's TOPIC (title + the most salient terms across the WHOLE note, or the
+  // question), so the results are on-topic — show them (deduped) WITHOUT re-gating on snippet
+  // term-overlap, which was dropping valid web hits and leaving only workspace results.
+  let webCards = [];
   if (web) {
     try {
       const [ws, lic, store] = await Promise.all([import('./js/web-search.js'), import('./js/license.js'), import('./js/store.js')]);
       const settings = await store.getSettings();
       const license = await lic.getLicense();
-      const term = webQuery(($('n-title').value || '').trim(), salient) || q.split('\n').filter(Boolean).pop() || q;
+      const topic = salientTerms(`${$('n-title').value || ''}\n${bodyText()}`);
+      const term = question || webQuery(($('n-title').value || '').trim(), topic) || q.split('\n').filter(Boolean).pop() || q;
       const res = await ws.webSearch(term, ws.webSearchOpts(settings, lic.isPro(license)));
       if (gen !== researchGen) return;
-      // Same relevance gate on web hits — a search backend still returns off-topic/promo
-      // results, and one shared query term is enough to keep the on-topic ones.
-      for (const r of (res.results || []).slice(0, 8)) {
-        const c = { kind: 'web', title: r.title || r.url, url: r.url, snippet: researchSnippet(r.text), key: r.url };
-        if (!researchDismissed.has(r.url) && researchRelevance(c, salient, { web: true }) > 0) cards.push(c);
-      }
+      webCards = (res.results || []).slice(0, 8)
+        .filter((r) => r.url && !researchDismissed.has(r.url))
+        .map((r) => ({ kind: 'web', title: r.title || r.url, url: r.url, snippet: researchSnippet(r.text), key: r.url }));
     } catch (e) { toast(e?.message ? `Web search: ${e.message}` : 'Web search unavailable'); }
   }
   if (gen !== researchGen) return;
 
+  // Web results first on an explicit web search (that's what the user asked for), then the
+  // grounded workspace hits. Dedup by key.
   const seen = new Set();
-  researchCards = cards.filter((c) => c.key && !seen.has(c.key) && seen.add(c.key)).slice(0, 10);
+  researchCards = [...webCards, ...local].filter((c) => c.key && !seen.has(c.key) && seen.add(c.key)).slice(0, 10);
   researchBusy = false;
   setResearchStatus('');
   renderResearch();
