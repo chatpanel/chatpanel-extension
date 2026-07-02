@@ -100,6 +100,7 @@ export async function getMeetingSuggestions({ meeting, settings, signal } = {}) 
       agent: { ...agent, systemPrompt: sys },
       settings,
       signal,
+      usage: { surface: 'suggestion' },
       messages: [{ role: 'user', content: user }],
       onDelta: (d) => (out += d),
     });
@@ -131,6 +132,7 @@ const PROVIDERS = {
       agent: { ...agent, systemPrompt: sys },
       settings,
       signal,
+      usage: { surface: 'suggestion' },
       messages: [{ role: 'user', content: user }],
       onDelta: (d) => (out += d),
     });

@@ -306,6 +306,32 @@ function stripImagesFromMessages(msgs) {
   return msgs;
 }
 
+// Very cheap token estimate (~4 chars/token) — ONLY used when a provider didn't
+// report usage. Deliberately no tokenizer import: real usage is both accurate
+// and free (the model already told us), and a per-model tokenizer on the boot
+// path would violate the load-time budget. Flagged `estimated` so the UI shows "≈".
+function estimateTokens(text) {
+  return Math.max(0, Math.round(String(text || '').length / 4));
+}
+
+// Normalize + emit ONE usage event for a completed turn. When the provider
+// reported real usage we forward it; otherwise we estimate from the sent
+// messages + produced text and mark it estimated.
+function emitUsage(onEvent, provider, model, acc, sentMessages, fullText) {
+  if (!onEvent) return;
+  let { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reported } = acc;
+  let estimated = false;
+  if (!reported || (!inputTokens && !outputTokens)) {
+    estimated = true;
+    const inText = (sentMessages || []).map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content || ''))).join('\n');
+    inputTokens = estimateTokens(inText);
+    outputTokens = estimateTokens(fullText);
+    cacheReadTokens = 0;
+    cacheWriteTokens = 0;
+  }
+  onEvent({ type: 'usage', provider, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, estimated });
+}
+
 async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }) {
   const base = (agent.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
   const system = combineSystemPrompt(agent.systemPrompt, tools?.system);
@@ -325,6 +351,10 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
   const msgs = [...sys, ...toMultimodalMessages(messages, 'openai')];
   let full = '';
   let noVision = false; // set once the model rejects images, then we go text-only
+  // Token accounting — accumulate across tool-use steps (each step is its own
+  // completion with its own usage) and emit ONE total when the turn returns.
+  const usageAcc = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reported: false };
+  const finishUsage = () => emitUsage(onEvent, 'openai', agent.model || 'gpt-4o-mini', usageAcc, msgs, full);
 
   // One model turn = one streamed completion. Loops only when the model asks to
   // call tools; without tools it runs exactly once (unchanged single-shot path).
@@ -337,6 +367,9 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
         model: agent.model || 'gpt-4o-mini',
         messages: msgs,
         stream: true,
+        // Ask for token usage in the final SSE chunk. Ignored by servers that
+        // don't support it (we then fall back to an estimate at finishUsage).
+        stream_options: { include_usage: true },
         ...(activeToolSpecs?.length ? { tools: activeToolSpecs } : {}),
         ...(agent.temperature != null ? { temperature: agent.temperature } : {}),
         ...(agent.maxTokens ? { max_tokens: agent.maxTokens } : {}),
@@ -371,6 +404,14 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
       } catch {
         continue;
       }
+      // Usage rides in a trailing chunk (choices often empty) when
+      // stream_options.include_usage is honored. Accumulate across steps.
+      if (json.usage) {
+        usageAcc.reported = true;
+        usageAcc.inputTokens += Number(json.usage.prompt_tokens || 0);
+        usageAcc.outputTokens += Number(json.usage.completion_tokens || 0);
+        usageAcc.cacheReadTokens += Number(json.usage.prompt_tokens_details?.cached_tokens || 0);
+      }
       const choice = json.choices?.[0];
       const delta = choice?.delta?.content;
       if (delta) {
@@ -394,6 +435,7 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
       .map((k) => calls[k]);
     if (!tools || !activeToolSpecs?.length || finish !== 'tool_calls' || wanted.length === 0) {
       onEvent?.({ type: 'finish', reason: finish || 'stop' });
+      finishUsage();
       return full;
     }
     // Execute the requested tools and feed results back for the next step.
@@ -436,6 +478,7 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
     loopGuard.noteRound(blockedThisRound, wanted.length, sig);
   }
   onEvent?.({ type: 'finish', reason: 'tool-step-limit' });
+  finishUsage();
   return full + (full ? '\n\n' : '') + '_(Reached the action limit for one turn — say "continue" to keep going.)_';
 }
 
@@ -465,6 +508,11 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
   // so pasted/attached images ride along as image blocks.
   const msgs = toMultimodalMessages(messages, 'anthropic');
   let full = '';
+  // Token accounting — Anthropic splits input across message_start (input +
+  // cache_creation + cache_read) and output across message_delta. Accumulate
+  // across tool-use steps; emit one total per turn.
+  const usageAcc = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reported: false };
+  const finishUsage = () => emitUsage(onEvent, 'anthropic', agent.model || 'claude-opus-4-8', usageAcc, msgs, full);
 
   const stepCap = toolStepCap(agent, tools);
   for (let step = 0; step < stepCap; step++) {
@@ -515,8 +563,20 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
         } else if (json.delta?.type === 'thinking_delta') {
           onEvent?.({ type: 'reasoning', text: json.delta.thinking || '' });
         }
+      } else if (json.type === 'message_start') {
+        const u = json.message?.usage;
+        if (u) {
+          usageAcc.reported = true;
+          usageAcc.inputTokens += Number(u.input_tokens || 0);
+          usageAcc.cacheWriteTokens += Number(u.cache_creation_input_tokens || 0);
+          usageAcc.cacheReadTokens += Number(u.cache_read_input_tokens || 0);
+        }
       } else if (json.type === 'message_delta') {
         if (json.delta?.stop_reason) stopReason = json.delta.stop_reason;
+        if (json.usage?.output_tokens != null) {
+          usageAcc.reported = true;
+          usageAcc.outputTokens += Number(json.usage.output_tokens || 0);
+        }
       } else if (json.type === 'message_stop') {
         // handled after the loop via stopReason
       } else if (json.type === 'error') {
@@ -527,6 +587,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
     const toolUses = blocks.filter((b) => b?.type === 'tool_use');
     if (!tools || !activeToolSpecs?.length || stopReason !== 'tool_use' || toolUses.length === 0) {
       onEvent?.({ type: 'finish', reason: stopReason || 'stop' });
+      finishUsage();
       return full;
     }
     // Echo the assistant's blocks back, then a user turn carrying tool_results.
@@ -572,6 +633,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
     msgs.push({ role: 'user', content: results });
   }
   onEvent?.({ type: 'finish', reason: 'tool-step-limit' });
+  finishUsage();
   return full + (full ? '\n\n' : '') + '_(Reached the action limit for one turn — say "continue" to keep going.)_';
 }
 
@@ -692,6 +754,11 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
   if (!res.ok) throw new Error(`Bridge: HTTP ${res.status} — ${await safeText(res)}`);
 
   let full = '';
+  // Token accounting for CLI agents. Newer bridges emit a {type:'usage'} SSE
+  // event (real counts from Claude Code / Codex stream-json); older ones don't,
+  // so we estimate from the produced text at the end. `costUsd` (when the CLI
+  // reports it) is authoritative and bypasses our rate table.
+  let usage = null;
   const loopGuard = createToolLoopGuard();
   for await (const data of sseLines(res)) {
     let ev;
@@ -703,6 +770,13 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
     if (ev.type === 'delta' && ev.text) {
       full += ev.text;
       onDelta?.(ev.text);
+    } else if (ev.type === 'usage') {
+      usage = {
+        type: 'usage', provider: 'bridge', model: ev.model || agent.model || bridgeAgent,
+        inputTokens: Number(ev.inputTokens || 0), outputTokens: Number(ev.outputTokens || 0),
+        cacheReadTokens: Number(ev.cacheReadTokens || 0), cacheWriteTokens: Number(ev.cacheWriteTokens || 0),
+        costUsd: ev.costUsd != null ? Number(ev.costUsd) : null, estimated: false,
+      };
     } else if (ev.type === 'error') {
       throw new Error(ev.error || 'Bridge error');
     } else if (ev.type === 'done') {
@@ -721,6 +795,8 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
       onEvent?.(ev);
     }
   }
+  if (usage) onEvent?.(usage);
+  else emitUsage(onEvent, 'bridge', agent.model || bridgeAgent, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reported: false }, toChatMessages(messages), full);
   return full;
 }
 
@@ -1007,7 +1083,27 @@ function runtimeContextSystem(settings) {
   return lines.join('\n');
 }
 
-export async function streamChat({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction }) {
+export async function streamChat({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction, usage: usageCtx }) {
+  // Token accounting at THE chokepoint: every provider adapter emits one
+  // {type:'usage'} event per turn; record it here (best-effort, off the hot
+  // path) tagging it with the caller's surface/sourceId, then forward the event
+  // unchanged. `usageCtx` = { surface:'note'|'chat'|'meeting'|…, sourceId }.
+  {
+    const rawOnEvent = onEvent;
+    const agentId = agent?.agentId || agent?.id || agent?.name || usageCtx?.agentId || null;
+    onEvent = (ev) => {
+      if (ev && ev.type === 'usage') {
+        import('./usage-meter.js').then((m) => m.recordUsage({
+          surface: usageCtx?.surface || 'other', sourceId: usageCtx?.sourceId, agentId,
+          provider: ev.provider, model: ev.model,
+          inputTokens: ev.inputTokens, outputTokens: ev.outputTokens,
+          cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens,
+          costUsd: ev.costUsd, estimated: ev.estimated,
+        })).catch(() => {});
+      }
+      return rawOnEvent?.(ev);
+    };
+  }
   // ONE place every model-bound call passes through — augment the agent's system
   // prompt with runtime context (date + enforced language) so all agents, present
   // and future, inherit it without per-provider wiring.

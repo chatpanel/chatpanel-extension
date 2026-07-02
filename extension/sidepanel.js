@@ -17,7 +17,11 @@ import {
   updateSettings,
   meetingNotesSkill,
 } from './js/store.js';
-import { streamChat, checkBridge, listModels, smallestModel } from './js/providers.js';
+import { streamChat as _streamChat, checkBridge, listModels, smallestModel } from './js/providers.js';
+
+// Tag side-panel model calls with the 'chat' surface for token accounting,
+// keyed to the active conversation (unless a caller passes its own usage ctx).
+const streamChat = (opts = {}) => _streamChat({ ...opts, usage: opts.usage || { surface: 'chat', sourceId: state?.conv?.id } });
 import {
   listTabs,
   getActiveTab,
@@ -26,6 +30,7 @@ import {
   captureSelection,
   captureUrl,
   captureMeetingTranscript,
+  isOwnDashboardUrl,
   meetingPlatform,
   probeMeeting,
   startMeeting,
@@ -340,6 +345,7 @@ const state = {
   pendingSkillRun: null, // set when a skill is picked from the menu before send
   usePage: true, // auto-include the current tab as context
   activeTab: null, // { id, title, url } of the tab the panel is looking at
+  ownPageTab: null, // our own dashboard (notes/meetings/history) tab, read from storage
   bridge: { ok: false, agents: [] },
   convCache: new Map(), // id -> live conv object (kept so streams survive switches)
   piiVaults: new Map(), // convId -> reversible PII redaction vault (per conversation)
@@ -1311,16 +1317,19 @@ async function send() {
     // meeting (ask about both the page AND the call) — only the meeting tab's own
     // page is skipped (it's just Meet's UI, and the transcript already covers it).
     const onMeetingTab = !!(state.activeTab && meetingPlatform(state.activeTab.url || ''));
+    // The page to auto-include: a normal web tab, or one of our own dashboards read
+    // from storage (captureTab handles both — inject vs. storage-by-hash-id).
+    const pageTab = state.activeTab || state.ownPageTab;
     if (
       !skipLivePageForHistoryIntent &&
       !onMeetingTab &&
       state.usePage &&
-      state.activeTab &&
-      !state.attachments.some((a) => a.url === state.activeTab.url)
+      pageTab &&
+      !state.attachments.some((a) => a.url === pageTab.url)
     ) {
       try {
         toast('Reading this page…');
-        state.attachments.unshift(await captureTab(state.activeTab.id));
+        state.attachments.unshift(await captureTab(pageTab.id));
       } catch {
         toast("⚠ Couldn't read this page; sending without it", 2200);
       }
@@ -2015,12 +2024,19 @@ function ensureActivityTimer() {
 async function refreshActiveTab() {
   try {
     const tab = await getActiveTab();
-    state.activeTab =
-      tab && /^https?:/.test(tab.url || '')
+    const http = tab && /^https?:/.test(tab.url || '');
+    state.activeTab = http ? { id: tab.id, title: tab.title || tab.url, url: tab.url } : null;
+    // Our own dashboard pages (notes/meetings/history) can't be script-read, but we
+    // read their record from storage by the URL's hash id (context.js captureOwnPage).
+    // Kept SEPARATE from activeTab so it feeds page auto-include + the context chip
+    // without arming DOM page-action tools / canvas / meeting probes on our own UI.
+    state.ownPageTab =
+      !http && tab && isOwnDashboardUrl(tab.url || '')
         ? { id: tab.id, title: tab.title || tab.url, url: tab.url }
         : null;
   } catch {
     state.activeTab = null;
+    state.ownPageTab = null;
   }
   renderContextBar();
   renderMeetingBar();
@@ -3983,7 +3999,8 @@ async function attachWholeWindow() {
 function renderContextBar() {
   const bar = $('context-bar');
   bar.innerHTML = '';
-  const showPage = state.usePage && state.activeTab;
+  const pageTab = state.activeTab || state.ownPageTab;
+  const showPage = state.usePage && pageTab;
   const showMeeting = !!state.liveMeeting && state.excludedMeetingId !== state.liveMeeting.id;
   if (!state.attachments.length && !showPage && !showMeeting) {
     bar.classList.add('hidden');
@@ -4030,9 +4047,9 @@ function renderContextBar() {
   if (showPage) {
     const chip = document.createElement('div');
     chip.className = 'ctx-chip page-chip';
-    chip.title = `This page is included as context — ${state.activeTab.url}`;
-    chip.innerHTML = `<span class="ctx-kind">${icon('web')}</span><span class="ctx-title">${escapeAttr(
-      state.activeTab.title,
+    chip.title = `This page is included as context — ${pageTab.url}`;
+    chip.innerHTML = `<span class="ctx-kind">${icon(state.ownPageTab ? 'file-text' : 'web')}</span><span class="ctx-title">${escapeAttr(
+      pageTab.title,
     )}</span>`;
     const x = document.createElement('button');
     x.className = 'ctx-x';
@@ -4248,8 +4265,8 @@ async function substituteVars(text, { args = '' } = {}) {
   if (!text.includes('{{')) return text;
   let out = text
     .replace(/\{\{\s*input(?::[^}]*)?\s*\}\}/gi, args || '')
-    .replace(/\{\{\s*url\s*\}\}/gi, state.activeTab?.url || '')
-    .replace(/\{\{\s*title\s*\}\}/gi, state.activeTab?.title || '')
+    .replace(/\{\{\s*url\s*\}\}/gi, (state.activeTab || state.ownPageTab)?.url || '')
+    .replace(/\{\{\s*title\s*\}\}/gi, (state.activeTab || state.ownPageTab)?.title || '')
     .replace(/\{\{\s*date\s*\}\}/gi, new Date().toLocaleDateString());
   if (/\{\{\s*selection\s*\}\}/i.test(out)) {
     let sel = '';

@@ -107,6 +107,7 @@ async function init() {
   renderLicense();
   wireGateway();
   renderGateway();
+  wireUsage();
   refreshBridgeState();
   loadMcpRegistry({ reset: true });
 }
@@ -348,6 +349,13 @@ function renderCombobox(input, state, open = true, showAll = false) {
       } else {
         item.innerHTML = textHtml;
       }
+      // Suppress the mousedown default so the input keeps focus while selecting.
+      // Otherwise clicking an option blurs the input first, firing its native
+      // `change` on the half-typed query — which (for the provider picker)
+      // resolves to Custom and re-renders the menu, removing this button before
+      // the click can land. That's the "reverts to Custom when picked by mouse"
+      // bug. Keep click for the actual commit (also used by keyboard activation).
+      item.addEventListener('mousedown', (event) => event.preventDefault());
       item.onclick = () => {
         input.value = option.value;
         closeCombobox(state);
@@ -393,6 +401,13 @@ function wireCombobox(input, options, current, placeholder, emptyText = 'No opti
       const currentState = input._chatpanelCombo;
       if (event.key === 'Escape') {
         closeCombobox(currentState);
+        return;
+      }
+      // Tab (not Shift+Tab) accepts the option when the query has narrowed to a
+      // single match, then lets focus advance normally (no preventDefault).
+      if (event.key === 'Tab' && !event.shiftKey) {
+        const items = currentState.menu.querySelectorAll('.combo-item');
+        if (!currentState.menu.classList.contains('hidden') && items.length === 1) items[0].click();
         return;
       }
       if (event.key !== 'Enter' && event.key !== 'ArrowDown') return;
@@ -3283,6 +3298,52 @@ function piiTextToDict(text) {
       const base = m ? { pattern: m[1], flags: m[2] } : { value: head };
       return alias != null ? { ...base, alias } : { ...base, type };
     });
+}
+
+// --------------------------------------------------------------------------
+// Usage — token accounting across every model call (see js/usage-meter.js).
+// The meter + rate table are dynamic-imported so they stay off the settings
+// boot path; renderUsage runs only when the Usage tab is opened.
+// --------------------------------------------------------------------------
+function wireUsage() {
+  const rerender = () => renderUsage();
+  document.querySelector('.tab[data-tab="usage"]')?.addEventListener('click', rerender);
+  if ($('usage-refresh')) $('usage-refresh').onclick = rerender;
+  if ($('usage-groupby')) $('usage-groupby').onchange = rerender;
+  if ($('usage-window')) $('usage-window').onchange = rerender;
+  if ($('usage-clear')) $('usage-clear').onclick = async () => {
+    if (!confirm('Clear all token-usage history?')) return;
+    const { clearUsage } = await import('./js/usage-meter.js');
+    await clearUsage();
+    renderUsage();
+  };
+}
+
+async function renderUsage() {
+  const box = $('usage-report');
+  if (!box) return;
+  box.textContent = 'Loading…';
+  try {
+    const [{ usageSummary }, { formatUsd }] = await Promise.all([
+      import('./js/usage-meter.js'), import('./js/usage-pricing.js'),
+    ]);
+    const groupBy = $('usage-groupby')?.value || 'surface';
+    const days = Number($('usage-window')?.value) || null;
+    const { groups, total } = await usageSummary({ groupBy, sinceDays: days });
+    if (!groups.length) { box.innerHTML = '<p class="sub">No model calls recorded yet.</p>'; return; }
+    const n = (v) => (Number(v) || 0).toLocaleString();
+    const est = (e) => (e ? '≈' : '');
+    const rows = groups.map((g) =>
+      `<tr><td>${escapeHtml(String(g.key))}</td><td>${n(g.calls)}</td><td>${n(g.inputTokens)}</td><td>${n(g.outputTokens)}</td><td>${n(g.cacheReadTokens)}</td><td>${est(g.estimated)}${formatUsd(g.usd)}</td></tr>`).join('');
+    box.innerHTML =
+      `<table class="usage-table" style="width:100%;border-collapse:collapse">
+        <thead><tr><th style="text-align:left">${escapeHtml(groupBy)}</th><th>Calls</th><th>Input</th><th>Output</th><th>Cache&nbsp;rd</th><th>Cost</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr><td><b>Total</b></td><td>${n(total.calls)}</td><td>${n(total.inputTokens)}</td><td>${n(total.outputTokens)}</td><td>${n(total.cacheReadTokens)}</td><td>${est(total.estimated)}${formatUsd(total.usd)}</td></tr></tfoot>
+      </table>`;
+  } catch {
+    box.textContent = 'Could not load usage.';
+  }
 }
 
 // --------------------------------------------------------------------------

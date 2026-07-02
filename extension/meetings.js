@@ -712,6 +712,7 @@ async function runMeetingInsightJob({ section, d, agent, settings, transcript })
       },
       messages: [{ role: 'user', content: meetingInsightPrompt(section, transcript) }],
       settings,
+      usage: { surface: 'meeting', sourceId: d?.id || d?.meetingId || null },
       onDelta: (delta) => {
         text += delta;
         slot.text = text;

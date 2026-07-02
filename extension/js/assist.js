@@ -39,6 +39,7 @@ export async function assistPrompt({ draft, settings, onDelta, signal }) {
     messages: [{ role: 'user', content: instruction }],
     settings,
     signal,
+    usage: { surface: 'assist' },
     onDelta: (chunk) => {
       out += chunk;
       onDelta?.(out);

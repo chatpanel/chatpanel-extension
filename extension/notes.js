@@ -207,11 +207,14 @@ function onCmKey(e) {
     if (e.key === 'Enter' && !e.shiftKey && (currentMention() || currentCommandLine())) { writerAbort.abort(); clearGhost({ remove: true }); }
     else { if (e.key === 'Escape') { writerAbort.abort(); clearGhost({ remove: true }); } return true; }
   }
-  // Pending draft-ahead ghost: Tab accepts, Esc rejects, any edit key drops it.
+  // Pending draft-ahead ghost: Tab accepts, Esc rejects, a bare typing/navigation key drops it.
+  // A ⌘/Ctrl SHORTCUT (⌘A select-all, ⌘C copy, ⌘S save…) must NOT drop it — otherwise ⌘A to
+  // copy the draft silently deletes it (and a ghost is never versioned, so it's gone for good).
+  // A real ⌘V paste still drops it via the input path (onCmChange), not here.
   if (ghost) {
     if (e.key === 'Tab') { acceptGhost(); return true; }
     if (e.key === 'Escape') { clearGhost({ remove: true }); return true; }
-    if (!['Shift', 'Meta', 'Control', 'Alt', 'CapsLock'].includes(e.key)) clearGhost({ remove: true });
+    if (!(e.metaKey || e.ctrlKey) && !['Shift', 'Meta', 'Control', 'Alt', 'CapsLock'].includes(e.key)) clearGhost({ remove: true });
   }
   const openJob = current && noteHasJob(current.id);
   if (e.key === 'Escape' && openJob) { lastJobForNote(current.id)?.abort.abort(); return true; }
@@ -566,14 +569,19 @@ function recordEdit({ discrete = false, author = HUMAN } = {}) {
   histCoalescing = !discrete;
 }
 
-// A labelled, restorable snapshot of the note (body + its attribution), capped.
-function pushVersion(by, label) {
+// A labelled, restorable snapshot of the note (body + its attribution), capped. `body`
+// defaults to the live editor value but can be passed explicitly (e.g. a pre-run snapshot
+// of the pristine note before an agent inserts its header).
+function pushVersion(by, label, body = $('n-body').value) {
   if (!current) return;
   current.versions = Array.isArray(current.versions) ? current.versions : [];
-  const body = $('n-body').value;
   const last = current.versions[current.versions.length - 1];
   if (last && last.body === body) return; // nothing new since the last snapshot
-  current.versions.push({ body, attribution: current.attribution || blankAttribution(body.length), at: Date.now(), by, label: label || by });
+  // Only keep the live ledger if it still matches THIS body's length (an explicit pre-run
+  // body won't); otherwise seed blank so restore stays length-consistent.
+  const attribution = (current.attribution && current.attribution.reduce((n, r) => n + (r.len || 0), 0) === body.length)
+    ? current.attribution : blankAttribution(body.length);
+  current.versions.push({ body, attribution, at: Date.now(), by, label: label || by });
   if (current.versions.length > 40) current.versions.shift();
 }
 
@@ -649,7 +657,10 @@ function restoreVersion(idx) {
   if (!v) return;
   const ta = $('n-body');
   if (ta.value === v.body) return toast('Already at this version');
-  pushVersion(HUMAN, 'Before restore'); // so the restore itself is reversible from the list
+  // Snapshot the pre-restore state ONLY if it isn't already recoverable as a version — otherwise
+  // flip-flopping between two versions (A→B→A→B) spams identical "Before restore" rows. ⌘Z still
+  // reverts the restore regardless (undoStack push below).
+  if (!current.versions.some((ver) => ver.body === ta.value)) pushVersion(HUMAN, 'Before restore');
   undoStack.push(histPrev);              // and undoable with ⌘Z
   if (undoStack.length > HIST_MAX) undoStack.shift();
   redoStack = [];
@@ -887,7 +898,11 @@ async function agentDeps() {
   if (_agentDeps) return _agentDeps;
   const [p, s, l, t, sk] = await Promise.all([import('./js/providers.js'), import('./js/store.js'), import('./js/license.js'), import('./js/turn-tools.js'), import('./js/skill-runtime.js')]);
   _agentDeps = {
-    streamChat: p.streamChat, checkBridge: p.checkBridge,
+    // Tag every notes model call with the 'note' surface for token accounting
+    // (this is where ambient / swarm / co-writer spend shows up), unless a caller
+    // set its own usage context. sourceId = the active note.
+    streamChat: (opts = {}) => p.streamChat({ ...opts, usage: opts.usage || { surface: 'note', sourceId: current?.id } }),
+    checkBridge: p.checkBridge,
     getSettings: s.getSettings, getTarget: s.getTarget, resolveTarget: s.resolveTarget,
     getLicense: l.getLicense, canUseAgent: l.canUseAgent, can: l.can,
     buildTurnTools: t.buildTurnTools, buildRedaction: t.buildRedaction,
@@ -1778,6 +1793,10 @@ async function runNoteJob({
 
   noteJobs.set(job.id, job);
   recordActivity(job);
+  // Guaranteed restore point: snapshot the PRISTINE note (before the header/placeholder the
+  // caller just inserted, and before any output streams) so the run is always revertible even
+  // if its region is dropped before completion — deduped, so a no-op run adds nothing.
+  pushVersion(HUMAN, `Before ${cmdLabel}`, head + commandText + tail);
   if (!region) {
     ta.readOnly = true;            // textarea path: whole editor is read-only while it streams
     streamStart();                 // scroll-anchoring for the mirror path
@@ -1827,17 +1846,24 @@ async function runNoteJob({
     noteJobs.delete(job.id);
     const open = current?.id === job.noteId;
     if (region) {
-      // Region job: if its note is OPEN it streamed into CM live (saved via onCmChange) — unlock
-      // the region, snapshot a version + save. If it finished while DETACHED (you were on another
-      // note), land the final buffer to the store so nothing's lost.
-      const liveRegion = open && cm && !job.detached && activeRegions(cm.view.state).some((r) => r.id === regionId);
-      if (open && cm) finishRegion(cm.view, regionId);
-      if (liveRegion) {
-        current.body = $('n-body').value = cm.value;
-        if (!aborted && !job.error) {
+      // Region job. If its note is OPEN, do the authoritative save + snapshot here — gated ONLY on
+      // the note being open, NOT on the region still being "live". A region can be dropped mid-run
+      // (an edit at its boundary, the position-mapping filter); gating persistence on region
+      // survival used to lose the WHOLE run's output. `cm.value` is normally the truth, but if the
+      // stream got diverted to the detached buffer mid-run (region dropped while you stayed on the
+      // note), cm is missing the tail — the buffer holds the complete output, so prefer it and
+      // mirror it back. If it finished while DETACHED (you were on another note), land the buffer.
+      if (open && cm) {
+        finishRegion(cm.view, regionId);
+        const complete = job.head + jobFinalMid(job) + job.tail; // full output from the job buffers
+        const body = (job.detachedDoc != null && complete.length > cm.value.length) ? complete : cm.value;
+        if (cm.value !== body) mirrorToCm(body); // repair the live surface if the stream had diverted
+        current.body = $('n-body').value = body;
+        if (!aborted && !job.error && job.out.trim()) {
           pushVersion(job.modelLabel, versionLabel || `${cmdLabel} · ${job.modelLabel}`);
           logActivity(job.modelLabel, job.cmd.startsWith('@') ? 'completed a task' : `@${job.cmd} inserted`);
         }
+        histCoalescing = false; // the completed run is a clean undo unit — the next edit starts fresh
         updateWordCount();
         setStatus(aborted ? '' : 'Saved', !aborted);
         renderActivity();
@@ -3169,7 +3195,9 @@ function init() {
     if (ghost) {
       if (e.key === 'Tab') { e.preventDefault(); return acceptGhost(); }
       if (e.key === 'Escape') { e.preventDefault(); return clearGhost({ remove: true }); }
-      if (!['Shift', 'Meta', 'Control', 'Alt', 'CapsLock'].includes(e.key)) clearGhost({ remove: true });
+      // A ⌘/Ctrl shortcut (⌘A/⌘C/⌘S…) must NOT drop the draft — ⌘A to copy it would delete it
+      // (a ghost is never versioned). A real ⌘V paste still drops it via the input path.
+      if (!(e.metaKey || e.ctrlKey) && !['Shift', 'Meta', 'Control', 'Alt', 'CapsLock'].includes(e.key)) clearGhost({ remove: true });
     }
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); return draftAhead(); }
     // Typing the second [ auto-closes to [[]] with the cursor inside → opens the picker.

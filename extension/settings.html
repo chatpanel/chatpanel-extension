@@ -25,6 +25,7 @@
           <button class="tab" data-tab="history"><span class="tab-ico" data-icon="chat"></span> History</button>
           <button class="tab" data-tab="privacy"><span class="tab-ico" data-icon="privacy"></span> Privacy</button>
           <button class="tab" data-tab="gateway"><span class="tab-ico" data-icon="lock"></span> Gateway</button>
+          <button class="tab" data-tab="usage"><span class="tab-ico" data-icon="chart"></span> Usage</button>
           <button class="tab" data-tab="license"><span class="tab-ico" data-icon="sparkles"></span> Account</button>
         </aside>
         <main class="content">
@@ -729,6 +730,33 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
             </div>
             <div id="gw-test-out" class="flow-track"></div>
           </div>
+        </div>
+      </section>
+
+      <!-- USAGE -->
+      <section class="panel hidden" data-panel="usage">
+        <div class="card">
+          <div class="card-head">
+            <h2>Token usage <span class="sub">— input/output tokens across chats, notes (all agent calls), and meetings</span></h2>
+            <button id="usage-refresh" class="btn" type="button">Refresh</button>
+          </div>
+          <div class="row" style="gap:8px;align-items:center;margin:8px 0">
+            <label class="sub">Group by</label>
+            <select id="usage-groupby" style="max-width:140px">
+              <option value="surface">Surface</option>
+              <option value="model">Model</option>
+              <option value="agent">Agent</option>
+            </select>
+            <label class="sub">Window</label>
+            <select id="usage-window" style="max-width:120px">
+              <option value="7">Last 7 days</option>
+              <option value="30" selected>Last 30 days</option>
+              <option value="">All time</option>
+            </select>
+            <button id="usage-clear" class="btn" type="button" style="margin-left:auto">Clear</button>
+          </div>
+          <p class="sub">Real counts come from each provider; a leading <b>≈</b> marks estimated tokens or an unknown price (BYO / local models). Cost is a best-effort estimate, not a bill.</p>
+          <div id="usage-report">Loading…</div>
         </div>
       </section>
 
