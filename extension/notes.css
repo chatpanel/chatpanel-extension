@@ -260,6 +260,8 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .cw-toggle.on { color: var(--accent); background: var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 .fmt-menu-btn { font: inherit; font-size: 12px; height: 32px; cursor: pointer; border: 1px solid var(--border-strong); background: var(--elev); color: var(--muted); border-radius: 8px; padding: 0 9px; }
 .fmt-menu-btn:hover { border-color: var(--accent); color: var(--accent); }
+.export-wrap { position: relative; display: inline-flex; }
+.export-menu { right: 0; left: auto; min-width: 190px; }
 .align-menu { min-width: 156px; }
 .align-menu button.active { color: var(--accent); background: var(--accent-weak); font-weight: 600; }
 .cowriter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 40px; border-top: 1px solid var(--border); background: linear-gradient(var(--accent-weak), transparent); }

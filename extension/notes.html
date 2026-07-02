@@ -94,7 +94,13 @@
               <button id="n-side-toggle" class="icon-btn" title="Toggle assistant panel (⌘/)" aria-label="Toggle assistant panel" data-icon="panel-toggle"></button>
               <button id="n-ask" class="icon-btn" title="Ask ChatPanel about this note" aria-label="Ask ChatPanel" data-icon="ask"></button>
               <button id="n-copy" class="icon-btn" title="Copy as Markdown" aria-label="Copy as Markdown" data-icon="copy"></button>
-              <button id="n-download" class="icon-btn" title="Download .md" aria-label="Download" data-icon="download"></button>
+              <div class="export-wrap">
+                <button id="n-export" class="icon-btn" title="Export" aria-label="Export" aria-haspopup="menu" data-icon="download"></button>
+                <div id="n-export-menu" class="agent-menu export-menu hidden" role="menu">
+                  <button data-export="md" role="menuitem">Markdown (.md)</button>
+                  <button data-export="pdf" role="menuitem">PDF — print / save</button>
+                </div>
+              </div>
               <button id="n-delete" class="icon-btn danger" title="Delete note" aria-label="Delete note" data-icon="delete"></button>
             </div>
           </div>

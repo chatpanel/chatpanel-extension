@@ -815,13 +815,57 @@ function copyCurrent() {
   if (!current) return;
   navigator.clipboard.writeText(noteToMarkdown(current)).then(() => toast('Copied as Markdown'), () => toast('Copy failed'));
 }
+function exportFilename(note) {
+  return (note?.title || 'note').replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 70) || 'note';
+}
 function downloadCurrent() {
   if (!current) return;
-  const safe = (current.title || 'note').replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 70) || 'note';
   const url = URL.createObjectURL(new Blob([noteToMarkdown(current)], { type: 'text/markdown' }));
   const a = document.createElement('a');
-  a.href = url; a.download = `${safe}.md`; a.click();
+  a.href = url; a.download = `${exportFilename(current)}.md`; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+// A standalone, print-optimized HTML document for the note — clean typography, page-break
+// rules, styled code/tables/quotes — so the browser's "Save as PDF" produces a beautiful,
+// selectable-text PDF (no heavy PDF library; CSP-safe — no inline scripts).
+function buildPrintHtml(note) {
+  const title = escapeHtml((note.title || 'Untitled note').trim());
+  const when = note.updatedAt ? escapeHtml(new Date(note.updatedAt).toLocaleString()) : '';
+  const css = `@page{margin:22mm 18mm}*{box-sizing:border-box}`
+    + `body{margin:0;color:#1a1a1a;background:#fff;font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}`
+    + `.doc{max-width:720px;margin:0 auto;padding:24px}`
+    + `.doc-title{font-size:28px;line-height:1.2;margin:0 0 6px;font-weight:700}`
+    + `.doc-meta{color:#888;font-size:12px;margin:0 0 22px;border-bottom:1px solid #e5e5e5;padding-bottom:14px}`
+    + `h1,h2,h3,h4,h5,h6{line-height:1.25;margin:1.4em 0 .5em;font-weight:700;page-break-after:avoid}`
+    + `h1{font-size:24px}h2{font-size:20px}h3{font-size:17px}h4{font-size:15px}`
+    + `p,li{orphans:2;widows:2}a{color:#2352c9;text-decoration:underline;word-break:break-word}`
+    + `code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88em;background:#f3f4f6;padding:.1em .35em;border-radius:4px}`
+    + `pre{background:#f6f8fa;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;overflow:auto;page-break-inside:avoid}pre code{background:none;padding:0}`
+    + `blockquote{margin:1em 0;padding:.2em 0 .2em 16px;border-left:3px solid #d0d7de;color:#57606a}`
+    + `table{border-collapse:collapse;width:100%;margin:1em 0;page-break-inside:avoid}th,td{border:1px solid #d0d7de;padding:7px 10px;text-align:left;font-size:14px}th{background:#f6f8fa;font-weight:600}`
+    + `ul,ol{padding-left:1.4em}img{max-width:100%}hr{border:0;border-top:1px solid #e5e5e5;margin:1.6em 0}input[type=checkbox]{margin-right:6px}`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>${css}</style></head>`
+    + `<body><main class="doc md"><h1 class="doc-title">${title}</h1>${when ? `<div class="doc-meta">${when}</div>` : ''}`
+    + `${renderMarkdown(note.body || '')}</main></body></html>`;
+}
+// Render the note into a hidden iframe and open the print dialog → "Save as PDF".
+function exportPdf() {
+  if (!current) return;
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;';
+  document.body.appendChild(iframe);
+  let printed = false;
+  const print = () => {
+    if (printed || !iframe.parentNode) return; printed = true;
+    try { iframe.contentWindow.focus(); iframe.contentWindow.print(); } catch { toast('Could not open the print dialog'); }
+    setTimeout(() => iframe.remove(), 2000);
+  };
+  iframe.onload = print;
+  const d = iframe.contentWindow.document;
+  d.open(); d.write(buildPrintHtml(current)); d.close();
+  setTimeout(print, 350); // fallback: document.write doesn't always fire onload
+  toast('Choose “Save as PDF” in the print dialog');
 }
 
 // ── agent actions (LLM) — everything model-related is LAZY-LOADED, so providers.js
@@ -2917,7 +2961,12 @@ function init() {
   $('n-new3').onclick = newNote;
   $('n-delete').onclick = removeCurrent;
   $('n-copy').onclick = copyCurrent;
-  $('n-download').onclick = downloadCurrent;
+  // Export menu → Markdown (.md download) or PDF (print/save). Extensible for future formats.
+  $('n-export').onclick = (e) => { e.stopPropagation(); $('n-export-menu').classList.toggle('hidden'); };
+  for (const b of $('n-export-menu').querySelectorAll('button[data-export]')) {
+    b.onclick = () => { $('n-export-menu').classList.add('hidden'); if (b.dataset.export === 'pdf') exportPdf(); else downloadCurrent(); };
+  }
+  document.addEventListener('click', () => $('n-export-menu').classList.add('hidden'));
   $('n-ask').onclick = askAboutNote;
   $('n-settings').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#notes') });
   // Assistant sidebar — tab switching + collapse.
