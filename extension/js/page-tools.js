@@ -67,6 +67,13 @@ export const PAGE_AUTOMATION_SYSTEM =
   'pushing on. (No vision? Rely on the tools’ verified results and report exactly what they say.)\n' +
   '5) SUBMIT LAST. Never click Submit/Save/Send/Pay/Confirm until the end screenshot — or the tool’s ' +
   'verified result — confirms EVERY checklist item. If unsure, ask the user instead.\n' +
+  '5a) ADAPT — DON’T HARDCODE, EXPLORE. Web UIs change (menus move, apps update, layouts differ), so ' +
+  'never assume a fixed path and never fire the SAME failing call again. When a tool errors or you ' +
+  'can’t find a control: (a) inspect_page for the real selectors, (b) screenshot to see the current ' +
+  'layout, and (c) use the app’s OWN search / command palette to locate an action by NAME — many apps ' +
+  'have a “/” or ⌘K box (e.g. draw.io’s “Type / to search” finds “Edit Diagram”). Try a DIFFERENT route ' +
+  'each attempt (another selector, the search box, a keyboard shortcut). If two varied attempts fail, ' +
+  'STOP, report what you tried and saw, and ask the user — do not loop on the identical action.\n' +
   '6) BE HONEST when a tool reports FAILURE (e.g. structured_insert verified:false): say so plainly ' +
   'and stop — do NOT silently switch to a flailing pixel-drawing fallback. You have NO ' +
   'image-generation tool and cannot fetch/export images: never claim you generated or exported one. ' +

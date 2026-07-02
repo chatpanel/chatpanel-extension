@@ -649,16 +649,51 @@ async function drawioOp(opJson) {
     return editorReady();
   };
 
+  // Prefer draw.io's OWN Editor API (get/setGraphXml) whenever the live EditorUi
+  // instance is reachable — deterministic and INDEPENDENT of the menu/toolbar UI
+  // (draw.io reshuffles that often). Only fall back to driving the Extras → Edit
+  // Diagram dialog on builds where the instance isn't exposed.
+  const findEditorUi = () => {
+    const ok = (v) => { try { return v && v.editor && typeof v.editor.getGraphXml === 'function' && typeof v.editor.setGraphXml === 'function' && v.editor.graph; } catch { return false; } };
+    for (const k of ['ui', 'editorUi', 'EDITOR_UI', 'App']) {
+      try { const v = window[k]; if (ok(v)) return v; if (ok(v && v.main)) return v.main; } catch { /* keep looking */ }
+    }
+    try { for (const k in window) { let v; try { v = window[k]; } catch { continue; } if (ok(v)) return v; } } catch { /* best-effort scan */ }
+    return null;
+  };
+
   try {
     const op = JSON.parse(opJson);
-    if (!(await openDialog())) return { ok: false, error: 'Could not open draw.io Extras → Edit Diagram dialog.' };
-    const xml = readXml();
-    if (xml == null) return { ok: false, error: 'Edit Diagram editor not found.' };
+    const ui = findEditorUi();
+    let via, readCurrentXml, applyXml;
+    let cancel = () => {};
+    if (ui) {
+      via = 'editor-api';
+      readCurrentXml = () => { try { return new XMLSerializer().serializeToString(ui.editor.getGraphXml()); } catch { return null; } };
+      applyXml = async (newXml) => {
+        const d = new DOMParser().parseFromString(newXml, 'text/xml');
+        if (!d.documentElement || d.getElementsByTagName('parsererror').length) return false;
+        const g = ui.editor.graph, m = g.getModel();
+        m.beginUpdate();
+        try { ui.editor.setGraphXml(d.documentElement); } finally { m.endUpdate(); }
+        return true;
+      };
+    } else {
+      via = 'edit-diagram';
+      if (!(await openDialog())) {
+        return { ok: false, error: 'Could not reach draw.io: no Editor API on the page and no Extras → Edit Diagram menu found. Explore the UI (screenshot / inspect_page / the “/” search box) to open the diagram XML editor, or switch to the classic editor.' };
+      }
+      readCurrentXml = readXml;
+      cancel = () => clickBtn(/^cancel$/i);
+      applyXml = async (newXml) => { if (!writeXml(newXml)) return false; await sleep(150); return clickBtn(/^ok$/i); };
+    }
+    const xml = readCurrentXml();
+    if (xml == null) { cancel(); return { ok: false, error: 'Could not read the current diagram XML.' }; }
     const doc = new DOMParser().parseFromString(xml, 'text/xml');
     const model = doc.querySelector('mxGraphModel');
     const root = model && model.querySelector('root');
     if (!root) {
-      clickBtn(/^cancel$/i);
+      cancel();
       return { ok: false, error: 'Unexpected diagram XML (no <root>).' };
     }
     const cells = [...root.querySelectorAll('mxCell')];
@@ -683,7 +718,7 @@ async function drawioOp(opJson) {
             ...(c.getAttribute('value') ? { text: c.getAttribute('value').replace(/<[^>]+>/g, '').slice(0, 40) } : {}),
           };
         });
-      clickBtn(/^cancel$/i);
+      cancel();
       let bbox = null;
       if (els.length) {
         bbox = {
@@ -693,14 +728,14 @@ async function drawioOp(opJson) {
           maxY: Math.max(...els.map((e) => e.y + e.h)),
         };
       }
-      return { ok: true, count: els.length, bbox, elements: els.slice(0, 200) };
+      return { ok: true, via, count: els.length, bbox, elements: els.slice(0, 200) };
     }
 
     // insert / upsert — from `elements` skeletons OR raw `native` mxGraph XML.
     const skeletons = Array.isArray(op.elements) ? op.elements : [];
     const native = typeof op.native === 'string' ? op.native.trim() : '';
     if (!native && !skeletons.length) {
-      clickBtn(/^cancel$/i);
+      cancel();
       return { ok: false, error: 'no elements provided' };
     }
     const uid = () => 'c' + Math.random().toString(36).slice(2, 10);
@@ -729,7 +764,7 @@ async function drawioOp(opJson) {
         (c) => c.getAttribute('vertex') === '1' || c.getAttribute('edge') === '1',
       );
       if (!newCells.length) {
-        clickBtn(/^cancel$/i);
+        cancel();
         return { ok: false, error: 'native XML contained no <mxCell vertex=…/edge=…> nodes' };
       }
       for (const c of newCells) upsert(doc.importNode(c, true));
@@ -771,17 +806,14 @@ async function drawioOp(opJson) {
         upsert(cell);
       }
     const newXml = new XMLSerializer().serializeToString(model);
-    if (!writeXml(newXml)) {
-      clickBtn(/^cancel$/i);
-      return { ok: false, error: 'Could not write the diagram XML into the editor.' };
-    }
-    await sleep(150);
-    const clicked = clickBtn(/^ok$/i);
-    await sleep(350);
-    // The dialog closing is the real confirmation that draw.io accepted the XML.
-    const applied = clicked && !editorReady();
+    const okApplied = await applyXml(newXml);
+    if (!okApplied) { cancel(); return { ok: false, error: 'Could not apply the diagram XML.' }; }
+    await sleep(via === 'edit-diagram' ? 350 : 60);
+    // Dialog path: the dialog closing confirms draw.io accepted the XML. Editor-API
+    // path: setGraphXml applied synchronously inside a model update.
+    const applied = via === 'edit-diagram' ? !editorReady() : true;
     const total = root.querySelectorAll('mxCell[vertex="1"], mxCell[edge="1"]').length;
-    return { ok: true, via: 'edit-diagram', added, updated, total, applied };
+    return { ok: true, via, added, updated, total, applied };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
@@ -803,8 +835,14 @@ const drawioAdapter = {
       'This page is draw.io. Build the diagram as DATA with `structured_insert` (nodes + edges) — do ' +
       'NOT pixel-draw. If the canvas is NOT empty, FIRST call `read_canvas` to see existing cells (ids, ' +
       'positions, bounding box), then place NEW nodes in free space or UPDATE one by reusing its id. ' +
-      'Give nodes ids so edges can reference them via source/target. It applies through draw.io’s Edit ' +
-      'Diagram XML and re-renders. Take ONE screenshot at the end to validate; do not re-insert.'
+      'Give nodes ids so edges can reference them via source/target. It applies through draw.io’s own ' +
+      'editor and re-renders. Take ONE screenshot at the end to validate; do not re-insert.\n' +
+      'IF `structured_insert` FAILS (e.g. it cannot reach the editor because the draw.io UI changed): do ' +
+      'NOT retry the identical call. EXPLORE and adapt — `screenshot` to see the current layout, ' +
+      '`inspect_page` for selectors, and use draw.io’s built-in “/” search box (top toolbar, “Type / to ' +
+      'search”) to find actions like “Edit Diagram”. Open the diagram-XML editor yourself (via that ' +
+      'search or the menu), then retry, OR ask the user to switch to the classic editor. Vary your ' +
+      'approach each attempt; report what you found if you stay blocked.'
     );
   },
   toolSpecs() {
