@@ -51,6 +51,14 @@ const R = await import('../extension/js/notes-regions.js');
   assert.deepEqual(R.activeRegions(s1), [{ id: 'a', label: 'A', from: 10, to: 15 }], 'region remapped by +4');
 }
 
+// ── boundary: a user insert AT the region's end does NOT extend it (so you can type below it) ──
+{
+  const s0 = EditorState.create({ doc: 'abcXYZdef', extensions: [R.regionsField] })
+    .update({ effects: R.addRegion.of({ id: 'a', label: 'A', from: 3, to: 6 }) }).state; // "XYZ"
+  const s1 = s0.update({ changes: { from: 6, to: 6, insert: '\n!' } }).state; // Enter + text at the region's end
+  assert.equal(R.activeRegions(s1)[0].to, 6, 'user text at the region end stays OUTSIDE — you can start a new line below it');
+}
+
 // ── live view: guard blocks in-region typing, allows elsewhere; agent writes land ──
 if (hasDom) {
   const host = document.getElementById('host');

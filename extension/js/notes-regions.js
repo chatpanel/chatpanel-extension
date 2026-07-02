@@ -33,8 +33,12 @@ export const regionsField = StateField.define({
   update(regions, tr) {
     let next = regions;
     if (tr.docChanged) {
+      // Map ranges through the change. `to` uses assoc -1 so text inserted AT the region's end
+      // is NOT swallowed into it — that's what lets you press Enter after a working region and
+      // start a new line (or another agent) below it. The agent grows its own region via the
+      // explicit setRegionRange effect (below), so it doesn't rely on boundary absorption.
       next = regions
-        .map((r) => ({ ...r, from: tr.changes.mapPos(r.from, -1), to: tr.changes.mapPos(r.to, 1) }))
+        .map((r) => ({ ...r, from: tr.changes.mapPos(r.from, -1), to: tr.changes.mapPos(r.to, -1) }))
         .filter((r) => r.to >= r.from);
     }
     for (const e of tr.effects) {
