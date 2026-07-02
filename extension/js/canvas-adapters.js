@@ -681,11 +681,13 @@ async function drawioOp(opJson) {
     } else {
       via = 'edit-diagram';
       if (!(await openDialog())) {
-        return { ok: false, error: 'Could not reach draw.io: no Editor API on the page and no Extras → Edit Diagram menu found. Explore the UI (screenshot / inspect_page / the “/” search box) to open the diagram XML editor, or switch to the classic editor.' };
+        return { ok: false, error: 'draw.io insert blocked: the Extras → Edit Diagram menu isn’t visible — the minimal/compact theme HIDES it. FIX (do this, then retry — don’t repeat the identical call first): switch Settings → Theme → Classic to restore the full menu bar (File/Edit/View/Arrange/Extras/Help), OR type into draw.io’s “/” search box (top toolbar, “Type / to search”) to find and open “Edit Diagram”.' };
       }
       readCurrentXml = readXml;
       cancel = () => clickBtn(/^cancel$/i);
-      applyXml = async (newXml) => { if (!writeXml(newXml)) return false; await sleep(150); return clickBtn(/^ok$/i); };
+      // The Edit Diagram dialog's commit button is "Apply" on current builds ("OK" on
+      // older ones) — match both, or the XML is written but never committed.
+      applyXml = async (newXml) => { if (!writeXml(newXml)) return false; await sleep(150); return clickBtn(/^(apply|ok)$/i); };
     }
     const xml = readCurrentXml();
     if (xml == null) { cancel(); return { ok: false, error: 'Could not read the current diagram XML.' }; }
@@ -837,12 +839,14 @@ const drawioAdapter = {
       'positions, bounding box), then place NEW nodes in free space or UPDATE one by reusing its id. ' +
       'Give nodes ids so edges can reference them via source/target. It applies through draw.io’s own ' +
       'editor and re-renders. Take ONE screenshot at the end to validate; do not re-insert.\n' +
-      'IF `structured_insert` FAILS (e.g. it cannot reach the editor because the draw.io UI changed): do ' +
-      'NOT retry the identical call. EXPLORE and adapt — `screenshot` to see the current layout, ' +
-      '`inspect_page` for selectors, and use draw.io’s built-in “/” search box (top toolbar, “Type / to ' +
-      'search”) to find actions like “Edit Diagram”. Open the diagram-XML editor yourself (via that ' +
-      'search or the menu), then retry, OR ask the user to switch to the classic editor. Vary your ' +
-      'approach each attempt; report what you found if you stay blocked.'
+      'IF `structured_insert` FAILS because it cannot reach the editor: do NOT retry the identical call. ' +
+      'The usual cause is draw.io’s minimal/compact theme HIDING the Extras → Edit Diagram menu the tool ' +
+      'needs. FIRST unblock the UI, THEN retry: switch Settings → Theme → Classic (restores the full ' +
+      'File/Edit/View/Arrange/Extras/Help menu bar), or type into draw.io’s “/” search box (“Type / to ' +
+      'search”) to find and open “Edit Diagram”. To change the theme: open the top-left menu / Settings ' +
+      'and pick the Classic theme. After the insert, if a dialog is still open, click Apply/OK; a banner ' +
+      '“Unsaved changes — click here to save” is normal (the diagram rendered) — mention it, don’t treat ' +
+      'it as a failure. Vary your approach each attempt; report what you found if you stay blocked.'
     );
   },
   toolSpecs() {
