@@ -84,7 +84,7 @@ function renderList(query = '') {
 }
 
 // ── editor ───────────────────────────────────────────────────────────────────
-function setMode(mode, persist = true) {
+function setMode(mode, persist = true, { focus = true } = {}) {
   const panes = $('n-panes');
   // Leaving Live → pull CM's content back into the textarea (the model) so the classic
   // panes show the latest (onCmChange already mirrors, so this is belt-and-suspenders).
@@ -95,7 +95,7 @@ function setMode(mode, persist = true) {
   if (mode === 'live') {
     panes.classList.add('live');
     ensureCm()
-      .then(() => { cmActive = true; _cmRO = null; mirrorToCm(); cm.focus(); })
+      .then(() => { cmActive = true; _cmRO = null; mirrorToCm(); if (focus) cm.focus(); }) // skip focus when the caller wants the title focused (e.g. a fresh note)
       .catch(() => { toast('Live editor unavailable — using Write'); setMode('write', persist); });
     return;
   }
@@ -213,7 +213,11 @@ function onCmKey(e) {
   // A real ⌘V paste still drops it via the input path (onCmChange), not here.
   if (ghost) {
     if (e.key === 'Tab') { acceptGhost(); return true; }
+    // A deliberate ⌘↵ Writer draft-ahead also accepts on plain Enter (an as-you-type
+    // Autocomplete prediction keeps Enter = newline, so it falls through and drops).
+    if (e.key === 'Enter' && !e.shiftKey && ghostAuthor.startsWith('Writer')) { acceptGhost(); return true; }
     if (e.key === 'Escape') { clearGhost({ remove: true }); return true; }
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C')) { acceptGhost({ keepSelection: true }); return false; } // ⌘C → commit so the copy keeps it (native copy still runs)
     if (!(e.metaKey || e.ctrlKey) && !['Shift', 'Meta', 'Control', 'Alt', 'CapsLock'].includes(e.key)) clearGhost({ remove: true });
   }
   const openJob = current && noteHasJob(current.id);
@@ -262,6 +266,7 @@ function setSideTab(t, { open = true } = {}) {
   if (t === 'history') renderHistory();          // some panes skip work unless they're the active tab
   else if (t === 'activity') renderActivity();
   else if (t === 'research') renderResearch();
+  else if (t === 'cowriter') renderCowriter();   // repaint (also clears the .hidden park) so chips are live
   else refreshSideTabs();
 }
 function setSideCollapsed(c) {
@@ -410,7 +415,7 @@ function startTagInput(addBtn) {
 async function openNote(id, preloaded = null) {
   if (agentAbort) agentAbort.abort(); // stop any in-flight @agent generation before switching
   if (writerAbort) writerAbort.abort();
-  clearGhost({ remove: true }); // strip any pending draft-ahead from the OLD note before it's flushed
+  resolvePendingGhost(); // commit a finished Writer draft-ahead into the OLD note (drop ephemeral autocomplete) before flush
   // Jobs are NOT aborted on a note switch — they keep running. A REGION job (Live) streams into
   // the live CM, which can't follow the switch, so it DETACHES: it keeps streaming into a buffer
   // + persists to its note's store, and re-attaches when you come back. A textarea @command job
@@ -427,6 +432,10 @@ async function openNote(id, preloaded = null) {
   } else {
     await flushSave();
   }
+  // Any region still active in CM now is stray — a detached job already dropped its own; an
+  // unregistered job's region (opened before its job existed) would otherwise float over / lock
+  // the incoming note. Drop them all; the job streams into its detached buffer instead.
+  if (cm) for (const r of activeRegions(cm.view.state)) finishRegion(cm.view, r.id);
   current = preloaded || await getNote(id);
   if (!current) return;
   $('n-blank').classList.add('hidden');
@@ -446,9 +455,11 @@ async function openNote(id, preloaded = null) {
   suggestTags();
   renderBacklinks(current.title);
   clearResearch(); // drop the previous note's research shelf (re-runs on the next typing pause)
+  clearCowriterUI(); // drop the previous note's fixes/links (re-computed on the next pause)
   resetSwarmState(); // fresh note → the team starts idle
   lastQuestion = '';
   lastAutoDraft = '';
+  lastGoalLen = -1;
   lastFactSentence = '';
   lastTitleChecked = '';
   board.log = [];
@@ -482,7 +493,7 @@ function scheduleSave(immediate = false) {
 }
 async function flushSave() {
   clearTimeout(saveTimer);
-  if (ghost) clearGhost({ remove: true }); // never persist an un-accepted draft-ahead
+  if (ghost) resolvePendingGhost(); // commit a finished Writer draft-ahead; drop an ephemeral autocomplete
   if (!dirty || !current) return;
   dirty = false;
   current.title = $('n-title').value;
@@ -779,7 +790,7 @@ async function newNote() {
   const rec = await createNote({ body: '' });
   updateEntry(rec);
   await openNote(rec.id, rec);           // finish editor setup before we place the cursor
-  setMode('live', false);                // a blank note opens in the live editor (don't change the saved default)
+  setMode('live', false, { focus: false }); // a blank note opens in the live editor (don't change the saved default); don't let CM's async focus steal the title
   const title = $('n-title');
   title.focus();
   title.select(); // select-all the title so you can type over it immediately; Enter → body
@@ -1693,6 +1704,24 @@ function noteCommandContext(head, tail) {
   return `The note I'm editing${title ? ` (title: "${title}")` : ''} is below. Resolve any reference in my instruction — "this meeting", a date, a name, a [[wikilink]] or a URL (a meeting link's #id identifies that exact meeting) — against THIS note, not a guess. If a tool lets you fetch something referenced here by id, use that id.\n\n"""\n${clipped}\n"""`;
 }
 
+// The OTHER configured agents that are participating in THIS note — detected by their
+// `**Name:**` answer headers or `@[Name]` mentions in the body. Lets an @mentioned agent
+// know it's co-writing a SHARED note with named siblings (not working solo), so it can
+// answer "who else is working here?" correctly instead of "only I am active".
+function noteCollaborators(body, settings, selfName) {
+  const lc = String(body || '').toLowerCase();
+  const self = String(selfName || '').trim().toLowerCase();
+  const seen = new Set();
+  const out = [];
+  for (const t of [...(settings.endpoints || []), ...(settings.agents || [])]) {
+    const name = (t.name || '').trim();
+    const key = name.toLowerCase();
+    if (!name || key === self || seen.has(key)) continue;
+    if (lc.includes(`**${key}:**`) || lc.includes(`@[${key}]`)) { seen.add(key); out.push(name); }
+  }
+  return out;
+}
+
 async function runNoteCommand() {
   const ctx = currentCommandLine();
   if (!ctx || !current || noteHasBlockingJob(current.id)) return false; // a Source/global-lock job is running
@@ -1700,6 +1729,7 @@ async function runNoteCommand() {
   if (!useRegion) { if (_jobStarting) return false; _jobStarting = true; } // Source: one job at a time
   closeAc();
   const ta = $('n-body');
+  const noteId = current.id; // bind the job to THIS note — setup below may span a note switch
   const head = ta.value.slice(0, ctx.start);
   const tail = ta.value.slice(ctx.end);
   const commandText = ta.value.slice(ctx.start, ctx.end);
@@ -1734,7 +1764,7 @@ async function runNoteCommand() {
     // A "#[Skill]" mention in the instruction scopes the tools + folds in the skill's prompt.
     const skill = resolveSkillMention(ctx.instruction, settings, license, deps);
     await runNoteJob({
-      deps, settings, license, targetAgent, resolved, head, tail, commandText,
+      deps, settings, license, targetAgent, resolved, head, tail, commandText, noteId,
       cmdLabel: ctx.spec.cmd, systemPrompt: ctx.spec.sys, instruction: skill.instruction,
       armToolset: !!ctx.spec.tools, skillRun: skill.skillRun, regionId, regionFrom: useRegion ? ctx.start : 0,
       versionLabel: `@${ctx.spec.cmd}${skill.skillLabel ? ` #${skill.skillLabel}` : ''} · ${targetAgent.name || resolved.model || 'agent'}`,
@@ -1751,14 +1781,18 @@ async function runNoteCommand() {
 async function runNoteJob({
   deps, settings, license, targetAgent, resolved,
   head, tail, commandText, cmdLabel, systemPrompt, instruction,
-  makeExtraProviders = null, armToolset = true, maxTokens = 1800, temperature = 0.4, versionLabel, skillRun = null, answerPrefix = '', regionId = null, regionFrom = 0,
+  makeExtraProviders = null, armToolset = true, maxTokens = 1800, temperature = 0.4, versionLabel, skillRun = null, answerPrefix = '', regionId = null, regionFrom = 0, noteId = current?.id,
 }) {
   const ta = $('n-body');
   // regionId set + Live active → stream into a CM region (animated widget, NO global lock, you
   // can edit elsewhere). The region + its widget were already opened by the caller.
   const region = !!regionId && cmActive && !!cm;
+  // Bind to the note the run was LAUNCHED from (passed by the caller, captured with head/tail),
+  // NOT `current` now — the caller's async setup (deps/tools) can span a note switch, and reading
+  // `current` here would bind the job to the WRONG note: its A-note output would then persist onto
+  // B (corrupting it) while A silently loses the answer. `noteId` keeps head/tail/target aligned.
   const job = {
-    id: regionId || `job-${++_jobSeq}`, noteId: current.id, cmd: cmdLabel, instruction,
+    id: regionId || `job-${++_jobSeq}`, noteId: noteId || current?.id, cmd: cmdLabel, instruction,
     head, tail, commandText, answerPrefix, out: '', steps: [], tools: [],
     region, regionId, regionFrom, detached: false, detachedDoc: null, detachedAt: 0,
     redacted: false, status: 'starting', statusText: 'starting…',
@@ -1795,8 +1829,10 @@ async function runNoteJob({
   recordActivity(job);
   // Guaranteed restore point: snapshot the PRISTINE note (before the header/placeholder the
   // caller just inserted, and before any output streams) so the run is always revertible even
-  // if its region is dropped before completion — deduped, so a no-op run adds nothing.
-  pushVersion(HUMAN, `Before ${cmdLabel}`, head + commandText + tail);
+  // if its region is dropped before completion — deduped, so a no-op run adds nothing. Only when
+  // the launch note is still open (pushVersion targets `current`); if we already switched away,
+  // skip it rather than snapshot onto the wrong note.
+  if (current?.id === job.noteId) pushVersion(HUMAN, `Before ${cmdLabel}`, head + commandText + tail);
   if (!region) {
     ta.readOnly = true;            // textarea path: whole editor is read-only while it streams
     streamStart();                 // scroll-anchoring for the mirror path
@@ -1907,6 +1943,7 @@ async function runAgentTask(mention) {
   if (!useRegion) { if (_jobStarting) return true; _jobStarting = true; } // Source: one job at a time
   closeAc();
   const ta = $('n-body');
+  const noteId = current.id; // bind the job to THIS note — setup below may span a note switch
   const head = ta.value.slice(0, mention.start);
   const tail = ta.value.slice(mention.end);
   const commandText = ta.value.slice(mention.start, mention.end);
@@ -1947,13 +1984,19 @@ async function runAgentTask(mention) {
       + '- note_create to put content in a NEW note when it belongs on its own;\n'
       + '- note_edit to revise the user\'s EXISTING text in THIS note (exact find/replace).\n'
       + 'Your streamed text is inserted where the task was written — use it for the main answer, tools for side effects. Output clean GitHub-flavored markdown, no preamble or meta commentary.';
+    // Swarm awareness: if other named agents have sections/mentions in THIS note, tell the
+    // agent it's co-writing a shared doc with them — otherwise it claims to be the only one.
+    const mates = noteCollaborators(`${head}\n${tail}`, settings, targetAgent.name);
+    const teamSys = mates.length
+      ? `\n\nYou are co-writing this SHARED note alongside other AI agents: ${mates.join(', ')}. Each agent's replies appear under its own "**Name:**" header — treat those sections as written by them, not you. If the user asks who else is working here, answer with that roster; never claim you're the only agent.`
+      : '';
     // Honor a "#[Skill]" mention in the task (scoped tools + the skill's prompt).
     const skill = resolveSkillMention(mention.task, settings, license, deps);
     // Keep the user's question in the note (as a blockquote), with the agent's answer
     // BELOW it — a readable Q&A trail, instead of the answer replacing the question.
     await runNoteJob({
-      deps, settings, license, targetAgent, resolved, head, tail, commandText,
-      cmdLabel: `@${targetAgent.name || 'agent'}`, systemPrompt: sys, instruction: skill.instruction,
+      deps, settings, license, targetAgent, resolved, head, tail, commandText, noteId,
+      cmdLabel: `@${targetAgent.name || 'agent'}`, systemPrompt: sys + teamSys, instruction: skill.instruction,
       armToolset: true, maxTokens: 2400, skillRun: skill.skillRun, regionId, regionFrom: useRegion ? mention.start + prefix.length : 0,
       answerPrefix: `${question}\n\n**${targetAgent.name || 'Agent'}:**\n\n`,
       makeExtraProviders: (job) => [makeNoteTools(job)],
@@ -2059,6 +2102,7 @@ function scheduleCowriter() {
 function clearCowriterUI() {
   cwSuggestions = [];
   boardSuggestions = [];
+  _cwAnnounced = 0; // next new suggestion re-pulses / re-reveals
   const el = $('n-cowriter');
   el.innerHTML = '';
   el.classList.add('hidden');
@@ -2208,12 +2252,28 @@ function applyTitleFix(e) {
   toast('Title fixed');
 }
 
+// Nudge attention to the Co-writer tab when NEW suggestions arrive. The badge pulses for
+// everyone (a quiet, discoverable cue — the maintainer's own confusion was "nothing
+// prompted me"); with "Show fixes as they land" on, we also switch to the tab. Tracks the
+// last-announced count so it fires on 0→N / N↑, never on a re-render or an accept.
+let _cwAnnounced = 0;
+function announceCowriter() {
+  const n = cwSuggestions.length + boardSuggestions.length;
+  if (n > _cwAnnounced) {
+    const tab = document.querySelector('#n-side .side-tab[data-side="cowriter"]');
+    if (tab) { tab.classList.remove('pulse'); void tab.offsetWidth; tab.classList.add('pulse'); } // restart the CSS pulse
+    if (AI_PREFS.revealFixes && activeSide !== 'cowriter') setSideTab('cowriter');
+  }
+  _cwAnnounced = n;
+}
 function renderCowriter() {
   const el = $('n-cowriter');
   el.innerHTML = '';
+  el.classList.remove('hidden'); // clearCowriterUI() parks it as .hidden (display:none !important) — un-park it so the chips are actually clickable when this tab is shown
   if (!cwSuggestions.length && !boardSuggestions.length) {
     el.innerHTML = '<div class="cw-empty">No suggestions yet. With the co-writer on, the Editor posts typo/grammar fixes and the Connector posts links here as you write.</div>';
     refreshSideTabs();
+    announceCowriter();
     return;
   }
   const label = document.createElement('span');
@@ -2252,6 +2312,7 @@ function renderCowriter() {
   x.onclick = () => { cwSuggestions.forEach((s) => cwDismissed.add(s.key)); boardSuggestions.forEach((s) => boardDismissed.add(s.key)); clearCowriterUI(); };
   el.appendChild(x);
   refreshSideTabs();
+  announceCowriter();
 }
 
 function commitCowriterBody() {
@@ -2541,6 +2602,7 @@ function clearGhost({ remove = false } = {}) {
   ghostAuthor = HUMAN;
   hideGhostHint();
   mirrorToCm(); // reflect the removed ghost onto the live editor
+  if (cmActive && cm) cm.clearGhost(); // drop the AI-draft tint
 }
 function renderGhost(from, text) {
   const ta = $('n-body');
@@ -2551,11 +2613,15 @@ function renderGhost(from, text) {
   ghost = { from, to: from + text.length };
   autoGrow();
   mirrorToCm(); // show the streaming draft in the live editor too
+  if (cmActive && cm) cm.setGhost(from, from + text.length); // tint it as an un-accepted AI draft
 }
-function acceptGhost() {
+// Commit the pending draft into the note: attribute it to its author, snapshot a version, save.
+// `keepSelection` leaves the selection + focus untouched — used when accepting on ⌘C so the
+// browser's native copy still grabs the (now-permanent) selected text.
+function acceptGhost({ keepSelection = false } = {}) {
   if (!ghost) return;
   const ta = $('n-body');
-  ta.selectionStart = ta.selectionEnd = ghost.to; // collapse to end — keep the text
+  if (!keepSelection) ta.selectionStart = ta.selectionEnd = ghost.to; // collapse to end — keep the text
   const author = ghostAuthor;
   ghost = null;
   ghostAuthor = HUMAN;
@@ -2566,13 +2632,25 @@ function acceptGhost() {
   pushVersion(author, author);
   logActivity(author.startsWith('Autocomplete') ? 'Autocomplete' : 'Writer', 'draft accepted');
   current.body = ta.value;
+  noteGoalProgress(); // re-baseline goal-drive so an accepted draft doesn't instantly re-fire
   autoGrow();
   if (!$('n-panes').classList.contains('write')) updatePreview();
+  if (cmActive && cm) cm.clearGhost(); // it's committed text now — drop the AI-draft tint
   updateWordCount();
   renderHistory();
   dirty = true;
   scheduleSave();
-  bodyFocus();
+  if (!keepSelection) bodyFocus();
+}
+
+// Leaving the note (switch / save) with a pending ghost. A Writer DRAFT-AHEAD is content the
+// user deliberately requested (⌘↵) — commit it into the note rather than silently deleting it.
+// An as-you-type Autocomplete prediction is ephemeral — drop it. `keepSelection` avoids the
+// focus/selection churn of a normal accept since we're on our way out of this note anyway.
+function resolvePendingGhost() {
+  if (!ghost) return;
+  if (ghostAuthor.startsWith('Writer')) acceptGhost({ keepSelection: true });
+  else clearGhost({ remove: true });
 }
 
 function writerTail(before) {
@@ -2672,17 +2750,26 @@ async function runAutocomplete() {
   if (!clip) return;
   ghostAuthor = label;
   renderGhost(from, clip);
-  showGhostHint('Tab ↹ accept · Esc dismiss');
+  showGhostHint('AI draft · Tab ↹ keep · Esc discard');
 }
-async function draftAhead() {
+async function draftAhead(opts = {}) {
   if (!current || ghost || writerAbort || agentAbort || noteHasJob(current.id)) return;
   // A line that @mentions an agent is a DELEGATION, not a spot for the ambient Writer to
   // continue — route ⌘↵ to that agent instead of drafting a continuation over the task.
   const men = currentMention();
   if (men) { runAgentTask(men); return; }
-  const from = bodyCursor();
+  // Instruction mode — an imperative line ("summarize the above in 3 sentences") is
+  // EXECUTED as a task and its result streamed below the line (opt-in / explicit). Any
+  // other ⌘↵ is a plain continuation from the caret. Same ghost = same accept/reject.
+  let instr = opts.instruction || null;
+  let iLine = null;
+  if (instr) iLine = currentLine();
+  else if (AI_PREFS.actOnInstructions) { const io = instructionOnLine(); if (io) { instr = io.text; iLine = currentLine(); } }
+  const from = instr ? iLine.end : bodyCursor();
   const before = bodyText().slice(0, from);
-  if (before.trim().length < 8) return toast('Write a little first, then ⌘↵ to draft ahead');
+  const ctxBefore = instr ? bodyText().slice(0, iLine.start) : before; // instruction: context is the note ABOVE the line
+  const sep = instr ? (before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n') : ''; // drop the result onto its own line
+  if (!instr && before.trim().length < 8) return toast('Write a little first, then ⌘↵ to draft ahead');
   const gen = ++writerGen;
   let deps;
   try { deps = await agentDeps(); } catch { return toast('Writer unavailable'); }
@@ -2701,7 +2788,12 @@ async function draftAhead() {
       + researchCards.slice(0, 5).map((c) => `- ${c.title}${c.snippet ? ` — ${c.snippet}` : ''}`).join('\n')
     : '';
   const intentLine = board.intent ? `The note's goal (guide your writing toward it): ${board.intent}.\n\n` : '';
-  const sys = intentLine + "You continue the user's note from where it stops. Match their voice, tone, and markdown style exactly. Write only the NEXT one or two sentences (or finish the current one) — concise, natural, no preamble, no repetition of prior text, no meta commentary. Output ONLY the continuation." + grounding;
+  const sys = instr
+    ? `You are executing an instruction inside the user's note. Use the note as context and do EXACTLY what the instruction says. Match the note's voice, tone, and markdown style. Output ONLY the resulting markdown to insert — no preamble, no restating the instruction, no meta commentary.${board.intent ? ` The note's goal: ${board.intent}.` : ''}${grounding}`
+    : intentLine + "You continue the user's note from where it stops. Match their voice, tone, and markdown style exactly. Write only the NEXT one or two sentences (or finish the current one) — concise, natural, no preamble, no repetition of prior text, no meta commentary. Output ONLY the continuation." + grounding;
+  const userContent = instr
+    ? `NOTE SO FAR:\n${writerTail(ctxBefore)}\n\nINSTRUCTION (do exactly this, output only the result):\n${instr}`
+    : writerTail(before);
   let redaction = null;
   try { redaction = deps.buildRedaction?.({ settings, license }); } catch { /* redaction off */ }
 
@@ -2718,12 +2810,12 @@ async function draftAhead() {
   let out = '';
   try {
     await deps.streamChat({
-      agent: { ...writer.resolved, systemPrompt: sys, maxTokens: 220, temperature: 0.6 },
+      agent: { ...writer.resolved, systemPrompt: sys, maxTokens: instr ? 600 : 220, temperature: instr ? 0.4 : 0.6 },
       settings,
       signal: writerAbort.signal,
       redaction, // the PII harness wraps the draft-ahead call too
-      messages: [{ role: 'user', content: writerTail(before) }],
-      onDelta: (d) => { if (gen === writerGen) { out += d; scheduleStreamRender(() => { if (gen === writerGen) renderGhost(from, out); }); } }, // one paint/frame; anchor fixed at `from`
+      messages: [{ role: 'user', content: userContent }],
+      onDelta: (d) => { if (gen === writerGen) { out += d; scheduleStreamRender(() => { if (gen === writerGen) renderGhost(from, sep + out); }); } }, // one paint/frame; anchor fixed at `from`
       onEvent: act.onEvent,
     });
   } catch (e) {
@@ -2734,7 +2826,7 @@ async function draftAhead() {
     writerAbort = null;
     streamStop(); // drop any pending frame before finalizing the ghost
     setStatus('');
-    if (!aborted && gen === writerGen && out.trim()) { renderGhost(from, out.replace(/\s+$/, '')); showGhostHint('Tab ↹ accept · Esc dismiss'); setSwarmState('writer', 'idle', 'draft ready'); logActivity('Writer', 'drafted a continuation'); }
+    if (!aborted && gen === writerGen && out.trim()) { renderGhost(from, sep + out.replace(/\s+$/, '')); showGhostHint('AI draft · Tab ↹ / ↵ keep · Esc discard'); setSwarmState('writer', 'idle', 'draft ready'); logActivity('Writer', instr ? 'ran an instruction' : 'drafted a continuation'); }
     else { clearGhost({ remove: true }); setSwarmState('writer', 'idle'); }
   }
 }
@@ -2781,6 +2873,32 @@ async function renderSwarmMenu() {
   intentIn.oninput = () => setIntent(intentIn.value);
   intentWrap.appendChild(intentIn);
   menu.appendChild(intentWrap);
+  // How proactive? — independent opt-ins (default off). Off = the calm default: fixes
+  // wait quietly in the Co-writer tab, nothing drafts unless you ask (⌘↵). On = the
+  // co-writer reaches into your flow. Each is a small, reversible choice.
+  const proWrap = document.createElement('div');
+  proWrap.className = 'swarm-prefs';
+  proWrap.innerHTML = `<div class="swarm-prefs-h">${icon('sparkles')} How proactive?</div>`;
+  const PREF_META = [
+    { k: 'revealFixes', label: 'Show fixes as they land', desc: 'Auto-open the Co-writer tab when a typo/link is ready — no hunting for the badge.' },
+    { k: 'actOnInstructions', label: 'Act on instruction lines', desc: 'A line like “summarize the above in 3 sentences” becomes a task the Writer drafts (accept/reject).' },
+    { k: 'goalDrive', label: 'Let the goal keep writing', desc: 'With a goal set above, draft the next line toward it whenever you pause. Always accept/reject; respects the spend cap.' },
+  ];
+  for (const p of PREF_META) {
+    const row = document.createElement('label');
+    row.className = 'swarm-pref';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!AI_PREFS[p.k];
+    cb.onchange = () => { setAIPref(p.k, cb.checked); toast(cb.checked ? `${p.label} — on` : `${p.label} — off`); };
+    row.appendChild(cb);
+    const txt = document.createElement('div');
+    txt.className = 'swarm-pref-txt';
+    txt.innerHTML = `<b>${escapeHtml(p.label)}</b><span>${escapeHtml(p.desc)}</span>`;
+    row.appendChild(txt);
+    proWrap.appendChild(row);
+  }
+  menu.appendChild(proWrap);
   for (const role of SWARM_ROLE_META) {
     const appt = router.appoint(SWARM_ROLES[role.id], pickable, { overrides }); // route only among enabled+usable
     const tier = appt?.mode === 'subagent' ? 'subagent' : (appt?.tier || SWARM_ROLES[role.id].prefer);
@@ -2838,6 +2956,26 @@ const swarm = {
   factcheck: { state: 'idle', info: '' },   // idle | working | 'N flags' (Focus only)
 };
 let swarmGear = localStorage.getItem('chatpanel.notes.gear') || 'ambient'; // 'ambient' | 'focus'
+
+// Fine-grained co-writer proactivity — each an independent OPT-IN (default OFF), so a
+// calm writer keeps a quiet editor and an active writer turns just the parts they want
+// on. Persisted; orthogonal to the Ambient/Focus gear (a preset). All require the
+// co-writer master toggle on. Surfaced as checkboxes in the team menu (notes settings).
+//   revealFixes       — auto-reveal the Co-writer tab when new fixes/links land
+//   actOnInstructions — a plain imperative line ("summarize the above in 3 sentences")
+//                       becomes a runnable task the Writer drafts a result for
+//   goalDrive         — with a goal set, keep drafting toward it on idle (accept/reject)
+const AI_PREFS = { revealFixes: false, actOnInstructions: false, goalDrive: false };
+function loadAIPrefs() {
+  try { Object.assign(AI_PREFS, JSON.parse(localStorage.getItem('chatpanel.notes.aiPrefs') || '{}')); }
+  catch { /* keep defaults */ }
+}
+function setAIPref(k, v) {
+  if (!(k in AI_PREFS)) return;
+  AI_PREFS[k] = !!v;
+  localStorage.setItem('chatpanel.notes.aiPrefs', JSON.stringify(AI_PREFS));
+}
+
 function setGear(g) {
   swarmGear = g === 'focus' ? 'focus' : 'ambient';
   localStorage.setItem('chatpanel.notes.gear', swarmGear);
@@ -2950,7 +3088,7 @@ let lastQuestion = '';
 function observe() {
   if (!cwEnabled || !current || noteHasJob(current.id)) return;
   const t = currentLine().text.trim();
-  boardSuggestions = boardSuggestions.filter((s) => s.role !== 'mention'); // recomputed per line
+  boardSuggestions = boardSuggestions.filter((s) => s.role !== 'mention' && s.role !== 'instruction'); // recomputed per line
   // A directed task line — an @command/slash at the start, OR an "@[Agent] …" mention
   // ANYWHERE on the line (the natural "do X @agent" form, not just "@agent do X"). The
   // ambient swarm must NOT research/draft/fact-check it (noise, and an auto-draft would
@@ -2958,6 +3096,9 @@ function observe() {
   const men = parseAgentMention(t);
   if (men.name && men.task) { addMentionNudge(men.name); return; }
   if (/^[@/]/.test(t)) { removeWriterNudge(); return; }
+  // An imperative line the user wants executed ("summarize the above in 3 sentences") →
+  // a one-click "Do this" (⌘↵ also runs it). Opt-in; otherwise it's just prose to continue.
+  if (AI_PREFS.actOnInstructions) { const io = instructionOnLine(); if (io) { addInstructionNudge(io); return; } }
   const isQuestion = /\?\s*$/.test(t) && t.split(/\s+/).length >= 3;
   const aff = writerAffordance();
   // Focus mode actively drafts a section on the spot; Ambient just nudges.
@@ -2965,6 +3106,9 @@ function observe() {
   else removeWriterNudge();
   if (isQuestion) { if (t !== lastQuestion) { lastQuestion = t; runResearch({ question: t, web: true }); } } // a question wants an answer → search the web too
   else { runResearch(); runConnector(); }
+  // With a goal set, keep the draft moving toward it on idle (opt-in) — but only when the
+  // line affords nothing else (no outline/heading nudge, not a question to research).
+  if (!aff && !isQuestion) maybeGoalDraft();
   if (swarmGear === 'focus') runFactcheck(); // the reasoning-tier member only runs in Focus
 }
 let lastAutoDraft = '';
@@ -3074,6 +3218,68 @@ function removeWriterNudge() {
   }
 }
 
+// An imperative line the user wants ACTED on ("summarize the above in 3 sentences",
+// "list the key risks", "rewrite this as bullets") — distinct from prose to continue.
+// Opt-in (actOnInstructions): conservative verb-led match, never an @mention/slash line.
+// Returns { text, at } (at = end of the line, where the drafted result is inserted).
+const INSTRUCTION_RE = /^\s*(?:please\s+|can you\s+|now\s+)?(summari[sz]e|recap|tl;?dr|rewrite|re-?write|reword|rephrase|expand|elaborate|continue|list|enumerate|outline|draft|write|compose|generate|create|add|explain|describe|define|compare|contrast|shorten|condense|tighten|simplify|translate|convert|turn\s+.+\s+into|make\s+(?:this|it|these|a\b)|bullet|brainstorm|suggest|proofread|polish|improve)\b/i;
+function instructionOnLine() {
+  const line = currentLine();
+  const t = line.text.trim();
+  if (t.length < 6) return null;
+  if (/^[@/]/.test(t) || parseAgentMention(t).name) return null; // mentions/commands run elsewhere
+  if (!INSTRUCTION_RE.test(t)) return null;
+  return { text: t, at: line.end };
+}
+function addInstructionNudge(io) {
+  boardSuggestions = boardSuggestions.filter((s) => s.role !== 'writer' && s.role !== 'instruction');
+  const key = `do:${io.text.slice(0, 60).toLowerCase()}`;
+  if (!boardDismissed.has(key)) {
+    boardSuggestions.push({
+      role: 'instruction', icon: '▶️', key,
+      html: `Do this <span class="cw-hand">— ${escapeHtml(io.text.slice(0, 40))}${io.text.length > 40 ? '…' : ''}</span>`,
+      title: 'Run this instruction on the note — the Writer drafts a result you accept (or press ⌘↵)',
+      apply: () => {
+        const ta = $('n-body');
+        const i = ta.value.indexOf(io.text);
+        if (i < 0) { toast('That line moved — click back on it'); return; }
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = i; // put the caret on the instruction line
+        draftAhead({ instruction: io.text });
+      },
+    });
+  }
+  renderCowriter();
+}
+
+// Goal-drive — with a goal set and "Let the goal keep writing" on, offer to draft the next
+// line toward it when the user pauses at a natural stopping point. Reuses the Writer's ghost
+// (accept/reject) and its prompt already carries board.intent, so this is just an idle auto-⌘↵.
+//
+// It must NOT loop: without a strong guard it re-fires on every keystroke-pause (each Enter
+// changes the length) and re-drafts near-duplicates. So it fires AT MOST ONCE per burst of
+// the user's OWN writing — the doc must have grown by real typing since the last auto-draft.
+// `lastGoalLen` is the body length at the last draft; accepting a draft bumps it too (see
+// acceptGhost), so an accepted continuation doesn't immediately trigger the next one — the
+// user has to add more of their own words first. -1 = armed (fire once when there's context).
+let lastGoalLen = -1;
+const GOAL_MIN_NEW = 24; // chars of the user's own writing between auto-drafts
+function maybeGoalDraft() {
+  if (!AI_PREFS.goalDrive || !board.intent) return;
+  if (ghost || writerAbort || agentAbort || (current && noteHasJob(current.id))) return;
+  const ta = $('n-body');
+  if (ta.readOnly || ta.selectionStart !== ta.selectionEnd) return;
+  const v = ta.value;
+  const from = ta.selectionStart;
+  if (from !== v.length && v[from] !== '\n') return;               // only at a line / paragraph / doc end
+  if (v.slice(0, from).trim().length < 24) return;                 // need real context to continue
+  if (lastGoalLen >= 0 && v.length <= lastGoalLen + GOAL_MIN_NEW) return; // wait for the user to write more themselves
+  if (!budgetOk()) return;                                          // respect the visible spend cap
+  lastGoalLen = v.length;
+  draftAhead();                                                     // intent is already injected into its prompt
+}
+function noteGoalProgress() { if (AI_PREFS.goalDrive) lastGoalLen = $('n-body').value.length; } // re-baseline after an accepted draft
+
 // A one-click "Run @Agent" chip for a line that mentions an agent — the same task Enter
 // would run, for the user who reaches for a button instead. Also drops the Writer nudge,
 // since a mention line is a directed task, not a spot to auto-draft.
@@ -3164,9 +3370,10 @@ function init() {
   $('n-title').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === 'ArrowDown') {
       e.preventDefault();
-      const b = $('n-body');
-      b.focus();
-      b.setSelectionRange(0, 0);
+      // In Live mode the visible body is CM6, not the (hidden mirror) textarea — focus the
+      // right surface and drop the caret at the very start of the body.
+      if (cmActive && cm) { cm.focus(); cm.setSelection(0, 0); }
+      else { const b = $('n-body'); b.focus(); b.setSelectionRange(0, 0); }
     }
   });
   $('n-body').addEventListener('input', onBodyInput);
@@ -3194,8 +3401,13 @@ function init() {
     }
     if (ghost) {
       if (e.key === 'Tab') { e.preventDefault(); return acceptGhost(); }
+      // A deliberate ⌘↵ Writer draft-ahead also accepts on plain Enter (an as-you-type
+      // Autocomplete prediction keeps Enter = newline, so it falls through and drops).
+      if (e.key === 'Enter' && !e.shiftKey && ghostAuthor.startsWith('Writer')) { e.preventDefault(); return acceptGhost(); }
       if (e.key === 'Escape') { e.preventDefault(); return clearGhost({ remove: true }); }
-      // A ⌘/Ctrl shortcut (⌘A/⌘C/⌘S…) must NOT drop the draft — ⌘A to copy it would delete it
+      // ⌘C → commit the draft so the copy keeps it in the note (native copy still proceeds).
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C')) { acceptGhost({ keepSelection: true }); return; }
+      // A ⌘/Ctrl shortcut (⌘A/⌘S…) must NOT drop the draft — ⌘A to copy it would delete it
       // (a ghost is never versioned). A real ⌘V paste still drops it via the input path.
       if (!(e.metaKey || e.ctrlKey) && !['Shift', 'Meta', 'Control', 'Alt', 'CapsLock'].includes(e.key)) clearGhost({ remove: true });
     }
@@ -3398,6 +3610,7 @@ function init() {
       extRefreshTimer = setTimeout(async () => { await reloadIndex(); renderList($('n-search').value); }, 400);
     });
   }
+  loadAIPrefs(); // co-writer proactivity opt-ins (reveal fixes / act on instructions / goal-drive)
   loadAutocompleteCfg(); // inline-autocomplete on/off + model (Settings → Notes)
   loadMentionTargets();  // configured agents for the @ picker / @mention task runner
 

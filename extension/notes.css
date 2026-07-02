@@ -239,6 +239,16 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .cm-tok-link { color: var(--accent); text-decoration: underline; cursor: pointer; }
 .cm-tok-quote { color: var(--muted); font-style: italic; }
 .cm-tok-list { color: var(--muted); }
+/* Real bullet glyph (• / ◦ / ▪) rendered in place of the raw -/*/+ marker. */
+.cm-host .cm-bullet { color: var(--accent); font-weight: 700; }
+/* Blockquote: left bar + muted italic (the `>` marks are concealed in live preview). */
+.cm-host .cm-line.cm-line-quote { border-left: 3px solid var(--border); padding-left: 10px; color: var(--muted); font-style: italic; }
+/* Horizontal rule (`---`) → a divider; the marks are concealed off the cursor line. */
+.cm-host .cm-line.cm-line-hr { border-bottom: 2px solid var(--border); }
+/* Fenced/indented code block → shaded, monospace lines (fences stay visible but styled). */
+.cm-host .cm-line.cm-line-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; background: var(--field); }
+/* Task-list checkbox rendered in place of `[ ]`/`[x]` — flows inline with the item text. */
+.cm-host .cm-task-check { margin: 0 .45em 0 0; vertical-align: -0.06em; cursor: pointer; accent-color: var(--accent); }
 
 /* Agent regions — a live span an agent is writing. Subtle tint + an animated "working" chip;
    the rest of the doc stays editable (only this region is locked). */
@@ -247,6 +257,10 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .cm-agent-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--accent); border-right-color: transparent; animation: cm-agent-spin .7s linear infinite; }
 @keyframes cm-agent-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .cm-agent-spin { animation-duration: 2s; } }
+
+/* AI draft (ghost) — an un-accepted draft-ahead suggestion. Tinted + dashed-underlined + italic
+   so it NEVER reads as committed text: it's a proposal you Tab to keep or Esc to discard. */
+.cm-host .cm-ai-draft { color: var(--accent); font-style: italic; background: var(--accent-weak); border-radius: 2px; text-decoration: underline dashed var(--accent); text-underline-offset: 3px; }
 
 .backlinks { max-width: var(--measure); margin: 0 auto; padding: 0 var(--gutter) 34px; }
 .backlinks:empty { display: none; }
@@ -443,6 +457,23 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .swarm-intent > span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .swarm-intent-in { width: 100%; font: inherit; font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--card); color: var(--text); }
 .swarm-intent-in:focus { outline: none; border-color: var(--accent); }
+
+/* How-proactive opt-ins — quiet by default, one small toggle each. */
+.swarm-prefs { padding: 2px 6px 6px; border-top: 1px solid var(--border); margin-top: 2px; }
+.swarm-prefs-h { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); padding: 8px 0 4px; }
+.swarm-pref { display: flex; align-items: flex-start; gap: 8px; padding: 5px 2px; cursor: pointer; border-radius: 7px; }
+.swarm-pref:hover { background: var(--field); }
+.swarm-pref input { margin-top: 2px; flex: none; accent-color: var(--accent); }
+.swarm-pref-txt { display: flex; flex-direction: column; gap: 1px; }
+.swarm-pref-txt b { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.swarm-pref-txt span { font-size: 11px; color: var(--muted); line-height: 1.35; }
+
+/* New-suggestion cue on the Co-writer side-tab (fires when a fix/link lands). */
+.side-tab.pulse { animation: cw-tab-pulse 1.4s ease-out 2; }
+@keyframes cw-tab-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  20% { box-shadow: 0 0 0 3px var(--accent-weak); color: var(--accent); }
+}
 
 /* Away-timeline popover — what the swarm did, from the footer status strip. */
 .timeline { position: fixed; z-index: 60; min-width: 240px; max-width: 340px; max-height: 260px; overflow-y: auto; background: var(--elev); border: 1px solid var(--border); border-radius: 11px; box-shadow: 0 12px 34px rgba(0, 0, 0, .24); padding: 8px; }

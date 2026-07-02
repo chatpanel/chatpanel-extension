@@ -12,8 +12,8 @@
 // a browser.
 
 import {
-  EditorState, Compartment, Prec,
-  EditorView, Decoration, ViewPlugin, keymap, drawSelection, placeholder as cmPlaceholder,
+  EditorState, StateField, StateEffect, Compartment, Prec,
+  EditorView, Decoration, WidgetType, ViewPlugin, keymap, drawSelection, placeholder as cmPlaceholder,
   history, historyKeymap, defaultKeymap, indentWithTab,
   syntaxTree, HighlightStyle, syntaxHighlighting, indentOnInput,
   markdown, markdownLanguage, tags as t,
@@ -36,8 +36,45 @@ const HL = HighlightStyle.define([
 ]);
 
 // Formatting marks to CONCEAL (so text reads clean): heading #s, emphasis/code/strike marks,
-// link brackets + the raw URL. Bullets and quote markers are kept (just styled).
-const CONCEAL = new Set(['HeaderMark', 'EmphasisMark', 'CodeMark', 'StrikethroughMark', 'LinkMark', 'URL']);
+// link brackets + the raw URL, and the blockquote `>` (the left bar comes from a line class).
+// Plain bullets are kept (just styled); task bullets + their `[ ]`/`[x]` are handled specially.
+const CONCEAL = new Set(['HeaderMark', 'EmphasisMark', 'CodeMark', 'StrikethroughMark', 'LinkMark', 'URL', 'QuoteMark']);
+// Marks that also swallow the run of spaces after them, so hiding `### ` / `> ` leaves no gap.
+const EAT_SPACE = new Set(['HeaderMark', 'QuoteMark']);
+
+// Bullet glyphs by nesting depth — a real • / ◦ / ▪ replaces the raw `-`/`*`/`+` marker
+// (Notion/Obsidian-style) so a list reads as a list, not a column of dashes. Ordered lists
+// keep their `1.`/`2.` (meaningful) and the mark stays raw on the cursor's own line for editing.
+const BULLET_GLYPHS = ['•', '◦', '▪'];
+class BulletWidget extends WidgetType {
+  constructor(glyph) { super(); this.glyph = glyph; }
+  eq(o) { return o.glyph === this.glyph; }
+  toDOM() { const s = document.createElement('span'); s.className = 'cm-bullet'; s.textContent = this.glyph; return s; }
+}
+
+// A rendered task checkbox that replaces the raw `[ ]`/`[x]`. Clicking it flips the marker in
+// the doc (markdown stays the source of truth). Position is re-derived at click time via
+// posAtDOM, so it survives edits/remaps without carrying a stale offset.
+class CheckboxWidget extends WidgetType {
+  constructor(checked) { super(); this.checked = checked; }
+  eq(o) { return o.checked === this.checked; }
+  toDOM(view) {
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = this.checked;
+    box.className = 'cm-task-check';
+    box.setAttribute('aria-label', 'toggle task');
+    box.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const pos = view.posAtDOM(box);
+      const cur = view.state.doc.sliceString(pos, pos + 3);
+      if (/\[[ xX]\]/.test(cur)) {
+        view.dispatch({ changes: { from: pos, to: pos + 3, insert: /[xX]/.test(cur) ? '[ ]' : '[x]' } });
+      }
+    });
+    return box;
+  }
+}
 
 // PURE: given an EditorState (markdown), the ranges to scan, and the line the cursor is on,
 // decide which spans get a heading line-class and which formatting marks get hidden. Marks on
@@ -53,10 +90,56 @@ export function scanMarkdown(state, ranges, cursorLine) {
       enter: (node) => {
         const h = /^ATXHeading([1-6])$/.exec(node.name);
         if (h) { out.push({ kind: 'line', from: state.doc.lineAt(node.from).from, cls: `cm-line-h${h[1]}` }); return; }
+        // Blockquote: bar every line via a line class; the `>` marks conceal as CONCEAL below.
+        if (node.name === 'Blockquote') {
+          const first = state.doc.lineAt(node.from).number;
+          const last = state.doc.lineAt(Math.min(node.to, state.doc.length)).number;
+          for (let n = first; n <= last; n++) out.push({ kind: 'line', from: state.doc.line(n).from, cls: 'cm-line-quote' });
+          return;
+        }
+        // Fenced / indented code: shade + monospace every line of the block. Don't descend —
+        // the ``` fences stay visible (clearer than half-hiding them) but read as a code block.
+        if (node.name === 'FencedCode' || node.name === 'CodeBlock') {
+          const first = state.doc.lineAt(node.from).number;
+          const last = state.doc.lineAt(Math.min(node.to, state.doc.length)).number;
+          for (let n = first; n <= last; n++) out.push({ kind: 'line', from: state.doc.line(n).from, cls: 'cm-line-code' });
+          return false; // skip children (no inner CodeMark concealing)
+        }
+        const onCursorLine = state.doc.lineAt(node.from).number === cursorLine;
+        // Horizontal rule (`---` / `***` / `___`) → a real divider line; hide the marks (unless
+        // the cursor is on the line, so it stays editable).
+        if (node.name === 'HorizontalRule') {
+          out.push({ kind: 'line', from: state.doc.lineAt(node.from).from, cls: 'cm-line-hr' });
+          if (!onCursorLine) out.push({ kind: 'conceal', from: node.from, to: node.to });
+          return;
+        }
+        // Lists: task items hide the bullet (the checkbox renders instead); unordered items get a
+        // real • (depth-aware); ordered items keep their `1.`. On the cursor line, show raw syntax.
+        if (node.name === 'ListMark') {
+          const line = state.doc.lineAt(node.to);
+          if (/^\s*\[[ xX]\]/.test(state.doc.sliceString(node.to, line.to))) { // task item
+            if (!onCursorLine) {
+              let end = node.to; while (end < state.doc.length && state.doc.sliceString(end, end + 1) === ' ') end++;
+              out.push({ kind: 'conceal', from: node.from, to: end });
+            }
+            return;
+          }
+          const mark = state.doc.sliceString(node.from, node.to);
+          if (!onCursorLine && /^[-*+]$/.test(mark)) { // unordered bullet → •/◦/▪ by nesting depth
+            const indent = line.text.length - line.text.trimStart().length;
+            out.push({ kind: 'bullet', from: node.from, to: node.to, glyph: BULLET_GLYPHS[Math.floor(indent / 2) % BULLET_GLYPHS.length] });
+          }
+          return; // ordered markers (`1.`) stay visible, styled via cm-tok-list
+        }
+        if (node.name === 'TaskMarker') {
+          if (onCursorLine || node.to <= node.from) return;
+          out.push({ kind: 'check', from: node.from, to: node.to, checked: /[xX]/.test(state.doc.sliceString(node.from, node.to)) });
+          return;
+        }
         if (!CONCEAL.has(node.name) || node.to <= node.from) return;
-        if (state.doc.lineAt(node.from).number === cursorLine) return; // editing this line → show marks
+        if (onCursorLine) return; // editing this line → show marks
         let end = node.to;
-        if (node.name === 'HeaderMark') { while (end < state.doc.length && state.doc.sliceString(end, end + 1) === ' ') end++; } // eat the space after ###
+        if (EAT_SPACE.has(node.name)) { while (end < state.doc.length && state.doc.sliceString(end, end + 1) === ' ') end++; } // eat the space after ### / >
         out.push({ kind: 'conceal', from: node.from, to: end });
       },
     });
@@ -70,6 +153,8 @@ function buildDecorations(view) {
   const deco = [];
   for (const d of scanMarkdown(view.state, ranges, cursorLine)) {
     if (d.kind === 'line') deco.push(Decoration.line({ class: d.cls }).range(d.from));
+    else if (d.kind === 'check') deco.push(Decoration.replace({ widget: new CheckboxWidget(d.checked) }).range(d.from, d.to));
+    else if (d.kind === 'bullet') deco.push(Decoration.replace({ widget: new BulletWidget(d.glyph) }).range(d.from, d.to));
     else deco.push(Decoration.replace({}).range(d.from, d.to));
   }
   return Decoration.set(deco, true);
@@ -82,6 +167,28 @@ const livePreview = ViewPlugin.fromClass(
   },
   { decorations: (v) => v.decorations },
 );
+
+// ── AI-draft (ghost) highlight ────────────────────────────────────────────────────
+// An un-accepted draft-ahead suggestion is real text in the doc, but it must NOT read as
+// committed content — so we tint its span with `.cm-ai-draft`. The range remaps through any
+// edit (mapping the mark), and clears on accept/dismiss. `setGhostRange.of(null)` clears it.
+const setGhostRange = StateEffect.define();
+const ghostField = StateField.define({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    deco = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (e.is(setGhostRange)) {
+        const r = e.value;
+        deco = (r && r.to > r.from)
+          ? Decoration.set([Decoration.mark({ class: 'cm-ai-draft' }).range(r.from, r.to)])
+          : Decoration.none;
+      }
+    }
+    return deco;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
 
 // Create the live-preview editor inside `parent`. Callbacks: onChange(value, update) on every
 // doc change, onSelection() on cursor moves, onKey(event)->true to mark a key handled (so CM
@@ -96,6 +203,7 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
     markdown({ base: markdownLanguage }),
     syntaxHighlighting(HL),
     livePreview,
+    ghostField, // tints an un-accepted AI draft so it never reads as committed text
     agentRegionsExtension(), // multi-agent regions: remap + region-scoped lock + working widget
     // Our gesture/autocomplete handler must beat the default keymap (Tab=indent, Enter=newline),
     // so it runs at the HIGHEST precedence — otherwise Tab/Enter get consumed before we can
@@ -142,6 +250,14 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
     lineAt(pos) { const l = view.state.doc.lineAt(pos); return { text: l.text, from: l.from, to: l.to, number: l.number }; },
     coordsAtCursor() { try { return view.coordsAtPos(view.state.selection.main.head); } catch { return null; } },
     focus() { view.focus(); },
+    // Tint [from,to) as an un-accepted AI draft (or clear it when the range is empty/absent).
+    setGhost(from, to) {
+      const len = view.state.doc.length;
+      const f = Math.max(0, Math.min(from ?? 0, len));
+      const tt = Math.max(f, Math.min(to ?? f, len));
+      dispatchChange({ effects: setGhostRange.of(tt > f ? { from: f, to: tt } : null) });
+    },
+    clearGhost() { dispatchChange({ effects: setGhostRange.of(null) }); },
     setReadOnly(b) { dispatchChange({ effects: editable.reconfigure(EditorView.editable.of(!b)) }); },
     scrollDocIntoView() { dispatchChange({ effects: EditorView.scrollIntoView(view.state.doc.length, { y: 'end' }) }); },
     destroy() { view.destroy(); },

@@ -67,6 +67,48 @@ function visible(doc, cs) {
   assert.equal(visible(state.doc.toString(), conceals(state)), 'See Docs now');
 }
 
+// ── unordered list: the -/*/+ marker renders as a real bullet (depth-aware); on the
+//    cursor's line it stays raw for editing; ordered `1.` markers are left alone ──
+{
+  const state = stateOf('- top\n  - nested\n* star');
+  const scan = scanMarkdown(state, [{ from: 0, to: state.doc.length }], -1);
+  const bullets = scan.filter((x) => x.kind === 'bullet');
+  assert.equal(bullets.length, 3, 'every unordered marker becomes a bullet widget');
+  assert.equal(bullets[0].glyph, '•', 'top-level → •');
+  assert.equal(bullets[1].glyph, '◦', 'nested (2-space indent) → ◦');
+  const onLine1 = scanMarkdown(state, [{ from: 0, to: state.doc.length }], 1).filter((x) => x.kind === 'bullet');
+  assert.ok(!onLine1.some((b) => b.from === 0), 'the marker on the cursor line stays raw (no bullet widget)');
+}
+{
+  const state = stateOf('1. first\n2. second');
+  const bullets = scanMarkdown(state, [{ from: 0, to: state.doc.length }], -1).filter((x) => x.kind === 'bullet');
+  assert.equal(bullets.length, 0, 'ordered markers (1. 2.) are not replaced with bullets');
+}
+
+// ── task list: the `- ` bullet is concealed (the checkbox renders instead), no bullet widget ──
+{
+  const state = stateOf('- [ ] todo\n- [x] done');
+  const scan = scanMarkdown(state, [{ from: 0, to: state.doc.length }], -1);
+  assert.equal(scan.filter((x) => x.kind === 'bullet').length, 0, 'task items get no bullet widget');
+  assert.ok(scan.some((x) => x.kind === 'check'), 'task items render a checkbox');
+}
+
+// ── horizontal rule → a divider line class; its marks conceal off the cursor line ──
+{
+  const state = stateOf('above\n\n---\n\nbelow');
+  const scan = scanMarkdown(state, [{ from: 0, to: state.doc.length }], -1);
+  assert.ok(scan.some((x) => x.kind === 'line' && x.cls === 'cm-line-hr'), 'HR gets a cm-line-hr line class');
+  assert.ok(scan.some((x) => x.kind === 'conceal' && state.doc.sliceString(x.from, x.to).includes('-')), 'HR marks are concealed');
+}
+
+// ── fenced code block → every line shaded (cm-line-code); fences left visible (not concealed) ──
+{
+  const state = stateOf('text\n\n```js\ncode();\n```\n\nmore');
+  const scan = scanMarkdown(state, [{ from: 0, to: state.doc.length }], -1);
+  const codeLines = scan.filter((x) => x.kind === 'line' && x.cls === 'cm-line-code');
+  assert.ok(codeLines.length >= 3, 'the fence lines + the code line all get cm-line-code');
+}
+
 // ── live view: mounts, edits reflect, onChange fires, facade verbs work (needs jsdom) ──
 if (hasDom) {
   const host = document.getElementById('host');
