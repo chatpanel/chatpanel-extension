@@ -891,14 +891,20 @@ async function detectForChat(sample, cfg, settings, signal, { strict = false } =
   // On OpenAI-compatible endpoints, force JSON mode (response_format) so even small
   // local models (phi4-mini, gemma) emit valid JSON instead of prose. Bridge CLIs
   // don't support it. EXTRACT_SYS mentions "JSON", satisfying servers that require it.
+  // Meter the detector too — it's a real (Pro) model call. Tagged 'redaction' so
+  // its token spend is visible alongside chat/notes/meetings.
+  const detModel = det.model || target.model;
+  const onDetectEvent = (ev) => {
+    if (ev && ev.type === 'usage') import('./usage-meter.js').then((m) => m.recordUsageEvent(ev, { surface: 'redaction', agentId: target.agentId || target.name || null })).catch(() => {});
+  };
   const ask = (jsonMode) => withTimeout(dispatchStream({
     agent: {
       ...target, systemPrompt: EXTRACT_SYS, temperature: 0,
-      maxTokens: det.maxTokens || 256, model: det.model || target.model,
+      maxTokens: det.maxTokens || 256, model: detModel,
       ...(jsonMode ? { extraBody: { ...(target.extraBody || {}), response_format: { type: 'json_object' } } } : {}),
     },
     messages: [{ role: 'user', content: prompt }],
-    settings, signal,
+    settings, signal, onEvent: onDetectEvent,
   }), timeoutMs, signal);
   let text = '';
   try {
@@ -1091,16 +1097,9 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
   {
     const rawOnEvent = onEvent;
     const agentId = agent?.agentId || agent?.id || agent?.name || usageCtx?.agentId || null;
+    const ctx = { surface: usageCtx?.surface || 'other', sourceId: usageCtx?.sourceId, agentId };
     onEvent = (ev) => {
-      if (ev && ev.type === 'usage') {
-        import('./usage-meter.js').then((m) => m.recordUsage({
-          surface: usageCtx?.surface || 'other', sourceId: usageCtx?.sourceId, agentId,
-          provider: ev.provider, model: ev.model,
-          inputTokens: ev.inputTokens, outputTokens: ev.outputTokens,
-          cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens,
-          costUsd: ev.costUsd, estimated: ev.estimated,
-        })).catch(() => {});
-      }
+      if (ev && ev.type === 'usage') import('./usage-meter.js').then((m) => m.recordUsageEvent(ev, ctx)).catch(() => {});
       return rawOnEvent?.(ev);
     };
   }

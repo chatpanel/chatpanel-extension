@@ -82,6 +82,21 @@ async function writeUsage(entry = {}) {
   } catch { /* best effort — never block a turn on accounting */ }
 }
 
+// Record straight from a provider {type:'usage'} event, merging the caller's
+// context (surface/sourceId/agentId). Shared by streamChat and any path that
+// drives an adapter directly (e.g. the redaction detector). No-op for other
+// event types, so callers can pass it as their onEvent unconditionally.
+export function recordUsageEvent(ev, ctx = {}) {
+  if (!ev || ev.type !== 'usage') return;
+  return recordUsage({
+    surface: ctx.surface || 'other', sourceId: ctx.sourceId, agentId: ctx.agentId,
+    provider: ev.provider, model: ev.model,
+    inputTokens: ev.inputTokens, outputTokens: ev.outputTokens,
+    cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens,
+    costUsd: ev.costUsd, estimated: ev.estimated,
+  });
+}
+
 // Read-only rollup snapshot for the UI. Optionally filter by surface and/or a
 // `sinceDays` window. Groups by the requested dimension and attaches $ cost
 // (dynamic-imports the rate table so it stays off the boot path).
