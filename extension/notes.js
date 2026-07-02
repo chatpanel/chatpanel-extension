@@ -14,7 +14,7 @@ import {
   relTime, escapeHtml, highlight, escapeMdText, tagify, snippetOf,
   KIND_ICON, sourceKind, researchSnippet,
   JOB_ICON, compactInput, prettyTools, toolTitle, stepIcon,
-  parseAgentMention, salientTerms, researchRelevance,
+  parseAgentMention, salientTerms, topicTerms, researchRelevance,
   parseSkillMention, mergeSkillPrompt, findSkillByName,
 } from './js/notes-util.js';
 import {
@@ -1255,9 +1255,12 @@ function acceptAc() {
     return;
   }
   const title = it ? it.title : r.query; // allow a new (unmatched) link name too
-  const hasClose = bodyText().slice(r.end, r.end + 2) === ']]'; // jump past an auto-closed ]]
+  // Close the wikilink if it isn't already (Live/CM doesn't auto-insert "]]" the way the
+  // classic textarea did — without this, accepting left "[[Title" unclosed, so it "did
+  // nothing" until you typed "]]" yourself). Caret lands past the "]]".
+  const hasClose = bodyText().slice(r.end, r.end + 2) === ']]';
   closeAc();
-  bodyReplaceRange(title, r.start, r.end, r.start + title.length + (hasClose ? 2 : 0));
+  bodyReplaceRange(hasClose ? title : `${title}]]`, r.start, r.end, r.start + title.length + 2);
 }
 
 // ── @ commands — AI actions that generate/fetch and insert inline ────────────────
@@ -2191,7 +2194,9 @@ async function runResearch({ web = false, question = '' } = {}) {
       const [ws, lic, store] = await Promise.all([import('./js/web-search.js'), import('./js/license.js'), import('./js/store.js')]);
       const settings = await store.getSettings();
       const license = await lic.getLicense();
-      const topic = salientTerms(`${$('n-title').value || ''}\n${bodyText()}`);
+      // Topic query: the note's title + its most FREQUENT content words (not stray meta/agent
+      // words that appear early), so the web search is about what the note is actually about.
+      const topic = topicTerms(`${$('n-title').value || ''}\n${bodyText()}`, 10);
       const term = question || webQuery(($('n-title').value || '').trim(), topic) || q.split('\n').filter(Boolean).pop() || q;
       const res = await ws.webSearch(term, ws.webSearchOpts(settings, lic.isPro(license)));
       if (gen !== researchGen) return;

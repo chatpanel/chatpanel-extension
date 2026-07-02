@@ -102,14 +102,28 @@ export function parseAgentMention(line) {
 
 // ── research relevance (pure) ───────────────────────────────────────────────────
 // Content-bearing terms of a query — lowercased words ≥4 chars that aren't stop-words,
-// so relevance is judged on what the note is ABOUT, not "can/you/plan/today".
-const RESEARCH_STOP = new Set(('the a an and or but for to of in on at by with from as is are was were be been being this that these those it its i you your my me we our they them he she his her can could would should will shall may might do does did done get got make made just like about into over under out up down off not no yes plan planning day today check please help note notes write writing').split(/\s+/));
+// so relevance is judged on what the note is ABOUT, not "can/you/plan/today". The stop set
+// also drops NOTE-META / agent / URL noise (claude, code, research, question, answer,
+// inline, source, https, www, …) that otherwise pollutes an auto-built search query.
+const RESEARCH_STOP = new Set(('the a an and or but for to of in on at by with from as is are was were be been being this that these those it its i you your my me we our they them he she his her can could would should will shall may might do does did done get got make made just like about into over under out up down off not no yes plan planning day today check please help note notes write writing claude code codex anthropic agent agents assistant research researcher question questions answer answers answered reply inline summary summarize source sources cite citation https http www com net org html url link links thing things using use used need needs want wants below above here there').split(/\s+/));
 export function salientTerms(q) {
   const out = new Set();
   for (const w of String(q || '').toLowerCase().match(/[a-z0-9][a-z0-9'-]{3,}/g) || []) {
     if (!RESEARCH_STOP.has(w)) out.add(w);
   }
   return out;
+}
+// The note's TOPIC terms — content words ranked by FREQUENCY (most-repeated first), so an
+// auto-built web/relevance query reflects what the note is mostly ABOUT, not stray meta words
+// that merely appear early. Letters-only + stop-words dropped; ties broken by longer (more
+// specific) term. This is what a good search query is built from.
+export function topicTerms(text, n = 8) {
+  const freq = new Map();
+  for (const w of String(text || '').toLowerCase().match(/[a-z][a-z'-]{3,}/g) || []) {
+    if (RESEARCH_STOP.has(w)) continue;
+    freq.set(w, (freq.get(w) || 0) + 1);
+  }
+  return [...freq.entries()].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length).slice(0, n).map(([w]) => w);
 }
 // Relevance of a source card to the query's salient terms → a score (0 = unrelated;
 // callers sort by it and drop zeros). A single shared GENERIC word ("trip", "morning")

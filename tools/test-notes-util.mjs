@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   relTime, escapeHtml, highlight, escapeMdText, tagify, snippetOf,
   sourceKind, researchSnippet, compactInput, prettyTools, toolTitle, stepIcon,
-  parseAgentMention, salientTerms, researchRelevance,
+  parseAgentMention, salientTerms, topicTerms, researchRelevance,
   parseSkillMention, mergeSkillPrompt, findSkillByName,
 } from '../extension/js/notes-util.js';
 
@@ -70,6 +70,21 @@ assert.deepEqual(parseAgentMention('Update below plan with google maps links @[C
 assert.deepEqual(parseAgentMention('Summarize this @[Writer] in three bullets'), { name: 'Writer', task: 'Summarize this in three bullets' });
 assert.deepEqual(parseAgentMention('no mention here'), { name: '', task: '' });
 assert.deepEqual(parseAgentMention('@[Agent]'), { name: 'Agent', task: '' }); // a bare mention has no runnable task
+
+// ── topic terms (frequency-ranked, meta/agent/url noise dropped) ──
+// The reported bug: an auto-built web query pulled early META words ("questions/answer/
+// inline/claude/code") instead of the actual topic. topicTerms ranks by frequency and drops
+// that noise, so the topic (repeated "frankfurt"/"airport") wins.
+{
+  const note = '# Questions\n\n> answer these questions inline\n\n**Claude Code:**\nI will research current Frankfurt Airport facts.\nFrankfurt airport luggage storage. Frankfurt airport trains. Frankfurt airport connection.';
+  const terms = topicTerms(note, 5);
+  assert.ok(terms.includes('frankfurt') && terms.includes('airport'), 'the frequent TOPIC words win');
+  for (const meta of ['claude', 'code', 'research', 'questions', 'answer', 'inline']) {
+    assert.ok(!terms.includes(meta), `meta/agent word "${meta}" is dropped`);
+  }
+  assert.equal(terms[0], 'frankfurt', 'most-frequent term ranks first');
+}
+assert.deepEqual(salientTerms('claude code research question answer inline https www'), new Set(), 'meta/url words are not salient');
 
 // ── research relevance ──
 assert.deepEqual([...salientTerms('Plan: Lucerne Day Trip Plan')], ['lucerne', 'trip']); // stop-words + short words dropped
