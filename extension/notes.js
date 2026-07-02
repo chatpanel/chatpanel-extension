@@ -744,7 +744,7 @@ async function newNote() {
   const rec = await createNote({ body: '' });
   updateEntry(rec);
   await openNote(rec.id, rec);           // finish editor setup before we place the cursor
-  setMode('write', false);               // a blank note always opens in edit mode (don't change the saved default)
+  setMode('live', false);                // a blank note opens in the live editor (don't change the saved default)
   const title = $('n-title');
   title.focus();
   title.setSelectionRange(title.value.length, title.value.length); // cursor in the title, ready to type
@@ -3167,7 +3167,9 @@ function init() {
   loadAutocompleteCfg(); // inline-autocomplete on/off + model (Settings → Notes)
   loadMentionTargets();  // configured agents for the @ picker / @mention task runner
 
-  setMode(localStorage.getItem('chatpanel.notes.mode') || 'write');
+  // Live is the default editor; Source (raw markdown) is the only other view. Coerce any
+  // legacy saved mode (write/split/read) → live so an old preference doesn't strand the user.
+  setMode(localStorage.getItem('chatpanel.notes.mode') === 'write' ? 'write' : 'live');
   setAlign(localStorage.getItem(ALIGN_KEY) || 'justify');
   setSideTab(localStorage.getItem('chatpanel.notes.sideTab') || 'activity', { open: false });
   setSideCollapsed(localStorage.getItem('chatpanel.notes.sideCollapsed') === '1');
