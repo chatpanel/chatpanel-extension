@@ -35,8 +35,11 @@ assert.match(css, /\.skill-mcp-pick-list\.scrollable\s*\{[^}]*overflow-y:\s*scro
 assert.match(css, /\.skill-mcp-pick-list::\-webkit-scrollbar-thumb/, 'Skills MCP selector should style the scrollbar thumb so scrolling is visible');
 
 const accountPanel = html.match(/<section class="panel hidden" data-panel="license">([\s\S]*?)<\/section>/)?.[1] || '';
-const meetingsPanel = html.match(/<section class="panel hidden" data-panel="meetings">([\s\S]*?)<\/section>/)?.[1] || '';
-assert.match(meetingsPanel, /id="meeting-storage-health"/, 'Meetings settings should show local storage health.');
+// Notes/Meetings/History are now sections of the merged "Workspace" tab (not separate
+// panels); the Meetings section still surfaces local storage health.
+const workspacePanel = html.match(/<section class="panel hidden" data-panel="workspace">([\s\S]*?)<\/section>/)?.[1] || '';
+const meetingsSection = workspacePanel.match(/id="ws-meetings"[\s\S]*?(?=id="ws-history"|$)/)?.[0] || '';
+assert.match(meetingsSection, /id="meeting-storage-health"/, 'Meetings (Workspace tab) should show local storage health.');
 assert.match(js, /renderStorageHealth/, 'Settings should refresh the local storage health summary.');
 assert.match(accountPanel, /class="account-secondary-grid"/, 'Account secondary cards should be grouped in a responsive grid');
 assert.ok(
