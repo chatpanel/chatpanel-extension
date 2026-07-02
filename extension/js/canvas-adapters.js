@@ -649,34 +649,48 @@ async function drawioOp(opJson) {
     return editorReady();
   };
 
-  // Prefer draw.io's OWN Editor API (get/setGraphXml) whenever the live EditorUi
-  // instance is reachable — deterministic and INDEPENDENT of the menu/toolbar UI
-  // (draw.io reshuffles that often). Only fall back to driving the Extras → Edit
-  // Diagram dialog on builds where the instance isn't exposed.
-  const findEditorUi = () => {
-    const ok = (v) => { try { return v && v.editor && typeof v.editor.getGraphXml === 'function' && typeof v.editor.setGraphXml === 'function' && v.editor.graph; } catch { return false; } };
-    for (const k of ['ui', 'editorUi', 'EDITOR_UI', 'App']) {
-      try { const v = window[k]; if (ok(v)) return v; if (ok(v && v.main)) return v.main; } catch { /* keep looking */ }
-    }
-    try { for (const k in window) { let v; try { v = window[k]; } catch { continue; } if (ok(v)) return v; } } catch { /* best-effort scan */ }
+  // Reach draw.io WITHOUT depending on its menu/theme. The live EditorUi instance
+  // isn't exposed on window on app.diagrams.net (a window scan returns []), so we
+  // capture the GRAPH via a one-time hook on a hot render method (mxGraphView's
+  // validate, whose `this.graph` is the live graph), force one repaint to fire it,
+  // then read/write the model directly with mxCodec. The mxGraph CLASSES are global
+  // even though the instance isn't. Falls back to the Extras → Edit Diagram dialog
+  // if the graph can't be reached.
+  const okGraph = (g) => { try { return !!(g && typeof g.getModel === 'function' && g.getModel()); } catch { return false; } };
+  const findGraph = async () => {
+    if (okGraph(window.__cpGraph)) return window.__cpGraph; // captured by a prior call's hook
+    for (const k in window) { let v; try { v = window[k]; } catch { continue; } try { if (v && v.editor && okGraph(v.editor.graph)) return v.editor.graph; } catch { /* next */ } }
+    try {
+      const V = window.mxGraphView;
+      if (V && V.prototype && !V.prototype.__cpHook) {
+        const orig = V.prototype.validate;
+        V.prototype.validate = function () { try { if (this && this.graph) window.__cpGraph = this.graph; } catch (e) { /* ignore */ } return orig.apply(this, arguments); };
+        V.prototype.__cpHook = true;
+      }
+      window.dispatchEvent(new Event('resize')); // draw.io revalidates the view → the hook fires
+      for (let i = 0; i < 20; i++) { if (okGraph(window.__cpGraph)) return window.__cpGraph; await sleep(50); }
+    } catch (e) { /* fall through to the dialog */ }
     return null;
   };
 
   try {
     const op = JSON.parse(opJson);
-    const ui = findEditorUi();
+    const graph = await findGraph();
     let via, readCurrentXml, applyXml;
     let cancel = () => {};
-    if (ui) {
-      via = 'editor-api';
-      readCurrentXml = () => { try { return new XMLSerializer().serializeToString(ui.editor.getGraphXml()); } catch { return null; } };
+    if (graph && window.mxCodec) {
+      via = 'graph-api';
+      readCurrentXml = () => { try { return new XMLSerializer().serializeToString(new window.mxCodec().encode(graph.getModel())); } catch (e) { return null; } };
       applyXml = async (newXml) => {
-        const d = new DOMParser().parseFromString(newXml, 'text/xml');
-        if (!d.documentElement || d.getElementsByTagName('parsererror').length) return false;
-        const g = ui.editor.graph, m = g.getModel();
-        m.beginUpdate();
-        try { ui.editor.setGraphXml(d.documentElement); } finally { m.endUpdate(); }
-        return true;
+        try {
+          const d = new DOMParser().parseFromString(newXml, 'text/xml');
+          if (!d.documentElement || d.getElementsByTagName('parsererror').length) return false;
+          const m = graph.getModel();
+          m.beginUpdate();
+          try { new window.mxCodec(d).decode(d.documentElement, m); } finally { m.endUpdate(); }
+          if (typeof graph.refresh === 'function') graph.refresh();
+          return true;
+        } catch (e) { return false; }
       };
     } else {
       via = 'edit-diagram';
