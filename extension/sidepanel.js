@@ -32,9 +32,8 @@ import {
   enableMeetingCaptions,
   getMeetingRecord,
 } from './js/context.js';
-import { captureSearch, webSearchOpts } from './js/web-search.js';
 import { getSuggestions, getMeetingSuggestions, FALLBACK_SUGGESTIONS } from './js/suggestions.js';
-import { syncHistoryToGateway } from './js/warm-sync.js';
+// warm-sync.js is dynamic-imported in maybeWarmSync() — it drags in the history-rag subgraph.
 import {
   meetingToText,
   meetingToMarkdown,
@@ -58,11 +57,14 @@ import { createVault } from './js/pii-redact.js';
 import { setPiiEntitlement, redactOnce, restore as restorePii, redactionFromSettings } from './js/pii-pipeline.js';
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
 import { assistPrompt } from './js/assist.js';
-import { PAGE_TOOL_SPECS, makePageToolExecutor, PAGE_AUTOMATION_SYSTEM } from './js/page-tools.js';
-import { detectCanvasAdapter } from './js/canvas-adapters.js';
-import { buildTurnTools, buildRedaction } from './js/turn-tools.js';
+// NB: page-tools.js + canvas-adapters.js (and their page-actions / draw.io / tldraw
+// transitive graph, ~130KB) are heavy and only needed when "Act on page" actually
+// runs — they're dynamic-imported inside pageToolProvider() to keep them OFF the
+// panel's first-paint load path.
+// turn-tools.js drags in web-search + history-rag + the MCP/toolset graph and is only
+// needed when a turn actually runs — dynamic-imported at the send/toolset sites below.
 import { upsertMeetingChatAttachment } from './js/meeting-chat-context.js';
-import { inferHistoryScopeFromQuery, parseHistoryCommand, retrieveHistory } from './js/history-rag.js';
+// history-rag.js (+ its meeting/search subgraph) is dynamic-imported inside send().
 import { skillRunFromSkill } from './js/skill-runtime.js';
 import { slashCommandInsert, slashCommandItems } from './js/slash-commands.js';
 import {
@@ -79,17 +81,8 @@ import {
 } from './js/tool-policy.js';
 import { paginateEntries, rankConversationEntries } from './js/conversation-search.js';
 import { rankMeetingEntries } from './js/meeting-search.js';
-import {
-  contentHash,
-  fallbackTopicItems,
-  insightTopicItemsFromNotes,
-  makeTopicIndex,
-  parseTopicExtractionResponse,
-  shouldExtractTopics,
-  topicExtractionPrompt,
-  topicSourceTextForConversation,
-  topicSourceTextForMeeting,
-} from './js/topic-extraction.js';
+// topic-extraction.js is dynamic-imported inside the post-response extract* functions
+// (extractTopicItems / maybeExtract*Topics) — never on the panel's first paint.
 
 const $ = (id) => document.getElementById(id);
 const HISTORY_PAGE_SIZE = 25;
@@ -229,6 +222,11 @@ async function pageToolProvider(resolvedAgent) {
   const cdp = !!state.settings.ui?.pageActionsCdp;
   console.info('[chatpanel] page actions attached for', resolvedAgent.kind, 'on tab', state.activeTab.id, cdp ? '(trusted/CDP)' : '(synthetic)');
 
+  // Load the heavy page-automation + canvas-adapter modules on first use only (they
+  // and their transitive graph stay off the panel's initial load path).
+  const [{ PAGE_TOOL_SPECS, makePageToolExecutor, PAGE_AUTOMATION_SYSTEM }, { detectCanvasAdapter }] =
+    await Promise.all([import('./js/page-tools.js'), import('./js/canvas-adapters.js')]);
+
   // Structured-editor adapter (Excalidraw, …): when the active tab is a canvas app
   // with a native data format, expose a `structured_insert` tool so the agent
   // builds diagrams as DATA instead of pixel-driving. Pro-gated.
@@ -283,6 +281,7 @@ async function toolsetFor(
 ) {
   const page = await pageToolProvider(resolvedAgent);
   const history = historyRag || skillRun?.history || null;
+  const { buildTurnTools } = await import('./js/turn-tools.js'); // heavy toolset graph, on-demand
   return buildTurnTools({
     resolvedAgent,
     settings: state.settings,
@@ -582,7 +581,10 @@ function parseSearchCommand(text) {
 // Agents
 // --------------------------------------------------------------------------
 function currentAgent() {
-  return getTarget(state.settings, state.conv.agentId || state.settings.activeAgentId);
+  // state.conv is null during the cold-start window (wireEvents() attaches handlers
+  // before startConversation() sets it), so fall back to the active agent — the
+  // correct default when no conversation exists yet.
+  return getTarget(state.settings, state.conv?.agentId || state.settings.activeAgentId);
 }
 
 // On Free, the active agent must be one of the unlocked slots. If it isn't
@@ -1143,7 +1145,10 @@ function maybeWarmSync({ immediate = false } = {}) {
   // compete with first paint or typing: wait, THEN run it only when the main thread
   // is idle (requestIdleCallback), with a timeout so it still runs on a busy tab.
   _warmSyncTimer = setTimeout(() => {
-    const run = () => syncHistoryToGateway(ws.url).then((r) => { if (r && !r.ok && !r.skipped) console.debug('[chatpanel] warm sync:', r.error); });
+    // Dynamic import: warm-sync pulls the whole history-rag subgraph, kept off first paint.
+    const run = () => import('./js/warm-sync.js')
+      .then(({ syncHistoryToGateway }) => syncHistoryToGateway(ws.url))
+      .then((r) => { if (r && !r.ok && !r.skipped) console.debug('[chatpanel] warm sync:', r.error); });
     if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 8000 });
     else run();
   }, immediate ? 1500 : 5000);
@@ -1156,6 +1161,9 @@ async function send() {
   const input = $('input');
   clearPromptSuggest();
   const raw = input.value.trim();
+  // History RAG lives in a heavy subgraph kept off the panel's first paint; load it
+  // now that the user is actually sending (module-cached, so this is a one-time cost).
+  const { parseHistoryCommand, inferHistoryScopeFromQuery, retrieveHistory } = await import('./js/history-rag.js');
   const historyCommand = parseHistoryCommand(raw);
   if (historyCommand && !historyCommand.query) {
     toast('Type a question after /history');
@@ -1209,7 +1217,10 @@ async function send() {
         toast('Web search is turned off in Settings');
       } else {
         toast('🔎 Searching the web…');
-        await addAttachment(() => captureSearch(searchCommand.query, webSearchOpts(state.settings, isPro(state.license))));
+        await addAttachment(async () => {
+          const { captureSearch, webSearchOpts } = await import('./js/web-search.js'); // heavy; only on /search
+          return captureSearch(searchCommand.query, webSearchOpts(state.settings, isPro(state.license)));
+        });
       }
       // Strip the directive from the sent message; if nothing else remains, the
       // query itself becomes the question the model answers with the results.
@@ -1573,6 +1584,7 @@ async function runStream(agent, assistant, conv) {
     );
     // Reversible PII vault is per-conversation, so a placeholder stays stable turn
     // to turn — pass it into the shared redaction capability.
+    const { buildRedaction } = await import('./js/turn-tools.js'); // module-cached after first turn
     const redaction = buildRedaction({ settings: state.settings, license: state.license, vault: piiVaultFor(conv.id) });
     await streamChat({
       agent: { ...resolved, systemPrompt },
@@ -1698,6 +1710,7 @@ function topicTarget(fallbackId = '') {
 }
 
 async function extractTopicItems(kind, title, text, fallbackId = '') {
+  const { fallbackTopicItems, topicExtractionPrompt, parseTopicExtractionResponse } = await import('./js/topic-extraction.js');
   const target = topicTarget(fallbackId);
   if (!target) return { items: fallbackTopicItems(text, 10), fallback: true, targetId: '' };
   let out = '';
@@ -1720,6 +1733,7 @@ async function extractTopicItems(kind, title, text, fallbackId = '') {
 async function maybeExtractConversationTopics(conv) {
   const cfg = topicExtractionConfig();
   if (cfg.enabled === false || !conv?.id) return;
+  const { topicSourceTextForConversation, contentHash, shouldExtractTopics, makeTopicIndex } = await import('./js/topic-extraction.js');
   const text = topicSourceTextForConversation(conv);
   if (!text) return;
   const hash = contentHash(text);
@@ -1741,6 +1755,7 @@ async function maybeExtractConversationTopics(conv) {
 async function maybeExtractMeetingTopics(id) {
   const cfg = topicExtractionConfig();
   if (cfg.enabled === false || !id) return;
+  const { contentHash, topicSourceTextForMeeting, insightTopicItemsFromNotes, shouldExtractTopics, makeTopicIndex } = await import('./js/topic-extraction.js');
   const key = `meeting:${id}`;
   if (topicJobs.has(key)) return;
   topicJobs.add(key);
