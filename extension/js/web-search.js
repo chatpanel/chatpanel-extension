@@ -105,15 +105,24 @@ function unwrapRedirect(href) {
 // --------------------------------------------------------------------------
 // SERP parsing (on fetched HTML — no executeScript)
 // --------------------------------------------------------------------------
+// Engine-FAMILY / promo hosts that appear in a SERP's nav, footer or banner but are never
+// organic results (e.g. Startpage's StartMail ad, Mojeek's Buttondown newsletter). When the
+// specific result selectors miss and we fall back to sweeping links, these leak in as junk.
+const SERP_JUNK_HOSTS = /(^|\.)(startpage\.com|startmail\.com|startpage\.dev|mojeek\.com|buttondown\.(com|email)|ecosia\.org|duckduckgo\.com|search\.brave\.com|qwant\.com)$/i;
+// Chrome (nav/footer/promo/consent/newsletter) containers whose links are never results.
+const SERP_CHROME_SEL = 'header,footer,nav,aside,form,[class*="promo" i],[class*="banner" i],[class*="cookie" i],[class*="consent" i],[class*="newsletter" i],[class*="subscribe" i],[class*="footer" i],[class*="header" i],[id*="nav" i],[id*="footer" i],[id*="header" i]';
+
 function parseSerp(html, engineHost, limit) {
   const doc = new DOMParser().parseFromString(stripResourceTags(html), 'text/html');
-  // Prefer explicit result anchors (Startpage, Mojeek, DuckDuckGo, Bing), then
-  // fall back to a generic "off-site anchor with a title" sweep for new engines.
-  let anchors = [...doc.querySelectorAll('a.result-title, a.result__a, a.title, h2 > a, h3 > a')];
-  if (!anchors.length) anchors = [...doc.querySelectorAll('a[href^="http"]')];
+  // Prefer explicit result anchors (Startpage, Mojeek, DuckDuckGo, Bing), then fall back to a
+  // generic "off-site anchor" sweep for new/changed engines. The fallback is junk-prone (it
+  // sees the whole page), so it's filtered harder below.
+  const specific = [...doc.querySelectorAll('a.result-title, a.result__a, a.title, h2 > a, h3 > a, [data-testid="result-title-a"], .result a[href^="http"], .w-gl__result-title')];
+  const usingFallback = !specific.length;
+  const anchors = usingFallback ? [...doc.querySelectorAll('a[href^="http"]')] : specific;
 
-  // Exclude only the ENGINE'S OWN domain (its nav/utility links) — NOT a broad
-  // denylist, since real results legitimately point at yahoo/youtube/google/etc.
+  // Exclude the ENGINE'S OWN domain (its nav/utility links) — NOT a broad denylist, since real
+  // results legitimately point at yahoo/youtube/google/etc.
   const engineDomain = String(engineHost || '').split('.').slice(-2).join('.');
 
   const out = [];
@@ -124,6 +133,8 @@ function parseSerp(html, engineHost, limit) {
     try { u = new URL(href); } catch { continue; }
     if (u.protocol !== 'https:' && u.protocol !== 'http:') continue;
     if (engineDomain && (u.hostname === engineDomain || u.hostname.endsWith('.' + engineDomain))) continue;
+    if (SERP_JUNK_HOSTS.test(u.hostname)) continue; // engine-family / promo hosts are never results
+    if (usingFallback && a.closest(SERP_CHROME_SEL)) continue; // fallback: skip nav/footer/promo links
     const title = (a.textContent || '').replace(/\s+/g, ' ').trim();
     if (title.length < 6) continue;
     const key = u.origin + u.pathname;
