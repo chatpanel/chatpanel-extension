@@ -83,10 +83,21 @@ function renderList(query = '') {
 // ── editor ───────────────────────────────────────────────────────────────────
 function setMode(mode, persist = true) {
   const panes = $('n-panes');
-  panes.classList.remove('write', 'split', 'read');
-  panes.classList.add(mode);
+  // Leaving Live → pull CM's content back into the textarea (the model) so the classic
+  // panes show the latest (onCmChange already mirrors, so this is belt-and-suspenders).
+  if (panes.classList.contains('live') && mode !== 'live' && cm && $('n-body').value !== cm.value) $('n-body').value = cm.value;
+  panes.classList.remove('write', 'split', 'read', 'live');
   for (const b of $('n-mode').children) b.classList.toggle('active', b.dataset.mode === mode);
   if (persist) localStorage.setItem('chatpanel.notes.mode', mode); // don't clobber the saved default for a transient switch
+  if (mode === 'live') {
+    panes.classList.add('live');
+    ensureCm()
+      .then(() => { cmActive = true; _cmRO = null; mirrorToCm(); cm.focus(); })
+      .catch(() => { toast('Live editor unavailable — using Write'); setMode('write', persist); });
+    return;
+  }
+  cmActive = false;
+  panes.classList.add(mode);
   if (mode !== 'write') updatePreview();
   if (mode !== 'read') autoGrow();
 }
@@ -101,7 +112,65 @@ function setAlign(a) {
   const menu = $('n-align-menu');
   if (menu) for (const b of menu.querySelectorAll('button[data-align]')) b.classList.toggle('active', b.dataset.align === align);
 }
-function updatePreview() { $('n-preview').innerHTML = renderMarkdown($('n-body').value); }
+function updatePreview() {
+  const md = $('n-body').value;
+  $('n-preview').innerHTML = renderMarkdown(md);
+  mirrorToCm(md); // when Live mode is active, keep the CM6 surface in sync with the model
+}
+
+// ── Live editor (CodeMirror 6) — Phase 1b ────────────────────────────────────────
+// Opt-in "Live" mode swaps the textarea for a CM6 live-preview surface (markdown renders as
+// you type). The textarea stays the MODEL and the provenance/autosave path: human edits in
+// CM mirror INTO it (attributed to You), and programmatic body changes (note open, AI
+// streaming, undo/restore) mirror OUT to CM through updatePreview(). CM6 is lazy-loaded on
+// first switch — off the notes first-paint path. Full swarm gestures (@mention, autocomplete,
+// ⌘↵ draft) reconnect to CM in Phase 3; today they run in the classic Write view.
+let cm = null;          // the live-editor facade (js/editor-cm.js createLiveEditor)
+let cmActive = false;   // is Live mode the visible surface right now?
+let _cmMod = null;
+let _cmSyncing = false; // guard: we're pushing model → CM (ignore the echoed change)
+let _cmRO = null;       // last read-only state pushed to CM (avoid churny reconfigures)
+async function ensureCm() {
+  if (cm) return cm;
+  if (!_cmMod) _cmMod = await import('./js/editor-cm.js');
+  cm = _cmMod.createLiveEditor({
+    parent: $('n-cm'),
+    doc: $('n-body').value,
+    placeholder: 'Start writing… formatting renders as you type.',
+    onChange: onCmChange,
+    onKey: onCmKey,
+  });
+  return cm;
+}
+// A human edit in CM → mirror to the textarea (model) and run the input pipeline minus the
+// textarea-specific autocomplete (that's Phase 3; still works in the classic view).
+function onCmChange(v, info = {}) {
+  if (info.programmatic || _cmSyncing) return; // our own model→CM push, not a user edit
+  const ta = $('n-body');
+  if (ta.readOnly || ta.value === v) return;
+  ta.value = v;
+  recordEdit();                                 // checkpoint + attribution (to You)
+  if (ghost) { ghost = null; hideGhostHint(); }
+  renderHistorySummary();
+  updateWordCount();
+  scheduleSave();
+  scheduleSuggest();
+  scheduleCowriter();
+  scheduleResearch();
+}
+function onCmKey() { return false; } // Phase 3: route Enter / ⌘↵ / @mention / autocomplete here
+// Push the model (textarea value + readonly) into CM when Live mode is active — for
+// programmatic changes: note open, AI streaming paints, undo/restore.
+function mirrorToCm(md = $('n-body').value) {
+  if (!cmActive || !cm) return;
+  _cmSyncing = true;
+  try {
+    if (cm.value !== md) cm.setValue(md, { programmatic: true });
+    const ro = !!$('n-body').readOnly;
+    if (_cmRO !== ro) { cm.setReadOnly(ro); _cmRO = ro; }
+  } catch { /* never let a mirror error break editing */ }
+  finally { _cmSyncing = false; }
+}
 
 // ── Assistant sidebar — Team activity / Research / Co-writer / History as tabs ───────
 // The panels used to stack at the bottom and eat the document's vertical space; now they
@@ -286,6 +355,7 @@ async function openNote(id, preloaded = null) {
   $('n-title').value = current.title || '';
   $('n-body').value = current.body || '';
   histReset(current.body || ''); // undo history is per note — start fresh on switch
+  _cmRO = null; mirrorToCm(current.body || ''); // load the note into the live editor if it's active
   // Provenance ledger: adopt the stored one, or seed existing content as authored by
   // You (tracking starts now). Keep it length-consistent with the body.
   const bodyLen = (current.body || '').length;
@@ -728,6 +798,7 @@ function setAgentBusy(busy) {
   btn.classList.toggle('busy', busy);
   btn.innerHTML = busy ? icon('stop') + ' Stop' : icon('assist') + ' Agent';
   $('n-body').readOnly = busy;
+  mirrorToCm(); // reflect the read-only state onto the live editor
 }
 function closeAgentMenu() { $('n-agent-menu').classList.add('hidden'); }
 
@@ -907,7 +978,7 @@ async function planInNewNote(explicitTopic) {
       histReset(ta.value); // resync the undo baseline to the plan body — the plan was written
       // straight into `ta.value` (never through recordEdit), so without this the user's first
       // keystroke would diff from an EMPTY baseline and re-attribute the whole plan to "You".
-      autoGrow(); updateWordCount(); dirty = true; await flushSave();
+      autoGrow(); updateWordCount(); mirrorToCm(); dirty = true; await flushSave();
     }
     const done = (planNote.tasks || []).filter((t) => t.done).length;
     logActivity('Planner', `plan complete · ${done}/${(planNote.tasks || []).length} sub-tasks`);
