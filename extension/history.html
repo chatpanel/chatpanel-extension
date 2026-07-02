@@ -5,18 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ChatPanel — Chat history</title>
     <link rel="icon" href="assets/icon128.png" />
+    <link rel="stylesheet" href="icons.css" />
     <link rel="stylesheet" href="meetings.css" />
   </head>
   <body>
     <header class="hdr">
       <nav class="topnav" aria-label="Workspace">
-        <a href="notes.html" class="topnav-item">✎ Notes</a>
-        <a href="history.html" class="topnav-item active">☰ Chats <span id="h-count" class="count"></span></a>
-        <a href="meetings.html" class="topnav-item">👥 Meetings</a>
+        <a href="notes.html" class="topnav-item" data-icon="notes">Notes</a>
+        <a href="history.html" class="topnav-item active" data-icon="menu">Chats <span id="h-count" class="count"></span></a>
+        <a href="meetings.html" class="topnav-item" data-icon="meetings">Meetings</a>
       </nav>
       <div class="hdr-actions">
-        <button id="h-graph-toggle" class="btn" type="button">🕸 Graph</button>
-        <button id="h-settings" class="btn ghost" type="button">⚙ ChatPanel settings</button>
+        <button id="h-graph-toggle" class="btn" type="button" data-icon="graph">Graph</button>
+        <button id="h-settings" class="btn ghost" type="button" data-icon="settings">ChatPanel settings</button>
       </div>
     </header>
     <div class="layout">

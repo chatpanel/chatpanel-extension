@@ -6,6 +6,7 @@
 //             plus the bridge connection itself.
 import { getSettings, saveSettings, uid, exportAllData, exportDataArchive, importAllData, resetSkillsToDefaults } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
+import { icon, iconForEmoji, hydrate } from './js/icons.js';
 import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, setAutoBackupHour, runAutoBackup } from './js/auto-backup.js';
 import { encryptBackup, decryptBackup, isEncryptedBackup } from './js/crypto-backup.js';
 import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, previewRedaction, traceFlow } from './js/providers.js';
@@ -272,7 +273,7 @@ function ensureCombobox(input) {
   toggle.className = 'combo-toggle';
   toggle.type = 'button';
   toggle.setAttribute('aria-label', 'Show options');
-  toggle.textContent = '▾';
+  toggle.innerHTML = icon('caret');
   wrap.appendChild(toggle);
 
   const menu = document.createElement('div');
@@ -502,6 +503,7 @@ function renderEndpoints() {
 
 function endpointCard(ep) {
   const node = $('endpoint-tpl').content.firstElementChild.cloneNode(true);
+  hydrate(node);
   const q = (sel) => node.querySelector(sel);
   const selectedPresetId = ep.providerPreset || providerPresetForEndpoint(ep)?.id || 'custom';
   const selectedPreset = providerPresetById(selectedPresetId);
@@ -984,7 +986,7 @@ function renderDestinations() {
     flowCount(); autoSaveGateway();
     if (!pro) renderDestinations(); // refresh which rows are locked
   };
-  const checkRow = (icon, name, models, dest, { disabled = false, note = '' } = {}) => {
+  const checkRow = (emoji, name, models, dest, { disabled = false, note = '' } = {}) => {
     const locked = !disabled && !pro && !isEnabled(dest.id) && atCap();
     const wrap = document.createElement('label');
     wrap.className = 'gw-dest' + (disabled || locked ? ' off' : '');
@@ -992,13 +994,14 @@ function renderDestinations() {
     cb.type = 'checkbox'; cb.checked = isEnabled(dest.id); cb.disabled = disabled || locked;
     cb.onchange = () => toggle(dest, cb.checked);
     wrap.appendChild(cb);
-    const nm = document.createElement('span'); nm.className = 'name'; nm.textContent = `${icon} ${name}`;
+    const nm = document.createElement('span'); nm.className = 'name';
+    nm.innerHTML = (iconForEmoji(emoji) || escapeHtml(emoji)) + ' ' + escapeHtml(name);
     wrap.appendChild(nm);
     for (const m of (models || []).slice(0, 4)) { const c = document.createElement('span'); c.className = 'chip'; c.textContent = m; wrap.appendChild(c); }
     const sp = document.createElement('span'); sp.className = 'spacer'; wrap.appendChild(sp);
     if (locked) {
       wrap.onclick = (e) => { e.preventDefault(); upsell(lockMsg); };
-      const b = document.createElement('span'); b.className = 'chip'; b.textContent = '🔒 Pro'; wrap.appendChild(b);
+      const b = document.createElement('span'); b.className = 'chip'; b.innerHTML = icon('lock') + ' Pro'; wrap.appendChild(b);
     } else if (note) {
       const n = document.createElement('span'); n.className = 'muted sm'; n.textContent = note; wrap.appendChild(n);
     }
@@ -1008,7 +1011,7 @@ function renderDestinations() {
 
   if (!pro) {
     const p = document.createElement('p'); p.className = 'muted sm'; p.style.margin = '0 0 4px';
-    p.innerHTML = `🔒 Free routes to <strong>${cap}</strong> destination — <a href="#" class="gw-dest-upsell">upgrade to Pro</a> for unlimited.`;
+    p.innerHTML = `${icon('lock')} Free routes to <strong>${cap}</strong> destination — <a href="#" class="gw-dest-upsell">upgrade to Pro</a> for unlimited.`;
     p.querySelector('a').onclick = (e) => { e.preventDefault(); subscribePro(); };
     host.appendChild(p);
   }
@@ -1239,7 +1242,7 @@ function gatewayLogBody(timings, detail) {
     const slowest = legs.reduce((a, k) => (timings[k] > (timings[a] ?? -1) ? k : a), legs[0]);
     const parts = legs.map((k) => `<span class="leg${k === slowest ? ' hot' : ''}">${label[k]} ${timings[k]}ms</span>`).join('<span class="sep">·</span>');
     const total = typeof timings.total === 'number' ? `<span class="leg total">total ${timings.total}ms</span>` : '';
-    html += `<div class="gw-timings">⏱ ${parts}${parts && total ? '<span class="sep">·</span>' : ''}${total}</div>`;
+    html += `<div class="gw-timings">${icon('timer')} ${parts}${parts && total ? '<span class="sep">·</span>' : ''}${total}</div>`;
   }
   if (Array.isArray(detail) && detail.length) {
     const rows = detail.map((d) => {
@@ -1624,7 +1627,7 @@ function renderGatewayFlow({ input, detected, redacted, spans, reply, error, too
   let n = 4;
   // Tool round-trip the agent ran through the gateway (args restored to REAL values).
   if (withModel && (toolEvents || []).length) {
-    const rows = toolEvents.map((t) => `<div class="flow-map">🔧 <code>${esc(t.name)}</code><div class="muted sm">args → tool: ${esc(JSON.stringify(t.args))}</div><div class="muted sm">result → ${esc((t.result || '').slice(0, 240))}</div></div>`).join('');
+    const rows = toolEvents.map((t) => `<div class="flow-map">${icon('tools')} <code>${esc(t.name)}</code><div class="muted sm">args → tool: ${esc(JSON.stringify(t.args))}</div><div class="muted sm">result → ${esc((t.result || '').slice(0, 240))}</div></div>`).join('');
     cards.push(flowCard(++n, 'Tools run (real values)', rows, 'flow-tools'));
   }
   if (withModel) {
@@ -2173,7 +2176,7 @@ function mcpServerCard(server, index = 0) {
     // stops the UI from letting a Free user toggle/test it past the cap).
     q('.mcp-enabled').disabled = true;
     q('.mcp-test').disabled = true;
-    status.innerHTML = `🔒 Free includes ${FREE_LIMITS.mcpServers} MCP servers — <a href="#" class="mcp-upsell">upgrade to Pro</a> for more`;
+    status.innerHTML = `${icon('lock')} Free includes ${FREE_LIMITS.mcpServers} MCP servers — <a href="#" class="mcp-upsell">upgrade to Pro</a> for more`;
     status.querySelector('.mcp-upsell').onclick = (e) => {
       e.preventDefault();
       upsell(`Free includes ${FREE_LIMITS.mcpServers} MCP servers. Pro unlocks unlimited.`);
@@ -2472,7 +2475,7 @@ function skillsBanner() {
   const div = document.createElement('div');
   div.className = 'gate-banner';
   const span = document.createElement('span');
-  span.innerHTML = '✨ <b>Skills are a Pro feature.</b> Reusable prompts, the 🎓 menu, slash-commands and prompt-assist all unlock with Pro.';
+  span.innerHTML = icon('upgrade') + ' <b>Skills are a Pro feature.</b> Reusable prompts, the ' + icon('skills') + ' menu, slash-commands and prompt-assist all unlock with Pro.';
   const a = document.createElement('button');
   a.className = 'btn primary';
   a.textContent = 'Upgrade to Pro';
@@ -2504,6 +2507,7 @@ function enabledMcpServersForSkills() {
 
 function skillCard(skill) {
   const node = $('skill-tpl').content.firstElementChild.cloneNode(true);
+  hydrate(node);
   const q = (sel) => node.querySelector(sel);
   q('.s-icon').value = skill.icon || '';
   q('.s-name').value = skill.name || '';
@@ -2682,7 +2686,7 @@ function renderWebSearchEngines() {
   // Adding custom engines is Pro; mark the button so Free users see why.
   const addBtn = $('add-websearch');
   if (addBtn) {
-    addBtn.textContent = pro ? '+ Add engine' : '+ Add engine 🔒';
+    addBtn.innerHTML = pro ? '+ Add engine' : '+ Add engine ' + icon('lock');
     addBtn.title = pro ? '' : 'Custom search engines are a Pro feature';
   }
 
@@ -2692,7 +2696,7 @@ function renderWebSearchEngines() {
     const hint = document.createElement('p');
     hint.className = 'muted sm';
     hint.style.margin = '0 0 4px';
-    hint.innerHTML = `🔒 Free: up to <strong>${engineCap}</strong> engines and <strong>${FREE_LIMITS.webSearchesPerDay}</strong> searches/day. `
+    hint.innerHTML = `${icon('lock')} Free: up to <strong>${engineCap}</strong> engines and <strong>${FREE_LIMITS.webSearchesPerDay}</strong> searches/day. `
       + `<a href="#" class="ws-upsell">Upgrade to Pro</a> for unlimited.`;
     hint.querySelector('.ws-upsell').onclick = (e) => { e.preventDefault(); upsell('Unlimited web search (engines + daily searches) is a Pro feature.'); };
     root.appendChild(hint);
@@ -2791,7 +2795,7 @@ async function renderPrivFullUsage(pro) {
   const el = $('priv-free-usage');
   if (!el) return;
   if (pro) {
-    el.innerHTML = '✨ <strong>Pro active</strong> — unlimited AI detection (names, orgs &amp; locations).';
+    el.innerHTML = icon('upgrade') + ' <strong>Pro active</strong> — unlimited AI detection (names, orgs &amp; locations).';
     el.classList.remove('warn');
     return;
   }
@@ -2975,9 +2979,9 @@ function populateFlowModel() {
     targets.length ? 'Model to run (a configured API / agent)' : 'No APIs / agents configured');
 }
 
-function flowCard(n, title, bodyHtml, cls = '') {
+function flowCard(n, title, bodyHtml, cls = '', leadIconHtml = '') {
   const badge = n ? `<span class="flow-n">${escapeHtml(String(n))}</span>` : '';
-  return `<div class="flow-card ${cls}"><div class="flow-card-h">${badge}${escapeHtml(title)}</div><div class="flow-card-b">${bodyHtml}</div></div>`;
+  return `<div class="flow-card ${cls}"><div class="flow-card-h">${badge}${leadIconHtml}${escapeHtml(title)}</div><div class="flow-card-b">${bodyHtml}</div></div>`;
 }
 
 // "Your prompt" badge when the de-steganography pass found invisible/format Unicode
@@ -3033,7 +3037,7 @@ function renderFlow(t, withModel) {
       : `<div class="flow-map">args → tool: <code>${esc(JSON.stringify(tt.realArgs))}</code></div>`
         + '<div class="muted sm" style="margin-top:5px">result → model:</div>'
         + `<div class="flow-text">${esc(tt.modelResult) || '<span class="muted sm">(empty)</span>'}</div>`;
-    cards.push(flowCard('', `🔧 ${tt.name}`, body, 'flow-tools'));
+    cards.push(flowCard('', tt.name, body, 'flow-tools', icon('tools')));
   });
   if (withModel) {
     const reply = t.error
@@ -3089,7 +3093,7 @@ function renderFlowTools(boxId = 'priv-flow-tools') {
   servers.forEach((s, i) => {
     const key = `mcp:${mcpKey(s)}`;
     const locked = i >= mcpLimit;
-    items.push(`<label class="check${locked ? ' off' : ''}" title="${locked ? 'Pro — Free includes ' + FREE_LIMITS.mcpServers + ' MCP server' + (FREE_LIMITS.mcpServers === 1 ? '' : 's') : ''}"><input type="checkbox" data-flow-tool="${escapeHtml(key)}"${prev.has(key) && !locked ? ' checked' : ''}${locked ? ' disabled' : ''} /> ${escapeHtml(s.name || s.url || s.command)}${locked ? ' 🔒' : ''}</label>`);
+    items.push(`<label class="check${locked ? ' off' : ''}" title="${locked ? 'Pro — Free includes ' + FREE_LIMITS.mcpServers + ' MCP server' + (FREE_LIMITS.mcpServers === 1 ? '' : 's') : ''}"><input type="checkbox" data-flow-tool="${escapeHtml(key)}"${prev.has(key) && !locked ? ' checked' : ''}${locked ? ' disabled' : ''} /> ${escapeHtml(s.name || s.url || s.command)}${locked ? ' ' + icon('lock') : ''}</label>`);
   });
   if (!servers.length) items.push('<span class="muted sm">No MCP servers enabled (Settings → MCP).</span>');
   box.innerHTML = items.join('');
@@ -3312,12 +3316,12 @@ function renderPlanFeatures() {
   const pro = isPro(license);
   const team = planOf(license) === 'team';
   const esc = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-  const row = (text, has) => `<li class="${has ? 'has' : 'locked'}">${has ? '✓' : '🔒'} ${esc(text)}</li>`;
+  const row = (text, has) => `<li class="${has ? 'has' : 'locked'}">${has ? icon('check') : icon('lock')} ${esc(text)}</li>`;
   const proItems = Object.values(PRO_FEATURES).map((t) => row(t, pro)).join('');
   const teamItems = Object.values(TEAM_FEATURES).map((t) => row(t, team)).join('');
   el.innerHTML =
-    `<div class="plan-group"><h3>✨ Pro</h3><ul class="feature-list">${proItems}</ul></div>` +
-    `<div class="plan-group"><h3>👥 Team</h3><ul class="feature-list">${teamItems}</ul></div>`;
+    `<div class="plan-group"><h3>${icon('upgrade')} Pro</h3><ul class="feature-list">${proItems}</ul></div>` +
+    `<div class="plan-group"><h3>${icon('users')} Team</h3><ul class="feature-list">${teamItems}</ul></div>`;
 }
 
 // About & updates. Manual ("Load unpacked") builds don't auto-update, so we show
@@ -3392,7 +3396,7 @@ async function subscribePro(btn) {
 function proBadge() {
   const b = document.createElement('span');
   b.className = 'pro-badge';
-  b.textContent = '✨ Pro';
+  b.innerHTML = icon('upgrade') + ' Pro';
   b.title = 'Pro feature';
   return b;
 }
@@ -3449,7 +3453,7 @@ function applyFreeSlot(node, item, kind) {
   if (chosen) {
     const star = document.createElement('span');
     star.className = 'free-slot on';
-    star.textContent = '★ Free';
+    star.innerHTML = icon('star') + ' Free';
     star.title = 'Your free ' + (kind === 'bridge' ? 'agent' : 'endpoint');
     head.appendChild(star);
     return;
@@ -3810,7 +3814,7 @@ function upsell(text) {
   const t = $('toast');
   t.innerHTML = '';
   const span = document.createElement('span');
-  span.textContent = '✨ ' + text + '  ';
+  span.innerHTML = icon('upgrade') + ' ' + escapeHtml(text) + '  ';
   const a = document.createElement('button');
   a.className = 'toast-action';
   a.textContent = 'Upgrade to Pro';

@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ChatPanel — Settings</title>
+    <link rel="stylesheet" href="icons.css" />
     <link rel="stylesheet" href="settings.css" />
   </head>
   <body>
@@ -15,16 +16,16 @@
 
       <div class="shell">
         <aside class="sidenav" id="tabs">
-          <button class="tab active" data-tab="api"><span class="tab-ico">🔌</span> API</button>
-          <button class="tab" data-tab="agents"><span class="tab-ico">🤖</span> Agents</button>
-          <button class="tab" data-tab="mcp"><span class="tab-ico">🛠</span> Tools</button>
-          <button class="tab" data-tab="skills"><span class="tab-ico">🎓</span> Skills</button>
-          <button class="tab" data-tab="notes"><span class="tab-ico">✎</span> Notes</button>
-          <button class="tab" data-tab="meetings"><span class="tab-ico">🗓</span> Meetings</button>
-          <button class="tab" data-tab="history"><span class="tab-ico">💬</span> History</button>
-          <button class="tab" data-tab="privacy"><span class="tab-ico">🛡</span> Privacy</button>
-          <button class="tab" data-tab="gateway"><span class="tab-ico">🔐</span> Gateway</button>
-          <button class="tab" data-tab="license"><span class="tab-ico">✦</span> Account</button>
+          <button class="tab active" data-tab="api"><span class="tab-ico" data-icon="plug"></span> API</button>
+          <button class="tab" data-tab="agents"><span class="tab-ico" data-icon="bot"></span> Agents</button>
+          <button class="tab" data-tab="mcp"><span class="tab-ico" data-icon="tools"></span> Tools</button>
+          <button class="tab" data-tab="skills"><span class="tab-ico" data-icon="skills"></span> Skills</button>
+          <button class="tab" data-tab="notes"><span class="tab-ico" data-icon="notes"></span> Notes</button>
+          <button class="tab" data-tab="meetings"><span class="tab-ico" data-icon="calendar"></span> Meetings</button>
+          <button class="tab" data-tab="history"><span class="tab-ico" data-icon="chat"></span> History</button>
+          <button class="tab" data-tab="privacy"><span class="tab-ico" data-icon="privacy"></span> Privacy</button>
+          <button class="tab" data-tab="gateway"><span class="tab-ico" data-icon="lock"></span> Gateway</button>
+          <button class="tab" data-tab="license"><span class="tab-ico" data-icon="sparkles"></span> Account</button>
         </aside>
         <main class="content">
 
@@ -56,7 +57,7 @@
             </p>
             <p>
               Keep that terminal running, then set Base URL
-              <code>http://localhost:11434/v1</code> and click <strong>↻ Load
+              <code>http://localhost:11434/v1</code> and click <strong><span class="inline-ico" data-icon="refresh"></span> Load
               models</strong>. The API key can be left blank.
             </p>
           </details>
@@ -210,7 +211,7 @@ npx @chatpanel/bridge</code></pre>
             </div>
           </div>
           <p class="muted">
-            Reusable prompts you drop into any chat with the 🎓 button. Editing the
+            Reusable prompts you drop into any chat with the <span class="inline-ico" data-icon="skills"></span> button. Editing the
             built-ins is free; <strong>creating your own is Pro</strong>.
           </p>
           <div id="skills"></div>
@@ -263,11 +264,11 @@ npx @chatpanel/bridge</code></pre>
           </div>
           <p class="muted tiny">
             Concise keeps the running summary short and cheap (recommended for long
-            calls); Detailed produces full minutes. You can always ↻ regenerate either
+            calls); Detailed produces full minutes. You can always <span class="inline-ico" data-icon="refresh"></span> regenerate either
             style per meeting in the meetings dashboard.
           </p>
           <p class="muted tiny">
-            🗂 <strong>Meeting monitors:</strong> turn any of your
+            <span class="inline-ico" data-icon="folder"></span> <strong>Meeting monitors:</strong> turn any of your
             <a href="#" id="meetings-open-skills">Skills</a> into a one-tap live monitor
             with “Use as a live-meeting monitor”, then launch it (or <code>/monitor</code>
             / <code>/tldr</code>) from the panel above the composer during a call.
@@ -282,7 +283,7 @@ npx @chatpanel/bridge</code></pre>
         <div class="card">
           <div class="card-head">
             <h2>Past meetings <span class="sub">— transcripts, summaries &amp; action items</span></h2>
-            <button id="open-meetings-dashboard" class="btn primary" type="button">Open meetings dashboard ↗</button>
+            <button id="open-meetings-dashboard" class="btn primary" type="button">Open meetings dashboard <span class="inline-ico" data-icon="external-link"></span></button>
           </div>
           <p class="muted">
             Browse every recorded meeting in a full-screen dashboard — summary, topics,
@@ -299,7 +300,7 @@ npx @chatpanel/bridge</code></pre>
         <div class="card">
           <div class="card-head">
             <h2>Notes <span class="sub">— your private, on-device writing workspace</span></h2>
-            <button id="open-notes-dashboard" class="btn primary" type="button">Open notes dashboard ↗</button>
+            <button id="open-notes-dashboard" class="btn primary" type="button">Open notes dashboard <span class="inline-ico" data-icon="external-link"></span></button>
           </div>
           <p class="muted">
             Notes are encrypted on your device and searchable alongside your chats and meetings.
@@ -324,7 +325,7 @@ npx @chatpanel/bridge</code></pre>
           <p class="muted">
             When on, an editor fixes typos/grammar on a pause, a researcher surfaces related material, and
             a writer drafts ahead on <code>⌘↵</code>. Off by default — it makes model calls as you type.
-            Pick a model per role from the <strong>⚙ team</strong> button in the note editor's footer.
+            Pick a model per role from the <strong><span class="inline-ico" data-icon="settings"></span> team</strong> button in the note editor's footer.
           </p>
         </div>
 
@@ -356,15 +357,15 @@ npx @chatpanel/bridge</code></pre>
             notes freely while they work.
           </p>
           <div class="card-actions" style="margin-top:2px">
-            <button id="notes-open-agents" class="btn" type="button">Change model in Agents ↗</button>
-            <button id="notes-open-privacy" class="btn" type="button">Privacy &amp; redaction ↗</button>
+            <button id="notes-open-agents" class="btn" type="button">Change model in Agents <span class="inline-ico" data-icon="external-link"></span></button>
+            <button id="notes-open-privacy" class="btn" type="button">Privacy &amp; redaction <span class="inline-ico" data-icon="external-link"></span></button>
           </div>
           <div style="margin-top:12px" class="sub">Tools these commands may use <span class="sub">— uncheck to limit notes to the model's own knowledge; checked follows your global ChatPanel setting.</span></div>
           <label class="check" style="margin-top:6px"><input type="checkbox" id="notes-tool-websearch" /> Web search <span class="sub">— fetch live results for @insert/@table/@list</span></label>
           <label class="check" style="margin-top:6px"><input type="checkbox" id="notes-tool-mcp" /> MCP tool servers <span class="sub">— your connected external tools</span></label>
           <label class="check" style="margin-top:6px"><input type="checkbox" id="notes-tool-history" /> History search <span class="sub">— search your own notes, chats &amp; meetings</span></label>
           <p class="muted" style="margin-top:10px">
-            🛡 Content is redacted per your <strong>Privacy</strong> settings before it leaves your device.
+            <span class="inline-ico" data-icon="privacy"></span> Content is redacted per your <strong>Privacy</strong> settings before it leaves your device.
           </p>
         </div>
 
@@ -377,7 +378,7 @@ npx @chatpanel/bridge</code></pre>
             the <strong>Account</strong> tab.
           </p>
           <div class="card-actions">
-            <button id="notes-open-backup" class="btn" type="button">Backup &amp; data ↗</button>
+            <button id="notes-open-backup" class="btn" type="button">Backup &amp; data <span class="inline-ico" data-icon="external-link"></span></button>
           </div>
         </div>
       </section>
@@ -386,7 +387,7 @@ npx @chatpanel/bridge</code></pre>
         <div class="card">
           <div class="card-head">
             <h2>Chat history <span class="sub">— search every conversation</span></h2>
-            <button id="open-history-dashboard" class="btn primary" type="button">Open chat history dashboard ↗</button>
+            <button id="open-history-dashboard" class="btn primary" type="button">Open chat history dashboard <span class="inline-ico" data-icon="external-link"></span></button>
           </div>
           <p class="muted">
             Browse and full-text search every chat in a full-screen dashboard —
@@ -512,13 +513,13 @@ npx @chatpanel/bridge</code></pre>
             <div class="row" style="margin-top:8px">
               <input id="priv-flow-model" placeholder="Model to run (a configured API / agent)" autocomplete="off"
                 style="flex:1 1 200px" />
-              <button type="button" id="priv-flow-run" class="btn primary">Run ▶</button>
+              <button type="button" id="priv-flow-run" class="btn primary">Run <span class="inline-ico" data-icon="play"></span></button>
               <button type="button" id="priv-flow-preview" class="btn">Preview redaction only</button>
             </div>
             <p class="muted sm" id="priv-flow-status" style="margin:6px 0 0"></p>
             <div id="priv-flow-out" class="flow-track"></div>
           </div>
-          <p class="muted sm" id="priv-pro-note">⭐ <strong>Pro</strong> unlocks name/org redaction, page/meeting/history /
+          <p class="muted sm" id="priv-pro-note"><span class="inline-ico" data-icon="star"></span> <strong>Pro</strong> unlocks name/org redaction, page/meeting/history /
             tool-result scope, an unlimited dictionary, and local-model detection. Free covers secrets (emails, keys,
             cards, phones) in chat.</p>
         </div>
@@ -678,7 +679,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                 </div>
                 <p class="muted sm" id="gw-monitor">—</p>
                 <div class="row" style="margin:4px 0">
-                  <button type="button" id="gw-logs-refresh" class="btn">Recent requests ↻</button>
+                  <button type="button" id="gw-logs-refresh" class="btn">Recent requests <span class="inline-ico" data-icon="refresh"></span></button>
                 </div>
                 <div id="gw-logs" class="muted sm"></div>
                 <details style="margin-top:8px">
@@ -696,7 +697,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                 <div class="gw-dest-select" id="gw-dest-select">
                   <button type="button" class="gw-dest-trigger" id="gw-dest-trigger" aria-haspopup="listbox" aria-expanded="false">
                     <span class="gw-dest-summary" id="gw-dest-summary">No destinations selected</span>
-                    <span class="gw-dest-caret" aria-hidden="true">▾</span>
+                    <span class="gw-dest-caret" aria-hidden="true" data-icon="caret"></span>
                   </button>
                   <div class="gw-dest-menu hidden" id="gw-dest-menu" role="listbox" aria-multiselectable="true">
                     <div class="gw-dest-menu-head">
@@ -722,7 +723,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
             <div id="gw-test-tools" class="flow-tools-pick"></div>
             <div class="row" style="margin-top:6px">
               <select id="gw-test-model" style="flex:1 1 220px"></select>
-              <button type="button" id="gw-test-run" class="btn primary">Run ▶</button>
+              <button type="button" id="gw-test-run" class="btn primary">Run <span class="inline-ico" data-icon="play"></span></button>
               <button type="button" id="gw-test-preview" class="btn">Preview redaction only</button>
               <span class="status" id="gw-test-status"></span>
             </div>
@@ -829,7 +830,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
               <div class="pref-item">
                 <label class="check" id="pref-autocomplete-row">
                   <input type="checkbox" id="pref-autocomplete" />
-                  <span>Autocomplete my prompts as I type <span class="pro-badge">✨ Pro</span></span>
+                  <span>Autocomplete my prompts as I type <span class="pro-badge"><span class="inline-ico" data-icon="upgrade"></span> Pro</span></span>
                 </label>
                 <p class="muted tiny">
                   As you pause typing, a model suggests a short continuation — press
@@ -847,7 +848,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                   <span>Confirm before page actions</span>
                 </label>
                 <p class="muted tiny">
-                  When ▶️ Act on page is on, ask for your OK before the agent fills a form,
+                  When <span class="inline-ico" data-icon="play"></span> Act on page is on, ask for your OK before the agent fills a form,
                   clicks, or types — so a web page, meeting transcript, or connected tool can’t
                   quietly steer it into acting for you. Pick <em>Allow for this site</em> to stop
                   being asked on a site you trust. <strong>On by default.</strong>
@@ -859,7 +860,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                   <span>High-reliability page control</span>
                 </label>
                 <p class="muted tiny" id="pref-pageact-cdp-note">
-                  When the agent fills forms or clicks (▶️ Act on page), use trusted
+                  When the agent fills forms or clicks (<span class="inline-ico" data-icon="play"></span> Act on page), use trusted
                   browser events instead of synthetic ones — far more reliable on heavy
                   web apps like Google Flights. Chrome shows a <strong>“ChatPanel is
                   debugging this browser”</strong> banner while it’s active. Off by
@@ -1043,7 +1044,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
             <label>Model</label>
             <input class="ep-model" placeholder="Search or type a model id" />
             <input class="ep-model-custom hidden" placeholder="custom model id" />
-            <button class="btn accent ep-load" title="Fetch the models this endpoint offers">↻ Load models</button>
+            <button class="btn accent ep-load" title="Fetch the models this endpoint offers"><span class="inline-ico" data-icon="refresh"></span> Load models</button>
             <button class="btn ghost ep-test" title="Send a small chat request with this model and auth">Test</button>
           </div>
           <div class="row"><label>Autocomplete model</label><input class="ep-acmodel" placeholder="optional — a small/fast model just for inline autocomplete (avoid reasoning models)" /></div>
@@ -1185,7 +1186,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
         <div class="row prompt-row">
           <label>Prompt</label>
           <textarea class="s-prompt" rows="3" placeholder="What this skill asks the agent to do. Use {{input}}, {{url}}, {{title}}, {{selection}}."></textarea>
-          <button class="btn assist s-assist" title="Expand / improve with your model">✨ Improve</button>
+          <button class="btn assist s-assist" title="Expand / improve with your model"><span class="inline-ico" data-icon="assist"></span> Improve</button>
         </div>
         <div class="row half">
           <div><label>Run on</label><select class="s-agent"></select></div>

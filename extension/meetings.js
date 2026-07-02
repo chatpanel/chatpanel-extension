@@ -19,6 +19,7 @@ import { isMeetingImageValue, participantRowsOfMeeting, peopleOfMeeting, speaker
 import { contentHash, insightTopicItemsFromNotes, makeTopicIndex, topicDisplayForMeetingSource, topicSourceTextForMeeting } from './js/topic-extraction.js';
 import { MEETING_INSIGHT_SECTIONS, composeMeetingInsightNotes, meetingInsightPrompt } from './js/meeting-insights.js';
 import { parseTranscriptText, repairImportedTranscriptDate, repairTranscriptParticipants } from './js/meeting-transcript-import.js';
+import { icon, iconForEmoji, hydrate } from './js/icons.js';
 
 const $ = (id) => document.getElementById(id);
 const PLATFORM_ICON = { zoom: '📹', meet: '📹', teams: '🟦', webex: '🟢', imported: '📄' };
@@ -38,7 +39,7 @@ let graphDrawToken = 0;
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const isImg = isMeetingImageValue;
-const platIcon = (p) => PLATFORM_ICON[p] || '🎙';
+const platIcon = (p) => { const g = PLATFORM_ICON[p] || '🎙'; return iconForEmoji(g) || esc(g); };
 const platLabel = (p) => (p === 'imported' ? 'Imported' : (PLATFORMS[p]?.label || p || 'Meeting'));
 
 function fmtDate(ts) { return ts ? new Date(ts).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; }
@@ -236,16 +237,16 @@ function renderDetail() {
         <h2>${esc(rec.title || 'Untitled meeting')}</h2>
         <div class="sub">
           <span class="stat">${platIcon(rec.platform)} ${esc(platLabel(rec.platform))}</span>
-          <span class="stat">🗓 ${esc(fmtDate(rec.startedAt))}</span>
-          ${live ? '<span class="stat"><span class="pill live">● live</span></span>' : (fmtDuration(rec.startedAt, rec.endedAt) ? `<span class="stat">⏱ ${esc(fmtDuration(rec.startedAt, rec.endedAt))}</span>` : '')}
-          ${ppl ? `<span class="stat">👥 ${ppl} participant${ppl === 1 ? '' : 's'}</span>` : ''}
+          <span class="stat">${icon('calendar')} ${esc(fmtDate(rec.startedAt))}</span>
+          ${live ? '<span class="stat"><span class="pill live">● live</span></span>' : (fmtDuration(rec.startedAt, rec.endedAt) ? `<span class="stat">${icon('timer')} ${esc(fmtDuration(rec.startedAt, rec.endedAt))}</span>` : '')}
+          ${ppl ? `<span class="stat">${icon('users')} ${ppl} participant${ppl === 1 ? '' : 's'}</span>` : ''}
         </div>
       </div>
       <div class="dactions">
-        <button class="btn" id="m-gen" type="button">${parsed.hasAny ? '✨ Regenerate' : '✨ Generate insights'}</button>
-        <button class="btn" id="m-ask" type="button">💬 Ask</button>
-        <button class="btn" id="m-export" type="button">⬆ Export</button>
-        <button class="btn danger" id="m-delete" type="button" title="Delete meeting">🗑</button>
+        <button class="btn" id="m-gen" type="button">${icon('sparkles')} ${parsed.hasAny ? 'Regenerate' : 'Generate insights'}</button>
+        <button class="btn" id="m-ask" type="button">${icon('chat')} Ask</button>
+        <button class="btn" id="m-export" type="button">${icon('arrow-up')} Export</button>
+        <button class="btn danger" id="m-delete" type="button" title="Delete meeting" aria-label="Delete meeting">${icon('trash-2')}</button>
       </div>
     </div>
     <div class="metrics">
@@ -257,7 +258,7 @@ function renderDetail() {
     ${(current.versions || []).length > 1 ? `
     <div class="ver-bar" id="m-verbar">
       <span class="ver-title">Summary version</span>
-      ${current.versions.map((v) => `<span class="ver ${v.id === current.activeId ? 'on' : ''}"><button class="ver-pick" data-vid="${esc(v.id)}" title="View this version">${esc(versionLabel(v))}</button>${v.id !== 'live' ? `<button class="ver-x" data-vid="${esc(v.id)}" title="Delete version">✕</button>` : ''}</span>`).join('')}
+      ${current.versions.map((v) => `<span class="ver ${v.id === current.activeId ? 'on' : ''}"><button class="ver-pick" data-vid="${esc(v.id)}" title="View this version">${esc(versionLabel(v))}</button>${v.id !== 'live' ? `<button class="ver-x" data-vid="${esc(v.id)}" title="Delete version" aria-label="Delete version">${icon('close')}</button>` : ''}</span>`).join('')}
     </div>` : ''}
     <div class="tabs">
       <button data-tab="insights" class="${tab === 'insights' ? 'active' : ''}" type="button">Insights</button>
@@ -302,11 +303,11 @@ function renderInsightDraft(draft) {
   const sections = draft?.sections || {};
   $('m-tabbody').innerHTML = `
     <div class="tiles">
-      <div class="tile span"><h3>▤ Summary</h3>${streamBlock(sections.summary, 'Waiting for summary…')}</div>
-      <div class="tile"><h3>◈ Topics</h3>${streamBlock(sections.topics, 'Waiting for topics…')}</div>
-      <div class="tile"><h3>✦ Key Moments</h3>${streamBlock(sections.moments, 'Waiting for key moments…')}</div>
-      <div class="tile"><h3>🔗 Shared Links</h3>${streamBlock(sections.links, 'Waiting for shared links…')}</div>
-      <div class="tile span"><h3>✓ Action Items</h3>${streamBlock(sections.actions, 'Waiting for action items…')}</div>
+      <div class="tile span"><h3>${icon('file-text')} Summary</h3>${streamBlock(sections.summary, 'Waiting for summary…')}</div>
+      <div class="tile"><h3>${icon('hash')} Topics</h3>${streamBlock(sections.topics, 'Waiting for topics…')}</div>
+      <div class="tile"><h3>${icon('sparkles')} Key Moments</h3>${streamBlock(sections.moments, 'Waiting for key moments…')}</div>
+      <div class="tile"><h3>${icon('link')} Shared Links</h3>${streamBlock(sections.links, 'Waiting for shared links…')}</div>
+      <div class="tile span"><h3>${icon('list-checks')} Action Items</h3>${streamBlock(sections.actions, 'Waiting for action items…')}</div>
     </div>`;
 }
 
@@ -332,11 +333,11 @@ function renderInsights() {
   const actions = renderActionItems(parsed.actions);
   $('m-tabbody').innerHTML = `
     <div class="tiles">
-      <div class="tile span"><h3>▤ Summary</h3>${parsed.summary ? `<p>${esc(parsed.summary)}</p>` : '<div class="tile-empty">No summary.</div>'}</div>
-      <div class="tile"><h3>◈ Topics</h3>${topics}</div>
-      <div class="tile"><h3>✦ Key Moments</h3>${moments}</div>
-      <div class="tile"><h3>🔗 Shared Links</h3>${links}</div>
-      <div class="tile span"><h3>✓ Action Items</h3>${actions}</div>
+      <div class="tile span"><h3>${icon('file-text')} Summary</h3>${parsed.summary ? `<p>${esc(parsed.summary)}</p>` : '<div class="tile-empty">No summary.</div>'}</div>
+      <div class="tile"><h3>${icon('hash')} Topics</h3>${topics}</div>
+      <div class="tile"><h3>${icon('sparkles')} Key Moments</h3>${moments}</div>
+      <div class="tile"><h3>${icon('link')} Shared Links</h3>${links}</div>
+      <div class="tile span"><h3>${icon('list-checks')} Action Items</h3>${actions}</div>
     </div>`;
   $('m-tabbody').querySelectorAll('.chk').forEach((cb) => (cb.onchange = () => toggleAction(Number(cb.dataset.line), Number(cb.dataset.i), cb.checked)));
 }
@@ -378,8 +379,8 @@ function linkParts(value) {
 
 function renderSharedLink(value) {
   const { label, url } = linkParts(value);
-  if (!url) return `<li><span class="dot">↗</span><span>${esc(label)}</span></li>`;
-  return `<li><span class="dot">↗</span><a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a></li>`;
+  if (!url) return `<li><span class="dot">${icon('external-link')}</span><span>${esc(label)}</span></li>`;
+  return `<li><span class="dot">${icon('external-link')}</span><a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a></li>`;
 }
 
 function relatedReasonList(items, limit = 3) {
@@ -416,7 +417,7 @@ function renderRelated() {
   const relatedList = related.length
     ? `<ul>${related.map((r) => {
         const d = store.get(r.id); if (!d) return '';
-        return `<li class="rel" data-id="${esc(r.id)}"><span class="dot">↗</span><span><strong>${esc(d.rec.title || 'Untitled')}</strong>
+        return `<li class="rel" data-id="${esc(r.id)}"><span class="dot">${icon('external-link')}</span><span><strong>${esc(d.rec.title || 'Untitled')}</strong>
           <span class="owner">— ${esc(fmtDateShort(d.rec.startedAt))} · ${esc(relatedMeetingReason(r))}</span></span></li>`;
       }).join('')}</ul>`
     : '<div class="tile-empty">No related meetings found yet.</div>';
@@ -424,7 +425,7 @@ function renderRelated() {
   $('m-tabbody').innerHTML = `
     <div class="tiles">
       <div class="tile span"><h3>${topicTitle}</h3>${topicChips}${topicHint}</div>
-      <div class="tile span"><h3>🔗 Related meetings</h3>${relatedList}</div>
+      <div class="tile span"><h3>${icon('link')} Related meetings</h3>${relatedList}</div>
     </div>`;
 
   $('m-tabbody').querySelectorAll('.chip[data-topic]').forEach((b) => (b.onclick = () => searchTopic(b.dataset.topic)));
@@ -479,7 +480,7 @@ function renderParticipants() {
 
   $('m-tabbody').innerHTML = `
     <div class="tiles">
-      <div class="tile span"><h3>👥 Participants</h3>${list}</div>
+      <div class="tile span"><h3>${icon('users')} Participants</h3>${list}</div>
     </div>`;
 }
 
@@ -535,7 +536,7 @@ function renderTranscript() {
       search: `${p.name || ''} ${p.role || ''} ${p.initials || ''}`,
       html: () => `<div class="tline participant-line">
         <span class="ts"></span>
-        <span class="sp">${esc(p.initials || '👥')}</span>
+        <span class="sp">${p.initials ? esc(p.initials) : icon('users')}</span>
         <span class="ttext">${esc(p.name || '')}${p.role ? ` <span class="owner">— ${esc(p.role)}</span>` : ''}</span>
       </div>`,
     }));
@@ -545,8 +546,8 @@ function renderTranscript() {
       transcriptSection('Participants', participantRows, ql),
     ].filter(Boolean).join('');
     $('m-tlines').innerHTML = html || '<div class="tile-empty">No matching lines.</div>';
-    $('m-tlines').querySelectorAll('img.av').forEach((img) => (img.onerror = () => { const x = document.createElement('span'); x.className = 'sp'; x.textContent = '👤'; img.replaceWith(x); }));
-    $('m-tlines').querySelectorAll('img.tline-img').forEach((img) => (img.onerror = () => { const x = document.createElement('span'); x.className = 'img-chip'; x.textContent = '🖼 image'; (img.closest('.tline-imglink') || img).replaceWith(x); }));
+    $('m-tlines').querySelectorAll('img.av').forEach((img) => (img.onerror = () => { const x = document.createElement('span'); x.className = 'sp'; x.innerHTML = icon('user'); img.replaceWith(x); }));
+    $('m-tlines').querySelectorAll('img.tline-img').forEach((img) => (img.onerror = () => { const x = document.createElement('span'); x.className = 'img-chip'; x.innerHTML = icon('image') + ' image'; (img.closest('.tline-imglink') || img).replaceWith(x); }));
   };
   $('m-tsearch').oninput = (e) => paint(e.target.value);
   paint();
@@ -745,7 +746,7 @@ async function generateInsights(d) {
   const agent = getTarget(settings, settings.activeAgentId);
   if (!agent) { toast('No active model/agent — configure one in Settings → API/Agents.'); return; }
   const gen = $('m-gen');
-  if (gen) { gen.disabled = true; gen.textContent = '✨ Generating…'; }
+  if (gen) { gen.disabled = true; gen.innerHTML = icon('sparkles') + ' Generating…'; }
   d.insightDraft = newInsightDraft();
   if (current === d) renderInsights();
   toast('Generating insight sections in parallel…');
@@ -761,7 +762,7 @@ async function generateInsights(d) {
   const errorCount = results.filter((result) => result.status === 'rejected').length;
   if (!successCount) {
     delete d.insightDraft;
-    if (gen) { gen.disabled = false; gen.textContent = d.parsed.hasAny ? '✨ Regenerate' : '✨ Generate insights'; }
+    if (gen) { gen.disabled = false; gen.innerHTML = icon('sparkles') + ' ' + (d.parsed.hasAny ? 'Regenerate' : 'Generate insights'); }
     if (current === d) renderDetail();
     toast(errorCount ? 'Couldn’t generate insights.' : 'No insights returned by the model.');
     return;
@@ -823,10 +824,10 @@ function showProGate() {
   document.querySelector('.layout').innerHTML = `
     <div class="progate">
       <div class="progate-card">
-        <div class="progate-ic">🗓✨</div>
+        <div class="progate-ic">${icon('calendar')}${icon('sparkles')}</div>
         <h2>Meetings is a Pro feature</h2>
         <p>The live meeting scribe and this dashboard — transcripts, AI summaries, action items, search and the relationship graph — are part of ChatPanel Pro.</p>
-        <button class="btn primary" id="m-upgrade">✨ Upgrade to Pro</button>
+        <button class="btn primary" id="m-upgrade">${icon('sparkles')} Upgrade to Pro</button>
       </div>
     </div>`;
   // Open the pricing page carrying this install's id (so checkout seats THIS

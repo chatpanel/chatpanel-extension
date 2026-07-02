@@ -11,6 +11,7 @@ import { drawGraph } from './js/graph-view.js';
 import { initialHistoryView } from './js/history-state.js';
 import { renderMarkdown } from './js/markdown.js';
 import { topicDisplayForSource } from './js/topic-extraction.js';
+import { icon, iconForEmoji, hydrate } from './js/icons.js';
 
 const $ = (id) => document.getElementById(id);
 const GRAPH_RENDER_LIMIT = 150;
@@ -77,22 +78,23 @@ function displayMcpServer(slug) {
   if (/^context7$/i.test(s)) return 'Context7';
   return s.replace(/\b[a-z]/g, (c) => c.toUpperCase());
 }
+// Returns ready-to-insert HTML: a leading Lucide icon + escaped (possibly dynamic) text.
 function stepLabel(s) {
   const i = s.input || {};
   switch (s.tool) {
-    case 'inspect_page': return '🔍 Read the page';
-    case 'fill_form': return `⌨️ Filled ${i.fields?.length || 0} field(s)`;
-    case 'fill_combobox': return `⌨️ Typed “${String(i.value || '').slice(0, 40)}” → select`;
-    case 'click_element': return `🖱️ Clicked ${String(i.selector || '').slice(0, 48)}`;
-    case 'click_by_text': return `🖱️ Clicked “${String(i.text || '').slice(0, 40)}”`;
-    case 'screenshot': return '📸 Took a screenshot';
-    case 'marked_screenshot': return '🔢 Tagged clickable elements';
-    case 'click_mark': return `🖱️ Clicked element #${i.n}`;
-    case 'click_at': return `🖱️ Clicked at (${Math.round(i.x)}, ${Math.round(i.y)})`;
-    case 'type_text': return `⌨️ Typed “${String(i.text || '').slice(0, 40)}”`;
-    case 'press_key': return `⌨️ Pressed ${i.key}`;
-    case 'scroll': return `🖱️ Scrolled ${i.dy > 0 ? 'down' : 'up'}`;
-    default: { const m = /^mcp_(.+?)__(.+)$/.exec(s.tool || ''); return m ? `${displayMcpServer(m[1])} / ${m[2]}` : `🔧 ${s.tool}`; }
+    case 'inspect_page': return `${icon('search')} Read the page`;
+    case 'fill_form': return `${icon('keyboard')} Filled ${i.fields?.length || 0} field(s)`;
+    case 'fill_combobox': return `${icon('keyboard')} Typed “${esc(String(i.value || '').slice(0, 40))}” → select`;
+    case 'click_element': return `${icon('mouse-pointer-click')} Clicked ${esc(String(i.selector || '').slice(0, 48))}`;
+    case 'click_by_text': return `${icon('mouse-pointer-click')} Clicked “${esc(String(i.text || '').slice(0, 40))}”`;
+    case 'screenshot': return `${icon('camera')} Took a screenshot`;
+    case 'marked_screenshot': return `${icon('hash')} Tagged clickable elements`;
+    case 'click_mark': return `${icon('mouse-pointer-click')} Clicked element #${esc(String(i.n))}`;
+    case 'click_at': return `${icon('mouse-pointer-click')} Clicked at (${Math.round(i.x)}, ${Math.round(i.y)})`;
+    case 'type_text': return `${icon('keyboard')} Typed “${esc(String(i.text || '').slice(0, 40))}”`;
+    case 'press_key': return `${icon('keyboard')} Pressed ${esc(String(i.key))}`;
+    case 'scroll': return `${icon('mouse-pointer-click')} Scrolled ${i.dy > 0 ? 'down' : 'up'}`;
+    default: { const m = /^mcp_(.+?)__(.+)$/.exec(s.tool || ''); return m ? `${esc(displayMcpServer(m[1]))} / ${esc(m[2])}` : `${icon('wrench')} ${esc(String(s.tool))}`; }
   }
 }
 function stepArgs(s) {
@@ -114,17 +116,17 @@ function renderSteps(steps) {
     const m = /^mcp_(.+?)__(.+)$/.exec(s.tool || '');
     const head = m
       ? `<div class="step step-mcp"><span class="step-server">${esc(displayMcpServer(m[1]))}</span><span class="step-tool">${esc(m[2])}</span></div>`
-      : `<div class="step">${esc(stepLabel(s))}</div>`;
+      : `<div class="step">${stepLabel(s)}</div>`;
     const status = s.status ? `<span class="step-status ${/error|fail|blocked/i.test(s.status) ? 'bad' : ''}">${esc(s.status)}</span>` : '';
     const shot = s.image ? `<img class="step-shot" src="${esc(s.image)}" alt="screenshot" loading="lazy" />` : '';
     return `${head}${status}${stepArgs(s)}${shot}`;
   }).join('');
-  return `<details class="agent-steps"><summary>🔧 Actions (${steps.length})</summary><div class="steps-body">${items}</div></details>`;
+  return `<details class="agent-steps"><summary>${icon('wrench')} Actions (${steps.length})</summary><div class="steps-body">${items}</div></details>`;
 }
 function msgBody(m) {
   let html = '';
   if (m.steps?.length) html += renderSteps(m.steps);
-  if (m.thinking) html += `<details class="thinking"><summary>💭 Thinking</summary><div class="thinking-body">${esc(m.thinking)}</div></details>`;
+  if (m.thinking) html += `<details class="thinking"><summary>${icon('thinking')} Thinking</summary><div class="thinking-body">${esc(m.thinking)}</div></details>`;
   html += m.content ? renderMarkdown(String(m.content)) : '';
   return html || '<span class="owner">(no text)</span>';
 }
@@ -165,7 +167,7 @@ function renderList() {
   host.innerHTML = results.map(({ d, snippet }) => {
     const e = d.entry;
     return `<div class="mitem${current && current.entry.id === e.id ? ' active' : ''}" data-id="${esc(e.id)}">
-      <div class="t"><span>💬</span> ${esc(e.title || 'Untitled chat')}</div>
+      <div class="t"><span>${icon('chat')}</span> ${esc(e.title || 'Untitled chat')}</div>
       <div class="meta"><span>${esc(d.agent)}</span><span>·</span><span>${esc(relTime(e.updatedAt))}</span><span class="pill">${e.msgs || (d.conv.messages || []).length} msgs</span></div>
       ${snippet ? `<div class="snip">${snippet}</div>` : ''}
     </div>`;
@@ -204,15 +206,15 @@ function renderDetail() {
       <div>
         <h2>${esc(conv.title || 'Untitled chat')}</h2>
         <div class="sub">
-          <span class="stat">🤖 ${esc(agent)}</span>
-          <span class="stat">🗓 ${esc(fmtDate(conv.createdAt || current.entry.updatedAt))}</span>
-          <span class="stat">🕘 ${esc(relTime(current.entry.updatedAt))}</span>
+          <span class="stat">${icon('bot')} ${esc(agent)}</span>
+          <span class="stat">${icon('calendar')} ${esc(fmtDate(conv.createdAt || current.entry.updatedAt))}</span>
+          <span class="stat">${icon('history-clock')} ${esc(relTime(current.entry.updatedAt))}</span>
         </div>
       </div>
       <div class="dactions">
-        <button class="btn" id="h-open" type="button">💬 Open in panel</button>
-        <button class="btn" id="h-export" type="button">⬆ Export</button>
-        <button class="btn danger" id="h-delete" type="button" title="Delete chat">🗑</button>
+        <button class="btn" id="h-open" type="button">${icon('chat')} Open in panel</button>
+        <button class="btn" id="h-export" type="button">${icon('arrow-up')} Export</button>
+        <button class="btn danger" id="h-delete" type="button" title="Delete chat" aria-label="Delete chat">${icon('trash-2')}</button>
       </div>
     </div>
     <div class="metrics">
@@ -247,7 +249,7 @@ function renderThread() {
     const rows = msgs.filter((m) => !ql || String(m.content || '').toLowerCase().includes(ql));
     $('h-thread').innerHTML = rows.length ? rows.map((m) => {
       const who = m.role === 'user' ? 'You' : (m.agentName || current.agent || 'Assistant');
-      const att = (m.attachments || []).length ? `<div class="msg-att">${m.attachments.map((a) => `📎 ${esc(a.title || a.url || 'attachment')}`).join(' · ')}</div>` : '';
+      const att = (m.attachments || []).length ? `<div class="msg-att">${m.attachments.map((a) => `${icon('attach')} ${esc(a.title || a.url || 'attachment')}`).join(' · ')}</div>` : '';
       return `<div class="msg ${m.role === 'user' ? 'user' : 'assistant'}"><div class="msg-role">${esc(who)}</div><div class="msg-body md">${msgBody(m)}${att}</div></div>`;
     }).join('') : '<div class="tile-empty">No matching messages.</div>';
   };
@@ -269,7 +271,7 @@ function renderRelated() {
   const relatedList = related.length
     ? `<ul>${related.map((r) => {
         const d = store.get(r.id); if (!d) return '';
-        return `<li class="rel" data-id="${esc(r.id)}"><span class="dot">↗</span><span><strong>${esc(d.conv.title || 'Untitled')}</strong>
+        return `<li class="rel" data-id="${esc(r.id)}"><span class="dot">${icon('external-link')}</span><span><strong>${esc(d.conv.title || 'Untitled')}</strong>
           <span class="owner">— ${esc(relTime(d.entry.updatedAt))} · ${esc(relatedHistoryReason(r))}</span></span></li>`;
       }).join('')}</ul>`
     : '<div class="tile-empty">No related chats found yet.</div>';
@@ -277,7 +279,7 @@ function renderRelated() {
   $('h-tabbody').innerHTML = `
     <div class="tiles">
       <div class="tile span"><h3>${topicTitle}</h3>${topicChips}${topicHint}</div>
-      <div class="tile span"><h3>🔗 Related chats</h3>${relatedList}<p class="muted tiny">See the <strong>Topic Graph</strong> tab to explore how these relate visually.</p></div>
+      <div class="tile span"><h3>${icon('link')} Related chats</h3>${relatedList}<p class="muted tiny">See the <strong>Topic Graph</strong> tab to explore how these relate visually.</p></div>
     </div>`;
   $('h-tabbody').querySelectorAll('.chip[data-topic]').forEach((b) => (b.onclick = () => searchTopic(b.dataset.topic)));
   $('h-tabbody').querySelectorAll('.rel[data-id]').forEach((li) => (li.onclick = () => select(li.dataset.id)));

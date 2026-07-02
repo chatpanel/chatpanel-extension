@@ -4,33 +4,34 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ChatPanel</title>
+    <link rel="stylesheet" href="icons.css" />
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
     <div id="panel-body">
     <!-- Top bar -->
     <header class="topbar">
-      <button id="btn-history" class="icon-btn" title="Chat history" aria-label="History">☰</button>
-      <button id="btn-notes" class="icon-btn" title="Notes" aria-label="Notes">✎</button>
+      <button id="btn-history" class="icon-btn" title="Chat history" aria-label="History" data-icon="menu"></button>
+      <button id="btn-notes" class="icon-btn" title="Notes" aria-label="Notes" data-icon="notes"></button>
       <div class="agent-select">
         <button id="agent-button" class="agent-button" title="Choose agent">
           <span id="agent-name">Claude Code</span>
-          <span class="caret">▾</span>
+          <span class="caret" data-icon="caret"></span>
         </button>
         <div id="agent-menu" class="menu hidden" role="menu"></div>
       </div>
       <span id="agent-model" class="agent-model hidden" title=""></span>
       <div class="topbar-spacer"></div>
-      <button id="btn-new" class="new-chat-btn" title="Start a new chat">+ New chat</button>
-      <button id="btn-upgrade" class="chip hidden" title="Upgrade to Pro">✨ Upgrade</button>
-      <button id="btn-settings" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
+      <button id="btn-new" class="new-chat-btn" title="Start a new chat" data-icon="plus">New chat</button>
+      <button id="btn-upgrade" class="chip hidden" title="Upgrade to Pro" data-icon="upgrade">Upgrade</button>
+      <button id="btn-settings" class="icon-btn" title="Settings" aria-label="Settings" data-icon="settings"></button>
     </header>
 
     <!-- Update notice (manual/unpacked builds only; hidden on Web Store installs) -->
     <div id="update-banner" class="update-banner hidden" role="status">
       <span id="update-banner-text"></span>
       <a id="update-banner-link" class="update-banner-link" target="_blank" rel="noopener">Download</a>
-      <button id="update-banner-dismiss" class="update-banner-x" aria-label="Dismiss">✕</button>
+      <button id="update-banner-dismiss" class="update-banner-x" aria-label="Dismiss" data-icon="close"></button>
     </div>
 
     <!-- History drawer -->
@@ -38,8 +39,8 @@
       <div class="history-head">
         <div class="history-search-row">
           <input id="history-search" type="search" placeholder="Search chats…" />
-          <button id="history-expand" class="icon-btn" title="Open full chat-history dashboard" aria-label="Open full view">⤢</button>
-          <button id="history-close" class="icon-btn" aria-label="Close">✕</button>
+          <button id="history-expand" class="icon-btn" title="Open full chat-history dashboard" aria-label="Open full view" data-icon="expand"></button>
+          <button id="history-close" class="icon-btn" aria-label="Close" data-icon="close"></button>
         </div>
         <div id="history-modes" class="history-modes" role="tablist" aria-label="Chat search mode">
           <button data-mode="smart" class="active" type="button" title="Ranked search across titles and messages">Best match</button>
@@ -49,9 +50,9 @@
       <div id="history-list" class="history-list"></div>
       <div class="history-foot">
         <div id="history-pager" class="history-pager hidden">
-          <button id="history-page-prev" class="pager-btn" type="button" aria-label="Previous history page">‹</button>
+          <button id="history-page-prev" class="pager-btn" type="button" aria-label="Previous history page" data-icon="chevron-left"></button>
           <span id="history-page-status"></span>
-          <button id="history-page-next" class="pager-btn" type="button" aria-label="Next history page">›</button>
+          <button id="history-page-next" class="pager-btn" type="button" aria-label="Next history page" data-icon="chevron-right"></button>
         </div>
         <button id="history-clear" class="text-btn danger">Clear all history</button>
       </div>
@@ -67,7 +68,7 @@
         <h1>ChatPanel</h1>
         <p>Your Privacy-First AI Assistant</p>
         <div id="empty-suggestions" class="suggestions"></div>
-        <button id="suggest-reload" class="suggest-reload" type="button">✨ Suggest ideas for this page</button>
+        <button id="suggest-reload" class="suggest-reload" type="button" data-icon="sparkles">Suggest ideas for this page</button>
       </div>
     </main>
 
@@ -78,11 +79,11 @@
     <aside id="live-notes-drawer" class="live-notes-drawer hidden">
       <div class="live-notes-resize" title="Drag to resize"></div>
       <div class="live-notes-head">
-        <span class="live-notes-title">📝 Meeting</span>
+        <span class="live-notes-title" data-icon="recording">Meeting</span>
         <span id="live-notes-status" class="live-notes-status"></span>
-        <button id="live-notes-download" class="icon-btn" title="Download this tab" aria-label="Download">⬇</button>
-        <button id="live-notes-copy" class="icon-btn" title="Copy this tab" aria-label="Copy">⧉</button>
-        <button id="live-notes-close" class="icon-btn" title="Close" aria-label="Close">✕</button>
+        <button id="live-notes-download" class="icon-btn" title="Download this tab" aria-label="Download" data-icon="download"></button>
+        <button id="live-notes-copy" class="icon-btn" title="Copy this tab" aria-label="Copy" data-icon="copy"></button>
+        <button id="live-notes-close" class="icon-btn" title="Close" aria-label="Close" data-icon="close"></button>
       </div>
       <div class="live-notes-tabs" role="tablist">
         <button id="ln-tab-summary" class="ln-tab active" role="tab">Summary</button>
@@ -98,10 +99,10 @@
       <div class="live-notes-resize" title="Drag to resize"></div>
       <div id="meetings-list-view">
         <div class="live-notes-head">
-          <span class="live-notes-title">👥 Meetings</span>
+          <span class="live-notes-title" data-icon="meetings">Meetings</span>
           <span class="topbar-spacer"></span>
-          <button id="meetings-expand" class="icon-btn" title="Open full meetings dashboard" aria-label="Open full view">⤢</button>
-          <button id="meetings-close" class="icon-btn" title="Close" aria-label="Close">✕</button>
+          <button id="meetings-expand" class="icon-btn" title="Open full meetings dashboard" aria-label="Open full view" data-icon="expand"></button>
+          <button id="meetings-close" class="icon-btn" title="Close" aria-label="Close" data-icon="close"></button>
         </div>
         <input id="meetings-search" class="live-notes-search" type="search" placeholder="Search meetings…" />
         <div id="meetings-modes" class="meetings-modes" role="tablist" aria-label="Meeting search mode">
@@ -112,13 +113,13 @@
       </div>
       <div id="meeting-view" class="hidden">
         <div class="live-notes-head">
-          <button id="meeting-back" class="icon-btn" title="Back to list" aria-label="Back">←</button>
+          <button id="meeting-back" class="icon-btn" title="Back to list" aria-label="Back" data-icon="back"></button>
           <span id="meeting-view-title" class="live-notes-title">Meeting</span>
           <span id="meeting-view-status" class="live-notes-status"></span>
-          <button id="meeting-ask" class="icon-btn" title="Ask about this meeting" aria-label="Ask">💬</button>
-          <button id="meeting-download" class="icon-btn" title="Download this tab" aria-label="Download">⬇</button>
-          <button id="meeting-copy" class="icon-btn" title="Copy this tab" aria-label="Copy">⧉</button>
-          <button id="meeting-vclose" class="icon-btn" title="Close" aria-label="Close">✕</button>
+          <button id="meeting-ask" class="icon-btn" title="Ask about this meeting" aria-label="Ask" data-icon="ask"></button>
+          <button id="meeting-download" class="icon-btn" title="Download this tab" aria-label="Download" data-icon="download"></button>
+          <button id="meeting-copy" class="icon-btn" title="Copy this tab" aria-label="Copy" data-icon="copy"></button>
+          <button id="meeting-vclose" class="icon-btn" title="Close" aria-label="Close" data-icon="close"></button>
         </div>
         <div class="live-notes-tabs" role="tablist">
           <button id="mv-tab-summary" class="ln-tab active" role="tab">Summary</button>
@@ -154,17 +155,17 @@
           <div id="input-ghost" class="input-ghost" aria-hidden="true"></div>
         </div>
         <div class="composer-tools">
-          <button id="btn-attach" class="tool-btn" title="Add context" aria-label="Add context">＋</button>
-          <button id="btn-skills" class="tool-btn" title="Skills" aria-label="Skills">🎓</button>
+          <button id="btn-attach" class="tool-btn" title="Add context" aria-label="Add context" data-icon="attach"></button>
+          <button id="btn-skills" class="tool-btn" title="Skills" aria-label="Skills" data-icon="skills"></button>
           <button id="btn-mcp" class="tool-btn mcp-toggle" title="MCP tools: Auto" aria-label="MCP tools" aria-pressed="false">MCP</button>
-          <button id="btn-history-context" class="tool-btn history-toggle" title="History context: Off" aria-label="History context" aria-pressed="false">🕘</button>
-          <button id="btn-privacy" class="tool-btn privacy-toggle" title="Privacy: redaction off" aria-label="Privacy redaction" aria-pressed="false">🛡</button>
-          <button id="btn-pageact" class="tool-btn" title="Act on page — let the agent fill forms & click for you" aria-label="Act on page" aria-pressed="false">▶️</button>
+          <button id="btn-history-context" class="tool-btn history-toggle" title="History context: Off" aria-label="History context" aria-pressed="false" data-icon="history-clock"></button>
+          <button id="btn-privacy" class="tool-btn privacy-toggle" title="Privacy: redaction off" aria-label="Privacy redaction" aria-pressed="false" data-icon="privacy"></button>
+          <button id="btn-pageact" class="tool-btn" title="Act on page — let the agent fill forms & click for you" aria-label="Act on page" aria-pressed="false" data-icon="pageact"></button>
           <div class="composer-tools-spacer"></div>
-          <button id="btn-copy-chat" class="tool-btn" title="Copy chat as Markdown" aria-label="Copy chat as Markdown">📋</button>
-          <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI" aria-label="Improve prompt">✨</button>
-          <button id="btn-send" class="send-btn" title="Send" aria-label="Send">↑</button>
-          <button id="btn-stop" class="send-btn stop hidden" title="Stop" aria-label="Stop">■</button>
+          <button id="btn-copy-chat" class="tool-btn" title="Copy chat as Markdown" aria-label="Copy chat as Markdown" data-icon="clipboard"></button>
+          <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI" aria-label="Improve prompt" data-icon="assist"></button>
+          <button id="btn-send" class="send-btn" title="Send" aria-label="Send" data-icon="send"></button>
+          <button id="btn-stop" class="send-btn stop hidden" title="Stop" aria-label="Stop" data-icon="stop"></button>
         </div>
       </div>
       <div id="attach-menu" class="menu up hidden"></div>
@@ -173,7 +174,7 @@
       <div id="history-context-menu" class="menu up hidden"></div>
       <div id="privacy-menu" class="menu up hidden"></div>
       <div id="watch-menu" class="menu up hidden">
-        <div class="menu-section">👁 Watch this page</div>
+        <div class="menu-section" data-icon="watch">Watch this page</div>
         <label class="watch-row">Re-check every
           <input id="watch-interval-n" class="watch-num" type="number" min="1" value="10" />
           <select id="watch-interval-unit">
@@ -195,7 +196,7 @@
 
     <!-- Collapsible right rail — pluggable panes (Meetings, Watch, future) -->
     <aside id="rail" class="rail"></aside>
-    <button id="rail-toggle" class="rail-toggle" title="Collapse panel" aria-label="Toggle rail">‹</button>
+    <button id="rail-toggle" class="rail-toggle" title="Collapse panel" aria-label="Toggle rail" data-icon="chevron-left"></button>
 
     <!-- URL paste prompt -->
     <div id="toast" class="toast hidden"></div>

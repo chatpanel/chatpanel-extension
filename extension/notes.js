@@ -19,6 +19,7 @@ import {
 import {
   SWARM_ROLES, SWARM_ROLE_META, swarmOverrides, swarmCandidates, roleAgent, getRouter,
 } from './js/notes-swarm-router.js';
+import { icon, iconForEmoji, hydrate } from './js/icons.js';
 import {
   HUMAN, blankAttribution, applyAttribution, attributionSummary, normalizeAttribution,
 } from './js/notes-provenance.js';
@@ -463,7 +464,7 @@ function previewVersion(idx) {
   previewedVersion = idx;
   el.innerHTML =
     `<div class="hpv-head"><span class="hpv-label">${escapeHtml(v.label || v.by)} · ${escapeHtml(relTime(v.at))}</span>`
-    + `<button class="hpv-restore">Restore this</button><button class="hpv-close" title="Close preview">✕</button></div>`
+    + `<button class="hpv-restore">Restore this</button><button class="hpv-close" title="Close preview" aria-label="Close preview">${icon('close')}</button></div>`
     + `<div class="hpv-body md">${renderMarkdown(v.body)}</div>`;
   el.querySelector('.hpv-restore').onclick = () => restoreVersion(idx);
   el.querySelector('.hpv-close').onclick = () => { previewedVersion = -1; el.classList.add('hidden'); renderHistory(); };
@@ -694,7 +695,7 @@ let agentAbort = null;
 function setAgentBusy(busy) {
   const btn = $('n-agent');
   btn.classList.toggle('busy', busy);
-  btn.textContent = busy ? '⏹ Stop' : '✨ Agent';
+  btn.innerHTML = busy ? icon('stop') + ' Stop' : icon('assist') + ' Agent';
   $('n-body').readOnly = busy;
 }
 function closeAgentMenu() { $('n-agent-menu').classList.add('hidden'); }
@@ -1026,7 +1027,7 @@ function renderAc() {
       if (ac.mode === 'skill') d.innerHTML = `<span class="ac-badge skill-tag">#${escapeHtml(it.name)}</span><span class="ac-title">use this skill for the command/task</span>`;
       else if (ac.mode === 'cmd' && it.agent) d.innerHTML = `<span class="ac-badge agent">@${escapeHtml(it.name)}</span><span class="ac-title">assign a task to this agent</span>`;
       else if (ac.mode === 'cmd') d.innerHTML = `<span class="ac-badge cmd">@${it.cmd}</span><span class="ac-title">${escapeHtml(it.hint)}</span>`;
-      else if (ac.mode === 'slash') d.innerHTML = `<span class="ac-badge slash">${it.icon}</span><span class="ac-title"><b>${escapeHtml(it.label)}</b> — ${escapeHtml(it.hint)}</span>`;
+      else if (ac.mode === 'slash') d.innerHTML = `<span class="ac-badge slash">${iconForEmoji(it.icon) || escapeHtml(it.icon)}</span><span class="ac-title"><b>${escapeHtml(it.label)}</b> — ${escapeHtml(it.hint)}</span>`;
       else d.innerHTML = `<span class="ac-badge ${it.type}">${it.type}</span><span class="ac-title">${escapeHtml(it.title)}</span>`;
       d.onmousedown = (e) => { e.preventDefault(); ac.index = i; acceptAc(); };
       el.appendChild(d);
@@ -1269,7 +1270,7 @@ function renderActivity() {
   const tl = $('n-activity-timeline');
   tl.innerHTML = log.length
     ? log.map((e) =>
-        `<div class="tlrow"><span class="tlrow-ico">${activityIcon(e.who)}</span>`
+        `<div class="tlrow"><span class="tlrow-ico">${(g => iconForEmoji(g) || escapeHtml(g))(activityIcon(e.who))}</span>`
         + `<span class="tlrow-who">${escapeHtml(e.who)}</span>`
         + `<span class="tlrow-what">${escapeHtml(e.what)}${e.n > 1 ? ` ×${e.n}` : ''}</span>`
         + `<span class="tlrow-when">${escapeHtml(relTime(e.at))}</span></div>`).join('')
@@ -1298,7 +1299,7 @@ function renderActivity() {
       const card = document.createElement('div');
       card.className = `acard ${state}`;
       card.innerHTML =
-        `<div class="acard-top"><span class="acard-ico">${stepIcon(s)}</span>` +
+        `<div class="acard-top"><span class="acard-ico">${(g => iconForEmoji(g) || escapeHtml(g))(stepIcon(s))}</span>` +
         `<span class="acard-name">${escapeHtml(toolTitle(s.tool))}</span>` +
         `<span class="acard-mark">${mark}</span></div>` +
         (arg ? `<div class="acard-arg"><code>${escapeHtml(arg)}</code></div>` : '') +
@@ -1801,7 +1802,7 @@ function renderCowriter() {
   }
   const label = document.createElement('span');
   label.className = 'cw-label';
-  label.textContent = '✍️ Co-writer';
+  label.innerHTML = icon('cowriter') + ' Co-writer';
   el.appendChild(label);
   for (const s of cwSuggestions.slice(0, 6)) {
     const chip = document.createElement('button');
@@ -1816,7 +1817,7 @@ function renderCowriter() {
     const chip = document.createElement('button');
     chip.className = `cw-sug cw-${s.role}`;
     chip.title = s.title || '';
-    chip.innerHTML = `<span class="cw-ico">${s.icon}</span>${s.html}`;
+    chip.innerHTML = `<span class="cw-ico">${iconForEmoji(s.icon) || escapeHtml(s.icon || '')}</span>${s.html}`;
     chip.onclick = () => { s.apply(); boardSuggestions = boardSuggestions.filter((x) => x !== s); renderCowriter(); };
     el.appendChild(chip);
   }
@@ -1830,7 +1831,8 @@ function renderCowriter() {
   const x = document.createElement('button');
   x.className = 'cw-x';
   x.title = 'Dismiss';
-  x.textContent = '✕';
+  x.setAttribute('aria-label', 'Dismiss');
+  x.innerHTML = icon('close');
   x.onclick = () => { cwSuggestions.forEach((s) => cwDismissed.add(s.key)); boardSuggestions.forEach((s) => boardDismissed.add(s.key)); clearCowriterUI(); };
   el.appendChild(x);
   refreshSideTabs();
@@ -2027,13 +2029,13 @@ function renderResearch() {
     const h = document.createElement('button');
     h.className = 'rcard-answer';
     h.title = 'Draft the answer INLINE here, grounded in these sources';
-    h.innerHTML = `✍️ Draft inline <span class="ra-q">“${escapeHtml(researchQuestion.slice(0, 44))}”</span>`;
+    h.innerHTML = `${icon('continue')} Draft inline <span class="ra-q">“${escapeHtml(researchQuestion.slice(0, 44))}”</span>`;
     h.onclick = () => draftAnswer();
     wrap.appendChild(h);
     const n = document.createElement('button');
     n.className = 'rcard-answer alt';
     n.title = 'Spin this off into a NEW linked note the swarm plans out';
-    n.innerHTML = '🧭 New note';
+    n.innerHTML = icon('plan') + ' New note';
     n.onclick = () => planInNewNote(researchQuestion);
     wrap.appendChild(n);
   }
@@ -2049,13 +2051,13 @@ function renderResearch() {
     const card = document.createElement('div');
     card.className = 'rcard';
     card.innerHTML =
-      `<div class="rcard-top"><span class="rcard-ico">${KIND_ICON[c.kind] || '📄'}</span>` +
+      `<div class="rcard-top"><span class="rcard-ico">${iconForEmoji(KIND_ICON[c.kind]) || icon('file-text')}</span>` +
       `<span class="rcard-title">${escapeHtml(c.title)}</span></div>` +
       (c.snippet ? `<div class="rcard-snip">${escapeHtml(c.snippet)}</div>` : '') +
       `<div class="rcard-acts">` +
       `<button class="rcard-insert" title="Insert a link at the cursor">Insert</button>` +
       `<button class="rcard-open" title="Open">Open</button>` +
-      `<button class="rcard-x" title="Dismiss">✕</button></div>`;
+      `<button class="rcard-x" title="Dismiss" aria-label="Dismiss">${icon('close')}</button></div>`;
     card.querySelector('.rcard-insert').onclick = () => insertResearch(c);
     card.querySelector('.rcard-open').onclick = () => openResearch(c);
     card.querySelector('.rcard-x').onclick = () => { researchDismissed.add(c.key); researchCards = researchCards.filter((x) => x !== c); renderResearch(); };
@@ -2338,13 +2340,13 @@ async function renderSwarmMenu() {
   gearRow.className = 'swarm-gear';
   gearRow.innerHTML =
     `<button class="sg-opt ${swarmGear === 'ambient' ? 'on' : ''}" data-g="ambient" title="Quiet — suggestions only, cheap/free members">🌙 Ambient</button>`
-    + `<button class="sg-opt ${swarmGear === 'focus' ? 'on' : ''}" data-g="focus" title="Active — drafts sections on the spot + runs the Fact-checker">⚡ Focus</button>`;
+    + `<button class="sg-opt ${swarmGear === 'focus' ? 'on' : ''}" data-g="focus" title="Active — drafts sections on the spot + runs the Fact-checker">${icon('zap')} Focus</button>`;
   gearRow.querySelectorAll('.sg-opt').forEach((b) => { b.onclick = () => setGear(b.dataset.g); });
   menu.appendChild(gearRow);
   // Shared intent — this note's goal; guides the Writer & Researcher.
   const intentWrap = document.createElement('label');
   intentWrap.className = 'swarm-intent';
-  intentWrap.innerHTML = '<span>🎯 Working on</span>';
+  intentWrap.innerHTML = `<span>${icon('target')} Working on</span>`;
   const intentIn = document.createElement('input');
   intentIn.type = 'text';
   intentIn.className = 'swarm-intent-in';
@@ -2361,7 +2363,7 @@ async function renderSwarmMenu() {
     const row = document.createElement('div');
     row.className = 'swarm-row';
     row.innerHTML =
-      `<div class="swarm-role"><span class="swarm-ico">${role.icon}</span>` +
+      `<div class="swarm-role"><span class="swarm-ico">${iconForEmoji(role.icon) || escapeHtml(role.icon || '')}</span>` +
       `<div class="swarm-role-txt"><b>${role.name}</b><span>${escapeHtml(role.desc)}</span></div>` +
       `<span class="swarm-tier tier-${escapeHtml(tier)}">${escapeHtml(tier)}</span></div>`;
     const sel = document.createElement('select');
@@ -2441,15 +2443,15 @@ function renderSwarmStatus() {
   const el = $('n-swarm-status');
   if (!el) return;
   if (!cwEnabled) { el.innerHTML = ''; return; }
-  const chip = (icon, r, title) =>
-    `<span class="ss ss-${r.state}" title="${title}"><span class="ss-dot"></span>${icon}${r.info ? ` <span class="ss-info">${escapeHtml(r.info)}</span>` : ''}</span>`;
+  const chip = (glyph, r, title) =>
+    `<span class="ss ss-${r.state}" title="${title}"><span class="ss-dot"></span>${glyph}${r.info ? ` <span class="ss-info">${escapeHtml(r.info)}</span>` : ''}</span>`;
   el.innerHTML =
-    (swarmGear === 'focus' ? '<span class="ss ss-focus" title="Focus mode — the swarm drafts sections + fact-checks (set in ⚙)">⚡ Focus</span>' : '')
-    + (board.intent ? `<span class="ss ss-intent" title="This note's goal — guides the Writer & Researcher">🎯 <span class="ss-info">${escapeHtml(board.intent.slice(0, 48))}</span></span>` : '')
-    + chip('✍️', swarm.editor, 'Editor — proofreads as you type')
-    + chip('🔎', swarm.researcher, 'Researcher — finds related material')
-    + chip('✨', swarm.writer, 'Writer — ⌘↵ to draft ahead')
-    + chip('🔗', swarm.connector, 'Connector — links new topics to your docs')
+    (swarmGear === 'focus' ? `<span class="ss ss-focus" title="Focus mode — the swarm drafts sections + fact-checks (set in ⚙)">${icon('zap')} Focus</span>` : '')
+    + (board.intent ? `<span class="ss ss-intent" title="This note's goal — guides the Writer & Researcher">${icon('target')} <span class="ss-info">${escapeHtml(board.intent.slice(0, 48))}</span></span>` : '')
+    + chip(icon('cowriter'), swarm.editor, 'Editor — proofreads as you type')
+    + chip(icon('research'), swarm.researcher, 'Researcher — finds related material')
+    + chip(icon('sparkles'), swarm.writer, 'Writer — ⌘↵ to draft ahead')
+    + chip(icon('link'), swarm.connector, 'Connector — links new topics to your docs')
     + (swarmGear === 'focus' ? chip('⚠️', swarm.factcheck, 'Fact-checker — flags shaky claims') : '');
 }
 
@@ -2685,7 +2687,7 @@ function init() {
   const collapseBtn = $('n-collapse');
   const applyCollapsed = (c) => {
     $('n-layout').classList.toggle('rail-collapsed', c);
-    collapseBtn.textContent = c ? '⇥' : '⇤';
+    collapseBtn.innerHTML = c ? icon('expand-list') : icon('collapse-list');
     collapseBtn.title = c ? 'Show list' : 'Hide list (⌘\\)';
   };
   let collapsed = localStorage.getItem('chatpanel.notes.railCollapsed') === '1';

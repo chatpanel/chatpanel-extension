@@ -1,0 +1,32 @@
+/* icons.css — shared styling for vendored Lucide inline-SVG icons (see js/icons.js).
+   Linked from every extension page so <button data-icon="…"> and icon('…') output
+   render consistently. Icons inherit text color (currentColor) and size to 1em. */
+
+.ico {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.125em; /* optical baseline alignment next to text */
+  flex: 0 0 auto;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  overflow: visible;
+}
+
+/* Icon-only controls: render the glyph a touch larger than body text. */
+.icon-btn .ico,
+.tool-btn .ico,
+.mini-btn .ico,
+.send-btn .ico,
+.omni-ico .ico {
+  width: 1.2em;
+  height: 1.2em;
+}
+
+/* Labeled buttons/links: put a small gap between the icon and its text. */
+.ico:first-child:not(:only-child) {
+  margin-right: 0.4em;
+}

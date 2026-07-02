@@ -5,20 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ChatPanel — Meetings</title>
     <link rel="icon" href="assets/icon128.png" />
+    <link rel="stylesheet" href="icons.css" />
     <link rel="stylesheet" href="meetings.css" />
   </head>
   <body>
     <header class="hdr">
       <nav class="topnav" aria-label="Workspace">
-        <a href="notes.html" class="topnav-item">✎ Notes</a>
-        <a href="history.html" class="topnav-item">☰ Chats</a>
-        <a href="meetings.html" class="topnav-item active">👥 Meetings <span id="m-count" class="count"></span></a>
+        <a href="notes.html" class="topnav-item" data-icon="notes">Notes</a>
+        <a href="history.html" class="topnav-item" data-icon="menu">Chats</a>
+        <a href="meetings.html" class="topnav-item active" data-icon="meetings">Meetings <span id="m-count" class="count"></span></a>
       </nav>
       <div class="hdr-actions">
-        <button id="m-import" class="btn" type="button">⬇ Import meeting</button>
+        <button id="m-import" class="btn" type="button" data-icon="download">Import meeting</button>
         <input id="m-import-file" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple class="hidden" />
-        <button id="m-graph-toggle" class="btn" type="button">🕸 Graph</button>
-        <button id="m-settings" class="btn ghost" type="button">⚙ ChatPanel settings</button>
+        <button id="m-graph-toggle" class="btn" type="button" data-icon="graph">Graph</button>
+        <button id="m-settings" class="btn ghost" type="button" data-icon="settings">ChatPanel settings</button>
       </div>
     </header>
     <div class="layout">

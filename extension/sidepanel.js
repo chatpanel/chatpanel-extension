@@ -1,4 +1,5 @@
 // ChatPanel side panel controller.
+import { icon, iconForEmoji, hydrate } from './js/icons.js';
 import {
   getSettings,
   defaultSettings,
@@ -139,7 +140,7 @@ function confirmPageAction(detail) {
     const card = document.createElement('div');
     card.style.cssText = 'width:100%;max-width:480px;background:var(--panel,#1b1d22);color:var(--fg,#e8e8ea);border:1px solid var(--border,#33363d);border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.4);padding:14px 16px;font:13px/1.45 system-ui,-apple-system,sans-serif';
     const title = document.createElement('div');
-    title.textContent = '🖋 Allow this page action?';
+    title.innerHTML = icon('pen') + ' Allow this page action?';
     title.style.cssText = 'font-weight:600;margin-bottom:6px';
     const body = document.createElement('div');
     body.textContent = detail;
@@ -680,7 +681,7 @@ function renderAgentMenu() {
     if (!usable) {
       const lock = document.createElement('span');
       lock.className = 'badge lock';
-      lock.textContent = '🔒 Pro';
+      lock.innerHTML = icon('lock') + ' Pro';
       item.appendChild(lock);
     } else if (badge) {
       const b = document.createElement('span');
@@ -719,7 +720,7 @@ function renderAgentMenu() {
   }
   const manage = document.createElement('button');
   manage.className = 'menu-item';
-  manage.innerHTML = '⚙ <span>Manage in Settings…</span>';
+  manage.innerHTML = icon('settings') + ' <span>Manage in Settings…</span>';
   manage.onclick = () => chrome.runtime.openOptionsPage();
   menu.appendChild(manage);
 }
@@ -748,7 +749,7 @@ function renderMessage(m) {
     const row = document.createElement('div');
     row.className = 'msg watch-log';
     row.dataset.id = m.id;
-    row.textContent = `👁 ${m.content} · ${timeLabel(m.ts)}`;
+    row.innerHTML = `${icon('watch')} ${escapeAttr(String(m.content ?? ''))} · ${escapeAttr(timeLabel(m.ts))}`;
     return row;
   }
 
@@ -761,7 +762,7 @@ function renderMessage(m) {
     card.dataset.id = m.id;
     const head = document.createElement('div');
     head.className = 'live-summary-h';
-    head.textContent = `🎙 Live summary · updated ${timeLabel(m.ts)}`;
+    head.innerHTML = `${icon('mic')} Live summary · updated ${escapeAttr(timeLabel(m.ts))}`;
     const body = document.createElement('div');
     body.className = 'live-summary-b bubble';
     body.innerHTML = m.content ? renderMarkdown(m.content) : '<span class="muted">Waiting for the first summary…</span>';
@@ -777,7 +778,8 @@ function renderMessage(m) {
   if (m.role === 'assistant') {
     const who = document.createElement('div');
     who.className = 'who';
-    who.textContent = m.watch ? `👁 watch run · ${timeLabel(m.watchAt)}` : m.agentName || 'Assistant';
+    if (m.watch) who.innerHTML = `${icon('watch')} watch run · ${escapeAttr(timeLabel(m.watchAt))}`;
+    else who.textContent = m.agentName || 'Assistant';
     wrap.appendChild(who);
   }
 
@@ -797,7 +799,7 @@ function renderMessage(m) {
         const note = document.createElement('div');
         note.className = 'who';
         note.style.marginTop = '6px';
-        note.textContent = '📎 ' + rest.map((a) => a.title || a.url).join(', ');
+        note.innerHTML = icon('attach') + ' ' + escapeAttr(rest.map((a) => a.title || a.url).join(', '));
         bubble.appendChild(note);
       }
       if (imgs.length) {
@@ -817,7 +819,7 @@ function renderMessage(m) {
       const q = document.createElement('div');
       q.className = 'who';
       q.style.marginTop = '4px';
-      q.textContent = '⏳ Queued';
+      q.innerHTML = icon('queued') + ' Queued';
       bubble.appendChild(q);
     }
   }
@@ -853,24 +855,47 @@ function updateBubble(m) {
 function stepLabel(s) {
   const i = s.input || {};
   switch (s.tool) {
-    case 'inspect_page': return '🔍 Read the page';
-    case 'fill_form': return `⌨️ Filled ${i.fields?.length || 0} field(s)`;
-    case 'fill_combobox': return `⌨️ Typed “${String(i.value || '').slice(0, 40)}” → select`;
-    case 'click_element': return `🖱️ Clicked ${String(i.selector || '').slice(0, 48)}`;
-    case 'click_by_text': return `🖱️ Clicked “${String(i.text || '').slice(0, 40)}”`;
-    case 'screenshot': return '📸 Took a screenshot';
-    case 'marked_screenshot': return '🔢 Tagged clickable elements';
-    case 'click_mark': return `🖱️ Clicked element #${i.n}`;
-    case 'click_at': return `🖱️ Clicked at (${Math.round(i.x)}, ${Math.round(i.y)})`;
-    case 'type_text': return `⌨️ Typed “${String(i.text || '').slice(0, 40)}”`;
-    case 'press_key': return `⌨️ Pressed ${i.key}`;
-    case 'scroll': return `🖱️ Scrolled ${i.dy > 0 ? 'down' : 'up'}`;
-    case 'draw_path': return `✏️ Drew a stroke (${i.points?.length || 0} pts)`;
+    case 'inspect_page': return 'Read the page';
+    case 'fill_form': return `Filled ${i.fields?.length || 0} field(s)`;
+    case 'fill_combobox': return `Typed “${String(i.value || '').slice(0, 40)}” → select`;
+    case 'click_element': return `Clicked ${String(i.selector || '').slice(0, 48)}`;
+    case 'click_by_text': return `Clicked “${String(i.text || '').slice(0, 40)}”`;
+    case 'screenshot': return 'Took a screenshot';
+    case 'marked_screenshot': return 'Tagged clickable elements';
+    case 'click_mark': return `Clicked element #${i.n}`;
+    case 'click_at': return `Clicked at (${Math.round(i.x)}, ${Math.round(i.y)})`;
+    case 'type_text': return `Typed “${String(i.text || '').slice(0, 40)}”`;
+    case 'press_key': return `Pressed ${i.key}`;
+    case 'scroll': return `Scrolled ${i.dy > 0 ? 'down' : 'up'}`;
+    case 'draw_path': return `Drew a stroke (${i.points?.length || 0} pts)`;
     default: {
       const mcp = /^mcp_(.+?)__(.+)$/.exec(s.tool || '');
       if (mcp) return `${displayMcpServer(mcp[1])} / ${mcp[2]}`;
-      return `🔧 ${s.tool}`;
+      return `${s.tool}`;
     }
+  }
+}
+
+// The Lucide icon that leads a step's label — mirrors the emoji stepLabel used
+// to prepend. Returned as an inline-SVG string so it can sit in the step's
+// innerHTML (the text label beside it is escaped separately).
+function stepIcon(s) {
+  switch (s.tool) {
+    case 'inspect_page': return icon('search');
+    case 'fill_form':
+    case 'fill_combobox':
+    case 'type_text':
+    case 'press_key': return icon('keyboard');
+    case 'click_element':
+    case 'click_by_text':
+    case 'click_mark':
+    case 'click_at':
+    case 'scroll': return icon('mouse-pointer-click');
+    case 'screenshot': return icon('camera');
+    case 'marked_screenshot': return icon('hash');
+    case 'draw_path': return icon('pencil');
+    default:
+      return /^mcp_(.+?)__(.+)$/.test(s.tool || '') ? '' : icon('wrench');
   }
 }
 
@@ -919,7 +944,7 @@ function stepArgs(s) {
 
 function stepHeader(s, badge, controls = '') {
   const info = mcpInfo(s.tool);
-  if (!info) return `<div class="step">${escapeAttr(stepLabel(s))}${badge}${controls}</div>`;
+  if (!info) return `<div class="step">${stepIcon(s)}${escapeAttr(stepLabel(s))}${badge}${controls}</div>`;
   return (
     `<div class="step step-mcp">` +
     `<span class="step-server">${escapeAttr(info.server)}</span>` +
@@ -948,7 +973,7 @@ function renderSteps(m) {
       return `${stepHeader(s, badge, stepControls(s))}${stepArgs(s)}${shot}${result}`;
     })
     .join('');
-  return `<details class="agent-steps"${open}><summary>🔧 Actions (${m.steps.length})</summary><div class="steps-body">${items}</div></details>`;
+  return `<details class="agent-steps"${open}><summary>${icon('tools')} Actions (${m.steps.length})</summary><div class="steps-body">${items}</div></details>`;
 }
 
 function wireStepControls(root) {
@@ -989,7 +1014,7 @@ function assistantBody(m) {
   if (m.steps?.length) html += renderSteps(m);
   if (m.thinking) {
     const open = m.pending ? ' open' : '';
-    html += `<details class="thinking"${open}><summary>💭 Thinking</summary><div class="thinking-body">${escapeAttr(
+    html += `<details class="thinking"${open}><summary>${icon('thinking')} Thinking</summary><div class="thinking-body">${escapeAttr(
       m.thinking,
     )}</div></details>`;
   }
@@ -1051,13 +1076,13 @@ function setSuggestLoading(on, label) {
     btn.dataset.busy = '1';
     btn.disabled = true;
     btn.classList.add('loading');
-    if (btn._label == null) btn._label = btn.textContent;
-    btn.textContent = label || '✨ Tailoring to this page…';
+    if (btn._label == null) btn._label = btn.innerHTML;
+    btn.innerHTML = label || (icon('assist') + ' Tailoring to this page…');
   } else {
     btn.dataset.busy = '0';
     btn.disabled = false;
     btn.classList.remove('loading');
-    if (btn._label != null) { btn.textContent = btn._label; btn._label = null; }
+    if (btn._label != null) { btn.innerHTML = btn._label; btn._label = null; }
   }
 }
 
@@ -1066,7 +1091,7 @@ function setSuggestLoading(on, label) {
 async function runManualSuggest() {
   if ($('suggest-reload')?.dataset.busy === '1') return;
   const run = ++suggestRun; // invalidate any in-flight auto fetch
-  setSuggestLoading(true, '✨ Thinking…');
+  setSuggestLoading(true, icon('assist') + ' Thinking…');
   try {
     const tab = await getActiveTab();
     const { items, source } = await getSuggestions({ tab, settings: state.settings, force: true });
@@ -2190,7 +2215,14 @@ function activeMonitors() {
   return (conv.monitors || []).filter((m) => m.meetingId === state.liveMeeting.id);
 }
 
-function monitorIcon(m) { return m.kind === 'tldr' ? '📌' : (m.kind === 'skill' ? (m.icon || '🎓') : '👁'); }
+// Returns an inline-SVG icon string for a monitor row. Skill monitors may carry a
+// user-chosen emoji (m.icon) — map it to an icon when known, else keep the emoji
+// escaped so custom glyphs still show. Callers must insert the result as HTML.
+function monitorIcon(m) {
+  if (m.kind === 'tldr') return icon('pin');
+  if (m.kind === 'skill') return iconForEmoji(m.icon) || (m.icon ? escapeAttr(m.icon) : icon('skills'));
+  return icon('watch');
+}
 function monitorLabel(m) {
   if (m.kind === 'tldr') return m.prompt ? `TL;DR — ${m.prompt}` : 'Running TL;DR';
   return m.prompt || m.title || 'Monitor';
@@ -2208,7 +2240,7 @@ function renderMonitors() {
   head.className = 'mon-head';
   const title = document.createElement('span');
   title.className = 'mon-title';
-  title.textContent = '👁 Live monitors';
+  title.innerHTML = icon('watch') + ' Live monitors';
   head.appendChild(title);
   panel.appendChild(head);
 
@@ -2224,12 +2256,12 @@ function renderMonitors() {
   watch.className = 'mon-add-btn'; watch.textContent = 'Watch'; watch.onclick = addQ;
   add.append(inp, watch);
   const tldr = document.createElement('button');
-  tldr.className = 'mon-skill-btn'; tldr.textContent = '📌 TL;DR';
+  tldr.className = 'mon-skill-btn'; tldr.innerHTML = icon('pin') + ' TL;DR';
   tldr.title = 'Keep a running TL;DR'; tldr.onclick = () => addMonitor({ kind: 'tldr', prompt: '' });
   add.appendChild(tldr);
   const suggest = document.createElement('button');
   suggest.className = 'mon-skill-btn';
-  suggest.textContent = meetingSuggestState.loading ? '💡 …' : '💡 Suggest';
+  suggest.innerHTML = icon('idea') + (meetingSuggestState.loading ? ' …' : ' Suggest');
   suggest.title = 'Suggest clarifying questions from the meeting so far';
   suggest.disabled = meetingSuggestState.loading;
   suggest.onclick = () => suggestMeetingQuestions();
@@ -2237,7 +2269,7 @@ function renderMonitors() {
   for (const sk of meetingSkills()) {
     const b = document.createElement('button');
     b.className = 'mon-skill-btn';
-    b.textContent = `${sk.icon || '🎓'} ${sk.name}`;
+    b.innerHTML = `${iconForEmoji(sk.icon) || (sk.icon ? escapeAttr(sk.icon) : icon('skills'))} ${escapeAttr(sk.name)}`;
     b.title = sk.description || sk.name;
     b.onclick = () => addMonitor({ kind: 'skill', skillId: sk.id, title: sk.name, icon: sk.icon });
     add.appendChild(b);
@@ -2251,7 +2283,7 @@ function renderMonitors() {
     for (const q of meetingSuggestState.items) {
       const chip = document.createElement('button');
       chip.className = 'mon-suggest-chip';
-      chip.textContent = `💡 ${q}`;
+      chip.innerHTML = `${icon('idea')} ${escapeAttr(q)}`;
       chip.title = 'Monitor this question';
       chip.onclick = () => {
         meetingSuggestState.items = meetingSuggestState.items.filter((x) => x !== q);
@@ -2269,12 +2301,12 @@ function renderMonitors() {
     h.className = 'mon-card-h';
     const q = document.createElement('span');
     q.className = 'mon-card-q';
-    q.textContent = `${monitorIcon(m)} ${monitorLabel(m)}`;
+    q.innerHTML = `${monitorIcon(m)} ${escapeAttr(monitorLabel(m))}`;
     const t = document.createElement('span');
     t.className = 'mon-card-t';
     t.textContent = m.pending ? 'updating…' : timeLabel(m.ts);
     const x = document.createElement('button');
-    x.className = 'mon-card-x'; x.textContent = '✕'; x.title = 'Stop monitoring';
+    x.className = 'mon-card-x'; x.innerHTML = icon('close'); x.title = 'Stop monitoring';
     x.onclick = () => stopMonitor(m.id);
     h.append(q, t, x);
     const body = document.createElement('div');
@@ -2761,7 +2793,7 @@ function renderHistoryContextMenu() {
     item.className = `menu-item${choice.locked ? ' locked' : ''}`;
     const active = current === choice.mode;
     item.innerHTML =
-      `<span>${choice.icon}</span>` +
+      `<span>${iconForEmoji(choice.icon) || escapeAttr(choice.icon)}</span>` +
       `<span style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">` +
       `<span>${active ? '✓ ' : ''}${escapeAttr(choice.label)}</span>` +
       `<span class="mi-sub">${escapeAttr(choice.sub)}</span>` +
@@ -2882,7 +2914,7 @@ function renderPrivacyMenu() {
   }
   const more = document.createElement('button');
   more.className = 'menu-item';
-  more.innerHTML = '<span>⚙</span><span style="flex:1;min-width:0">Privacy settings…</span>';
+  more.innerHTML = `<span>${icon('settings')}</span><span style="flex:1;min-width:0">Privacy settings…</span>`;
   more.onmousedown = (e) => {
     e.preventDefault();
     closeMenus();
@@ -2923,7 +2955,7 @@ function renderMcpToolsMenu() {
     item.className = 'menu-item';
     const active = current === choice.mode;
     item.innerHTML =
-      `<span>${choice.icon}</span>` +
+      `<span>${iconForEmoji(choice.icon) || escapeAttr(choice.icon)}</span>` +
       `<span style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">` +
       `<span>${active ? '✓ ' : ''}${escapeAttr(choice.label)}</span>` +
       `<span class="mi-sub">${escapeAttr(choice.sub)}</span>` +
@@ -3239,7 +3271,7 @@ async function renderScribeIndicator(liveOpt) {
   const onMeetingTab = state.activeTab && meetingPlatform(state.activeTab.url || '');
   if (live.length && !onMeetingTab) {
     el.classList.remove('hidden');
-    el.textContent = `🎙 ${live.length} meeting${live.length === 1 ? '' : 's'} recording — view`;
+    el.innerHTML = `${icon('mic')} ${live.length} meeting${live.length === 1 ? '' : 's'} recording — view`;
   } else {
     el.classList.add('hidden');
   }
@@ -3280,7 +3312,8 @@ function renderRail() {
     btn.className = 'rail-btn' + (active ? ' active' : '');
     const ico = document.createElement('span');
     ico.className = 'rail-ico';
-    ico.textContent = p.icon;
+    const railSvg = iconForEmoji(p.icon);
+    if (railSvg) ico.innerHTML = railSvg; else ico.textContent = p.icon;
     btn.appendChild(ico);
     if (p.label) {
       const lab = document.createElement('span');
@@ -3363,7 +3396,7 @@ function renderMeetingSummary() {
     if (v.id !== 'live') {
       const x = document.createElement('button');
       x.className = 'mtg-ver-x';
-      x.textContent = '✕';
+      x.innerHTML = icon('close');
       x.title = 'Delete this version';
       x.onclick = (e) => { e.stopPropagation(); deleteMeetingVersion(v.id); };
       chip.appendChild(x);
@@ -3377,7 +3410,8 @@ function renderMeetingSummary() {
     const b = document.createElement('button');
     b.className = 'mtg-ver regen';
     b.disabled = !!meetingsView.generating;
-    b.textContent = meetingsView.generating ? '…' : (style === 'concise' ? '↻ Concise' : '↻ Detailed');
+    if (meetingsView.generating) b.textContent = '…';
+    else b.innerHTML = icon('refresh') + (style === 'concise' ? ' Concise' : ' Detailed');
     b.title = `Generate a new ${style} summary from the full transcript (kept as a new version)`;
     b.onclick = (e) => { e.stopPropagation(); regenerateMeetingSummary(style); };
     bar.appendChild(b);
@@ -3708,7 +3742,10 @@ async function renderMeetingBar() {
     for (const b of buttons) {
       const btn = document.createElement('button');
       btn.className = 'meeting-btn' + (b.primary ? ' primary' : '');
-      btn.textContent = b.label;
+      // b.icon is an icon-role name; render it as a leading SVG with the (escaped)
+      // label. Falls back to plain text when no icon role is given.
+      if (b.icon) btn.innerHTML = icon(b.icon) + ' ' + escapeAttr(b.label);
+      else btn.textContent = b.label;
       btn.onclick = b.onClick;
       bar.appendChild(btn);
     }
@@ -3729,7 +3766,7 @@ async function renderMeetingBar() {
   // Gated behind Pro.
   if (!can(state.license, 'liveMeetings')) {
     render(`${scribe} · Pro`, [
-      { label: '✨ Upgrade', primary: true, onClick: () => upsell('liveMeetings') },
+      { label: 'Upgrade', icon: 'upgrade', primary: true, onClick: () => upsell('liveMeetings') },
     ]);
     return;
   }
@@ -3752,7 +3789,7 @@ async function renderMeetingBar() {
             await enableMeetingCaptions(tab.id);
           },
         },
-        { label: '📄 View', onClick: () => viewActiveMeeting(tab.id) },
+        { label: 'View', icon: 'document', onClick: () => viewActiveMeeting(tab.id) },
         {
           label: 'Stop',
           onClick: async () => {
@@ -3766,9 +3803,9 @@ async function renderMeetingBar() {
       return;
     }
     render(scribe, [
-      { label: '📄 View', onClick: () => viewActiveMeeting(tab.id) },
-      { label: `📝 Live ${iv ? iv + 'm' : 'Off'}`, onClick: cycleLiveNotesInterval },
-      { label: `🕑 ${meetingWindowLabel()}`, onClick: cycleMeetingWindow },
+      { label: 'View', icon: 'document', onClick: () => viewActiveMeeting(tab.id) },
+      { label: `Live ${iv ? iv + 'm' : 'Off'}`, icon: 'note', onClick: cycleLiveNotesInterval },
+      { label: `${meetingWindowLabel()}`, icon: 'history-clock', onClick: cycleMeetingWindow },
       {
         label: 'Stop',
         primary: true,
@@ -3961,7 +3998,7 @@ function renderContextBar() {
     const chip = document.createElement('div');
     chip.className = 'ctx-chip page-chip';
     chip.title = 'Live meeting transcript — included on every message (read fresh each send)';
-    chip.innerHTML = `<span class="ctx-kind">🎙</span><span class="ctx-title">${escapeAttr(
+    chip.innerHTML = `<span class="ctx-kind">${icon('mic')}</span><span class="ctx-title">${escapeAttr(
       (state.liveMeeting.title || 'Meeting') + ' · live',
     )}</span>`;
     // Live-summary toggle (Phase 2): stream the scribe's running summary into this
@@ -3978,7 +4015,7 @@ function renderContextBar() {
     // (Monitors moved to the pinned "Live monitors" panel below — see renderMonitors.)
     const x = document.createElement('button');
     x.className = 'ctx-x';
-    x.textContent = '✕';
+    x.innerHTML = icon('close');
     x.title = 'Stop including this meeting';
     x.onclick = () => {
       state.excludedMeetingId = state.liveMeeting.id;
@@ -3994,12 +4031,12 @@ function renderContextBar() {
     const chip = document.createElement('div');
     chip.className = 'ctx-chip page-chip';
     chip.title = `This page is included as context — ${state.activeTab.url}`;
-    chip.innerHTML = `<span class="ctx-kind">🌐</span><span class="ctx-title">${escapeAttr(
+    chip.innerHTML = `<span class="ctx-kind">${icon('web')}</span><span class="ctx-title">${escapeAttr(
       state.activeTab.title,
     )}</span>`;
     const x = document.createElement('button');
     x.className = 'ctx-x';
-    x.textContent = '✕';
+    x.innerHTML = icon('close');
     x.title = 'Stop including this page';
     x.onclick = () => {
       state.usePage = false;
@@ -4013,13 +4050,13 @@ function renderContextBar() {
   state.attachments.forEach((att, i) => {
     const chip = document.createElement('div');
     chip.className = 'ctx-chip';
-    const kind = { page: '🌐', url: '🔗', selection: '✂️', image: '🖼' }[att.kind] || '📎';
+    const kind = { page: icon('web'), url: icon('link'), selection: icon('cut'), image: icon('image') }[att.kind] || icon('attach');
     chip.innerHTML = `<span class="ctx-kind">${kind}</span><span class="ctx-title">${escapeAttr(
       att.title || att.url,
     )}</span>`;
     const x = document.createElement('button');
     x.className = 'ctx-x';
-    x.textContent = '✕';
+    x.innerHTML = icon('close');
     x.onclick = () => {
       state.attachments.splice(i, 1);
       renderContextBar();
@@ -4034,7 +4071,7 @@ async function renderAttachMenu() {
   const menu = $('attach-menu');
   menu.innerHTML = '';
   // Toggle for auto-including the current page (the default behavior).
-  const toggle = actionItem(state.usePage ? '✅' : '⬜️', 'Include this page automatically', () => {
+  const toggle = actionItem(state.usePage ? icon('check') : icon('square'), 'Include this page automatically', () => {
     state.usePage = !state.usePage;
     refreshActiveTab();
     toast(state.usePage ? 'This page will be included' : 'Page context off');
@@ -4092,7 +4129,7 @@ async function renderAttachMenu() {
       item.className = 'menu-item';
       const fav = t.favIconUrl
         ? `<img src="${escapeAttr(t.favIconUrl)}" width="14" height="14" style="border-radius:3px"/>`
-        : '🗎';
+        : icon('file');
       item.innerHTML = `${fav}<span class="ctx-title" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeAttr(
         t.title,
       )}</span>`;
@@ -4147,7 +4184,7 @@ function renderSkillsMenu() {
   for (const skill of state.settings.skills) {
     const item = document.createElement('button');
     item.className = 'menu-item';
-    item.innerHTML = `<span>${skill.icon || '🎓'}</span><span>${escapeAttr(skill.name)}</span><span class="mi-sub">/${escapeAttr(
+    item.innerHTML = `<span>${iconForEmoji(skill.icon) || (skill.icon ? escapeAttr(skill.icon) : icon('skills'))}</span><span>${escapeAttr(skill.name)}</span><span class="mi-sub">/${escapeAttr(
       skill.command || '',
     )}</span>`;
     item.onclick = () => {
@@ -4158,7 +4195,7 @@ function renderSkillsMenu() {
   }
   const manage = document.createElement('button');
   manage.className = 'menu-item';
-  manage.innerHTML = '⚙ <span>Manage skills…</span>';
+  manage.innerHTML = icon('settings') + ' <span>Manage skills…</span>';
   manage.onclick = () => chrome.runtime.openOptionsPage();
   menu.appendChild(manage);
 }
@@ -4233,8 +4270,8 @@ async function improvePrompt() {
   if (btn.disabled) return;
   const before = input.value;
   btn.disabled = true;
-  const prev = btn.textContent;
-  btn.textContent = '⏳';
+  const prev = btn.innerHTML;
+  btn.innerHTML = icon('queued');
   let streamed = false;
   try {
     await assistPrompt({
@@ -4259,7 +4296,7 @@ async function improvePrompt() {
     }
   } finally {
     btn.disabled = false;
-    btn.textContent = prev;
+    btn.innerHTML = prev;
   }
 }
 
@@ -4303,14 +4340,14 @@ function renderSuggest() {
   box.innerHTML = '';
   const chip = document.createElement('button');
   chip.className = 'suggest-chip';
-  chip.innerHTML = `💡 Use <b>/${escapeAttr(skill.command)}</b> — ${escapeAttr(skill.description || skill.name)}`;
+  chip.innerHTML = `${icon('idea')} Use <b>/${escapeAttr(skill.command)}</b> — ${escapeAttr(skill.description || skill.name)}`;
   chip.onclick = () => {
     box.classList.add('hidden');
     applySkill(skill);
   };
   const x = document.createElement('button');
   x.className = 'suggest-x';
-  x.textContent = '✕';
+  x.innerHTML = icon('close');
   x.title = 'Dismiss';
   x.onclick = () => {
     suggestSuppressed = true;
@@ -4349,7 +4386,7 @@ function renderSlashMenu() {
     item.className = 'slash-item' + (i === slashActive ? ' active' : '');
     const badge = itemData.locked ? '<span class="si-badge">Pro</span>' : '';
     item.innerHTML =
-      `<span class="si-icon">${escapeAttr(itemData.icon || '🎓')}</span>` +
+      `<span class="si-icon">${iconForEmoji(itemData.icon) || (itemData.icon ? escapeAttr(itemData.icon) : icon('skills'))}</span>` +
       `<span class="si-cmd">/${escapeAttr(itemData.command || '')}</span>` +
       `${badge}` +
       `<span class="si-desc">${escapeAttr(itemData.description || '')}</span>`;
@@ -4444,8 +4481,8 @@ async function renderHistory(filter = '') {
     main.onclick = () => openConversation(e.id);
     const actions = document.createElement('div');
     actions.className = 'hi-actions';
-    actions.appendChild(miniBtn('✎', () => startRename(e, item), 'Rename'));
-    actions.appendChild(miniBtn('⤓', () => exportConv(e.id), 'Export as Markdown'));
+    actions.appendChild(miniBtn(icon('rename'), () => startRename(e, item), 'Rename'));
+    actions.appendChild(miniBtn(icon('download'), () => exportConv(e.id), 'Export as Markdown'));
     actions.appendChild(miniBtn('🗑', () => removeConv(e.id), 'Delete'));
     item.append(main, actions);
     list.appendChild(item);
@@ -4553,7 +4590,7 @@ function renderUpgradeChip() {
     el.classList.add('is-active');
     el.classList.remove('is-upgrade');
   } else {
-    el.textContent = '✨ Upgrade';
+    el.innerHTML = icon('upgrade') + ' Upgrade';
     el.title = 'Upgrade to Pro';
     el.classList.add('is-upgrade');
     el.classList.remove('is-active');
@@ -5384,7 +5421,10 @@ function uid() {
 function miniBtn(label, onClick, title) {
   const b = document.createElement('button');
   b.className = 'mini-btn';
-  b.textContent = label;
+  // `label` may be an icon() SVG string, a legacy emoji, or plain text.
+  const svg = /^<svg/.test(label) ? label : iconForEmoji(label);
+  if (svg) b.innerHTML = svg;
+  else b.textContent = label;
   if (title) b.title = title;
   b.onclick = (e) => {
     e.stopPropagation();
@@ -5392,10 +5432,12 @@ function miniBtn(label, onClick, title) {
   };
   return b;
 }
-function actionItem(icon, label, onClick) {
+function actionItem(glyph, label, onClick) {
   const b = document.createElement('button');
   b.className = 'menu-item';
-  b.innerHTML = `<span>${icon}</span><span>${escapeAttr(label)}</span>`;
+  // `glyph` may be an icon() SVG string, a legacy emoji, or plain text.
+  const ic = /^<svg/.test(glyph) ? glyph : (iconForEmoji(glyph) || escapeAttr(glyph));
+  b.innerHTML = `<span>${ic}</span><span>${escapeAttr(label)}</span>`;
   b.onclick = () => {
     closeMenus();
     onClick();

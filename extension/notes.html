@@ -4,23 +4,24 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Notes · ChatPanel</title>
+    <link rel="stylesheet" href="icons.css" />
     <link rel="stylesheet" href="notes.css" />
   </head>
   <body>
     <header class="hdr">
       <nav class="topnav" aria-label="Workspace">
-        <a href="notes.html" class="topnav-item active">✎ Notes <span id="n-count" class="count"></span></a>
-        <a href="history.html" class="topnav-item">☰ Chats</a>
-        <a href="meetings.html" class="topnav-item">👥 Meetings</a>
+        <a href="notes.html" class="topnav-item active" data-icon="notes">Notes <span id="n-count" class="count"></span></a>
+        <a href="history.html" class="topnav-item" data-icon="menu">Chats</a>
+        <a href="meetings.html" class="topnav-item" data-icon="meetings">Meetings</a>
       </nav>
       <div class="omni">
-        <span class="omni-ico">⌕</span>
+        <span class="omni-ico" data-icon="search"></span>
         <input id="n-search" class="omni-input" placeholder="Search notes…" autocomplete="off" spellcheck="false" />
       </div>
       <div class="hdr-actions">
-        <button id="n-collapse" class="icon-btn" title="Hide list (⌘\)" aria-label="Toggle list">⇤</button>
-        <button id="n-settings" class="btn ghost" type="button" title="Notes settings">⚙ Settings</button>
-        <button id="n-new" class="btn primary" title="New note (⌘N)">✎ New</button>
+        <button id="n-collapse" class="icon-btn" title="Hide list (⌘\)" aria-label="Toggle list" data-icon="collapse-list"></button>
+        <button id="n-settings" class="btn ghost" type="button" title="Notes settings" data-icon="settings">Settings</button>
+        <button id="n-new" class="btn primary" title="New note (⌘N)" data-icon="note-new">New</button>
       </div>
     </header>
 
@@ -37,7 +38,7 @@
         <div id="n-rail-resizer" class="resizer rail-resizer" title="Drag to resize the list"></div>
         <!-- Empty state -->
         <div id="n-blank" class="blank">
-          <div class="blank-mark">✎</div>
+          <div class="blank-mark" data-icon="notes"></div>
           <h2>Your notes, in one private place</h2>
           <p>Everything stays on your device — encrypted, backed up, and searchable alongside your chats and meetings.</p>
           <button id="n-new3" class="btn primary">New note</button>
@@ -52,50 +53,50 @@
               <button data-mode="read" title="Read">Read</button>
             </div>
             <div class="fmt" id="n-fmt">
-              <button data-fmt="bold" title="Bold (⌘B)"><b>B</b></button>
-              <button data-fmt="italic" title="Italic (⌘I)"><i>I</i></button>
-              <button data-fmt="h1" title="Heading">H</button>
-              <button data-fmt="ul" title="Bullet list">•</button>
-              <button data-fmt="task" title="Checklist">☑</button>
-              <button data-fmt="quote" title="Quote">❝</button>
-              <button data-fmt="code" title="Code">‹›</button>
-              <button data-fmt="link" title="Link (⌘K in text)">🔗</button>
+              <button data-fmt="bold" title="Bold (⌘B)" aria-label="Bold" data-icon="bold"></button>
+              <button data-fmt="italic" title="Italic (⌘I)" aria-label="Italic" data-icon="italic"></button>
+              <button data-fmt="h1" title="Heading" aria-label="Heading" data-icon="heading"></button>
+              <button data-fmt="ul" title="Bullet list" aria-label="Bullet list" data-icon="bullets"></button>
+              <button data-fmt="task" title="Checklist" aria-label="Checklist" data-icon="checklist"></button>
+              <button data-fmt="quote" title="Quote" aria-label="Quote" data-icon="quote"></button>
+              <button data-fmt="code" title="Code" aria-label="Code" data-icon="code"></button>
+              <button data-fmt="link" title="Link (⌘K in text)" aria-label="Link" data-icon="link"></button>
             </div>
             <div class="agent-wrap">
-              <button id="n-align" class="fmt-menu-btn" title="Paragraph alignment (reading view)" aria-haspopup="menu">¶ ▾</button>
+              <button id="n-align" class="fmt-menu-btn" title="Paragraph alignment (reading view)" aria-label="Paragraph alignment" aria-haspopup="menu" data-icon="pilcrow"><span class="caret" data-icon="caret"></span></button>
               <div id="n-align-menu" class="agent-menu align-menu hidden" role="menu">
-                <button data-align="left" role="menuitem">⯇&nbsp;&nbsp;Left</button>
-                <button data-align="justify" role="menuitem">☰&nbsp;&nbsp;Justify</button>
-                <button data-align="center" role="menuitem">≡&nbsp;&nbsp;Center</button>
-                <button data-align="right" role="menuitem">⯈&nbsp;&nbsp;Right</button>
+                <button data-align="left" role="menuitem" data-icon="align-left">&nbsp;&nbsp;Left</button>
+                <button data-align="justify" role="menuitem" data-icon="align-justify">&nbsp;&nbsp;Justify</button>
+                <button data-align="center" role="menuitem" data-icon="align-center">&nbsp;&nbsp;Center</button>
+                <button data-align="right" role="menuitem" data-icon="align-right">&nbsp;&nbsp;Right</button>
                 <div class="agent-hint">Applies to the Read / Split preview</div>
               </div>
             </div>
             <div class="agent-wrap">
-              <button id="n-agent" class="ai-btn" title="Agent actions — uses your selected model">✨ Agent</button>
+              <button id="n-agent" class="ai-btn" title="Agent actions — uses your selected model" data-icon="assist">Agent</button>
               <div id="n-agent-menu" class="agent-menu hidden" role="menu">
-                <button data-act="plannote" role="menuitem">🧭 Plan in a new note</button>
-                <button data-act="continue" role="menuitem">✍️ Continue writing</button>
-                <button data-act="summarize" role="menuitem">📋 Summarize</button>
-                <button data-act="tasks" role="menuitem">☑️ Turn into tasks</button>
-                <button data-act="improve" role="menuitem">✨ Improve writing</button>
+                <button data-act="plannote" role="menuitem" data-icon="plan">Plan in a new note</button>
+                <button data-act="continue" role="menuitem" data-icon="continue">Continue writing</button>
+                <button data-act="summarize" role="menuitem" data-icon="summarize">Summarize</button>
+                <button data-act="tasks" role="menuitem" data-icon="tasks">Turn into tasks</button>
+                <button data-act="improve" role="menuitem" data-icon="improve">Improve writing</button>
                 <div class="agent-hint">Acts on your selection, or the whole note</div>
               </div>
             </div>
-            <button id="n-cw-toggle" class="cw-toggle" title="Co-writer — proofread as you write">✍️</button>
-            <button id="n-research-btn" class="cw-toggle" title="Research — find related notes, chats & the web">🔎</button>
-            <button id="n-history-btn" class="cw-toggle" title="History — who wrote what, and versions to revert to">🕓</button>
+            <button id="n-cw-toggle" class="cw-toggle" title="Co-writer — proofread as you write" aria-label="Co-writer" data-icon="cowriter"></button>
+            <button id="n-research-btn" class="cw-toggle" title="Research — find related notes, chats & the web" aria-label="Research" data-icon="research"></button>
+            <button id="n-history-btn" class="cw-toggle" title="History — who wrote what, and versions to revert to" aria-label="History" data-icon="history-clock"></button>
             <div class="agent-wrap">
-              <button id="n-swarm" class="cw-toggle" title="Co-writer team — pick a model per role" aria-haspopup="menu">⚙</button>
+              <button id="n-swarm" class="cw-toggle" title="Co-writer team — pick a model per role" aria-label="Co-writer team" aria-haspopup="menu" data-icon="settings"></button>
               <div id="n-swarm-menu" class="agent-menu swarm-menu hidden" role="menu"></div>
             </div>
             <div class="toolbar-right">
               <span id="n-status" class="save-status"></span>
-              <button id="n-side-toggle" class="icon-btn" title="Toggle assistant panel (⌘/)" aria-label="Toggle assistant panel">◧</button>
-              <button id="n-ask" class="icon-btn" title="Ask ChatPanel about this note">💬</button>
-              <button id="n-copy" class="icon-btn" title="Copy as Markdown">⧉</button>
-              <button id="n-download" class="icon-btn" title="Download .md">⬇</button>
-              <button id="n-delete" class="icon-btn danger" title="Delete note">🗑</button>
+              <button id="n-side-toggle" class="icon-btn" title="Toggle assistant panel (⌘/)" aria-label="Toggle assistant panel" data-icon="panel-toggle"></button>
+              <button id="n-ask" class="icon-btn" title="Ask ChatPanel about this note" aria-label="Ask ChatPanel" data-icon="ask"></button>
+              <button id="n-copy" class="icon-btn" title="Copy as Markdown" aria-label="Copy as Markdown" data-icon="copy"></button>
+              <button id="n-download" class="icon-btn" title="Download .md" aria-label="Download" data-icon="download"></button>
+              <button id="n-delete" class="icon-btn danger" title="Delete note" aria-label="Delete note" data-icon="delete"></button>
             </div>
           </div>
 
@@ -113,31 +114,31 @@
             <aside id="n-side" class="side" aria-label="Assistant panels">
               <div id="n-side-resizer" class="resizer side-resizer" title="Drag to resize the panel"></div>
               <div class="side-tabs" role="tablist">
-                <button class="side-tab active" data-side="activity" role="tab" title="Team activity">🧰<span class="side-badge hidden" id="n-side-badge-activity"></span></button>
-                <button class="side-tab" data-side="research" role="tab" title="Research">🔎<span class="side-badge hidden" id="n-side-badge-research"></span></button>
-                <button class="side-tab" data-side="cowriter" role="tab" title="Co-writer">✍️<span class="side-badge hidden" id="n-side-badge-cowriter"></span></button>
-                <button class="side-tab" data-side="history" role="tab" title="History">🕓</button>
-                <button id="n-side-collapse" class="side-collapse" title="Collapse panel (⌘/)" aria-label="Collapse panel">⟩</button>
+                <button class="side-tab active" data-side="activity" role="tab" title="Team activity" aria-label="Team activity" data-icon="tools"><span class="side-badge hidden" id="n-side-badge-activity"></span></button>
+                <button class="side-tab" data-side="research" role="tab" title="Research" aria-label="Research" data-icon="research"><span class="side-badge hidden" id="n-side-badge-research"></span></button>
+                <button class="side-tab" data-side="cowriter" role="tab" title="Co-writer" aria-label="Co-writer" data-icon="cowriter"><span class="side-badge hidden" id="n-side-badge-cowriter"></span></button>
+                <button class="side-tab" data-side="history" role="tab" title="History" aria-label="History" data-icon="history-clock"></button>
+                <button id="n-side-collapse" class="side-collapse" title="Collapse panel (⌘/)" aria-label="Collapse panel" data-icon="collapse-panel"></button>
               </div>
               <div class="side-body">
                 <div id="n-research" class="research side-pane" role="tabpanel" aria-label="Research">
                   <div class="research-head">
-                    <span class="research-name">🔎 Research</span>
+                    <span class="research-name" data-icon="research">Research</span>
                     <span id="n-research-count" class="research-count"></span>
                     <span id="n-research-status" class="research-status"></span>
                     <div class="research-tools">
-                      <button id="n-research-web" class="research-web" title="Search the web for this section">🌐 Web</button>
+                      <button id="n-research-web" class="research-web" title="Search the web for this section" data-icon="web">Web</button>
                     </div>
                   </div>
                   <div id="n-research-cards" class="research-cards"></div>
                 </div>
                 <div id="n-activity" class="activity side-pane tab-active" role="tabpanel" aria-label="Team activity">
                   <div class="activity-head">
-                    <span class="activity-name">🧰 Team activity</span>
+                    <span class="activity-name" data-icon="tools">Team activity</span>
                     <span id="n-activity-status" class="activity-status"></span>
                     <div class="activity-tools">
-                      <span id="n-activity-pii" class="activity-pii hidden" title="PII redaction on">🛡</span>
-                      <button id="n-activity-clear" class="activity-x" title="Clear activity">✕</button>
+                      <span id="n-activity-pii" class="activity-pii hidden" title="PII redaction on" aria-label="PII redaction on" data-icon="privacy"></span>
+                      <button id="n-activity-clear" class="activity-x" title="Clear activity" aria-label="Clear activity" data-icon="close"></button>
                     </div>
                   </div>
                   <div id="n-activity-timeline" class="activity-timeline"></div>
@@ -148,11 +149,11 @@
                 <div id="n-cowriter" class="cowriter side-pane"></div>
                 <div id="n-history" class="history side-pane" role="tabpanel" aria-label="Version history and authorship">
                   <div class="history-head">
-                    <span class="history-name">🕓 History</span>
+                    <span class="history-name" data-icon="history-clock">History</span>
                     <span id="n-history-summary" class="history-summary"></span>
                     <div class="history-tools">
-                      <button id="n-history-attrib" class="research-web" title="Show who wrote what">👤 Who wrote what</button>
-                      <button id="n-history-save" class="research-web" title="Snapshot the current draft as a version">＋ Save version</button>
+                      <button id="n-history-attrib" class="research-web" title="Show who wrote what" data-icon="who">Who wrote what</button>
+                      <button id="n-history-save" class="research-web" title="Snapshot the current draft as a version" data-icon="save-version">Save version</button>
                     </div>
                   </div>
                   <div id="n-history-attrib-view" class="attrib-view hidden"></div>
