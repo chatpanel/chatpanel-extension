@@ -17,6 +17,7 @@
     "test:pii-sync": "node tools/sync-pii.mjs --check",
     "prepackage": "node tools/sync-pii.mjs",
     "package": "node tools/package-extension.mjs",
+    "verify:edge": "node tools/verify-manifest.mjs",
     "test": "node tools/run-tests.mjs",
     "test:all": "node tools/run-tests.mjs",
     "test:notes-util": "node tools/test-notes-util.mjs",

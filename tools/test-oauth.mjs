@@ -180,7 +180,7 @@ assert.match(
     { authMode: 'huggingface', oauth: {} },
     'https://abcdef.chromiumapp.org/oauth/huggingface',
   ),
-  /hosted Hugging Face sign-in only supports the production extension redirect URI/,
+  /Hosted Hugging Face sign-in only works from a published build/,
 );
 assert.equal(
   oauthRedirectPreflightMessage(
@@ -188,6 +188,15 @@ assert.equal(
     'https://icemacffhbgnfoofclgdbcdmnlkkklem.chromiumapp.org/oauth/huggingface',
   ),
   '',
+  'Chrome production redirect URI should be accepted for hosted HF sign-in',
+);
+assert.equal(
+  oauthRedirectPreflightMessage(
+    { authMode: 'huggingface', oauth: {} },
+    'https://jkmmbleapaognlonbnllpaoeibmfkjmp.chromiumapp.org/oauth/huggingface',
+  ),
+  '',
+  'Edge production redirect URI should be accepted for hosted HF sign-in',
 );
 assert.equal(
   oauthRedirectPreflightMessage(
