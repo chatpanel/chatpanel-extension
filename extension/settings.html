@@ -20,9 +20,7 @@
           <button class="tab" data-tab="agents"><span class="tab-ico" data-icon="bot"></span> Agents</button>
           <button class="tab" data-tab="mcp"><span class="tab-ico" data-icon="tools"></span> Tools</button>
           <button class="tab" data-tab="skills"><span class="tab-ico" data-icon="skills"></span> Skills</button>
-          <button class="tab" data-tab="notes"><span class="tab-ico" data-icon="notes"></span> Notes</button>
-          <button class="tab" data-tab="meetings"><span class="tab-ico" data-icon="calendar"></span> Meetings</button>
-          <button class="tab" data-tab="history"><span class="tab-ico" data-icon="chat"></span> History</button>
+          <button class="tab" data-tab="workspace"><span class="tab-ico" data-icon="folder"></span> Workspace</button>
           <button class="tab" data-tab="privacy"><span class="tab-ico" data-icon="privacy"></span> Privacy</button>
           <button class="tab" data-tab="gateway"><span class="tab-ico" data-icon="lock"></span> Gateway</button>
           <button class="tab" data-tab="usage"><span class="tab-ico" data-icon="chart"></span> Usage</button>
@@ -220,84 +218,11 @@ npx @chatpanel/bridge</code></pre>
       </section>
 
       <!-- MEETINGS (live scribe preferences) -->
-      <section class="panel hidden" data-panel="meetings">
-        <div class="card">
-          <div class="card-head">
-            <h2>Meetings <span class="sub">— live scribe for Zoom, Meet, Teams &amp; Webex</span></h2>
-            <span class="pro-pill">Pro</span>
-          </div>
-          <p class="muted">
-            On a supported call, ChatPanel turns the live captions into an
-            auto-refreshing summary and a searchable transcript you can ask about
-            mid-meeting. Captions only — never audio or video. These settings control
-            how the scribe behaves.
-          </p>
-          <div class="row half">
-            <div>
-              <label>Auto-refresh notes</label>
-              <select id="pref-live-notes">
-                <option value="0">Off — summarize only when I ask</option>
-                <option value="1">Every 1 minute</option>
-                <option value="2">Every 2 minutes</option>
-                <option value="5">Every 5 minutes</option>
-                <option value="10">Every 10 minutes</option>
-              </select>
-            </div>
-            <div>
-              <label>Transcript sent per question</label>
-              <select id="pref-meeting-window">
-                <option value="0">Full transcript so far</option>
-                <option value="5">Last 5 minutes</option>
-                <option value="10">Last 10 minutes</option>
-                <option value="20">Last 20 minutes</option>
-                <option value="30">Last 30 minutes</option>
-              </select>
-            </div>
-          </div>
-          <div class="row half">
-            <div>
-              <label>Live summary style</label>
-              <select id="pref-meeting-summary-style">
-                <option value="concise">Concise — tight TL;DR + decisions + action items</option>
-                <option value="detailed">Detailed — full minutes (TL;DR, topics, key moments…)</option>
-              </select>
-            </div>
-          </div>
-          <p class="muted tiny">
-            Concise keeps the running summary short and cheap (recommended for long
-            calls); Detailed produces full minutes. You can always <span class="inline-ico" data-icon="refresh"></span> regenerate either
-            style per meeting in the meetings dashboard.
-          </p>
-          <p class="muted tiny">
-            <span class="inline-ico" data-icon="folder"></span> <strong>Meeting monitors:</strong> turn any of your
-            <a href="#" id="meetings-open-skills">Skills</a> into a one-tap live monitor
-            with “Use as a live-meeting monitor”, then launch it (or <code>/monitor</code>
-            / <code>/tldr</code>) from the panel above the composer during a call.
-          </p>
-          <p class="muted tiny">
-            Auto-refresh merges new captions into the running summary on that interval
-            and saves it to Past Meetings automatically. A shorter transcript window
-            keeps long meetings from growing the prompt (and cost) on every question —
-            use the full transcript for short calls, a window for long ones.
-          </p>
-        </div>
-        <div class="card">
-          <div class="card-head">
-            <h2>Past meetings <span class="sub">— transcripts, summaries &amp; action items</span></h2>
-            <button id="open-meetings-dashboard" class="btn primary" type="button">Open meetings dashboard <span class="inline-ico" data-icon="external-link"></span></button>
-          </div>
-          <p class="muted">
-            Browse every recorded meeting in a full-screen dashboard — summary, topics,
-            key moments and action items, plus the searchable transcript. Everything
-            stays on your device.
-          </p>
-          <p id="meeting-storage-health" class="muted tiny storage-health">Checking local storage…</p>
-        </div>
-      </section>
+      <section class="panel hidden" data-panel="workspace">
 
-      <!-- CHAT HISTORY -->
-      <!-- NOTES -->
-      <section class="panel hidden" data-panel="notes">
+        <!-- NOTES -->
+        <div class="ws-section" id="ws-notes">
+        <h3 class="ws-heading"><span class="inline-ico" data-icon="notes"></span> Notes</h3>
         <div class="card">
           <div class="card-head">
             <h2>Notes <span class="sub">— your private, on-device writing workspace</span></h2>
@@ -382,9 +307,88 @@ npx @chatpanel/bridge</code></pre>
             <button id="notes-open-backup" class="btn" type="button">Backup &amp; data <span class="inline-ico" data-icon="external-link"></span></button>
           </div>
         </div>
-      </section>
+        </div>
 
-      <section class="panel hidden" data-panel="history">
+        <!-- MEETINGS -->
+        <div class="ws-section" id="ws-meetings">
+        <h3 class="ws-heading"><span class="inline-ico" data-icon="calendar"></span> Meetings</h3>
+        <div class="card">
+          <div class="card-head">
+            <h2>Meetings <span class="sub">— live scribe for Zoom, Meet, Teams &amp; Webex</span></h2>
+            <span class="pro-pill">Pro</span>
+          </div>
+          <p class="muted">
+            On a supported call, ChatPanel turns the live captions into an
+            auto-refreshing summary and a searchable transcript you can ask about
+            mid-meeting. Captions only — never audio or video. These settings control
+            how the scribe behaves.
+          </p>
+          <div class="row half">
+            <div>
+              <label>Auto-refresh notes</label>
+              <select id="pref-live-notes">
+                <option value="0">Off — summarize only when I ask</option>
+                <option value="1">Every 1 minute</option>
+                <option value="2">Every 2 minutes</option>
+                <option value="5">Every 5 minutes</option>
+                <option value="10">Every 10 minutes</option>
+              </select>
+            </div>
+            <div>
+              <label>Transcript sent per question</label>
+              <select id="pref-meeting-window">
+                <option value="0">Full transcript so far</option>
+                <option value="5">Last 5 minutes</option>
+                <option value="10">Last 10 minutes</option>
+                <option value="20">Last 20 minutes</option>
+                <option value="30">Last 30 minutes</option>
+              </select>
+            </div>
+          </div>
+          <div class="row half">
+            <div>
+              <label>Live summary style</label>
+              <select id="pref-meeting-summary-style">
+                <option value="concise">Concise — tight TL;DR + decisions + action items</option>
+                <option value="detailed">Detailed — full minutes (TL;DR, topics, key moments…)</option>
+              </select>
+            </div>
+          </div>
+          <p class="muted tiny">
+            Concise keeps the running summary short and cheap (recommended for long
+            calls); Detailed produces full minutes. You can always <span class="inline-ico" data-icon="refresh"></span> regenerate either
+            style per meeting in the meetings dashboard.
+          </p>
+          <p class="muted tiny">
+            <span class="inline-ico" data-icon="folder"></span> <strong>Meeting monitors:</strong> turn any of your
+            <a href="#" id="meetings-open-skills">Skills</a> into a one-tap live monitor
+            with “Use as a live-meeting monitor”, then launch it (or <code>/monitor</code>
+            / <code>/tldr</code>) from the panel above the composer during a call.
+          </p>
+          <p class="muted tiny">
+            Auto-refresh merges new captions into the running summary on that interval
+            and saves it to Past Meetings automatically. A shorter transcript window
+            keeps long meetings from growing the prompt (and cost) on every question —
+            use the full transcript for short calls, a window for long ones.
+          </p>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <h2>Past meetings <span class="sub">— transcripts, summaries &amp; action items</span></h2>
+            <button id="open-meetings-dashboard" class="btn primary" type="button">Open meetings dashboard <span class="inline-ico" data-icon="external-link"></span></button>
+          </div>
+          <p class="muted">
+            Browse every recorded meeting in a full-screen dashboard — summary, topics,
+            key moments and action items, plus the searchable transcript. Everything
+            stays on your device.
+          </p>
+          <p id="meeting-storage-health" class="muted tiny storage-health">Checking local storage…</p>
+        </div>
+        </div><!-- /#ws-meetings -->
+
+        <!-- HISTORY -->
+        <div class="ws-section" id="ws-history">
+        <h3 class="ws-heading"><span class="inline-ico" data-icon="history-clock"></span> History</h3>
         <div class="card">
           <div class="card-head">
             <h2>Chat history <span class="sub">— search every conversation</span></h2>
@@ -397,6 +401,8 @@ npx @chatpanel/bridge</code></pre>
             device.
           </p>
         </div>
+        </div><!-- /#ws-history -->
+
       </section>
 
       <!-- PRIVACY -->

@@ -26,7 +26,7 @@ body {
   margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Inter, sans-serif;
   background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5;
 }
-.wrap { max-width: 1140px; margin: 0 auto; padding: 26px 28px 72px; }
+.wrap { max-width: 1260px; margin: 0 auto; padding: 26px 28px 72px; }
 
 /* Header ------------------------------------------------------------------ */
 .hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
@@ -55,6 +55,18 @@ body {
 .tab.active { color: var(--text); }
 .tab.active::after { content: ""; position: absolute; left: 13px; right: 13px; bottom: -1px; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent); }
 .tab .tab-ico { font-size: 14px; opacity: .9; }
+
+/* Workspace tab — Notes / Meetings / History grouped as sections. A subtle
+   uppercase divider labels each group; scroll-margin lets deep-links (#notes,
+   #meetings, #history) land the section below the sticky tab bar. */
+.ws-section { scroll-margin-top: 64px; }
+.ws-section + .ws-section { margin-top: 8px; }
+.ws-heading {
+  display: flex; align-items: center; gap: 8px; margin: 4px 0 12px;
+  font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted);
+}
+.ws-heading .inline-ico { font-size: 14px; opacity: .85; }
 
 /* Cards ------------------------------------------------------------------- */
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 22px; margin-bottom: 18px; box-shadow: var(--shadow); }

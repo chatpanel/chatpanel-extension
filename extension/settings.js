@@ -122,8 +122,22 @@ function wireTabs() {
     document
       .querySelectorAll('.panel')
       .forEach((p) => p.classList.toggle('hidden', p.dataset.panel !== name));
+    // Usage renders lazily and only when visible — trigger it whenever the panel
+    // is shown (a Cmd+R deep-link to #usage or last-tab restore reveals it without
+    // a click), else it sits at the static "Loading…" placeholder forever.
+    if (name === 'usage') renderUsage();
   };
   const exists = (name) => !!document.querySelector(`.tab[data-tab="${name}"]`);
+  // Notes/Meetings/History are merged into one "Workspace" tab as sections. Keep
+  // the old deep-links (#notes, #meetings, #history — used by notes.js/meetings.js
+  // and any stored last-tab) working by resolving them to the workspace tab and
+  // scrolling to the matching section.
+  const WS_ALIAS = { notes: 'ws-notes', meetings: 'ws-meetings', history: 'ws-history' };
+  const showAlias = (name) => {
+    show('workspace');
+    const el = document.getElementById(WS_ALIAS[name]);
+    if (el) el.scrollIntoView({ block: 'start' });
+  };
   const select = (name) => {
     show(name);
     // Use replaceState, NOT location.hash: a panel like "skills" shares its id
@@ -141,13 +155,18 @@ function wireTabs() {
   // Priority: an explicit #hash (e.g. the Pro chip opens #license), else the
   // last-opened tab, else the default (API).
   const fromHash = (location.hash || '').replace('#', '');
+  if (fromHash && WS_ALIAS[fromHash]) {
+    showAlias(fromHash);
+    return;
+  }
   if (fromHash && exists(fromHash)) {
     show(fromHash);
     return;
   }
   chrome.storage.local.get(K_SETTINGS_TAB).then((g) => {
     const last = g[K_SETTINGS_TAB];
-    if (last && exists(last)) show(last);
+    if (last && WS_ALIAS[last]) show('workspace');
+    else if (last && exists(last)) show(last);
   });
 }
 const K_SETTINGS_TAB = 'chatpanel:settingsTab';
@@ -3307,7 +3326,8 @@ function piiTextToDict(text) {
 // --------------------------------------------------------------------------
 function wireUsage() {
   const rerender = () => renderUsage();
-  document.querySelector('.tab[data-tab="usage"]')?.addEventListener('click', rerender);
+  // The tab click itself is handled by wireTabs → show('usage') → renderUsage();
+  // here we only wire the in-panel controls.
   if ($('usage-refresh')) $('usage-refresh').onclick = rerender;
   if ($('usage-groupby')) $('usage-groupby').onchange = rerender;
   if ($('usage-window')) $('usage-window').onchange = rerender;
