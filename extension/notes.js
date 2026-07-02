@@ -20,6 +20,9 @@ import {
 import {
   SWARM_ROLES, SWARM_ROLE_META, swarmOverrides, swarmCandidates, roleAgent, getRouter,
 } from './js/notes-swarm-router.js';
+import {
+  beginRegion, appendRegion, finishRegion, activeRegions, agentReplace,
+} from './js/notes-regions.js';
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
 import {
   HUMAN, blankAttribution, mergeRuns, applyAttribution, attributionSummary, normalizeAttribution,
@@ -406,9 +409,14 @@ async function openNote(id, preloaded = null) {
   if (writerAbort) writerAbort.abort();
   clearGhost({ remove: true }); // strip any pending draft-ahead from the OLD note before it's flushed
   // @insert/@command jobs are deliberately NOT aborted here — they run in the
-  // background keyed by note id and persist their result on completion.
+  // background keyed by note id and persist their result on completion. A REGION job
+  // (Live) streams into the live CM surface, which can't follow a note switch — so it's
+  // foreground: stop it and save whatever streamed (onCmChange already persisted it).
   const outJob = current && noteJobs.get(current.id);
-  if (outJob) {
+  if (outJob?.region) {
+    outJob.abort.abort();
+    await flushSave();
+  } else if (outJob) {
     dirty = false;            // the job owns this note's body — don't flush the transient progress block
     await persistJobBody(outJob); // snapshot the partial output so a switch/reload loses nothing
   } else {
@@ -447,7 +455,7 @@ async function openNote(id, preloaded = null) {
   setStatus('');
   history.replaceState(null, '', `#${encodeURIComponent(id)}`);
   const inJob = noteJobs.get(current.id);
-  if (inJob) attachEditorToJob(inJob); // reopening a note with a running job re-attaches its live progress
+  if (inJob && !inJob.region) attachEditorToJob(inJob); // re-attach a textarea job's live progress (region jobs are foreground, never backgrounded)
   else $('n-body').readOnly = false;
   renderActivity(); // re-attach this note's persisted command-activity trace (or hide it)
   renderList($('n-search').value);
@@ -1413,6 +1421,7 @@ const noteJobs = new Map(); // noteId -> job
 let _jobStarting = false; // synchronous single-flight lock: a job is being set up (before it
 // registers in noteJobs). Without it, rapid Enter presses each pass the noteJobs guard during
 // the async model/bridge/tool setup and spawn DUPLICATE jobs (the "rewritten again and again").
+let _jobSeq = 0; // unique id per job → its CM region id (for the multi-agent editor)
 
 // What the note's body should hold once the job is finished (or dropped): the
 // produced output, or — if it errored before producing anything — the original
@@ -1654,12 +1663,16 @@ async function runNoteCommand() {
 async function runNoteJob({
   deps, settings, license, targetAgent, resolved,
   head, tail, commandText, cmdLabel, systemPrompt, instruction,
-  makeExtraProviders = null, armToolset = true, maxTokens = 1800, temperature = 0.4, versionLabel, skillRun = null, answerPrefix = '',
+  makeExtraProviders = null, armToolset = true, maxTokens = 1800, temperature = 0.4, versionLabel, skillRun = null, answerPrefix = '', regionId = null,
 }) {
   const ta = $('n-body');
+  // regionId set + Live active → stream into a CM region (animated widget, NO global lock, you
+  // can edit elsewhere). The region + its widget were already opened by the caller.
+  const region = !!regionId && cmActive && !!cm;
   const job = {
     noteId: current.id, cmd: cmdLabel, instruction,
     head, tail, commandText, answerPrefix, out: '', steps: [], tools: [],
+    region, regionId,
     redacted: false, status: 'starting', statusText: 'starting…',
     modelLabel: targetAgent.name || resolved.model || resolved.bridgeAgent || 'agent',
     abort: new AbortController(), done: false, error: null,
@@ -1692,9 +1705,11 @@ async function runNoteJob({
 
   noteJobs.set(job.noteId, job);
   recordActivity(job);
-  ta.readOnly = true;
-  streamStart(); // begin scroll-anchoring for this run
-  renderJob(job);
+  if (!region) {
+    ta.readOnly = true;            // textarea path: whole editor is read-only while it streams
+    streamStart();                 // scroll-anchoring for the mirror path
+    renderJob(job);
+  } // region path: no global lock, CM auto-scrolls each append
   setSideTab('activity'); // surface the run in the sidebar
   renderList($('n-search').value);
   try {
@@ -1705,7 +1720,12 @@ async function runNoteJob({
       tools,
       redaction,
       messages: [{ role: 'user', content: noteCtx ? `${noteCtx}\n\n---\nInstruction: ${instruction}` : instruction }],
-      onDelta: (d) => { job.out += d; job.status = 'writing'; job.statusText = 'writing…'; scheduleJobRender(job); scheduleActivityRender(); },
+      onDelta: (d) => {
+        job.out += d; job.status = 'writing'; job.statusText = 'writing…';
+        if (region) { if (current?.id === job.noteId && cm) appendRegion(cm.view, regionId, d); } // stream into the region
+        else scheduleJobRender(job);
+        scheduleActivityRender();
+      },
       onEvent: (ev) => {
         if (ev?.type === 'tool' && ev.phase === 'start') {
           job.status = 'tool';
@@ -1719,7 +1739,7 @@ async function runNoteJob({
           job.status = 'thinking'; job.statusText = 'thinking…';
         }
         recordActivity(job);
-        scheduleJobRender(job);
+        if (!region) scheduleJobRender(job);
         scheduleActivityRender();
       },
     });
@@ -1729,22 +1749,43 @@ async function runNoteJob({
     const aborted = job.abort.signal.aborted;
     job.done = true;
     noteJobs.delete(job.noteId);
-    if (current?.id === job.noteId) {
-      $('n-body').readOnly = false;
-      renderJob(job); // collapse the progress block down to the final output
-      if (!aborted && !job.error) {
-        recordEdit({ author: job.modelLabel, discrete: true }); // attribute the produced text
-        pushVersion(job.modelLabel, versionLabel || `${cmdLabel} · ${job.modelLabel}`);
-        // Log the completion to the Team-activity timeline (directed actions too).
-        logActivity(job.modelLabel, job.cmd.startsWith('@') ? 'completed a task' : `@${job.cmd} inserted`);
+    const open = current?.id === job.noteId;
+    if (region) {
+      // Region job: text was streamed into CM live and saved via onCmChange as it went. Unlock
+      // the region + drop the widget; snapshot + persist. If its note was switched away (region
+      // gone from the live CM), just clean up — the streamed text was already saved to the note.
+      const liveRegion = open && cm && activeRegions(cm.view.state).some((r) => r.id === regionId);
+      if (open && cm) finishRegion(cm.view, regionId);
+      if (liveRegion) {
+        current.body = $('n-body').value = cm.value;
+        if (!aborted && !job.error) {
+          pushVersion(job.modelLabel, versionLabel || `${cmdLabel} · ${job.modelLabel}`);
+          logActivity(job.modelLabel, job.cmd.startsWith('@') ? 'completed a task' : `@${job.cmd} inserted`);
+        }
+        updateWordCount();
+        setStatus(aborted ? '' : 'Saved', !aborted);
+        renderActivity();
+        renderHistory();
+        dirty = true;
+        await flushSave();
       }
-      current.body = $('n-body').value;
-      updateWordCount();
-      setStatus(aborted ? '' : 'Saved', !aborted);
-      renderActivity();
-      renderHistory();
+    } else {
+      if (open) {
+        $('n-body').readOnly = false;
+        renderJob(job); // collapse the progress block down to the final output
+        if (!aborted && !job.error) {
+          recordEdit({ author: job.modelLabel, discrete: true }); // attribute the produced text
+          pushVersion(job.modelLabel, versionLabel || `${cmdLabel} · ${job.modelLabel}`);
+          logActivity(job.modelLabel, job.cmd.startsWith('@') ? 'completed a task' : `@${job.cmd} inserted`);
+        }
+        current.body = $('n-body').value;
+        updateWordCount();
+        setStatus(aborted ? '' : 'Saved', !aborted);
+        renderActivity();
+        renderHistory();
+      }
+      await persistJobBody(job); // lands the result (+ ledger) even if the note isn't open
     }
-    await persistJobBody(job); // lands the result (+ ledger) even if the note isn't open
     renderList($('n-search').value);
   }
   return job;
@@ -1763,14 +1804,29 @@ async function runAgentTask(mention) {
   const tail = ta.value.slice(mention.end);
   const commandText = ta.value.slice(mention.start, mention.end);
   const question = (mention.task || '').split('\n').map((l) => `> ${l}`).join('\n');
+  const prefix = `${question}\n\n**${mention.name}:**\n\n`;
+  const useRegion = cmActive && !!cm;
+  const regionId = useRegion ? `job-${++_jobSeq}` : null;
   // IMMEDIATE, deterministic ack — the instant Enter is pressed, before the (possibly slow)
   // deps/bridge/tool setup, so it's obvious the request was taken and you don't press again.
-  ta.value = `${head}${question}\n\n**${mention.name}:**\n\n⏳ starting…${tail}`;
-  ta.readOnly = true;
-  mirrorToCm();
+  if (useRegion) {
+    // Live: replace the mention line with the Q&A header, then open an (empty, animated)
+    // region for the answer. NO global lock — the region guard protects only the answer span,
+    // so you can keep editing elsewhere while the agent works.
+    bodyReplaceRange(prefix, mention.start, mention.end, mention.start + prefix.length);
+    beginRegion(cm.view, regionId, mention.name, mention.start + prefix.length);
+  } else {
+    ta.value = `${head}${prefix}⏳ starting…${tail}`; // classic textarea placeholder + global lock
+    ta.readOnly = true;
+    mirrorToCm();
+  }
   setStatus(`Sending to ${mention.name}…`);
   setSideTab('activity');
-  const fail = (msg) => { ta.value = head + commandText + tail; ta.readOnly = false; mirrorToCm(); setStatus(''); bodyFocus(); toast(msg); _jobStarting = false; return true; };
+  const fail = (msg) => {
+    if (useRegion && cm) { finishRegion(cm.view, regionId); bodyReplaceRange(commandText, mention.start, mention.start + prefix.length, mention.end); }
+    else { ta.value = head + commandText + tail; ta.readOnly = false; mirrorToCm(); }
+    setStatus(''); bodyFocus(); toast(msg); _jobStarting = false; return true;
+  };
   try {
     let deps;
     try { deps = await agentDeps(); } catch { return fail('Agent unavailable'); }
@@ -1792,7 +1848,7 @@ async function runAgentTask(mention) {
     await runNoteJob({
       deps, settings, license, targetAgent, resolved, head, tail, commandText,
       cmdLabel: `@${targetAgent.name || 'agent'}`, systemPrompt: sys, instruction: skill.instruction,
-      armToolset: true, maxTokens: 2400, skillRun: skill.skillRun,
+      armToolset: true, maxTokens: 2400, skillRun: skill.skillRun, regionId,
       answerPrefix: `${question}\n\n**${targetAgent.name || 'Agent'}:**\n\n`,
       makeExtraProviders: (job) => [makeNoteTools(job)],
       versionLabel: `@${targetAgent.name || 'agent'}${skill.skillLabel ? ` #${skill.skillLabel}` : ''} · task`,
@@ -1854,10 +1910,14 @@ function makeNoteTools(job) {
         const find = String(input?.find || '');
         const replace = String(input?.replace || '');
         if (!find) return JSON.stringify({ error: '`find` is required.' });
-        if (job.head.includes(find)) job.head = job.head.replace(find, replace);
-        else if (job.tail.includes(find)) job.tail = job.tail.replace(find, replace);
+        if (job.region && cm && current?.id === job.noteId) {
+          // Region job: edit the LIVE document (an agent write, so the region guard allows it).
+          const idx = cm.value.indexOf(find);
+          if (idx < 0) return JSON.stringify({ error: '`find` was not an exact substring of the note. Copy the exact text to replace.' });
+          agentReplace(cm.view, idx, idx + find.length, replace, job.modelLabel);
+        } else if (job.head.includes(find)) { job.head = job.head.replace(find, replace); scheduleJobRender(job); }
+        else if (job.tail.includes(find)) { job.tail = job.tail.replace(find, replace); scheduleJobRender(job); }
         else return JSON.stringify({ error: '`find` was not an exact substring of the note (outside the text being written). Copy the exact text to replace.' });
-        scheduleJobRender(job);
         if (current?.id === job.noteId) logActivity(job.modelLabel, 'edited the note');
         return JSON.stringify({ ok: true });
       }

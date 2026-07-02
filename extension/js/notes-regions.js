@@ -141,6 +141,11 @@ export function finishRegion(view, id) {
   view.dispatch({ effects: dropRegion.of(id) });
   return r ? { from: r.from, to: r.to } : null;
 }
+// An agent editing EXISTING note text (its note_edit tool) — an agentWrite so the region
+// guard lets it through even if it touches a locked span; attributed to the agent.
+export function agentReplace(view, from, to, text, label) {
+  view.dispatch({ changes: { from, to, insert: text }, annotations: agentWrite.of({ id: '_edit', label: label || 'Agent' }) });
+}
 // The author label of an agent write in this update, or null (used for provenance).
 export function agentAuthorOf(update) {
   for (const tr of update.transactions || []) {
