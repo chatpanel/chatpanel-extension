@@ -138,12 +138,30 @@ async function ensureCm() {
     doc: $('n-body').value,
     placeholder: 'Start writing… formatting renders as you type.',
     onChange: onCmChange,
+    onSelection: onCmSelection,
     onKey: onCmKey,
   });
   return cm;
 }
-// A human edit in CM → mirror to the textarea (model) and run the input pipeline minus the
-// textarea-specific autocomplete (that's Phase 3; still works in the classic view).
+// ── Editor-agnostic accessors ────────────────────────────────────────────────────
+// The gesture/autocomplete logic reads the body + cursor through these so it works whether
+// the active surface is the textarea (classic) or CM (Live). Writes go through the active
+// surface too; in Live, the CM change re-enters onCmChange to run the input pipeline.
+const bodyText = () => (cmActive && cm ? cm.value : $('n-body').value);
+function bodySel() {
+  if (cmActive && cm) { const s = cm.getSelection(); return { start: s.start, end: s.end, head: s.head }; }
+  const ta = $('n-body'); return { start: ta.selectionStart, end: ta.selectionEnd, head: ta.selectionStart };
+}
+const bodyCursor = () => bodySel().head;
+const bodyHasSelection = () => { const s = bodySel(); return s.start !== s.end; };
+function bodyReplaceRange(text, from, to, cursor = from + text.length) {
+  if (cmActive && cm) { cm.replaceRange(text, from, to); cm.setSelection(cursor); } // onCmChange runs the pipeline
+  else { const ta = $('n-body'); ta.setRangeText(text, from, to, 'end'); ta.setSelectionRange(cursor, cursor); onBodyInput(); }
+}
+const bodyFocus = () => (cmActive && cm ? cm.focus() : $('n-body').focus());
+// A human edit in CM → mirror to the textarea (the model) and run the input pipeline (minus
+// the inline ghost-prediction, which is deferred in Live). The (editor-agnostic) autocomplete
+// + swarm schedulers read the cursor from CM.
 function onCmChange(v, info = {}) {
   if (info.programmatic || _cmSyncing) return; // our own model→CM push, not a user edit
   const ta = $('n-body');
@@ -155,10 +173,46 @@ function onCmChange(v, info = {}) {
   updateWordCount();
   scheduleSave();
   scheduleSuggest();
+  maybeAutocomplete();                           // @/[[/# dropdown, positioned via CM coords
   scheduleCowriter();
   scheduleResearch();
 }
-function onCmKey() { return false; } // Phase 3: route Enter / ⌘↵ / @mention / autocomplete here
+function onCmSelection() { maybeAutocomplete(); } // moving the caret updates/closes the dropdown
+// Route CM key events to the same gestures the textarea has. Return true = handled (CM won't
+// also act). Normal typing falls through (return false) to CM.
+function onCmKey(e) {
+  if (ac.open) {
+    if (e.key === 'ArrowDown') { moveAc(1); return true; }
+    if (e.key === 'ArrowUp') { moveAc(-1); return true; }
+    if (e.key === 'Enter' || e.key === 'Tab') { acceptAc(); return true; }
+    if (e.key === 'Escape') { closeAc(); return true; }
+  }
+  // Writer draft streaming: swallow keys (Esc aborts); a directed Enter still submits.
+  if (writerAbort) {
+    if (e.key === 'Enter' && !e.shiftKey && (currentMention() || currentCommandLine())) { writerAbort.abort(); clearGhost({ remove: true }); }
+    else { if (e.key === 'Escape') { writerAbort.abort(); clearGhost({ remove: true }); } return true; }
+  }
+  // Pending draft-ahead ghost: Tab accepts, Esc rejects, any edit key drops it.
+  if (ghost) {
+    if (e.key === 'Tab') { acceptGhost(); return true; }
+    if (e.key === 'Escape') { clearGhost({ remove: true }); return true; }
+    if (!['Shift', 'Meta', 'Control', 'Alt', 'CapsLock'].includes(e.key)) clearGhost({ remove: true });
+  }
+  const openJob = current && noteJobs.has(current.id);
+  if (e.key === 'Escape' && openJob) { noteJobs.get(current.id).abort.abort(); return true; }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { draftAhead(); return true; } // draftAhead → runAgentTask on a mention line
+  if (e.key === 'Enter' && !e.shiftKey && !openJob) {
+    const line = currentLine();
+    const rm = line.text.match(/^@research\s+(.{2,})$/i);
+    if (rm) { bodyReplaceRange('', line.start, line.end, line.start); runResearch({ question: rm[1].trim(), web: true }); return true; }
+    const pm = line.text.match(/^\/plan\s+(.{2,})$/i);
+    if (pm) { bodyReplaceRange('', line.start, line.end, line.start); planInNewNote(pm[1].trim()); return true; }
+    const mention = currentMention();
+    if (mention) { runAgentTask(mention); return true; }
+    if (currentCommandLine()) { runNoteCommand(); return true; }
+  }
+  return false;
+}
 // Push the model (textarea value + readonly) into CM when Live mode is active — for
 // programmatic changes: note open, AI streaming paints, undo/restore.
 function mirrorToCm(md = $('n-body').value) {
@@ -416,21 +470,16 @@ async function flushSave() {
 
 // ── toolbar ─────────────────────────────────────────────────────────────────
 function surround(before, after = before) {
-  const ta = $('n-body');
-  const [s, e] = [ta.selectionStart, ta.selectionEnd];
-  const sel = ta.value.slice(s, e) || '';
-  ta.setRangeText(before + sel + after, s, e, 'end');
-  if (!sel) ta.selectionStart = ta.selectionEnd = s + before.length;
-  ta.focus();
-  onBodyInput();
+  const { start: s, end: e } = bodySel();
+  const sel = bodyText().slice(s, e) || '';
+  bodyReplaceRange(before + sel + after, s, e, sel ? s + (before + sel + after).length : s + before.length);
+  bodyFocus();
 }
 function linePrefix(prefix) {
-  const ta = $('n-body');
-  const s = ta.selectionStart;
-  const lineStart = ta.value.lastIndexOf('\n', s - 1) + 1;
-  ta.setRangeText(prefix, lineStart, lineStart, 'end');
-  ta.focus();
-  onBodyInput();
+  const s = bodyCursor();
+  const lineStart = bodyText().lastIndexOf('\n', s - 1) + 1;
+  bodyReplaceRange(prefix, lineStart, lineStart, s + prefix.length);
+  bodyFocus();
 }
 function applyFmt(fmt) {
   switch (fmt) {
@@ -442,12 +491,10 @@ function applyFmt(fmt) {
     case 'task': return linePrefix('- [ ] ');
     case 'quote': return linePrefix('> ');
     case 'link': {
-      const ta = $('n-body');
-      const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd) || 'text';
-      const [s, e] = [ta.selectionStart, ta.selectionEnd];
-      ta.setRangeText(`[${sel}](url)`, s, e, 'end');
-      ta.focus();
-      return onBodyInput();
+      const { start: s, end: e } = bodySel();
+      const sel = bodyText().slice(s, e) || 'text';
+      bodyReplaceRange(`[${sel}](url)`, s, e);
+      return bodyFocus();
     }
     default: break;
   }
@@ -807,8 +854,8 @@ async function runAgentAction(kind) {
   if (!current || agentAbort) return;
   const spec = AGENT_SPECS[kind];
   const ta = $('n-body');
-  const body = ta.value;
-  const [s0, s1] = [ta.selectionStart, ta.selectionEnd];
+  const body = bodyText(); // synced from CM when Live is active
+  const { start: s0, end: s1 } = bodySel();
   const sel = body.slice(s0, s1);
 
   // Frame WHERE the streamed output lands (head + output + tail) per action.
@@ -887,8 +934,8 @@ async function planInNewNote(explicitTopic) {
   closeAgentMenu();
   if (!current || agentAbort) return;
   const ta = $('n-body');
-  const [s0, s1] = [ta.selectionStart, ta.selectionEnd];
-  const topic = (explicitTopic || ta.value.slice(s0, s1) || currentLine().text || current.title || '').trim();
+  const { start: s0, end: s1 } = bodySel();
+  const topic = (explicitTopic || bodyText().slice(s0, s1) || currentLine().text || current.title || '').trim();
   if (topic.length < 3) return toast('Select the text you want planned, or type /plan <topic>');
 
   let deps;
@@ -904,8 +951,7 @@ async function planInNewNote(explicitTopic) {
   const clean = topic.replace(/[#*_`>~[\]]/g, '').replace(/\s+/g, ' ').trim();
   const title = `Plan: ${clean.slice(0, 60)}`;
   const plan = await createNote({ title, body: '' });
-  ta.setRangeText(`[[${title}]]`, s0, s1, 'end');
-  onBodyInput();
+  bodyReplaceRange(`[[${title}]]`, s0, s1); // replace the selection with a link (classic or CM)
   await flushSave(); // persist the link in the source note before we switch away
 
   // 3) Open the plan note and set it up for the swarm.
@@ -1065,10 +1111,9 @@ function closeAc() { ac.open = false; ac.range = null; $('n-ac').classList.add('
 
 // The [[…]] link query under the cursor, or null.
 function currentWikiQuery() {
-  const ta = $('n-body');
-  if (ta.selectionStart !== ta.selectionEnd) return null;
-  const pos = ta.selectionStart;
-  const upto = ta.value.slice(0, pos);
+  if (bodyHasSelection()) return null;
+  const pos = bodyCursor();
+  const upto = bodyText().slice(0, pos);
   const open = upto.lastIndexOf('[[');
   if (open < 0) return null;
   const between = upto.slice(open + 2);
@@ -1170,7 +1215,9 @@ function renderAc() {
       el.appendChild(d);
     });
   }
-  const { x, y } = caretXY($('n-body'));
+  let x; let y;
+  if (cmActive && cm) { const c = cm.coordsAtCursor(); if (c) { x = c.left; y = c.bottom; } }
+  if (x == null) { const p = caretXY($('n-body')); x = p.x; y = p.y; } // classic textarea (mirror-div)
   el.style.left = `${Math.max(8, Math.min(x, window.innerWidth - 372))}px`;
   el.style.top = `${y + 4}px`;
   el.classList.remove('hidden');
@@ -1184,41 +1231,33 @@ function moveAc(dir) {
 }
 function acceptAc() {
   if (!ac.range) return closeAc();
-  const ta = $('n-body');
   const it = ac.items[ac.index];
+  const r = ac.range;
+  // Replace the typed token (the @/#// sigil sits at start-1) and let bodyReplaceRange run
+  // the input pipeline — works in both the classic textarea and the Live CM surface.
   if (ac.mode === 'cmd') {
     if (!it) return closeAc();
-    // Replace the typed "@word" (the @ is at start-1) with the command or a bracketed
-    // agent mention ("@[Name] "), then keep typing the instruction/task.
-    const insert = it.agent ? `@[${it.name}] ` : `@${it.cmd} `;
-    ta.setRangeText(insert, ac.range.start - 1, ac.range.end, 'end');
     closeAc();
-    onBodyInput();
+    bodyReplaceRange(it.agent ? `@[${it.name}] ` : `@${it.cmd} `, r.start - 1, r.end);
     return;
   }
   if (ac.mode === 'slash') {
     if (!it) return closeAc();
-    // Remove the "/word" (the / is at start-1), then run the action on its natural target.
-    ta.setRangeText('', ac.range.start - 1, ac.range.end, 'end');
     closeAc();
-    onBodyInput();
-    it.run();
+    bodyReplaceRange('', r.start - 1, r.end);
+    it.run(); // act on its natural target (selection / line / note)
     return;
   }
   if (ac.mode === 'skill') {
     if (!it) return closeAc();
-    // Replace the typed "#word" (the # is at start-1) with a "#[Skill]" mention.
-    ta.setRangeText(`#[${it.name}] `, ac.range.start - 1, ac.range.end, 'end');
     closeAc();
-    onBodyInput();
+    bodyReplaceRange(`#[${it.name}] `, r.start - 1, r.end);
     return;
   }
-  const title = it ? it.title : ac.range.query; // allow a new (unmatched) link name too
-  ta.setRangeText(title, ac.range.start, ac.range.end, 'end');
-  const after = ac.range.start + title.length;
-  ta.selectionStart = ta.selectionEnd = ta.value.slice(after, after + 2) === ']]' ? after + 2 : after;
+  const title = it ? it.title : r.query; // allow a new (unmatched) link name too
+  const hasClose = bodyText().slice(r.end, r.end + 2) === ']]'; // jump past an auto-closed ]]
   closeAc();
-  onBodyInput();
+  bodyReplaceRange(title, r.start, r.end, r.start + title.length + (hasClose ? 2 : 0));
 }
 
 // ── @ commands — AI actions that generate/fetch and insert inline ────────────────
@@ -1236,10 +1275,9 @@ const NOTE_CMD_RE = new RegExp(`@(${NOTE_COMMANDS.map((c) => c.cmd).join('|')})\
 
 // The @word being typed at the cursor (start of line or after whitespace), or null.
 function currentAtQuery() {
-  const ta = $('n-body');
-  if (ta.selectionStart !== ta.selectionEnd) return null;
-  const pos = ta.selectionStart;
-  const line = ta.value.slice(ta.value.lastIndexOf('\n', pos - 1) + 1, pos);
+  if (bodyHasSelection()) return null;
+  const v = bodyText(); const pos = bodyCursor();
+  const line = v.slice(v.lastIndexOf('\n', pos - 1) + 1, pos);
   const m = line.match(/(?:^|\s)@(\w*)$/);
   if (!m) return null;
   return { word: m[1], start: pos - m[1].length, end: pos };
@@ -1258,10 +1296,9 @@ const SLASH_ACTIONS = [
 ];
 // The "/word" being typed at the cursor (line-start or after whitespace), or null.
 function currentSlashQuery() {
-  const ta = $('n-body');
-  if (ta.selectionStart !== ta.selectionEnd) return null;
-  const pos = ta.selectionStart;
-  const line = ta.value.slice(ta.value.lastIndexOf('\n', pos - 1) + 1, pos);
+  if (bodyHasSelection()) return null;
+  const v = bodyText(); const pos = bodyCursor();
+  const line = v.slice(v.lastIndexOf('\n', pos - 1) + 1, pos);
   const m = line.match(/(?:^|\s)\/(\w*)$/);
   if (!m) return null;
   return { word: m[1], start: pos - m[1].length, end: pos };
@@ -1269,10 +1306,9 @@ function currentSlashQuery() {
 // The "#word" being typed (line-start or after whitespace) — the skill picker. Won't
 // fire on a markdown heading ("# " has a space, breaking \w*).
 function currentHashQuery() {
-  const ta = $('n-body');
-  if (ta.selectionStart !== ta.selectionEnd) return null;
-  const pos = ta.selectionStart;
-  const line = ta.value.slice(ta.value.lastIndexOf('\n', pos - 1) + 1, pos);
+  if (bodyHasSelection()) return null;
+  const v = bodyText(); const pos = bodyCursor();
+  const line = v.slice(v.lastIndexOf('\n', pos - 1) + 1, pos);
   const m = line.match(/(?:^|\s)#(\w*)$/);
   if (!m) return null;
   return { word: m[1], start: pos - m[1].length, end: pos };
@@ -1280,11 +1316,11 @@ function currentHashQuery() {
 
 // The runnable "@command instruction" on the cursor's line, or null.
 function currentCommandLine() {
-  const ta = $('n-body');
-  const lineStart = ta.value.lastIndexOf('\n', ta.selectionStart - 1) + 1;
-  let end = ta.value.indexOf('\n', ta.selectionStart);
-  if (end < 0) end = ta.value.length;
-  const line = ta.value.slice(lineStart, end);
+  const v = bodyText(); const pos = bodyCursor();
+  const lineStart = v.lastIndexOf('\n', pos - 1) + 1;
+  let end = v.indexOf('\n', pos);
+  if (end < 0) end = v.length;
+  const line = v.slice(lineStart, end);
   const m = line.match(NOTE_CMD_RE);
   if (!m) return null;
   const spec = NOTE_COMMANDS.find((c) => c.cmd === m[1].toLowerCase());
@@ -1298,11 +1334,11 @@ function currentCommandLine() {
 // ("Update the plan @[Agent]" works, not just "@[Agent] update the plan"). Runs the
 // named agent on the task (runAgentTask); the WHOLE line is replaced by the Q&A.
 function currentMention() {
-  const ta = $('n-body');
-  const lineStart = ta.value.lastIndexOf('\n', ta.selectionStart - 1) + 1;
-  let end = ta.value.indexOf('\n', ta.selectionStart);
-  if (end < 0) end = ta.value.length;
-  const { name, task } = parseAgentMention(ta.value.slice(lineStart, end));
+  const v = bodyText(); const pos = bodyCursor();
+  const lineStart = v.lastIndexOf('\n', pos - 1) + 1;
+  let end = v.indexOf('\n', pos);
+  if (end < 0) end = v.length;
+  const { name, task } = parseAgentMention(v.slice(lineStart, end));
   if (!name || !task) return null;
   return { name, task, start: lineStart, end };
 }
@@ -1784,9 +1820,8 @@ function clearCowriterUI() {
 
 // The paragraph the cursor sits in (blank-line delimited).
 function currentParagraph() {
-  const ta = $('n-body');
-  const v = ta.value;
-  const pos = ta.selectionStart;
+  const v = bodyText();
+  const pos = bodyCursor();
   const b = v.lastIndexOf('\n\n', pos - 1);
   const start = b < 0 ? 0 : b + 2;
   const n = v.indexOf('\n\n', pos);
@@ -2200,13 +2235,11 @@ function renderResearch() {
   refreshSideTabs();
 }
 function insertResearch(c) {
-  const ta = $('n-body');
   const link = c.kind === 'note' ? `[[${c.title}]]` : `[${escapeMdText(c.title)}](${c.url})`;
-  const pos = ta.selectionStart;
-  const lead = pos > 0 && !/\s$/.test(ta.value.slice(0, pos)) ? ' ' : '';
-  ta.setRangeText(lead + link + ' ', pos, ta.selectionEnd, 'end');
-  onBodyInput();
-  ta.focus();
+  const { start, end } = bodySel();
+  const lead = start > 0 && !/\s$/.test(bodyText().slice(0, start)) ? ' ' : '';
+  bodyReplaceRange(lead + link + ' ', start, end);
+  bodyFocus();
   toast('Inserted');
 }
 function openResearch(c) {
@@ -2255,6 +2288,7 @@ function clearGhost({ remove = false } = {}) {
   ghost = null;
   ghostAuthor = HUMAN;
   hideGhostHint();
+  mirrorToCm(); // reflect the removed ghost onto the live editor
 }
 function renderGhost(from, text) {
   const ta = $('n-body');
@@ -2264,6 +2298,7 @@ function renderGhost(from, text) {
   ghostApplying = false;
   ghost = { from, to: from + text.length };
   autoGrow();
+  mirrorToCm(); // show the streaming draft in the live editor too
 }
 function acceptGhost() {
   if (!ghost) return;
@@ -2285,7 +2320,7 @@ function acceptGhost() {
   renderHistory();
   dirty = true;
   scheduleSave();
-  ta.focus();
+  bodyFocus();
 }
 
 function writerTail(before) {
@@ -2393,9 +2428,8 @@ async function draftAhead() {
   // continue — route ⌘↵ to that agent instead of drafting a continuation over the task.
   const men = currentMention();
   if (men) { runAgentTask(men); return; }
-  const ta = $('n-body');
-  const from = ta.selectionStart;
-  const before = ta.value.slice(0, from);
+  const from = bodyCursor();
+  const before = bodyText().slice(0, from);
   if (before.trim().length < 8) return toast('Write a little first, then ⌘↵ to draft ahead');
   const gen = ++writerGen;
   let deps;
@@ -2650,8 +2684,7 @@ function toggleTimeline() {
 
 // The single line the cursor sits on (for affordance detection).
 function currentLine() {
-  const ta = $('n-body');
-  const v = ta.value; const pos = ta.selectionStart;
+  const v = bodyText(); const pos = bodyCursor();
   const s = v.lastIndexOf('\n', pos - 1) + 1;
   let e = v.indexOf('\n', pos); if (e < 0) e = v.length;
   return { text: v.slice(s, e), start: s, end: e };
