@@ -165,8 +165,20 @@ const bodyFocus = () => (cmActive && cm ? cm.focus() : $('n-body').focus());
 function onCmChange(v, info = {}) {
   if (info.programmatic || _cmSyncing) return; // our own model→CM push, not a user edit
   const ta = $('n-body');
-  if (ta.readOnly || ta.value === v) return;
+  if (ta.value === v) return;
+  const prev = ta.value;
   ta.value = v;
+  if (info.agentAuthor) {
+    // A streamed AGENT write into its region — attribute the changed span to the agent (not
+    // You), keep the ledger + baseline in sync, persist, but DON'T run the user input pipeline
+    // (no autocomplete / co-writer / undo checkpoint on agent-authored text).
+    if (current) current.attribution = applyAttribution(current.attribution, prev, v, info.agentAuthor, Date.now());
+    histPrev = { value: v, start: Math.min(histPrev.start, v.length), end: Math.min(histPrev.end, v.length) };
+    updateWordCount();
+    renderHistorySummary();
+    scheduleSave();
+    return;
+  }
   recordEdit();                                 // checkpoint + attribution (to You)
   if (ghost) { ghost = null; hideGhostHint(); }
   renderHistorySummary();

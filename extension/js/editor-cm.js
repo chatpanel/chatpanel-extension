@@ -18,6 +18,7 @@ import {
   syntaxTree, HighlightStyle, syntaxHighlighting, indentOnInput,
   markdown, markdownLanguage, tags as t,
 } from './vendor/codemirror.js';
+import { agentRegionsExtension, agentAuthorOf } from './notes-regions.js';
 
 // Markdown token → CSS class (colors/weights live in notes.css so themes control them).
 const HL = HighlightStyle.define([
@@ -95,6 +96,7 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
     markdown({ base: markdownLanguage }),
     syntaxHighlighting(HL),
     livePreview,
+    agentRegionsExtension(), // multi-agent regions: remap + region-scoped lock + working widget
     // Our gesture/autocomplete handler must beat the default keymap (Tab=indent, Enter=newline),
     // so it runs at the HIGHEST precedence — otherwise Tab/Enter get consumed before we can
     // accept an autocomplete item or submit a directed line. Returns true → CM won't also act.
@@ -102,7 +104,8 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
     keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
     editable.of(EditorView.editable.of(!readOnly)),
     EditorView.updateListener.of((u) => {
-      if (u.docChanged && onChange) onChange(u.state.doc.toString(), u);
+      // agentAuthor set → this change was an agent write (attribute to the agent, not "You").
+      if (u.docChanged && onChange) onChange(u.state.doc.toString(), { update: u, agentAuthor: agentAuthorOf(u) });
       if (u.selectionSet && !u.docChanged && onSelection) onSelection();
     }),
     EditorView.contentAttributes.of({ 'aria-label': 'Note body', spellcheck: 'true' }),

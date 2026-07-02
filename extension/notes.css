@@ -239,6 +239,14 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .cm-tok-quote { color: var(--muted); font-style: italic; }
 .cm-tok-list { color: var(--muted); }
 
+/* Agent regions — a live span an agent is writing. Subtle tint + an animated "working" chip;
+   the rest of the doc stays editable (only this region is locked). */
+.cm-host .cm-line.cm-agent-region { background: var(--accent-weak); box-shadow: inset 2px 0 0 0 var(--accent); border-radius: 2px; }
+.cm-agent-working { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; padding: 1px 8px; border-radius: 999px; font: 500 12px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--accent); background: var(--accent-weak); vertical-align: baseline; user-select: none; }
+.cm-agent-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--accent); border-right-color: transparent; animation: cm-agent-spin .7s linear infinite; }
+@keyframes cm-agent-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .cm-agent-spin { animation-duration: 2s; } }
+
 .backlinks { max-width: var(--measure); margin: 0 auto; padding: 0 var(--gutter) 34px; }
 .backlinks:empty { display: none; }
 .backlinks-label { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; margin: 8px 0 8px; border-top: 1px solid var(--border); padding-top: 16px; }
