@@ -501,6 +501,16 @@ export function topicSourceTextForMeeting(rec, notes = '') {
   return lines.join('\n').trim();
 }
 
+// Notes are plain markdown, so the body IS the topic source — no transcript/segment
+// shape to flatten. Tags ride along as high-signal hints. Kept raw (not compacted) so
+// headings/bullets survive for the deterministic fallback's line scan.
+export function topicSourceTextForNote(rec) {
+  const lines = [`TITLE: ${rec?.title || 'Note'}`];
+  if (Array.isArray(rec?.tags) && rec.tags.length) lines.push(`TAGS: ${rec.tags.join(', ')}`);
+  lines.push('', String(rec?.body || '').slice(0, 12000));
+  return lines.join('\n').trim();
+}
+
 export function topicExtractionPrompt({ kind = 'chat', title = '', text = '' } = {}) {
   return [
     `You extract graph traversal topics from a ${kind} transcript.`,

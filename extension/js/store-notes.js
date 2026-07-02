@@ -41,6 +41,11 @@ function extractLinks(body) {
   return out;
 }
 
+function wordCount(body) {
+  const s = String(body || '').trim();
+  return s ? s.split(/\s+/).length : 0;
+}
+
 // First non-empty line becomes the title, stripped of markdown heading/emphasis
 // marks. Falls back to "Untitled note".
 export function deriveTitle(body) {
@@ -88,6 +93,11 @@ async function writeNote(rec) {
     snippet: snippetOf(rec.body),
     tags: Array.isArray(rec.tags) ? rec.tags : [],
     links: extractLinks(rec.body),
+    // Auto-extracted topics (kept in the index so the graph/dashboard/omni use them
+    // without decrypting bodies — same reason tags/links live here). Attached by the
+    // background extractor via saveNoteTopics(); mirrored on every full save.
+    topics: Array.isArray(rec.topics?.items) ? rec.topics.items : [],
+    words: wordCount(rec.body),
     createdAt: rec.createdAt,
     updatedAt: rec.updatedAt,
     chars: (rec.body || '').length,
@@ -117,7 +127,24 @@ export async function saveNote(note) {
     // labelled version snapshots to revert to. Carried verbatim when provided.
     ...(Array.isArray(note.attribution) ? { attribution: note.attribution } : {}),
     ...(Array.isArray(note.versions) ? { versions: note.versions } : {}),
+    // Auto-extracted topic index { version, hash, items[], fallback, extractedAt }.
+    ...(note.topics ? { topics: note.topics } : {}),
   });
+}
+
+// Attach a freshly-extracted topic index to a note WITHOUT re-stamping updatedAt or
+// re-sorting the list — a background extraction shouldn't jump the note to the top.
+// Mirrors store-meetings.js saveMeetingTopics(). Returns the updated record or null.
+export async function saveNoteTopics(id, topics) {
+  const rec = await getNote(id);
+  if (!rec) return null;
+  rec.topics = topics;
+  await chrome.storage.local.set({ [noteKey(id)]: await encryptJSON(rec) });
+  const items = Array.isArray(topics?.items) ? topics.items : [];
+  const index = await getNoteIndex();
+  const entry = index.find((e) => e.id === id);
+  if (entry) { entry.topics = items; await saveIndex(index); }
+  return rec;
 }
 
 // Make a fresh empty note and return its record.

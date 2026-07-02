@@ -7,7 +7,7 @@
 // entry carries a title + snippet. A full note body is decrypted only when opened.
 
 import {
-  getNoteIndex, getNote, createNote, saveNote, deleteNote, noteToMarkdown,
+  getNoteIndex, getNote, createNote, saveNote, deleteNote, noteToMarkdown, saveNoteTopics,
 } from './js/store-notes.js';
 import { renderMarkdown } from './js/markdown.js';
 import {
@@ -53,12 +53,28 @@ async function reloadIndex() {
 }
 function updateEntry(rec) {
   // Fold a just-saved record into the in-memory index and move it to the front.
+  // Preserve auto-topics: prefer the record's own index, else keep the prior entry's
+  // (a body-only save shouldn't blank topics the background extractor already attached).
+  const prev = list.find((e) => e.id === rec.id);
+  const body = rec.body || '';
   const entry = {
     id: rec.id, title: rec.title, snippet: snippetOf(rec.body),
-    tags: rec.tags || [], createdAt: rec.createdAt, updatedAt: rec.updatedAt, chars: (rec.body || '').length,
+    tags: rec.tags || [], links: extractBodyLinks(body),
+    topics: Array.isArray(rec.topics?.items) ? rec.topics.items : (prev?.topics || []),
+    words: body.trim() ? body.trim().split(/\s+/).length : 0,
+    createdAt: rec.createdAt, updatedAt: rec.updatedAt, chars: body.length,
   };
   list = [entry, ...list.filter((e) => e.id !== rec.id)];
   invalidateNotesIndex();
+}
+// The [[Title]] targets a note references — mirrors store-notes.js extractLinks so the
+// in-memory index entry carries outgoing links right after a save (before reload).
+function extractBodyLinks(body) {
+  const out = [];
+  const re = /\[\[([^[\]\n]+)\]\]/g;
+  let m;
+  while ((m = re.exec(String(body || '')))) { const t = m[1].trim(); if (t && !out.includes(t)) out.push(t); }
+  return out;
 }
 
 function renderList(query = '') {
@@ -143,15 +159,16 @@ function openOmni(query = '') {
 // Extensible shell — more tabs (Topics, Recent, Action items, Calendar) plug in
 // here later. Everything heavy (graph-view, BM25 graph model) is lazy-imported.
 let nDashOn = false;
-let nDashTab = 'graph';
+let nDashTab = 'stats';
 let _graphMod = null;
+const DASH_TABS = ['stats', 'graph', 'related'];
 async function openDash() {
   nDashOn = true;
   $('n-graph-toggle').classList.add('active');
   $('n-dash').classList.remove('hidden');
   $('n-blank').classList.add('hidden');
   $('n-editor').classList.add('hidden');
-  await renderDash();
+  setDashTab(nDashTab); // sync tab buttons + pane visibility, then render
 }
 function closeDash() {
   nDashOn = false;
@@ -162,8 +179,9 @@ function closeDash() {
 }
 async function toggleDash() { if (nDashOn) closeDash(); else await openDash(); }
 function setDashTab(tab) {
-  nDashTab = tab === 'related' ? 'related' : 'graph';
+  nDashTab = DASH_TABS.includes(tab) ? tab : 'stats';
   for (const b of $('n-dash').querySelectorAll('.dash-tabs button')) b.classList.toggle('active', b.dataset.dash === nDashTab);
+  $('n-dash-stats').classList.toggle('hidden', nDashTab !== 'stats');
   $('n-dash-graph').classList.toggle('hidden', nDashTab !== 'graph');
   $('n-dash-related').classList.toggle('hidden', nDashTab !== 'related');
   renderDash();
@@ -172,29 +190,44 @@ function setDashTab(tab) {
 // preview) — no body decrypts, so the dashboard stays cheap.
 async function notesGraphModel() {
   const mod = await ensureNotesIndexMod();
+  // Edge signal = auto-extracted topics + user tags + salient title terms (was title/tags
+  // tokens only). Real topics make the graph reflect what notes are ABOUT, not just shared
+  // words. Falls back to title terms for notes not yet topic-extracted.
   const model = list.map((n) => ({
     id: n.id,
     title: n.title || 'Untitled note',
     people: [],
-    terms: mod.topTerms(noteSearchText(n), 8),
+    terms: [...new Set([...(n.topics || []), ...(n.tags || []), ...mod.topTerms(n.title || '', 4)])].slice(0, 12),
   }));
   const g = mod.buildGraph(model);
   const seen = new Set();
   const links = [];
   const degree = new Map();
-  for (const m of model) {
-    for (const rel of g.relatedMeetings(m.id, { limit: 4 })) {
-      const key = m.id < rel.id ? `${m.id}|${rel.id}` : `${rel.id}|${m.id}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      links.push({ s: m.id, t: rel.id, weight: rel.weight });
-      degree.set(m.id, (degree.get(m.id) || 0) + 1);
-      degree.set(rel.id, (degree.get(rel.id) || 0) + 1);
+  const addEdge = (a, b, weight) => {
+    if (!a || !b || a === b) return;
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    links.push({ s: a, t: b, weight });
+    degree.set(a, (degree.get(a) || 0) + 1);
+    degree.set(b, (degree.get(b) || 0) + 1);
+  };
+  // Explicit [[wikilinks]] are the strongest signal (deliberate connections) — add them
+  // first so they always survive; then term/tag/topic overlap fills in the rest.
+  const byTitle = new Map(list.map((n) => [(n.title || '').toLowerCase(), n.id]));
+  for (const n of list) {
+    for (const name of n.links || []) {
+      const target = byTitle.get((name || '').toLowerCase());
+      if (target) addEdge(n.id, target, 6);
     }
+  }
+  for (const m of model) {
+    for (const rel of g.relatedMeetings(m.id, { limit: 4 })) addEdge(m.id, rel.id, rel.weight);
   }
   return { model, links, degree, g };
 }
 async function renderDash() {
+  if (nDashTab === 'stats') { renderNoteStats(); return; }
   if (!list.length) {
     $('n-dash-graph').innerHTML = '<div class="dash-empty">No notes yet — create one to see how they connect.</div>';
     $('n-dash-related').innerHTML = '<div class="dash-empty">No notes yet.</div>';
@@ -227,6 +260,68 @@ async function renderDash() {
       host.appendChild(card);
     }
   }
+}
+
+// Corpus stats — computed entirely from the lightweight index (no body decrypts), so
+// the Stats tab is instant. Mirrors the per-item metric cards Chats/Meetings show, but
+// aggregated across all notes: counts, top topics, top tags, link connectivity.
+function renderNoteStats() {
+  const host = $('n-dash-stats');
+  if (!list.length) { host.innerHTML = '<div class="dash-empty">No notes yet — create one to see your stats.</div>'; return; }
+  const byTitle = new Map(list.map((e) => [(e.title || '').toLowerCase(), e]));
+  const topicFreq = new Map();
+  const tagFreq = new Map();
+  let words = 0, tagged = 0, withTopics = 0;
+  const inbound = new Map(); // note id → # of notes linking to it
+  let linkedNotes = 0;       // notes with ≥1 resolvable outgoing OR inbound link
+  for (const e of list) {
+    words += e.words || Math.round((e.chars || 0) / 6);
+    if ((e.tags || []).length) tagged += 1;
+    if ((e.topics || []).length) withTopics += 1;
+    for (const t of e.topics || []) topicFreq.set(t, (topicFreq.get(t) || 0) + 1);
+    for (const t of e.tags || []) tagFreq.set(t, (tagFreq.get(t) || 0) + 1);
+    for (const name of e.links || []) {
+      const hit = byTitle.get((name || '').toLowerCase());
+      if (hit && hit.id !== e.id) inbound.set(hit.id, (inbound.get(hit.id) || 0) + 1);
+    }
+  }
+  for (const e of list) {
+    const outResolves = (e.links || []).some((name) => { const h = byTitle.get((name || '').toLowerCase()); return h && h.id !== e.id; });
+    if (outResolves || inbound.get(e.id)) linkedNotes += 1;
+  }
+  const topTopics = [...topicFreq.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 12);
+  const topTags = [...tagFreq.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 12);
+  const orphans = list.length - linkedNotes;
+  const card = (n, l) => `<div class="metric"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  const cards =
+    card(list.length, 'Notes') +
+    card(words.toLocaleString(), 'Words') +
+    card(topicFreq.size, 'Topics') +
+    card(tagFreq.size, 'Tags') +
+    card(linkedNotes, 'Linked notes') +
+    card(orphans, 'Unlinked') +
+    card(tagged, 'Tagged') +
+    card(withTopics, 'With topics');
+  host.innerHTML =
+    `<div class="metrics">${cards}</div>` +
+    `<div class="stat-cols">` +
+    `<div class="stat-col"><div class="stat-col-head">Top topics</div><div id="n-stat-topics" class="chip-cloud"></div></div>` +
+    `<div class="stat-col"><div class="stat-col-head">Top tags</div><div id="n-stat-tags" class="chip-cloud"></div></div>` +
+    `</div>`;
+  const cloud = (elId, entries, empty) => {
+    const el = $(elId);
+    if (!entries.length) { el.innerHTML = `<span class="stat-empty">${empty}</span>`; return; }
+    for (const [term, count] of entries) {
+      const b = document.createElement('button');
+      b.className = 'topic-chip';
+      b.innerHTML = `${escapeHtml(term)} <span class="chip-count">${count}</span>`;
+      b.title = `Find "${term}" across notes, chats & meetings`;
+      b.onclick = () => openOmni(term);
+      el.appendChild(b);
+    }
+  };
+  cloud('n-stat-topics', topTopics, 'Topics appear as you open and edit notes.');
+  cloud('n-stat-tags', topTags, 'No tags yet — add tags to group notes.');
 }
 
 // ── Related notes/chats/meetings for the OPEN note (Research side pane) ───────
@@ -366,6 +461,7 @@ function onCmChange(v, info = {}) {
   updateWordCount();
   scheduleSave();
   scheduleSuggest();
+  scheduleNoteTopics();
   maybeAutocomplete();                           // @/[[/# dropdown, positioned via CM coords
   scheduleCowriter();
   scheduleResearch();
@@ -663,7 +759,9 @@ async function openNote(id, preloaded = null) {
   renderHistory();
   renderTags(current.tags || []);
   suggestTags();
-  renderBacklinks(current.title);
+  renderNoteTopics();
+  renderNoteLinks(current);
+  if (!current.topics?.items?.length) scheduleNoteTopics(); // first open of an un-topiced note → extract soon
   clearResearch(); // drop the previous note's research shelf (re-runs on the next typing pause)
   clearCowriterUI(); // drop the previous note's fixes/links (re-computed on the next pause)
   resetSwarmState(); // fresh note → the team starts idle
@@ -710,9 +808,10 @@ async function flushSave() {
   dirty = false;
   current.title = $('n-title').value;
   current.body = $('n-body').value;
-  const saved = await saveNote({ id: current.id, title: current.title, body: current.body, tags: current.tags, createdAt: current.createdAt, attribution: current.attribution, versions: current.versions });
-  Object.assign(current, saved); // pick up derived title + updatedAt
+  const saved = await saveNote({ id: current.id, title: current.title, body: current.body, tags: current.tags, createdAt: current.createdAt, attribution: current.attribution, versions: current.versions, topics: current.topics });
+  Object.assign(current, saved); // pick up derived title + updatedAt (saveNote returns the record incl. topics)
   updateEntry(current);
+  renderNoteLinks(current); // outgoing [[links]] may have changed as the body was edited
   $('n-when').textContent = `Edited ${relTime(current.updatedAt)}`;
   setStatus('Saved', true);
   renderList($('n-search').value);
@@ -946,6 +1045,7 @@ function onBodyInput() {
   updateWordCount();
   scheduleSave();
   scheduleSuggest();
+  scheduleNoteTopics();
   maybeAutocomplete();
   scheduleAutocomplete(); // inline AI ghost prediction on a typing pause (opt-in)
   scheduleCowriter();
@@ -1055,6 +1155,7 @@ async function suggestTags() {
   if (!_topicFn) {
     try { _topicFn = (await import('./js/topic-extraction.js')).fallbackTopicItems; }
     catch { return; }
+    if (!current.topics?.items?.length) renderNoteTopics(); // fn now loaded → show a topic preview
   }
   if (!current) return; // could have changed while importing
   const have = new Set((current.tags || []).map((t) => t.toLowerCase()));
@@ -1086,6 +1187,66 @@ async function suggestTags() {
   }
 }
 
+// ── auto topic extraction (mirrors chats/meetings) ──────────────────────────────
+// Each note earns durable topics the same way chats/meetings do: the configured model
+// extracts noun-phrase topics (deterministic fallback when no model / it fails), stored
+// via saveNoteTopics so the graph, dashboard, omni-search and history RAG can traverse
+// notes by concept — not just user tags. Debounced off the typing path; hash-guarded so
+// it only runs when the content materially changed. Everything is lazy-imported.
+const noteTopicJobs = new Set();
+let topicTimer = null;
+function scheduleNoteTopics() {
+  clearTimeout(topicTimer);
+  const id = current?.id;
+  topicTimer = setTimeout(() => { if (current?.id === id) maybeExtractNoteTopics(current).catch(() => {}); }, 4000);
+}
+async function maybeExtractNoteTopics(rec) {
+  if (!rec?.id || noteTopicJobs.has(rec.id)) return;
+  const te = await import('./js/topic-extraction.js');
+  const text = te.topicSourceTextForNote(rec);
+  if (!text) return;
+  const hash = te.contentHash(text);
+  let settings = null, target = null;
+  try {
+    const deps = await agentDeps();
+    settings = await deps.getSettings();
+    if (settings?.ui?.topicExtraction?.enabled === false) return;
+    const wantId = settings?.ui?.topicExtraction?.targetId || settings?.activeAgentId || '';
+    const t = deps.getTarget(settings, wantId);
+    target = t ? deps.resolveTarget(t, settings) : null;
+  } catch { /* no model available → deterministic fallback below */ }
+  const targetId = target?.id || '';
+  if (!te.shouldExtractTopics(rec.topics, { hash, targetId, enabled: true })) return;
+  noteTopicJobs.add(rec.id);
+  try {
+    let items = [], fallback = true;
+    if (target) {
+      let out = '';
+      try {
+        const deps = await agentDeps();
+        await deps.streamChat({
+          agent: { ...target, systemPrompt: 'Return only valid JSON. Do not include markdown fences.', temperature: 0.2, maxTokens: 500 },
+          messages: [{ role: 'user', content: te.topicExtractionPrompt({ kind: 'note', title: rec.title || 'Note', text }) }],
+          settings,
+          onDelta: (d) => { out += d; },
+          onEvent: () => {},
+          usage: { surface: 'note', sourceId: rec.id },
+        });
+        const parsed = te.parseTopicExtractionResponse(out);
+        if (parsed.length) { items = parsed; fallback = false; }
+      } catch { /* fall through to deterministic */ }
+    }
+    if (!items.length) items = te.fallbackTopicItems(text, 10);
+    const topics = te.makeTopicIndex({ hash, targetId, items, fallback });
+    await saveNoteTopics(rec.id, topics);
+    const entry = list.find((e) => e.id === rec.id);
+    if (entry) entry.topics = items;
+    if (current?.id === rec.id) { current.topics = topics; renderNoteTopics(); }
+  } finally {
+    noteTopicJobs.delete(rec.id);
+  }
+}
+
 // ── actions ─────────────────────────────────────────────────────────────────
 async function newNote() {
   await flushSave();
@@ -1110,25 +1271,78 @@ async function removeCurrent() {
   renderList($('n-search').value);
   toast('Note deleted');
 }
-// Notes that link TO the current one (via [[Title]]) — computed from the index, no
-// body decrypts. Existing notes gain links the next time they're saved.
-function renderBacklinks(title) {
-  const el = $('n-backlinks');
+// Auto-extracted topics for the open note — durable, navigable concepts (distinct from
+// user tags). Shows stored topics; if none yet (extraction pending), computes a cheap
+// deterministic preview so the row is never empty. Click a topic → omni-search it across
+// notes, chats and meetings.
+function renderNoteTopics() {
+  const el = $('n-topics');
+  if (!el) return;
   el.innerHTML = '';
-  const t = (title || '').toLowerCase();
-  const refs = t ? list.filter((e) => e.id !== current?.id && (e.links || []).some((l) => l.toLowerCase() === t)) : [];
-  if (!refs.length) return;
-  const lbl = document.createElement('div');
-  lbl.className = 'backlinks-label';
-  lbl.textContent = `↩ Linked from ${refs.length} note${refs.length === 1 ? '' : 's'}`;
-  el.appendChild(lbl);
-  for (const r of refs) {
+  if (!current) return;
+  let items = current.topics?.items || [];
+  let pending = false;
+  if (!items.length) { items = deterministicTopicPreview(current.body || ''); pending = true; }
+  if (!items.length) return;
+  const label = document.createElement('span');
+  label.className = 'topics-label';
+  label.textContent = pending ? 'Topics (drafting…)' : 'Topics';
+  el.appendChild(label);
+  for (const topic of items.slice(0, 10)) {
     const b = document.createElement('button');
-    b.className = 'backlink';
-    b.innerHTML = `${escapeHtml(r.title || 'Untitled note')} <span class="bl-snip">${escapeHtml(r.snippet || '')}</span>`;
-    b.onclick = () => openNote(r.id);
+    b.className = 'topic-chip';
+    b.textContent = topic;
+    b.title = `Find "${topic}" across notes, chats & meetings`;
+    b.onclick = () => openOmni(topic);
     el.appendChild(b);
   }
+}
+function deterministicTopicPreview(body) {
+  if (!body.trim() || !_topicFn) return []; // _topicFn is loaded lazily by suggestTags()
+  try { return _topicFn(body, 6); } catch { return []; }
+}
+
+// The link neighbourhood of the open note: OUTGOING [[Title]] links that resolve to a
+// real note, plus INBOUND backlinks — both from the lightweight index (no body decrypts).
+function renderNoteLinks(note) {
+  const el = $('n-backlinks');
+  el.innerHTML = '';
+  if (!note) return;
+  const byTitle = new Map(list.map((e) => [(e.title || '').toLowerCase(), e]));
+  const entry = list.find((e) => e.id === note.id);
+  const outNames = entry?.links || extractBodyLinks(note.body);
+  const seen = new Set();
+  const out = [];
+  for (const name of outNames) {
+    const hit = byTitle.get((name || '').toLowerCase());
+    if (hit && hit.id !== note.id && !seen.has(hit.id)) { seen.add(hit.id); out.push(hit); }
+  }
+  const title = (note.title || '').toLowerCase();
+  const inbound = title ? list.filter((e) => e.id !== note.id && (e.links || []).some((l) => l.toLowerCase() === title)) : [];
+  const section = (labelText, entries) => {
+    if (!entries.length) return;
+    const lbl = document.createElement('div');
+    lbl.className = 'backlinks-label';
+    lbl.textContent = labelText.replace('{n}', entries.length).replace('{s}', entries.length === 1 ? '' : 's');
+    el.appendChild(lbl);
+    for (const r of entries) {
+      const b = document.createElement('button');
+      b.className = 'backlink';
+      b.innerHTML = `${escapeHtml(r.title || 'Untitled note')} <span class="bl-snip">${escapeHtml(r.snippet || '')}</span>`;
+      b.onclick = () => openNote(r.id);
+      el.appendChild(b);
+    }
+  };
+  section('→ Links to {n} note{s}', out);
+  section('↩ Linked from {n} note{s}', inbound);
+}
+
+// Open the ChatPanel side panel (fresh) from the header — no note attached.
+async function openPanel() {
+  try {
+    const win = await chrome.windows.getCurrent();
+    await chrome.sidePanel.open({ windowId: win.id });
+  } catch { toast('Open the ChatPanel side panel from the toolbar'); }
 }
 
 // Hand this note to the side-panel composer as context, then open the panel — the
@@ -3707,6 +3921,7 @@ function init() {
   }
   document.addEventListener('click', () => $('n-export-menu').classList.add('hidden'));
   $('n-ask').onclick = askAboutNote;
+  $('n-open-panel').onclick = openPanel;
   $('n-settings').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#notes') });
   // Assistant sidebar — tab switching + collapse.
   document.querySelectorAll('#n-side .side-tab').forEach((b) => { b.onclick = () => setSideTab(b.dataset.side); });

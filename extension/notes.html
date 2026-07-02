@@ -16,9 +16,10 @@
       </nav>
       <div class="hdr-actions">
         <button id="omni-open" class="omni-trigger" type="button" title="Search notes, chats & meetings (⌘K)"><span data-icon="search"></span><span class="omni-trigger-label">Search everything</span><kbd>⌘K</kbd></button>
-        <button id="n-graph-toggle" class="btn" type="button" title="Map how your notes connect" data-icon="graph">Graph</button>
-        <button id="n-settings" class="btn ghost" type="button" title="Notes settings" data-icon="settings">Settings</button>
         <button id="n-new" class="btn primary" title="New note (⌘N)" data-icon="note-new">New</button>
+        <button id="n-graph-toggle" class="btn" type="button" title="Map how your notes connect" data-icon="graph">Graph</button>
+        <button id="n-open-panel" class="btn" type="button" title="Open the ChatPanel side panel" data-icon="chat">Open ChatPanel</button>
+        <button id="n-settings" class="btn ghost" type="button" title="ChatPanel settings" data-icon="settings">ChatPanel settings</button>
       </div>
     </header>
 
@@ -41,16 +42,19 @@
       <main class="detail">
         <div id="n-rail-resizer" class="resizer rail-resizer" title="Drag to resize the list"></div>
 
-        <!-- Dashboard view — a tabbed overview of the whole notes corpus. Graph is the
-             default; Related surfaces notes that share topics. Extensible: more tabs
-             (Topics, Recent, Action items, Calendar) plug in here later. -->
+        <!-- Dashboard view — a tabbed overview of the whole notes corpus. Stats is the
+             default (corpus metrics + top topics/tags); Graph maps connections; Related
+             surfaces notes that share topics. Extensible: more tabs (Recent, Action
+             items, Calendar) plug in here later. -->
         <div id="n-dash" class="dash hidden">
           <div class="dash-tabs seg" role="tablist" aria-label="Dashboard view">
-            <button data-dash="graph" class="active" type="button" role="tab" data-icon="graph">Topic graph</button>
+            <button data-dash="stats" class="active" type="button" role="tab" data-icon="chart">Stats</button>
+            <button data-dash="graph" type="button" role="tab" data-icon="graph">Topic graph</button>
             <button data-dash="related" type="button" role="tab" data-icon="waypoints">Related</button>
           </div>
           <div class="dash-body">
-            <div id="n-dash-graph" class="dash-pane graph-host big" role="tabpanel"></div>
+            <div id="n-dash-stats" class="dash-pane" role="tabpanel"></div>
+            <div id="n-dash-graph" class="dash-pane graph-host big hidden" role="tabpanel"></div>
             <div id="n-dash-related" class="dash-pane hidden" role="tabpanel"></div>
           </div>
         </div>
@@ -133,6 +137,7 @@
               <input id="n-title" class="title-input" placeholder="Untitled note" spellcheck="false" />
               <div id="n-tags" class="tags-row"></div>
               <div id="n-suggest" class="suggest-row" aria-label="Suggested tags"></div>
+              <div id="n-topics" class="topics-row" aria-label="Auto-extracted topics"></div>
               <div class="panes" id="n-panes">
                 <textarea id="n-body" class="body-input" placeholder="Start writing…  Markdown supported." spellcheck="true"></textarea>
                 <div id="n-preview" class="preview md"></div>
