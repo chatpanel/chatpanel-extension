@@ -85,6 +85,9 @@ body {
 .priv-h { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); font-weight: 700; opacity: .9; }
 .priv-col > .priv-h:first-child { margin-top: 0; }
 @media (max-width: 760px) { .priv-grid { grid-template-columns: 1fr; } }
+/* Model-download progress bar (NER + STT model managers). */
+.dl-bar { height: 6px; border-radius: 4px; background: var(--accent-weak); overflow: hidden; margin-top: 6px; }
+.dl-bar-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width .4s ease; }
 /* End-to-end flow visual: horizontally-scrolling cards with arrows between them. */
 .priv-flow { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
 .priv-flow textarea { width: 100%; box-sizing: border-box; }

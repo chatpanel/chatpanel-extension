@@ -96,9 +96,11 @@ function createBrowserDictation({
   let rec = null;
   let recording = false; // user intent — stays true across the engine's silent auto-restarts
 
+  // Web Speech wants a BCP-47 tag (te-IN), our setting stores the whisper code (te).
+  const BROWSER_LANG = { te: 'te-IN', hi: 'hi-IN', ta: 'ta-IN', kn: 'kn-IN', ml: 'ml-IN', bn: 'bn-IN', en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE', zh: 'zh-CN', ja: 'ja-JP', ar: 'ar-SA' };
   function build() {
     const r = new Rec();
-    r.lang = lang || navigator.language || 'en-US';
+    r.lang = (lang && (BROWSER_LANG[lang] || (lang.includes('-') ? lang : null))) || navigator.language || 'en-US';
     r.continuous = true;      // keep listening across pauses
     r.interimResults = true;  // stream partial words as they're recognized
 

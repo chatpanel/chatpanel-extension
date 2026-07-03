@@ -149,6 +149,9 @@
     <!-- Composer -->
     <footer class="composer">
       <div id="composer-resize" class="composer-resize" title="Drag to resize · double-click to reset"></div>
+      <!-- Persistent dictation status: which engine is listening + model-download
+           progress, so first-run isn't silent (no more "nothing happened, click again"). -->
+      <div id="dictation-status" class="dictation-status hidden" aria-live="polite"></div>
       <!-- Redaction preview (opt-in via the privacy menu): the EXACT text the model
            will receive, placeholders highlighted. View-only — the wire is always
            redacted when privacy is on, whichever view the user looks at. -->

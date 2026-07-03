@@ -898,10 +898,12 @@ async function toggleDictate() {
     bodyReplaceRange(' ', dictPos, dictPos);
     dictPos += 1;
   }
+  const dictLang = settings?.ui?.dictation?.lang || undefined; // '' → auto-detect
   let lastPct = -25; // throttle model-download toasts
   dict = createDictation({
     provider: engine.provider,
     gatewayUrl,
+    lang: dictLang,
     onStart: () => {
       setDictateRecording(true);
       $('n-dictate').title = `Stop dictation — ${engine.label}`;

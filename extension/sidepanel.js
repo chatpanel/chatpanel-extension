@@ -4392,12 +4392,39 @@ let dictation = null;        // active controller while recording, else null
 let dictationBase = '';      // composer text captured when dictation began
 let dictationCommitted = ''; // finalized transcript chunks so far this session
 
+// Language code → display name for the dictation status line.
+const LANG_NAME = { en: 'English', te: 'Telugu', hi: 'Hindi', ta: 'Tamil', kn: 'Kannada', ml: 'Malayalam', bn: 'Bengali', es: 'Spanish', fr: 'French', de: 'German', zh: 'Chinese', ja: 'Japanese', ar: 'Arabic', ru: 'Russian', pt: 'Portuguese' };
+
 function setMicRecording(on) {
   const btn = $('btn-mic');
   if (!btn) return;
   btn.classList.toggle('recording', on);
   btn.setAttribute('aria-pressed', on ? 'true' : 'false');
   btn.title = on ? 'Stop dictation' : 'Dictate (voice → text)';
+}
+
+// Persistent dictation status (engine + model download % + language) — so
+// first-run never looks like "nothing happened". `dl` = {pct,file} or null.
+function renderDictationStatus({ engine, hidden = false, dl = null, lang = null } = {}) {
+  const el = $('dictation-status');
+  if (!el) return;
+  if (hidden || !engine) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  el.classList.remove('hidden');
+  el.classList.toggle('local', !!engine.private);
+  el.classList.toggle('cloud', !engine.private);
+  const langName = lang ? (LANG_NAME[lang] || lang) : null;
+  const head = engine.private
+    ? `🎙 Listening — <strong>local, on-device</strong>${langName ? ` · ${langName}` : ''}`
+    : `🎙 Listening — <strong>browser engine</strong> · audio processed by Google${langName ? ` · ${langName}` : ''}`;
+  let body = `<div class="ds-row"><span class="ds-dot"></span><span>${head}</span></div>`;
+  if (dl) {
+    const pct = Math.max(3, dl.pct || 0);
+    body += `<div class="ds-dl-bar"><div class="ds-dl-fill" style="width:${pct}%"></div></div>`
+      + `<div class="ds-sub">Downloading speech model — ${dl.pct || 0}% (one-time). Keep talking; it starts transcribing when ready.</div>`;
+  } else if (!engine.private) {
+    body += '<div class="ds-sub">Install the ChatPanel gateway for private, on-device dictation (any language).</div>';
+  }
+  el.innerHTML = body;
 }
 
 async function toggleDictation() {
@@ -4425,26 +4452,26 @@ async function toggleDictation() {
   dictationCommitted = '';
   const render = (interim = '') => { input.value = dictationBase + dictationCommitted + interim; autoGrow(); };
 
-  let lastPct = -25; // throttle model-download toasts to every 25%
+  const dictLang = state.settings?.ui?.dictation?.lang || undefined; // '' → auto-detect
+  let curLang = dictLang || null;
   dictation = createDictation({
     provider: engine.provider,
     gatewayUrl,
+    lang: dictLang,
     onStart: () => {
       setMicRecording(true);
       $('btn-mic').title = `Stop dictation — ${engine.label}`;
-      // The privacy indicator: say WHICH engine is listening, every time.
-      toast(engine.private ? '🎙 Dictating — local, on-device' : '🎙 Dictating — browser engine (audio processed by Google)', 2600);
+      renderDictationStatus({ engine, lang: curLang });
       input.focus();
     },
-    onStatus: ({ state: st, pct }) => {
-      if (st === 'downloading' && typeof pct === 'number' && pct - lastPct >= 25) {
-        lastPct = pct;
-        toast(`⬇ Preparing local dictation — downloading speech model ${pct}%`, 2400);
-      }
+    onStatus: ({ state: st, pct, lang }) => {
+      if (lang) { curLang = lang; renderDictationStatus({ engine, lang: curLang }); return; } // auto-detected language
+      if (st === 'downloading' || st === 'loading') renderDictationStatus({ engine, dl: { pct, file: null }, lang: curLang });
+      else renderDictationStatus({ engine, lang: curLang });
     },
     onInterim: (t) => render(t),
     onFinal: (t) => { dictationCommitted += (dictationCommitted ? ' ' : '') + t.trim(); render(); },
-    onEnd: () => { setMicRecording(false); dictation = null; input.focus(); },
+    onEnd: () => { setMicRecording(false); dictation = null; renderDictationStatus({ hidden: true }); input.focus(); },
     onError: ({ code, message, fatal }) => {
       if (code === 'not-allowed' || code === 'service-not-allowed')
         toast('✕ Microphone blocked — allow mic access for the side panel', 3200);
@@ -4454,9 +4481,10 @@ async function toggleDictation() {
         toast('✕ Gateway stopped answering — tap the mic to retry', 2800);
       else if (fatal)
         toast('✕ Voice input error: ' + (message || code), 2800);
-      if (fatal) { setMicRecording(false); dictation = null; }
+      if (fatal) { setMicRecording(false); dictation = null; renderDictationStatus({ hidden: true }); }
     },
   });
+  renderDictationStatus({ engine, lang: curLang }); // show immediately, before the first event
   dictation.start();
 }
 

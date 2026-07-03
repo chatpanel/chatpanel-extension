@@ -1485,6 +1485,10 @@ function renderSttModels(data) {
     const label = downloading
       ? `Downloading… ${dl.pct || 0}%`
       : isActive ? 'In use' : (m.installed ? 'Use' : `Download${m.approxMB ? ` (~${m.approxMB} MB)` : ''}`);
+    const bar = downloading
+      ? `<div class="dl-bar"><div class="dl-bar-fill" style="width:${Math.max(3, dl.pct || 0)}%"></div></div>
+         <p class="muted sm" style="margin:2px 0 0">${dl.file ? esc(dl.file) + ' · ' : ''}${dl.pct || 0}% — large models take a few minutes; you can keep working.</p>`
+      : '';
     return `<div class="entity">
       <div class="entity-head">
         <strong style="flex:1 1 auto">${esc(m.label || m.id)}</strong>
@@ -1492,6 +1496,7 @@ function renderSttModels(data) {
         <button type="button" class="btn ${isActive ? '' : 'primary'} gw-stt-use" data-id="${esc(m.id)}" ${isActive || downloading ? 'disabled' : ''}>${label}</button>
       </div>
       <p class="muted sm" style="margin:0">${esc(m.note || '')}</p>
+      ${bar}
     </div>`;
   });
   host.innerHTML = rows.join('') || '<p class="muted sm">No models available.</p>';
@@ -1517,21 +1522,28 @@ async function refreshSttModels() {
   }
 }
 
+// One STT poll loop at a time: each click bumps the token so any older loop
+// exits (otherwise clicking Download twice stacks loops that both hammer
+// /stt/models — the "called in a loop" bug). A large model can take minutes, so
+// poll at 2s and surface the % the whole time.
+let _sttPollToken = 0;
 async function selectSttModel(id) {
   const url = normalizeGatewayUrl($('gw-url').value);
   const st = $('gw-stt-models-status');
   if (!url || !id) return;
+  const my = ++_sttPollToken;
   st.className = 'status'; st.textContent = `Switching to ${id}…`;
   try {
     await setSttModel(url, id);
   } catch (e) { st.className = 'status err'; st.textContent = `Switch failed: ${e.message}`; return; }
-  for (let i = 0; i < 600; i++) { // whisper models can be a large one-time download
-    await new Promise((r) => setTimeout(r, 1000));
+  for (let i = 0; i < 450 && my === _sttPollToken; i++) { // ~15 min ceiling; superseded by a newer click
+    await new Promise((r) => setTimeout(r, 2000));
+    if (my !== _sttPollToken) return; // a newer selection took over
     const data = await refreshSttModels();
     if (data && data.active === id && data.state === 'ready') { st.className = 'status ok'; st.textContent = `✓ Using ${id}`; return; }
-    if (data && data.state === 'error') { st.className = 'status err'; st.textContent = 'Model failed to load — try another.'; return; }
+    if (data && data.state === 'error') { st.className = 'status err'; st.textContent = 'Model failed to load — try a smaller one.'; return; }
   }
-  st.className = 'status'; st.textContent = 'Still downloading… it will switch when ready.';
+  if (my === _sttPollToken) { st.className = 'status'; st.textContent = 'Still downloading… it will switch when ready.'; }
 }
 
 // Privacy-tab NER health line (the "Bundled NER" detector === the gateway's NER).
@@ -1882,6 +1894,16 @@ function wireGateway() {
   $('gw-test-preview').onclick = () => runGatewayTest(false);
   $('gw-logs-refresh').onclick = refreshGatewayLogs;
   $('gw-ner-check').onclick = checkNer;
+  // Dictation language override (client-side; drives both the gateway session and
+  // the browser fallback). '' = auto-detect.
+  if ($('gw-stt-lang')) {
+    $('gw-stt-lang').value = settings.ui?.dictation?.lang || '';
+    $('gw-stt-lang').onchange = async () => {
+      settings.ui = settings.ui || {};
+      settings.ui.dictation = { ...(settings.ui.dictation || {}), lang: $('gw-stt-lang').value || '' };
+      await saveSettings(settings);
+    };
+  }
   $('gw-stt-custom-use').onclick = () => {
     const id = ($('gw-stt-custom').value || '').trim();
     if (!id) return;
