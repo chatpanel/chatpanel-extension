@@ -147,9 +147,44 @@ export async function saveNoteTopics(id, topics) {
   return rec;
 }
 
-// Make a fresh empty note and return its record.
-export async function createNote({ title = '', body = '' } = {}) {
-  return saveNote({ id: uid(), title, body, createdAt: Date.now() });
+// Free-tier note ceiling. Pro/Team is unlimited. The guard lives at createNote() — the
+// single "make a NEW note" factory every path funnels through (UI button, plan-in-note,
+// @task note_create) — so there's ONE place to enforce it. saveNote()/writeNote() stay
+// ungated so editing existing notes, capture-to-Inbox, and backup restore are never
+// blocked (restore must never lose notes). license.js is dynamic-imported so the notes
+// first-paint graph stays lean; the cost is paid only when a note is actually created.
+export class NoteLimitError extends Error {
+  constructor(limit) {
+    super(`Free plan is limited to ${limit} notes`);
+    this.name = 'NoteLimitError';
+    this.limit = limit;
+  }
+}
+
+// { reached, limit, count } — reached is true when a Free user is at/over the cap.
+// Pro/Team never reach it. Counts via the lightweight index (no body decrypts). The UI
+// calls this BEFORE createNote() to show a friendly upgrade prompt instead of a throw.
+export async function noteLimitReached() {
+  const { getLicense, isPro, FREE_LIMITS } = await import('./license.js');
+  const limit = FREE_LIMITS.notes;
+  const license = await getLicense();
+  if (isPro(license)) return { reached: false, limit, count: 0 };
+  const count = (await getNoteIndex()).length;
+  return { reached: count >= limit, limit, count };
+}
+
+// Make a fresh note and return its record. Throws NoteLimitError on Free past the cap.
+// `attribution`/`versions` let a caller stamp authorship at birth — e.g. an agent that
+// creates a note via note_create records ITSELF as the author (a human-made note is seeded
+// as "You" on open by normalizeAttribution), so provenance shows who created every note.
+export async function createNote({ title = '', body = '', attribution = null, versions = null } = {}) {
+  const { reached, limit } = await noteLimitReached();
+  if (reached) throw new NoteLimitError(limit);
+  return saveNote({
+    id: uid(), title, body, createdAt: Date.now(),
+    ...(Array.isArray(attribution) ? { attribution } : {}),
+    ...(Array.isArray(versions) ? { versions } : {}),
+  });
 }
 
 export async function deleteNote(id) {

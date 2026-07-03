@@ -75,6 +75,7 @@ export const FEATURE_TIER = {
   customSkills: 'pro',
   customAgents: 'pro', // "bring your own" CLI agent — HARD-gated, verified by the bridge
   advancedAgent: 'pro',
+  unlimitedNotes: 'pro', // Free is capped at FREE_LIMITS.notes; Pro/Team is unlimited
   structuredInsert: 'pro', // native-format insert for canvas apps (Excalidraw, …)
   exportChats: 'pro',
   autoBackup: 'pro', // scheduled daily backup of all data to disk (survives a reinstall)
@@ -91,6 +92,7 @@ export const FEATURE_TIER = {
 
 // Human-readable feature lists for the upgrade UI.
 export const PRO_FEATURES = {
+  unlimitedNotes: 'Unlimited notes — Free keeps your first 10',
   multiTab: 'Attach several tabs at once',
   unlimitedAgents: 'Unlimited custom agents',
   customSkills: 'Create & edit your own skills',
@@ -111,6 +113,7 @@ export const TEAM_FEATURES = {
 // Free-tier ceilings. Free gives one usable API endpoint AND one usable local
 // CLI agent — the user picks which. Everything else stays visible but locked.
 export const FREE_LIMITS = {
+  notes: 10, // saved notes on Free — Pro is unlimited (enforced at the note-create factory)
   apiEndpoints: 1, // usable API/BYO endpoints on Free
   bridgeAgents: 1, // usable local CLI agents (Claude Code / Codex / Antigravity) on Free
   customAgents: 1, // saved custom agent configs before Pro is required

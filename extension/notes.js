@@ -8,6 +8,7 @@
 
 import {
   getNoteIndex, getNote, createNote, saveNote, deleteNote, noteToMarkdown, saveNoteTopics,
+  NoteLimitError,
 } from './js/store-notes.js';
 import { renderMarkdown } from './js/markdown.js';
 import {
@@ -35,6 +36,15 @@ let current = null;     // the full record of the OPEN note (decrypted on demand
 let dirty = false;
 let saveTimer = null;
 
+// Pro entitlement + note cap, read ONCE at load from local storage (getLicense() is a
+// local storage read + offline JWK verify — it NEVER calls the license server). Cached
+// here so the header cap and the New-note gate are decided in-memory, not re-read per
+// action; refreshLicense() re-reads only when the entitlement actually changes (storage
+// listener). Fail-open (Pro=true) until the async read lands so we never flash a lock or
+// wrongly block a paying user; createNote() is the authoritative backstop regardless.
+let isProUser = true;
+let noteCap = 10;       // FREE_LIMITS.notes, cached from license.js
+
 // ── utilities ─────────────────────────────────────────────────────────────────
 // Pure helpers (relTime/escapeHtml/highlight/snippetOf/…) live in js/notes-util.js.
 let toastTimer = null;
@@ -44,6 +54,70 @@ function toast(msg) {
   el.classList.remove('hidden');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.add('hidden'), 2200);
+}
+// Toast with an inline action button (mirrors the side panel's toastAction).
+function toastAction(text, label, fn, ms = 5000) {
+  const el = $('n-toast');
+  el.innerHTML = '';
+  const span = document.createElement('span');
+  span.textContent = `${text}  `;
+  const btn = document.createElement('button');
+  btn.className = 'toast-action';
+  btn.textContent = label;
+  btn.onclick = (e) => { e.stopPropagation(); el.classList.add('hidden'); fn(); };
+  el.append(span, btn);
+  el.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.classList.add('hidden'); el.textContent = ''; }, ms);
+}
+
+// Free-tier note cap reached. We DON'T sell from here — upgrading and restoring Pro
+// both live on the Account page. Just inform, with a shortcut to open it; the storage
+// listener unlocks notes the moment an entitlement lands there.
+function noteCapReached(limit) {
+  toastAction(
+    `You've reached the Free limit of ${limit} notes.`,
+    'Account',
+    () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#license') }),
+    5000,
+  );
+}
+
+// Read the entitlement + cap ONCE (or when it changes) and repaint the header. No server
+// call — getLicense() is local storage + offline verify. Cheap enough to also run on a
+// license storage change so an in-session upgrade unlocks notes immediately.
+async function refreshLicense() {
+  try {
+    const { getLicense, isPro, FREE_LIMITS } = await import('./js/license.js');
+    noteCap = FREE_LIMITS.notes;
+    isProUser = isPro(await getLicense());
+  } catch { /* fail-open: leave Pro=true; the store backstop still enforces */ }
+  renderNoteCap();
+}
+
+// Header note count / cap. Pro (or empty) → plain "· N"; Free → "· N/10", coloured when
+// at the cap so the limit is visible BEFORE the user hits it. Decided from cached state,
+// so it repaints instantly on every list change with zero storage/network cost.
+function renderNoteCap() {
+  const el = $('n-count');
+  if (!el) return;
+  if (!list.length) { el.textContent = ''; el.classList.remove('capped'); el.removeAttribute('title'); return; }
+  if (isProUser) { el.textContent = `· ${list.length}`; el.classList.remove('capped'); el.removeAttribute('title'); return; }
+  const atCap = list.length >= noteCap;
+  el.textContent = `· ${list.length}/${noteCap}`;
+  el.classList.toggle('capped', atCap);
+  el.title = atCap
+    ? `Free plan holds ${noteCap} notes — upgrade to Pro for unlimited`
+    : `${noteCap - list.length} of ${noteCap} free notes left`;
+}
+
+// Pre-flight the note cap before creating, from cached entitlement (no storage read on
+// this hot path). Returns true (and shows the upsell) when a Free user is at the limit,
+// so callers bail: `if (noteCapBlocked()) return;`. createNote() re-checks authoritatively.
+function noteCapBlocked() {
+  if (isProUser || list.length < noteCap) return false;
+  noteCapReached(noteCap);
+  return true;
 }
 
 // ── list (index-only — no body decrypts) ────────────────────────────────────────
@@ -93,7 +167,7 @@ function renderList(query = '') {
   } else {
     filtered = list.filter((n) => noteSearchText(n).toLowerCase().includes(q));
   }
-  $('n-count').textContent = list.length ? `· ${list.length}` : '';
+  renderNoteCap();
   $('n-empty-list').classList.toggle('hidden', list.length > 0);
   items.innerHTML = '';
   for (const n of filtered) {
@@ -436,6 +510,18 @@ function bodyReplaceRange(text, from, to, cursor = from + text.length) {
   else { const ta = $('n-body'); ta.setRangeText(text, from, to, 'end'); ta.setSelectionRange(cursor, cursor); onBodyInput(); }
 }
 const bodyFocus = () => (cmActive && cm ? cm.focus() : $('n-body').focus());
+// After opening a Live agent region at `regionStart`, drop the caret on a fresh line just
+// BELOW the region so the user can keep writing — or @mention another agent — while this
+// one streams. The answer fills the region above; because the region's `to` uses assoc -1
+// (see notes-regions.js), a newline inserted at the boundary lands OUTSIDE the region and
+// agent appends push it (and the caret) down, so it never fights the stream. No-op outside
+// Live mode (Source jobs are one-at-a-time and lock the editor).
+function parkCaretBelowRegion(regionStart) {
+  if (!cmActive || !cm) return;
+  cm.replaceRange('\n', regionStart, regionStart); // at region.to → not swallowed, not blocked
+  cm.setSelection(regionStart + 1);
+  bodyFocus();
+}
 // A human edit in CM → mirror to the textarea (the model) and run the input pipeline (minus
 // the inline ghost-prediction, which is deferred in Live). The (editor-agnostic) autocomplete
 // + swarm schedulers read the cursor from CM.
@@ -497,9 +583,14 @@ function onCmKey(e) {
     if (!(e.metaKey || e.ctrlKey) && !['Shift', 'Meta', 'Control', 'Alt', 'CapsLock'].includes(e.key)) clearGhost({ remove: true });
   }
   const openJob = current && noteHasJob(current.id);
+  // Only a Source/global-lock job blocks starting another (editor is read-only then).
+  // Live-mode region jobs are non-blocking and run concurrently — so a second @agent can
+  // be invoked while the first still streams (each owns its own region). Gating invoke on
+  // `openJob` here was the bug: it swallowed the 2nd Enter until the 1st job finished.
+  const blockingJob = current && noteHasBlockingJob(current.id);
   if (e.key === 'Escape' && openJob) { lastJobForNote(current.id)?.abort.abort(); return true; }
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { draftAhead(); return true; } // draftAhead → runAgentTask on a mention line
-  if (e.key === 'Enter' && !e.shiftKey && !openJob) {
+  if (e.key === 'Enter' && !e.shiftKey && !blockingJob) {
     const line = currentLine();
     const rm = line.text.match(/^@research\s+(.{2,})$/i);
     if (rm) { bodyReplaceRange('', line.start, line.end, line.start); runResearch({ question: rm[1].trim(), web: true }); return true; }
@@ -1462,6 +1553,7 @@ async function maybeExtractNoteTopics(rec) {
 
 // ── actions ─────────────────────────────────────────────────────────────────
 async function newNote() {
+  if (noteCapBlocked()) return; // Free tier: first 10 notes only
   await flushSave();
   const rec = await createNote({ body: '' });
   updateEntry(rec);
@@ -1792,6 +1884,7 @@ async function planInNewNote(explicitTopic) {
   const { start: s0, end: s1 } = bodySel();
   const topic = (explicitTopic || bodyText().slice(s0, s1) || currentLine().text || current.title || '').trim();
   if (topic.length < 3) return toast('Select the text you want planned, or type /plan <topic>');
+  if (noteCapBlocked()) return; // a plan spins up a NEW note — Free tier: first 10 only
 
   let deps;
   try { deps = await agentDeps(); } catch { return toast('Agent unavailable'); }
@@ -2716,8 +2809,12 @@ async function runAgentTask(mention) {
     // Live: replace the mention line with the Q&A header, then open an (empty, animated)
     // region for the answer. NO global lock — the region guard protects only the answer span,
     // so you can keep editing elsewhere while the agent works.
-    bodyReplaceRange(prefix, mention.start, mention.end, mention.start + prefix.length);
-    beginRegion(cm.view, regionId, mention.name, mention.start + prefix.length);
+    const regionStart = mention.start + prefix.length;
+    bodyReplaceRange(prefix, mention.start, mention.end, regionStart);
+    beginRegion(cm.view, regionId, mention.name, regionStart);
+    // Park the caret on a fresh line below the region so the user can immediately keep
+    // typing / invoke another agent instead of being stuck inside the streaming answer.
+    parkCaretBelowRegion(regionStart);
   } else {
     ta.value = `${head}${prefix}⏳ starting…${tail}`; // classic textarea placeholder + global lock
     ta.readOnly = true;
@@ -2741,9 +2838,9 @@ async function runAgentTask(mention) {
     const resolved = deps.resolveTarget(targetAgent, settings);
     const sys = `You are "${targetAgent.name || 'the agent'}", completing a task INSIDE the user's note. Use your tools to do it well:\n`
       + '- research with web_search / history tools when you need facts or the user\'s own material;\n'
-      + '- note_create ONLY when a substantial, self-contained piece of content truly belongs in its own note — write inline by default, and NEVER create an empty note or one that just links back to this note;\n'
+      + '- note_create to spin off a NEW note — do this whenever the user asks for a new / separate / standalone / printable note (if they say "notes", create one per note, e.g. one per category), or when a substantial self-contained piece truly belongs on its own page. When the user asked for a separate note, put the real content in that note (not inline) and let your streamed reply be a short confirmation with the [link](notes.html#id). Otherwise write inline. NEVER create an empty note or one that just links back to this note;\n'
       + '- note_edit to revise the user\'s EXISTING text in THIS note (exact find/replace).\n'
-      + 'Your streamed text is inserted where the task was written — use it for the main answer, tools for side effects. Output clean GitHub-flavored markdown, no preamble or meta commentary.';
+      + 'Your streamed text is inserted where the task was written — use it for the main answer (or a brief confirmation when the substance went into a new note via note_create), tools for side effects. Output clean GitHub-flavored markdown, no preamble or meta commentary.';
     // Swarm awareness: if other named agents have sections/mentions in THIS note, tell the
     // agent it's co-writing a shared doc with them — otherwise it claims to be the only one.
     const mates = noteCollaborators(`${head}\n${tail}`, settings, targetAgent.name);
@@ -2797,7 +2894,7 @@ function makeNoteTools(job) {
   const specs = [
     {
       name: 'note_create',
-      description: 'Create a NEW note ONLY when a substantial, self-contained piece of content clearly belongs in its own note. Default to writing inline — do NOT create a note that is empty or whose body is just a link back to the current note (that call is rejected). `body` must be real markdown prose. Returns the new note id + a notes.html#id link to reference as [markdown](link).',
+      description: 'Create a NEW standalone note, with the content in `body`. USE THIS whenever the user asks for a new / separate / standalone / printable note (or "notes" — then call it once per note, e.g. one per category), or when a substantial self-contained piece clearly belongs on its own page. When the user asks for a separate note, the content goes in `body` here — do NOT also write it inline. Otherwise default to writing inline in the current note. Do NOT create a note that is empty or whose body is just a link back to the current note (that call is rejected). `body` must be real markdown prose. Returns the new note id + a notes.html#id link to reference as [markdown](link).',
       parameters: { type: 'object', properties: { title: { type: 'string', description: 'Optional; first line is used if omitted.' }, body: { type: 'string', description: 'GitHub-flavored markdown.' } }, required: ['body'] },
     },
     {
@@ -2810,7 +2907,7 @@ function makeNoteTools(job) {
     try {
       if (name === 'note_create') {
         const title = String(input?.title || '').trim();
-        const body = String(input?.body || '');
+        let body = String(input?.body || '');
         // Guard: never materialize an EMPTY or link-only note. The model otherwise calls
         // note_create reflexively and leaves behind a blank note (or one whose whole body is
         // just a [[backlink]] to the doc it's working on) — clutter the user never asked for.
@@ -2821,7 +2918,25 @@ function makeNoteTools(job) {
         if (!/[\p{L}\p{N}]/u.test(prose)) {
           return JSON.stringify({ error: 'Refusing to create an empty or link-only note. Put the actual content in `body` (real prose — not just a link back to this note), or write inline instead of calling note_create.' });
         }
-        const rec = await createNote({ title, body });
+        // Backlink: append a [[wikilink]] to the SOURCE note so the new note is navigable and
+        // shows as connected in the graph/related view (both directions resolve from this one
+        // link). Skipped if the source is untitled or already linked.
+        const srcTitle = (list.find((e) => e.id === job.noteId)?.title
+          || (current?.id === job.noteId ? current?.title : '') || '').trim();
+        if (srcTitle && !body.includes(`[[${srcTitle}]]`)) body += `\n\n---\n\nFrom [[${srcTitle}]]`;
+        // Authorship: the agent created this note — attribute the whole body to it and seed a
+        // "Created by …" version so provenance/history shows who made it (not "You").
+        const at = Date.now();
+        const attribution = blankAttribution(body.length, job.modelLabel, at);
+        const versions = [{ body, attribution, at, by: job.modelLabel, label: `Created by ${job.modelLabel}` }];
+        let rec;
+        try {
+          rec = await createNote({ title, body, attribution, versions });
+        } catch (e) {
+          // Free-tier note cap: tell the agent to fold this into the current note instead.
+          if (e instanceof NoteLimitError) return JSON.stringify({ error: `Note limit reached — the Free plan keeps ${e.limit} notes. Write this content into the current note instead of creating a new one (Pro unlocks unlimited notes).` });
+          throw e;
+        }
         await reloadIndex();
         renderList($('n-search').value);
         if (current?.id === job.noteId) logActivity(job.modelLabel, `created “${rec.title}”`);
@@ -4529,6 +4644,7 @@ function init() {
       if (area !== 'local') return;
       // Pick up autocomplete on/off + model and the agent list from the Settings tab.
       if (changes['chatpanel:settings']) { loadAutocompleteCfg(); loadMentionTargets(); }
+      if (changes['chatpanel:license']) refreshLicense(); // upgrade/downgrade → unlock notes + repaint cap
       if (!Object.keys(changes).some((k) => k.startsWith('chatpanel:note'))) return;
       clearTimeout(extRefreshTimer);
       extRefreshTimer = setTimeout(async () => { await reloadIndex(); renderList($('n-search').value); }, 400);
@@ -4549,6 +4665,7 @@ function init() {
 
 (async function start() {
   init();
+  refreshLicense();         // read entitlement + cap once (local, off the paint path); repaints the header cap when ready
   await reloadIndex();      // one decrypt (the index), not one-per-note
   renderList('');
   const hashId = decodeURIComponent(location.hash.slice(1));
