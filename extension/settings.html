@@ -623,6 +623,24 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                 <div id="gw-models"></div>
                 <p class="status" id="gw-models-status">—</p>
 
+                <h3 class="priv-h">Speech-to-text (dictation) model</h3>
+                <p class="muted sm">Local <strong>whisper</strong> for the mic button — audio never leaves your
+                  machine. Runs in-process; the model downloads once to <code>~/.chatpanel/models</code>. Pick by your
+                  hardware: lighter models are faster and smaller, larger ones are more accurate. Multilingual models
+                  auto-detect the spoken language.</p>
+                <div id="gw-stt-models"></div>
+                <p class="status" id="gw-stt-models-status">—</p>
+                <details class="gw-stt-adv">
+                  <summary class="muted sm">Advanced — use a custom whisper model</summary>
+                  <div class="field row" style="margin-top:6px">
+                    <input id="gw-stt-custom" type="text" placeholder="onnx-community/whisper-small.en" style="flex:1" />
+                    <button type="button" id="gw-stt-custom-use" class="btn">Download &amp; use</button>
+                  </div>
+                  <p class="muted sm" style="margin:4px 0 0">Any transformers.js whisper export
+                    (<code>onnx-community/*</code> or <code>Xenova/*</code>). Custom ids are fetched from Hugging Face
+                    directly (not the ChatPanel mirror).</p>
+                </details>
+
                 <h3 class="priv-h">Dictionary</h3>
                 <div class="field">
                   <label class="sub"><code>=&gt; LABEL</code> redacts reversibly; <code>-&gt; alias</code> pseudonymizes

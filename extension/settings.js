@@ -43,7 +43,7 @@ import { filterComboboxOptions, normalizeComboboxOptions } from './js/combobox.j
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth } from './js/storage-health.js';
-import { checkGateway, getGatewayConfig, getGatewayLogs, setGatewayConfig, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel } from './js/gateway.js';
+import { checkGateway, getGatewayConfig, getGatewayLogs, setGatewayConfig, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel } from './js/gateway.js';
 import { createVault, redactText } from './js/pii-redact.js';
 import { detectEntities } from './js/pii-detect.js';
 import {
@@ -1314,6 +1314,7 @@ async function refreshGateway() {
     renderGatewayMonitor(gatewayState);
     renderNerStatus(gatewayState.ner);
     refreshNerModels();
+    refreshSttModels();
   } catch (e) {
     status.textContent = `✓ Connected, but config load failed: ${e.message}`;
   }
@@ -1457,6 +1458,78 @@ async function selectNerModel(id, ctx = GW_NER) {
       ctx.onHealth(s.ok ? s.ner : null);
       return;
     }
+  }
+  st.className = 'status'; st.textContent = 'Still downloading… it will switch when ready.';
+}
+
+// ── STT (dictation) model manager — mirrors the NER one above ────────────────────
+// Pickable by machine resources: each row shows size + a rough RAM hint + tier.
+const TIER_LABEL = { light: 'Light', balanced: 'Balanced', accurate: 'Accurate', max: 'Max', custom: 'Custom' };
+
+function renderSttModels(data) {
+  const host = $('gw-stt-models');
+  if (!host) return;
+  const esc = (s) => escapeHtml(String(s == null ? '' : s));
+  const active = data?.active || null;
+  const dl = data?.progress || null;
+  const rows = (data?.available || []).map((m) => {
+    const isActive = m.id === active;
+    const downloading = dl && dl.model === m.id;
+    const meta = [
+      m.tier ? esc(TIER_LABEL[m.tier] || m.tier) : '',
+      esc(m.lang),
+      m.approxMB ? `~${m.approxMB} MB` : '',
+      m.ramMB ? `~${(m.ramMB / 1024).toFixed(1)} GB RAM` : '',
+      m.installed && !isActive ? 'installed' : '',
+    ].filter(Boolean).join(' · ');
+    const label = downloading
+      ? `Downloading… ${dl.pct || 0}%`
+      : isActive ? 'In use' : (m.installed ? 'Use' : `Download${m.approxMB ? ` (~${m.approxMB} MB)` : ''}`);
+    return `<div class="entity">
+      <div class="entity-head">
+        <strong style="flex:1 1 auto">${esc(m.label || m.id)}</strong>
+        <span class="status">${meta}</span>
+        <button type="button" class="btn ${isActive ? '' : 'primary'} gw-stt-use" data-id="${esc(m.id)}" ${isActive || downloading ? 'disabled' : ''}>${label}</button>
+      </div>
+      <p class="muted sm" style="margin:0">${esc(m.note || '')}</p>
+    </div>`;
+  });
+  host.innerHTML = rows.join('') || '<p class="muted sm">No models available.</p>';
+  host.querySelectorAll('.gw-stt-use').forEach((b) => { b.onclick = () => selectSttModel(b.dataset.id); });
+}
+
+async function refreshSttModels() {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const st = $('gw-stt-models-status');
+  if (!url) return null;
+  try {
+    const data = await getSttModels(url);
+    renderSttModels(data);
+    if (st) {
+      if (data.progress) { st.className = 'status'; st.textContent = `Downloading ${data.progress.model} — ${data.progress.pct || 0}%…`; }
+      else { st.className = 'status'; st.textContent = ''; }
+    }
+    return data;
+  } catch (e) {
+    // Older gateways (pre-STT) 404 here — show a gentle hint, not a scary error.
+    if (st) { st.className = 'status'; st.textContent = /404/.test(e.message) ? 'Update the gateway to enable local dictation.' : `Models: ${e.message}`; }
+    return null;
+  }
+}
+
+async function selectSttModel(id) {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const st = $('gw-stt-models-status');
+  if (!url || !id) return;
+  st.className = 'status'; st.textContent = `Switching to ${id}…`;
+  try {
+    await setSttModel(url, id);
+  } catch (e) { st.className = 'status err'; st.textContent = `Switch failed: ${e.message}`; return; }
+  for (let i = 0; i < 600; i++) { // whisper models can be a large one-time download
+    await new Promise((r) => setTimeout(r, 1000));
+    const data = await refreshSttModels();
+    if (data && data.active === id && data.state === 'ready') { st.className = 'status ok'; st.textContent = `✓ Using ${id}`; return; }
+    if (data && data.state === 'error') { st.className = 'status err'; st.textContent = 'Model failed to load — try another.'; return; }
   }
   st.className = 'status'; st.textContent = 'Still downloading… it will switch when ready.';
 }
@@ -1809,6 +1882,16 @@ function wireGateway() {
   $('gw-test-preview').onclick = () => runGatewayTest(false);
   $('gw-logs-refresh').onclick = refreshGatewayLogs;
   $('gw-ner-check').onclick = checkNer;
+  $('gw-stt-custom-use').onclick = () => {
+    const id = ($('gw-stt-custom').value || '').trim();
+    if (!id) return;
+    if (!/^[A-Za-z0-9][\w.-]*\/[\w.-]+$/.test(id) || !/whisper/i.test(id)) {
+      const st = $('gw-stt-models-status'); st.className = 'status err';
+      st.textContent = 'Enter an org/name whisper id, e.g. onnx-community/whisper-small.en';
+      return;
+    }
+    selectSttModel(id);
+  };
 
   // Auto-save every config field to the gateway on change (debounced) — so users
   // never lose edits by forgetting "Save to gateway". The explicit button remains.

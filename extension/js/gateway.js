@@ -58,6 +58,22 @@ export async function setNerModel(baseUrl, id) {
   });
 }
 
+// STT (dictation) model manager — mirrors the NER one. List returns { active,
+// state, progress, available:[{id,label,lang,tier,approxMB,ramMB,note,installed}] }.
+// Switching downloads the model if needed (202 + background download; poll the
+// list for progress). Custom (non-catalog) whisper ids are accepted too.
+export async function getSttModels(baseUrl) {
+  return jfetch(`${normalizeGatewayUrl(baseUrl)}/stt/models`);
+}
+
+export async function setSttModel(baseUrl, id) {
+  return jfetch(`${normalizeGatewayUrl(baseUrl)}/stt/models`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+}
+
 // Recent request summaries (counts only, no values) for the monitoring view.
 export async function getGatewayLogs(baseUrl) {
   try { return (await jfetch(`${normalizeGatewayUrl(baseUrl)}/logs`))?.entries || []; }

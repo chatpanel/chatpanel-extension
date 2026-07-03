@@ -228,14 +228,19 @@ function createGatewayDictation({
     finish();
   }
 
-  // Mic → mono Float32 PCM at 16 kHz, shipped every CHUNK_MS.
+  // Mic → mono Float32 PCM at 16 kHz, shipped every CHUNK_MS, captured on an
+  // AudioWorklet (ScriptProcessorNode is deprecated). The worklet module loads
+  // from the extension origin (CSP-clean); it batches quanta and posts PCM here.
   async function pumpAudio() {
     media = await navigator.mediaDevices.getUserMedia({ audio: true });
     ctx = new AudioContext({ sampleRate: 16000 });
     const src = ctx.createMediaStreamSource(media);
-    // ScriptProcessor keeps this CSP-simple (no separate worklet file); its
-    // latency is irrelevant at dictation timescales.
-    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    const workletUrl = globalThis.chrome?.runtime?.getURL
+      ? chrome.runtime.getURL('js/pcm-worklet.js')
+      : new URL('./pcm-worklet.js', import.meta.url).href;
+    await ctx.audioWorklet.addModule(workletUrl);
+    const node = new AudioWorkletNode(ctx, 'pcm-worklet', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
+
     let pending = [];
     let pendingLen = 0;
     let lastPost = Date.now();
@@ -249,14 +254,14 @@ function createGatewayDictation({
         await fetch(`${base}/stt/sessions/${sid}/audio`, { method: 'POST', body: out.buffer });
       } catch { if (recording) fail('gateway-unreachable', 'gateway stopped answering'); }
     };
-    proc.onaudioprocess = (e) => {
+    node.port.onmessage = (e) => {
       if (!recording) return;
-      pending.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-      pendingLen += e.inputBuffer.length;
+      pending.push(e.data);
+      pendingLen += e.data.length;
       if (Date.now() - lastPost >= CHUNK_MS) { lastPost = Date.now(); flush(); }
     };
-    src.connect(proc);
-    proc.connect(ctx.destination); // required for onaudioprocess to fire; proc outputs silence
+    src.connect(node);
+    node.connect(ctx.destination); // keeps the node in the render graph; it outputs silence
   }
 
   return {
