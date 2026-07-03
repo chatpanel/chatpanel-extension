@@ -13,6 +13,7 @@
 // (conv.meetingId), so this record stays purely capture data and never races.
 
 import { encryptJSON, decryptJSON, isEncrypted } from './meeting-crypto.js';
+import { monitorsKey } from './store-monitors.js';
 
 export const MEETING_SCHEMA_VERSION = 1;
 
@@ -162,14 +163,14 @@ export async function getLatestSessionRecord(platform, key) {
 }
 
 export async function deleteMeeting(id) {
-  await chrome.storage.local.remove([meetingKey(id), notesKey(id), topicsKey(id)]);
+  await chrome.storage.local.remove([meetingKey(id), notesKey(id), topicsKey(id), monitorsKey(id)]);
   const index = (await getMeetingIndex()).filter((e) => e.id !== id);
   await saveIndex(index);
 }
 
 export async function clearAllMeetings() {
   const index = await getMeetingIndex();
-  await chrome.storage.local.remove(index.flatMap((e) => [meetingKey(e.id), notesKey(e.id), topicsKey(e.id)]));
+  await chrome.storage.local.remove(index.flatMap((e) => [meetingKey(e.id), notesKey(e.id), topicsKey(e.id), monitorsKey(e.id)]));
   await saveIndex([]);
 }
 

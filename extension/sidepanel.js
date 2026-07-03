@@ -57,6 +57,11 @@ import {
   deleteMeeting,
   markMeetingEnded,
 } from './js/store-meetings.js';
+import {
+  getMeetingMonitors,
+  upsertMeetingMonitor,
+  setMonitorClosed,
+} from './js/store-monitors.js';
 import { renderMarkdown } from './js/markdown.js';
 import { combineSystemPrompt, sourceCitationSystem } from './js/tool-hints.js';
 import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
@@ -252,9 +257,11 @@ async function pageToolProvider(resolvedAgent) {
 // two can never drift. Returns undefined when nothing is armed.
 async function toolsetFor(
   resolvedAgent,
-  { historyRag = null, skillRun = null, mcpMode = MCP_TURN_MODES.AUTO, userText = '', attachments = [] } = {},
+  { historyRag = null, skillRun = null, mcpMode = MCP_TURN_MODES.AUTO, userText = '', attachments = [], pageTools = true } = {},
 ) {
-  const page = await pageToolProvider(resolvedAgent);
+  // Page-action tools need a live tab + confirm dialogs — skip them for background
+  // callers (e.g. auto-refreshing live monitors) that shouldn't drive the tab.
+  const page = pageTools ? await pageToolProvider(resolvedAgent) : null;
   const history = historyRag || skillRun?.history || null;
   const { buildTurnTools } = await import('./js/turn-tools.js'); // heavy toolset graph, on-demand
   return buildTurnTools({
@@ -1086,6 +1093,9 @@ async function runManualSuggest() {
 function renderSuggestions() {
   const box = $('empty-suggestions');
   if (!box) return;
+  // During a live meeting the Live-monitors "Suggest" covers this — skip the generic
+  // page-suggestions (and their model call) and keep the empty state hidden.
+  if (state.liveMeeting) { $('empty')?.classList.add('hidden'); return; }
   const reload = $('suggest-reload');
   if (reload && !reload._wired) { reload._wired = true; reload.onclick = runManualSuggest; }
   // Universal fallbacks paint instantly — no model call, works offline.
@@ -2118,6 +2128,9 @@ function upsertLiveSummaryCard(meetingId, text) {
   } else {
     m = { id, role: 'live-summary', kind: 'live-summary', meetingId, content: text, ts: Date.now() };
     conv.messages.push(m);
+    // The card is added out-of-band (not via renderMessages), so hide the generic
+    // empty-state ourselves — otherwise its page-suggestions render over the summary.
+    $('empty')?.classList.add('hidden');
     $('messages').appendChild(renderMessage(m));
     scrollToBottomNow();
   }
@@ -2132,6 +2145,8 @@ function removeLiveSummaryCard(meetingId) {
   if (i < 0) return;
   conv.messages.splice(i, 1);
   $('messages').querySelector(`[data-id="${id}"]`)?.remove();
+  // If that was the only message, bring the empty state (and its suggestions) back.
+  if (!conv.messages.length) renderMessages();
   saveConversation(conv).catch(() => {});
 }
 
@@ -2222,13 +2237,26 @@ function renderMonitors() {
   if (!show) { panel.innerHTML = ''; return; }
   panel.innerHTML = '';
 
+  // Two-pane layout: a sticky control row (title + input + quick goals) that never
+  // scrolls, over a dedicated scroll list of question cards — so the input stays
+  // reachable no matter how many monitors are running.
+  const controls = document.createElement('div');
+  controls.className = 'mon-controls';
+  panel.appendChild(controls);
+
   const head = document.createElement('div');
   head.className = 'mon-head';
   const title = document.createElement('span');
   title.className = 'mon-title';
   title.innerHTML = icon('watch') + ' Live monitors';
-  head.appendChild(title);
-  panel.appendChild(head);
+  const refresh = document.createElement('button');
+  refresh.className = 'mon-refresh' + (monitorRefreshing ? ' spin' : '');
+  refresh.innerHTML = icon('refresh');
+  refresh.title = 'Refresh now — pull the latest transcript, update the summary, and re-answer all live (non-paused) monitors';
+  refresh.disabled = monitorRefreshing;
+  refresh.onclick = () => refreshMonitorsNow();
+  head.append(title, refresh);
+  controls.appendChild(head);
 
   // Add-a-question input + quick goals (TL;DR + the user's meeting skills).
   const add = document.createElement('div');
@@ -2260,7 +2288,7 @@ function renderMonitors() {
     b.onclick = () => addMonitor({ kind: 'skill', skillId: sk.id, title: sk.name, icon: sk.icon });
     add.appendChild(b);
   }
-  panel.appendChild(add);
+  controls.appendChild(add);
 
   // Suggested clarifying questions (generated on demand) — tap to start monitoring one.
   if (meetingSuggestState.items.length && meetingSuggestState.meetingId === state.liveMeeting?.id) {
@@ -2277,10 +2305,42 @@ function renderMonitors() {
       };
       sg.appendChild(chip);
     }
-    panel.appendChild(sg);
+    controls.appendChild(sg);
   }
 
-  for (const m of activeMonitors()) {
+  // Scroll pane: the running question cards live here so they scroll on their own.
+  const list = document.createElement('div');
+  list.className = 'mon-list';
+  panel.appendChild(list);
+
+  const monitors = activeMonitors();
+  const minimized = monitors.filter((m) => m.minimized);
+  const expanded = monitors.filter((m) => !m.minimized);
+
+  // Minimized monitors collapse to a compact chips row — click to restore, no state
+  // lost. Keeps a busy meeting's panel readable without deleting standing goals.
+  if (minimized.length) {
+    const row = document.createElement('div');
+    row.className = 'mon-min-row';
+    for (const m of minimized) {
+      const chip = document.createElement('button');
+      chip.className = 'mon-chip';
+      chip.innerHTML = `${monitorIcon(m)} ${escapeAttr(monitorLabel(m))}`;
+      chip.title = 'Restore monitor';
+      chip.onclick = () => setMonitorMinimized(m.id, false);
+      row.appendChild(chip);
+    }
+    list.appendChild(row);
+  }
+
+  if (!monitors.length) {
+    const hint = document.createElement('div');
+    hint.className = 'mon-empty';
+    hint.textContent = 'Ask a question above to watch this meeting as it goes.';
+    list.appendChild(hint);
+  }
+
+  for (const m of expanded) {
     const card = document.createElement('div');
     card.className = 'mon-card';
     const h = document.createElement('div');
@@ -2290,18 +2350,130 @@ function renderMonitors() {
     q.innerHTML = `${monitorIcon(m)} ${escapeAttr(monitorLabel(m))}`;
     const t = document.createElement('span');
     t.className = 'mon-card-t';
-    t.textContent = m.pending ? 'updating…' : timeLabel(m.ts);
+    t.textContent = m.pending ? 'updating…' : `${cadenceLabel(m)} · ${timeLabel(m.ts)}`;
+    // Per-question refresh — re-answer just this one now (works even when paused).
+    const ref = document.createElement('button');
+    ref.className = 'mon-card-refresh' + (m.pending ? ' spin' : '');
+    ref.innerHTML = icon('refresh');
+    ref.title = 'Refresh just this answer now';
+    ref.disabled = m.pending;
+    ref.onclick = () => refreshMonitor(m);
+    // Edit — change the question text and/or refresh cadence, then resubmit.
+    const ed = document.createElement('button');
+    ed.className = 'mon-card-edit' + (editingMonitorId === m.id ? ' on' : '');
+    ed.innerHTML = icon('edit'); ed.title = 'Edit question & refresh interval';
+    ed.onclick = () => openMonitorEditor(m.id);
+    const min = document.createElement('button');
+    min.className = 'mon-card-min'; min.innerHTML = icon('chevron-down'); min.title = 'Minimize (keep watching)';
+    min.onclick = () => setMonitorMinimized(m.id, true);
     const x = document.createElement('button');
     x.className = 'mon-card-x'; x.innerHTML = icon('close'); x.title = 'Stop monitoring';
-    x.onclick = () => stopMonitor(m.id);
-    h.append(q, t, x);
+    x.onclick = async () => {
+      if (await confirmDelete({ title: 'Stop monitoring?', body: monitorLabel(m), confirmLabel: 'Stop & remove' })) closeMonitor(m.id);
+    };
+    h.append(q, t, ref, ed, min, x);
+    card.appendChild(h);
+    if (editingMonitorId === m.id) card.appendChild(monitorEditor(m));
     const body = document.createElement('div');
     body.className = 'mon-card-b bubble';
     body.innerHTML = m.answer ? renderMarkdown(m.answer) : `<span class="muted">${m.pending ? 'Answering…' : 'Waiting for the meeting…'}</span>`;
     if (m.answer && !m.pending) enhanceCode(body);
-    card.append(h, body);
-    panel.appendChild(card);
+    card.appendChild(body);
+    list.appendChild(card);
   }
+}
+
+// Preset per-question refresh cadences. everyMin 0 = every scribe update ("Live");
+// N = at most every N minutes (when new transcript is available); paused = never auto.
+const MONITOR_CADENCES = [
+  { v: '0', label: 'Live — every update' },
+  { v: '1', label: 'Every 1 min' },
+  { v: '2', label: 'Every 2 min' },
+  { v: '5', label: 'Every 5 min' },
+  { v: '10', label: 'Every 10 min' },
+  { v: '15', label: 'Every 15 min' },
+  { v: 'paused', label: 'Paused — manual only' },
+];
+
+// Short badge for a monitor's current cadence, shown in the card timestamp.
+function cadenceLabel(m) {
+  if (m.paused) return 'Paused';
+  return m.everyMin ? `every ${m.everyMin}m` : 'Live';
+}
+
+// Inline editor: edit the question (qa/tldr) + pick a refresh cadence, then resubmit.
+// Field values live in monitorEditDraft so a mid-edit re-render preserves them.
+function monitorEditor(m) {
+  const fresh = !monitorEditDraft || monitorEditDraft.id !== m.id;
+  if (fresh) monitorEditDraft = { id: m.id, prompt: m.prompt || '', every: m.paused ? 'paused' : String(m.everyMin || 0) };
+  const draft = monitorEditDraft;
+  const wrap = document.createElement('div');
+  wrap.className = 'mon-edit';
+  let input = null;
+  if (m.kind !== 'skill') {
+    input = document.createElement('input');
+    input.className = 'mon-edit-input';
+    input.value = draft.prompt;
+    input.placeholder = m.kind === 'tldr' ? 'Focus (optional)…' : 'Question to keep answering…';
+    input.oninput = () => { draft.prompt = input.value; };
+    input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } };
+    wrap.appendChild(input);
+  }
+  const row = document.createElement('div');
+  row.className = 'mon-edit-row';
+  const lab = document.createElement('span');
+  lab.className = 'mon-edit-lab';
+  lab.textContent = 'Refresh';
+  const sel = document.createElement('select');
+  sel.className = 'mon-edit-every';
+  for (const c of MONITOR_CADENCES) {
+    const o = document.createElement('option');
+    o.value = c.v; o.textContent = c.label;
+    if (c.v === draft.every) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => { draft.every = sel.value; };
+  row.append(lab, sel);
+  const actions = document.createElement('div');
+  actions.className = 'mon-edit-actions';
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'mon-add-btn'; saveBtn.textContent = 'Save & run';
+  const cancel = document.createElement('button');
+  cancel.className = 'mon-skill-btn'; cancel.textContent = 'Cancel';
+  cancel.onclick = () => { editingMonitorId = null; monitorEditDraft = null; renderMonitors(); };
+  actions.append(saveBtn, cancel);
+  wrap.append(row, actions);
+  function save() {
+    const prompt = input ? draft.prompt.trim() : m.prompt;
+    if (m.kind === 'qa' && !prompt) { toast('Type a question to monitor'); return; }
+    const val = draft.every;
+    applyMonitorEdit(m.id, {
+      prompt,
+      everyMin: val === 'paused' ? (m.everyMin || 0) : Number(val),
+      paused: val === 'paused',
+    });
+  }
+  saveBtn.onclick = save;
+  // Focus the field on first open (not on background re-renders, which would steal it).
+  if (fresh && input) setTimeout(() => input.focus(), 0);
+  return wrap;
+}
+
+// Apply an edit and resubmit: update the question + cadence, persist, then re-run
+// (unless it was set to Paused — then just save without a fresh call).
+function applyMonitorEdit(id, { prompt, everyMin, paused }) {
+  const conv = state.conv;
+  const m = (conv?.monitors || []).find((x) => x.id === id);
+  if (!m) return;
+  m.prompt = prompt;
+  m.everyMin = Math.max(0, everyMin | 0);
+  m.paused = !!paused;
+  editingMonitorId = null;
+  monitorEditDraft = null;
+  renderMonitors();
+  saveConversation(conv).catch(() => {});
+  persistMonitor(m);
+  if (!m.paused) runMonitor(m); // resubmit against the latest transcript
 }
 
 async function addMonitor({ kind, prompt = '', skillId = '', title = '', icon = '' }) {
@@ -2311,20 +2483,122 @@ async function addMonitor({ kind, prompt = '', skillId = '', title = '', icon = 
   if (!can(state.license, 'liveMeetings')) { upsell('liveMeetings'); return; }
   if (kind === 'qa' && !prompt) { toast('Type a question to monitor'); return; }
   conv.monitors = conv.monitors || [];
-  const m = { id: `mon_${uid()}`, kind, prompt, skillId, title, icon, answer: '', ts: Date.now(), pending: true, meetingId: state.liveMeeting.id };
+  const now = Date.now();
+  const m = { id: `mon_${uid()}`, kind, prompt, skillId, title, icon, answer: '', ts: now, createdAt: now, pending: true, minimized: false, paused: false, everyMin: 0, meetingId: state.liveMeeting.id };
   conv.monitors.push(m);
   renderMonitors();
   await saveConversation(conv).catch(() => {});
+  persistMonitor(m);
   runMonitor(m);
   scheduleLiveNotes({ force: true, delayMs: 1500 });
 }
 
-function stopMonitor(id) {
+// Mirror one monitor into the durable, meeting-scoped store (drops the transient
+// `pending` flag) so its insight survives a chat switch / restart and is surfaced +
+// searchable. Fire-and-forget: the panel already has the live copy in conv.monitors.
+function persistMonitor(m) {
+  if (!m?.meetingId) return;
+  const { pending, ...rec } = m;
+  upsertMeetingMonitor(m.meetingId, rec).catch(() => {});
+}
+
+// Minimize (keep + collapse to a chip) vs restore — no confirm, state persists.
+function setMonitorMinimized(id, minimized) {
   const conv = state.conv;
-  if (!conv) return;
-  conv.monitors = (conv.monitors || []).filter((m) => m.id !== id);
+  const m = (conv?.monitors || []).find((x) => x.id === id);
+  if (!m) return;
+  m.minimized = !!minimized;
   renderMonitors();
   saveConversation(conv).catch(() => {});
+  persistMonitor(m);
+}
+
+// Which monitor card is showing its inline editor (question + cadence), or null — plus
+// a live draft of its fields so a background re-render (scribe tick) can't wipe typing.
+let editingMonitorId = null;
+let monitorEditDraft = null; // { id, prompt, every }
+function openMonitorEditor(id) {
+  editingMonitorId = editingMonitorId === id ? null : id;
+  monitorEditDraft = null; // re-seed from the record on next render
+  renderMonitors();
+}
+
+// Re-answer a SINGLE monitor now — a manual, per-question refresh that runs even if the
+// question is paused (an explicit click overrides the freeze, one-off).
+function refreshMonitor(m) {
+  if (!m || m.pending) return;
+  runMonitor(m);
+}
+
+// Is a monitor due for an AUTOMATIC (scribe-driven) refresh? Paused ones never are;
+// otherwise everyMin is a minimum spacing since the last run (0 = every update).
+function monitorDueForAuto(m, now = Date.now()) {
+  if (m.paused) return false;
+  const every = Math.max(0, m.everyMin | 0);
+  if (!every) return true;
+  return now - (m.ts || 0) >= every * 60_000;
+}
+
+// Close = remove from the live panel but KEEP the record (closed:true) so it can be
+// restored after an accidental close or restart. Offers an inline undo.
+function closeMonitor(id) {
+  const conv = state.conv;
+  if (!conv) return;
+  const m = (conv.monitors || []).find((x) => x.id === id);
+  const mid = m?.meetingId;
+  conv.monitors = (conv.monitors || []).filter((x) => x.id !== id);
+  renderMonitors();
+  saveConversation(conv).catch(() => {});
+  if (mid) setMonitorClosed(mid, id, true).catch(() => {});
+  if (m) toastAction('Monitor closed', 'Undo', () => restoreMonitor(m), 5000);
+}
+
+// Bring a closed/absent monitor back into the live panel.
+function restoreMonitor(rec) {
+  const conv = state.conv;
+  if (!conv || !rec?.id) return;
+  conv.monitors = conv.monitors || [];
+  if (!conv.monitors.some((x) => x.id === rec.id)) {
+    conv.monitors.push({ ...rec, minimized: false, pending: false });
+  }
+  renderMonitors();
+  saveConversation(conv).catch(() => {});
+  if (rec.meetingId) setMonitorClosed(rec.meetingId, rec.id, false).catch(() => {});
+}
+
+// Restore any active (non-closed) monitors saved for a meeting that aren't already in
+// the current conversation — so switching chats or restarting the extension while a
+// meeting is live brings the standing monitors back.
+async function hydrateMonitorsForMeeting(meetingId) {
+  const conv = state.conv;
+  if (!conv || !meetingId) return;
+  let saved = [];
+  try { saved = await getMeetingMonitors(meetingId); } catch { return; }
+  if (!saved.length) return;
+  conv.monitors = conv.monitors || [];
+  const have = new Set(conv.monitors.map((x) => x.id));
+  let added = 0;
+  for (const rec of saved) {
+    if (rec.closed || have.has(rec.id)) continue;
+    conv.monitors.push({ ...rec, pending: false });
+    added++;
+  }
+  if (added) { renderMonitors(); saveConversation(conv).catch(() => {}); }
+}
+
+// Manual "Refresh now": pull fresh transcript, update the summary, and re-answer every
+// monitor immediately instead of waiting for the next scribe tick.
+let monitorRefreshing = false;
+async function refreshMonitorsNow() {
+  const mid = state.liveMeeting?.id;
+  if (!mid || monitorRefreshing) return;
+  monitorRefreshing = true; renderMonitors();
+  try {
+    await runLiveNotesTick();                     // new transcript delta + summary refresh
+    await runMeetingMonitors(mid, { manual: true }); // re-answer all non-paused now (ignore per-question intervals)
+  } catch { /* surfaced per-monitor */ } finally {
+    monitorRefreshing = false; renderMonitors();
+  }
 }
 
 function monitorPrompt(m, summary, transcript) {
@@ -2340,13 +2614,13 @@ function monitorPrompt(m, summary, transcript) {
     const sk = (state.settings?.skills || []).find((s) => s.id === m.skillId);
     return [
       sk?.prompt || 'Summarize the relevant part of this meeting.',
-      'Apply the instruction above to the LIVE meeting using the running summary + recent transcript. Be concise and grounded; say plainly if still unknown; never invent.',
+      'Apply the instruction above to the LIVE meeting. The running summary + recent transcript below are your PRIMARY source; you MAY use available tools (web search, history, MCP, etc.) to verify or add context, citing outside sources. Be concise and grounded; say plainly if still unknown; never invent.',
       summary && `RUNNING SUMMARY:\n${summary}`,
       `RECENT TRANSCRIPT:\n${transcript}`,
     ].filter(Boolean).join('\n\n');
   }
   return [
-    'You are keeping a SINGLE concise answer to the user’s question up to date as a LIVE meeting progresses. Answer from the running summary + recent transcript; state what is known so far and flag if still unknown; never invent.',
+    'You are keeping a SINGLE concise answer to the user’s question up to date as a LIVE meeting progresses. The meeting transcript + running summary below are your PRIMARY source — ground the answer in them and prioritize what was actually said. You MAY use available tools (web search, history, MCP, etc.) to verify or fact-check claims from the meeting and add missing context, citing any outside sources. State what is known so far, flag if still unknown, and never invent.',
     `QUESTION: ${m.prompt}`,
     summary && `RUNNING SUMMARY:\n${summary}`,
     `RECENT TRANSCRIPT:\n${transcript}`,
@@ -2357,15 +2631,33 @@ async function runMonitor(m) {
   const conv = state.conv;
   if (!conv) return;
   m.pending = true; renderMonitors();
+  const controller = new AbortController();
   try {
     const rec = await getLiveMeetingRecord().catch(() => null);
     const transcript = rec ? meetingToText(rec, { sinceTs: Date.now() - 15 * 60_000 }) : '';
     const summary = await getLiveNotesText(m.meetingId).catch(() => '');
+    const resolved = resolveTarget(agentForConv(conv), state.settings);
+    // Give the monitor the SAME access as a normal chat turn — web search, history,
+    // MCP + the live-transcript reader — so it can fact-check / augment the meeting
+    // against other sources. Skip only the interactive page-action tools (a
+    // background auto-refresh must not pop confirm dialogs or drive the tab).
+    const tools = await toolsetFor(resolved, { userText: m.prompt || '', pageTools: false });
+    // Redact the transcript/PII before it leaves and restore placeholders on the way
+    // back — the reversible per-conversation vault, exactly like chat turns.
+    const { buildRedaction } = await import('./js/turn-tools.js'); // module-cached after first turn
+    const redaction = buildRedaction({ settings: state.settings, license: state.license, vault: piiVaultFor(conv.id) });
+    const systemPrompt = combineSystemPrompt(
+      systemWithSummary(resolved.systemPrompt, conv),
+      sourceCitationSystem(),
+    );
     let out = '';
     await streamChat({
-      agent: resolveTarget(agentForConv(conv), state.settings),
+      agent: { ...resolved, systemPrompt },
       messages: [{ role: 'user', content: monitorPrompt(m, summary, transcript) }],
       settings: state.settings,
+      signal: controller.signal,
+      tools,
+      redaction,
       onDelta: (d) => { out += d; },
     });
     m.answer = out.trim();
@@ -2376,15 +2668,20 @@ async function runMonitor(m) {
     m.ts = Date.now();
     renderMonitors();
     saveConversation(conv).catch(() => {});
+    persistMonitor(m); // durably snapshot the fresh insight (appends to history)
   }
 }
 
 // Re-run every monitor for a meeting once new transcript has landed (serialized so a
 // slow tick can't overlap the next). Called by the scribe loop after it saves.
-async function runMeetingMonitors(meetingId) {
+async function runMeetingMonitors(meetingId, { manual = false } = {}) {
   if (monitorsBusy) return;
   const conv = state.conv;
-  const mons = (conv?.monitors || []).filter((m) => m.meetingId === meetingId);
+  // Paused questions are always skipped. Auto (scribe-driven) runs honor each
+  // question's cadence (everyMin) so slow ones don't re-run every update; a manual
+  // "Refresh now (all)" ignores the interval and re-answers every non-paused question.
+  const now = Date.now();
+  const mons = (conv?.monitors || []).filter((m) => m.meetingId === meetingId && !m.paused && (manual || monitorDueForAuto(m, now)));
   if (!mons.length) return;
   monitorsBusy = true;
   try { for (const m of mons) await runMonitor(m); }
@@ -3317,7 +3614,12 @@ async function renderScribeIndicator(liveOpt) {
   const prevId = state.liveMeeting && state.liveMeeting.id;
   const prevTabId = state.liveMeeting && state.liveMeeting.tabId;
   state.liveMeeting = top ? { id: top.id, title: top.title, tabId: top.id === prevId ? prevTabId : undefined } : null;
-  if ((state.liveMeeting && state.liveMeeting.id) !== prevId) renderContextBar();
+  if ((state.liveMeeting && state.liveMeeting.id) !== prevId) {
+    renderContextBar();
+    // A different meeting just became the live one (start / attach / boot) — restore any
+    // active monitors saved for it that aren't in this conversation yet.
+    if (state.liveMeeting?.id) hydrateMonitorsForMeeting(state.liveMeeting.id);
+  }
 
   const el = $('scribe-indicator');
   if (!el) return;
@@ -3404,13 +3706,63 @@ function toggleRail() {
 function switchMeetingTab(tab) {
   meetingsView.tab = tab;
   const isT = tab === 'transcript';
-  $('mv-tab-summary').classList.toggle('active', !isT);
+  const isM = tab === 'monitors';
+  $('mv-tab-summary').classList.toggle('active', tab === 'summary');
   $('mv-tab-transcript').classList.toggle('active', isT);
-  $('meeting-summary').classList.toggle('hidden', isT);
+  $('mv-tab-monitors')?.classList.toggle('active', isM);
+  $('meeting-summary').classList.toggle('hidden', tab !== 'summary');
   $('meeting-transcript').classList.toggle('hidden', !isT);
+  $('meeting-monitors')?.classList.toggle('hidden', !isM);
   $('meeting-search').classList.toggle('hidden', !isT);
-  if (isT) renderMeetingTranscript(); else renderMeetingSummary();
+  if (isT) renderMeetingTranscript();
+  else if (isM) renderMeetingMonitors();
+  else renderMeetingSummary();
   setMeetingViewStatus();
+}
+
+// Monitors tab: the standing questions + latest insights saved for this meeting,
+// pulled from the durable meeting-scoped store (so they show even after the chat that
+// created them is gone). Closed monitors can be re-opened from here.
+async function renderMeetingMonitors() {
+  const body = $('meeting-monitors');
+  if (!body || !meetingsView.rec) return;
+  body.innerHTML = '<div class="muted" style="padding:8px 2px">Loading…</div>';
+  let items = [];
+  try { items = await getMeetingMonitors(meetingsView.rec.id); } catch { /* none */ }
+  if (!items.length) {
+    body.innerHTML = '<div class="muted" style="padding:8px 2px">No live-monitor questions were saved for this meeting.</div>';
+    return;
+  }
+  // Active first, then closed; newest updated first within each group.
+  items.sort((a, b) => (a.closed === b.closed ? (b.updatedAt || 0) - (a.updatedAt || 0) : a.closed ? 1 : -1));
+  body.innerHTML = '';
+  for (const m of items) {
+    const card = document.createElement('div');
+    card.className = 'mon-card' + (m.closed ? ' mon-closed' : '');
+    const h = document.createElement('div');
+    h.className = 'mon-card-h';
+    const q = document.createElement('span');
+    q.className = 'mon-card-q';
+    q.innerHTML = `${monitorIcon(m)} ${escapeAttr(monitorLabel(m))}`;
+    const t = document.createElement('span');
+    t.className = 'mon-card-t';
+    t.textContent = timeLabel(m.updatedAt || m.ts);
+    h.append(q, t);
+    if (m.closed && state.liveMeeting?.id === m.meetingId) {
+      const re = document.createElement('button');
+      re.className = 'mon-card-min'; re.title = 'Restore to live panel';
+      re.innerHTML = icon('refresh');
+      re.onclick = () => { restoreMonitor(m); renderMeetingMonitors(); };
+      h.appendChild(re);
+    }
+    const bd = document.createElement('div');
+    bd.className = 'mon-card-b bubble';
+    const answer = m.answer || m.history?.[m.history.length - 1]?.answer || '';
+    bd.innerHTML = answer ? renderMarkdown(answer) : '<span class="muted">No answer captured yet.</span>';
+    if (answer) enhanceCode(bd);
+    card.append(h, bd);
+    body.appendChild(card);
+  }
 }
 
 // Load all summary versions for the viewed meeting into meetingsView (active text
@@ -3478,6 +3830,34 @@ function renderMeetingSummary() {
     : '<div class="empty-notes">No summary yet — click ↻ Concise or ↻ Detailed to generate one.</div>';
   enhanceCode(content);
   body.appendChild(content);
+
+  // Surface saved live-monitor insights beneath the summary — rendered, NOT written
+  // into the notes text, so regenerating a summary never pulls them in. Filled async.
+  const monWrap = document.createElement('div');
+  monWrap.className = 'mtg-monitors';
+  body.appendChild(monWrap);
+  renderSummaryMonitorInsights(meetingsView.rec?.id, monWrap);
+}
+
+async function renderSummaryMonitorInsights(meetingId, wrap) {
+  if (!meetingId || !wrap) return;
+  let items = [];
+  try { items = await getMeetingMonitors(meetingId); } catch { return; }
+  const active = items.filter((m) => !m.closed && (m.answer || m.history?.length));
+  if (!active.length) return;
+  const h = document.createElement('div');
+  h.className = 'mtg-monitors-h';
+  h.innerHTML = `${icon('watch')} Live monitor insights`;
+  wrap.appendChild(h);
+  for (const m of active) {
+    const row = document.createElement('div');
+    row.className = 'mtg-monitor';
+    const answer = m.answer || m.history?.[m.history.length - 1]?.answer || '';
+    row.innerHTML = `<div class="mtg-monitor-q">${monitorIcon(m)} ${escapeAttr(monitorLabel(m))}</div>`
+      + `<div class="mtg-monitor-a">${renderMarkdown(answer)}</div>`;
+    enhanceCode(row);
+    wrap.appendChild(row);
+  }
 }
 
 async function switchMeetingVersion(vid) {
@@ -5513,6 +5893,7 @@ function wireEvents() {
   });
   $('mv-tab-summary').onclick = () => switchMeetingTab('summary');
   $('mv-tab-transcript').onclick = () => switchMeetingTab('transcript');
+  $('mv-tab-monitors').onclick = () => switchMeetingTab('monitors');
   $('meeting-search').oninput = () => renderMeetingTranscript();
   $('meeting-copy').onclick = () => copyMeetingActive();
   $('meeting-download').onclick = () => downloadMeetingActive();

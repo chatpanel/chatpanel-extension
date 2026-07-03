@@ -1,6 +1,7 @@
 import { getConversation, getIndex } from './store.js';
 import { getMeeting, getMeetingIndex, getMeetingNotes, getMeetingTopics, meetingToText } from './store-meetings.js';
 import { getNote, getNoteIndex } from './store-notes.js';
+import { getMeetingMonitors, monitorsSearchText } from './store-monitors.js';
 import { peopleOfMeeting } from './meeting-people.js';
 import { insightTopicItemsFromNotes } from './topic-extraction.js';
 import { sourceCitationSystem } from './tool-hints.js';
@@ -147,7 +148,7 @@ export function conversationSource(entry, conv) {
   };
 }
 
-export function meetingSource(entry, rec, notes = '', topics = null) {
+export function meetingSource(entry, rec, notes = '', topics = null, monitors = []) {
   const normalized = normalizedMeetingRecord(entry, rec);
   const id = normalized.id;
   if (!id) return null;
@@ -167,8 +168,19 @@ export function meetingSource(entry, rec, notes = '', topics = null) {
   lines.push('', 'TRANSCRIPT:', transcript);
   contentLines.push('TRANSCRIPT:', transcript);
 
+  // Fold saved live-monitor Q&A/insights into the meeting's searchable doc so ⌘K
+  // finds them by question, answer, and (via the terms below) subject.
+  const monitorText = monitorsSearchText(monitors);
+  if (monitorText) {
+    lines.push('', monitorText);
+    contentLines.push('', monitorText);
+  }
+  const monitorTerms = (monitors || [])
+    .map((m) => (m.title || m.prompt || '').trim())
+    .filter(Boolean);
+
   const insightTerms = insightTopicItemsFromNotes(notes, 15);
-  const terms = insightTerms.length ? insightTerms : (topics?.items || []);
+  const terms = [...(insightTerms.length ? insightTerms : (topics?.items || [])), ...monitorTerms];
   return {
     id: `meeting:${id}`,
     type: 'meeting',
@@ -294,7 +306,8 @@ async function loadMeetingSources() {
       const rec = await getMeeting(entry.id);
       const notes = await getMeetingNotes(entry.id).catch(() => '');
       const topics = await getMeetingTopics(entry.id).catch(() => null);
-      const source = meetingSource(entry, rec, notes, topics);
+      const monitors = await getMeetingMonitors(entry.id).catch(() => []);
+      const source = meetingSource(entry, rec, notes, topics, monitors);
       if (source?.text) out.push(source);
     } catch (e) {
       console.warn('[chatpanel] history source load failed for meeting', entry?.id, e);

@@ -597,20 +597,60 @@ body.rail-collapsed { --rail-w: 0px; }
 .msg.live-summary { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 10px; padding: 8px 12px; margin: 6px 10px; }
 .live-summary-h { font-size: 11.5px; font-weight: 600; color: var(--accent); margin-bottom: 5px; }
 .live-summary-b { font-size: 13px; }
-/* Live monitors panel (pinned above the composer) — standing meeting goals. */
-.monitors-panel { border-top: 1px solid var(--border); background: var(--panel); max-height: 38vh; overflow-y: auto; padding: 6px 10px 8px; }
-.mon-head { display: flex; align-items: center; padding: 2px 2px 6px; }
+/* Live monitors panel (pinned above the composer) — standing meeting goals.
+   Two panes: a sticky control row (never scrolls) over a scrollable card list. */
+.monitors-panel { display: flex; flex-direction: column; min-height: 0; max-height: 44vh; border-top: 1px solid var(--border); background: var(--panel); padding: 6px 10px 8px; }
+.mon-controls { position: sticky; top: 0; z-index: 1; background: var(--panel); padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.mon-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-top: 6px; }
+.mon-empty { font-size: 12px; color: var(--text-dim); padding: 6px 2px; }
+.mon-head { display: flex; align-items: center; gap: 6px; padding: 2px 2px 6px; }
 .mon-title { font-size: 11.5px; font-weight: 700; color: var(--accent); }
-.mon-add { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-bottom: 6px; }
+.mon-refresh { margin-left: auto; cursor: pointer; border: none; background: none; color: var(--text-dim); padding: 1px 3px; display: inline-flex; align-items: center; border-radius: 6px; }
+.mon-refresh:hover:not(:disabled) { color: var(--accent); }
+.mon-refresh:disabled { cursor: default; opacity: .8; }
+.mon-refresh svg { width: 14px; height: 14px; }
+.mon-refresh.spin svg { animation: cp-mon-spin .8s linear infinite; }
+@keyframes cp-mon-spin { to { transform: rotate(360deg); } }
+.mon-min-row { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+.mon-chip { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; max-width: 100%; font-size: 11px; border: 1px solid var(--border); background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 3px 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mon-chip svg { width: 12px; height: 12px; flex: none; }
+.mon-card-min { cursor: pointer; border: none; background: none; color: var(--text-dim); font-size: 11px; padding: 0 2px; display: inline-flex; align-items: center; }
+.mon-card-min:hover { color: var(--accent); }
+.mon-card-min svg { width: 13px; height: 13px; }
+.mon-card-refresh { cursor: pointer; border: none; background: none; color: var(--text-dim); padding: 0 2px; display: inline-flex; align-items: center; }
+.mon-card-refresh:hover:not(:disabled) { color: var(--accent); }
+.mon-card-refresh:disabled { opacity: .7; cursor: default; }
+.mon-card-refresh svg { width: 13px; height: 13px; }
+.mon-card-refresh.spin svg { animation: cp-mon-spin .8s linear infinite; }
+.mon-card-edit { cursor: pointer; border: none; background: none; color: var(--text-dim); padding: 0 2px; display: inline-flex; align-items: center; }
+.mon-card-edit:hover, .mon-card-edit.on { color: var(--accent); }
+.mon-card-edit svg { width: 13px; height: 13px; }
+/* Inline per-question editor: question text + refresh cadence + resubmit. */
+.mon-edit { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 6px; }
+.mon-edit-input { font: inherit; font-size: 12px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); }
+.mon-edit-row { display: flex; align-items: center; gap: 6px; }
+.mon-edit-lab { font-size: 11px; color: var(--text-dim); }
+.mon-edit-every { flex: 1; font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); }
+.mon-edit-actions { display: flex; gap: 5px; }
+.mon-add { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .mon-input { flex: 1 1 160px; min-width: 120px; font: inherit; font-size: 12px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text); }
 .mon-add-btn { cursor: pointer; font-size: 11.5px; font-weight: 600; border: 1px solid transparent; background: var(--accent); color: #fff; border-radius: 999px; padding: 4px 11px; }
 .mon-skill-btn { cursor: pointer; font-size: 11px; border: 1px solid var(--border); background: none; color: var(--text); border-radius: 999px; padding: 4px 9px; white-space: nowrap; }
-.mon-card { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 10px; padding: 7px 10px; margin-top: 6px; }
+.mon-card { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 10px; padding: 7px 10px; margin-bottom: 6px; }
+.mon-card:last-child { margin-bottom: 0; }
 .mon-card-h { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 .mon-card-q { flex: 1; font-size: 12px; font-weight: 600; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mon-card-t { font-size: 10px; color: var(--text-dim); white-space: nowrap; }
 .mon-card-x { cursor: pointer; border: none; background: none; color: var(--text-dim); font-size: 11px; padding: 0 2px; }
 .mon-card-b { font-size: 12.5px; }
+.mon-card.mon-closed { opacity: .72; border-style: dashed; }
+/* Saved live-monitor insights beneath a meeting summary. */
+.mtg-monitors { padding: 4px 12px 12px; }
+.mtg-monitors-h { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 700; color: var(--accent); margin: 6px 0; }
+.mtg-monitors-h svg { width: 14px; height: 14px; }
+.mtg-monitor { border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; margin-bottom: 6px; }
+.mtg-monitor-q { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 3px; }
+.mtg-monitor-a { font-size: 12.5px; }
 .mon-suggest { display: flex; flex-wrap: wrap; gap: 5px; margin: 2px 0 4px; }
 .mon-suggest-chip { cursor: pointer; font-size: 11px; border: 1px dashed var(--accent); background: none; color: var(--accent); border-radius: 999px; padding: 3px 9px; text-align: left; }
 .ctx-live { cursor: pointer; border: 1px solid var(--accent); background: none; color: var(--accent); border-radius: 999px; font-size: 10px; font-weight: 600; padding: 1px 8px; margin-left: 4px; white-space: nowrap; }

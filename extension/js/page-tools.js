@@ -77,7 +77,12 @@ export const PAGE_AUTOMATION_SYSTEM =
   '6) BE HONEST when a tool reports FAILURE (e.g. structured_insert verified:false): say so plainly ' +
   'and stop — do NOT silently switch to a flailing pixel-drawing fallback. You have NO ' +
   'image-generation tool and cannot fetch/export images: never claim you generated or exported one. ' +
-  'Never invent selectors — use only ones from inspect_page.';
+  'Never invent selectors — use only ones from inspect_page.\n' +
+  '7) MEETING CONTROLS are just ordinary on-page buttons. If the user asks to end/leave the call, ' +
+  'mute/unmute, or turn the camera on/off in Google Meet / Zoom / Teams / Webex, do it by CLICKING the ' +
+  'real control on the page (inspect_page or click_by_text for “Leave call”/“End call”/“Mute”/“Turn off ' +
+  'camera”, or click_at on the toolbar icon). There is no separate meeting API and you do NOT need one — ' +
+  'never claim “meeting/browser controls are unavailable”; treat the meeting UI like any other web page.';
 
 // Capture a screenshot, preferring CDP (works on background tabs) then the
 // visible-tab fallback. Returns a JPEG data URL or null.
