@@ -14,10 +14,11 @@
 //   micPermissionState()              -> 'granted' | 'prompt' | 'denied'
 //   resolveDictationProvider({gatewayUrl}) -> { provider, private, label, stt? }
 //   createDictation(opts)             -> controller
-//     opts: { lang?, provider='browser', gatewayUrl?, redact?,
+//     opts: { lang?, provider='browser', gatewayUrl?, redact?, diarize?, speakerLabel?,
 //             onStart, onInterim, onFinal, onEnd, onError, onStatus }
 //       onInterim(text) — best guess of the phrase being spoken right now (mutable)
-//       onFinal(text)   — a finalized chunk; append it to the committed transcript
+//       onFinal(text, info?) — a finalized chunk; append it. `info.speaker` = { id,
+//                 label } when diarize is on (gateway provider) — for meetings.
 //       onEnd()         — recognition fully stopped (user, or a fatal error)
 //       onError({ code, message, fatal })
 //       onStatus({ state, pct? }) — gateway engine state (model download progress)
@@ -166,7 +167,7 @@ function createBrowserDictation({
 const CHUNK_MS = 400; // post cadence — small enough to feel live, big enough to be cheap
 
 function createGatewayDictation({
-  lang, gatewayUrl, redact = false,
+  lang, gatewayUrl, redact = false, diarize = false, speakerLabel = null,
   onStart, onInterim, onFinal, onEnd, onError, onStatus,
 } = {}) {
   const base = String(gatewayUrl || DEFAULT_GATEWAY_URL).replace(/\/+$/, '');
@@ -219,7 +220,7 @@ function createGatewayDictation({
           let ev = null;
           try { ev = JSON.parse(line.slice(6)); } catch { continue; }
           if (ev.type === 'interim') onInterim?.(ev.text);
-          else if (ev.type === 'final') onFinal?.(ev.text);
+          else if (ev.type === 'final') onFinal?.(ev.text, ev.speaker ? { speaker: ev.speaker } : undefined);
           else if (ev.type === 'progress' || ev.type === 'state') onStatus?.({ state: ev.state, pct: ev.pct });
           else if (ev.type === 'language') onStatus?.({ state: 'language', lang: ev.lang }); // auto-detected spoken language
           else if (ev.type === 'error') { onError?.({ code: ev.code, message: ev.message, fatal: !!ev.fatal }); if (ev.fatal) { endSessionReq(); return finish(); } }
@@ -275,7 +276,7 @@ function createGatewayDictation({
         const r = await fetch(`${base}/stt/sessions`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ lang: lang || undefined, redact: !!redact }),
+          body: JSON.stringify({ lang: lang || undefined, redact: !!redact, diarize: !!diarize, speakerLabel: speakerLabel || undefined }),
         });
         if (!r.ok) throw new Error((await r.json().catch(() => null))?.error?.message || `HTTP ${r.status}`);
         sid = (await r.json()).id;
