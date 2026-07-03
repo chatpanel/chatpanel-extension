@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ChatPanel — Microphone access</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f7f7f9; color: #1c1c1e;
+    }
+    @media (prefers-color-scheme: dark) { body { background: #17171a; color: #ececf0; } }
+    .card { max-width: 420px; padding: 32px; text-align: center; }
+    .mic { font-size: 40px; }
+    h1 { font-size: 19px; margin: 12px 0 8px; }
+    p { color: #6e6e76; margin: 0 0 20px; }
+    button {
+      font: inherit; font-weight: 600; color: #fff; background: #5b5bf0; border: none;
+      border-radius: 10px; padding: 10px 22px; cursor: pointer;
+    }
+    button:disabled { opacity: .5; cursor: default; }
+    #status { margin-top: 16px; font-size: 14px; min-height: 1.5em; }
+    #status.ok { color: #16a34a; }
+    #status.err { color: #dc2626; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="mic">🎙️</div>
+    <h1>Allow microphone for dictation</h1>
+    <p>ChatPanel needs a one-time microphone permission to turn your speech into
+       text. Chrome will ask once — after that, the mic button in the side panel
+       and Notes just works.</p>
+    <button id="grant">Allow microphone</button>
+    <div id="status"></div>
+  </div>
+  <script type="module" src="mic-permission.js"></script>
+</body>
+</html>

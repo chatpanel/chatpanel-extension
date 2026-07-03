@@ -297,6 +297,12 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .cw-toggle { width: 32px; height: 32px; border: 1px solid transparent; background: transparent; color: var(--muted); border-radius: 8px; cursor: pointer; font-size: 15px; }
 .cw-toggle:hover { background: var(--field); color: var(--text); }
 .cw-toggle.on { color: var(--accent); background: var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+/* Dictation mic: red + pulse while listening. */
+.cw-toggle.recording, .cw-toggle.recording:hover { color: #fff; background: var(--danger); border-color: transparent; animation: dictate-pulse 1.5s ease-in-out infinite; }
+@keyframes dictate-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 55%, transparent); }
+  50%      { box-shadow: 0 0 0 5px color-mix(in srgb, var(--danger) 0%, transparent); }
+}
 .fmt-menu-btn { font: inherit; font-size: 12px; height: 32px; cursor: pointer; border: 1px solid var(--border-strong); background: var(--elev); color: var(--muted); border-radius: 8px; padding: 0 9px; }
 .fmt-menu-btn:hover { border-color: var(--accent); color: var(--accent); }
 .export-wrap { position: relative; display: inline-flex; }

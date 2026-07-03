@@ -149,9 +149,13 @@
     <!-- Composer -->
     <footer class="composer">
       <div id="composer-resize" class="composer-resize" title="Drag to resize · double-click to reset"></div>
+      <!-- Redaction preview (opt-in via the privacy menu): the EXACT text the model
+           will receive, placeholders highlighted. View-only — the wire is always
+           redacted when privacy is on, whichever view the user looks at. -->
+      <div id="redact-preview" class="redact-preview hidden" aria-live="polite"></div>
       <div class="composer-box">
         <div class="input-wrap">
-          <textarea id="input" class="input" rows="1" placeholder="Message your agent…  ( /history searches chats · / for skills · paste a URL )"></textarea>
+          <textarea id="input" class="input" rows="1" placeholder="Message your agent. / for skills"></textarea>
           <div id="input-ghost" class="input-ghost" aria-hidden="true"></div>
         </div>
         <div class="composer-tools">
@@ -164,6 +168,7 @@
           <div class="composer-tools-spacer"></div>
           <button id="btn-copy-chat" class="tool-btn" title="Copy chat as Markdown" aria-label="Copy chat as Markdown" data-icon="clipboard"></button>
           <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI" aria-label="Improve prompt" data-icon="assist"></button>
+          <button id="btn-mic" class="tool-btn mic-btn" title="Dictate (voice → text)" aria-label="Dictate" aria-pressed="false" data-icon="mic"></button>
           <button id="btn-send" class="send-btn" title="Send" aria-label="Send" data-icon="send"></button>
           <button id="btn-stop" class="send-btn stop hidden" title="Stop" aria-label="Stop" data-icon="stop"></button>
         </div>

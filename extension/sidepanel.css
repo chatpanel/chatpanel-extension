@@ -503,6 +503,21 @@ body.rail-collapsed { --rail-w: 0px; }
 .composer-tools .tool-btn.history-toggle.active { color: var(--accent); background: var(--accent-soft); }
 /* The box itself is --bg-soft, so the default tool-btn hover would be invisible. */
 .composer-tools .tool-btn:hover { background: var(--bg-elev); }
+/* Redaction preview — what the model will actually receive. */
+.redact-preview {
+  margin: 0 0 8px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 12px;
+  background: var(--bg-soft); font-size: 12.5px; line-height: 1.5; color: var(--text-dim);
+  max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+}
+.redact-preview .rp-head { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--text-dim); opacity: .8; margin-bottom: 4px; }
+.redact-preview mark { background: var(--accent-soft, rgba(91,91,240,.15)); color: var(--accent); border-radius: 4px; padding: 0 3px; font-weight: 600; }
+/* Mic: while dictating, turn red and pulse so it's clearly "listening". */
+.composer-tools .tool-btn.mic-btn.recording,
+.composer-tools .tool-btn.mic-btn.recording:hover { color: #fff; background: var(--danger); animation: mic-pulse 1.5s ease-in-out infinite; }
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 55%, transparent); }
+  50%      { box-shadow: 0 0 0 5px color-mix(in srgb, var(--danger) 0%, transparent); }
+}
 /* Drag handle to resize the composer (double-click resets to auto-grow). */
 .composer-resize { position: absolute; top: -4px; left: 0; right: 0; height: 9px; cursor: ns-resize; z-index: 6; }
 .composer-resize::before {

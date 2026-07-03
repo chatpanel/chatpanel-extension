@@ -17,7 +17,7 @@ import {
   updateSettings,
   meetingNotesSkill,
 } from './js/store.js';
-import { streamChat as _streamChat, checkBridge, listModels, smallestModel } from './js/providers.js';
+import { streamChat as _streamChat, checkBridge, listModels, smallestModel, previewRedaction } from './js/providers.js';
 
 // Tag side-panel model calls with the 'chat' surface for token accounting,
 // keyed to the active conversation (unless a caller passes its own usage ctx).
@@ -1189,6 +1189,7 @@ async function send() {
   // If the user hits Send/Enter before the cold first-run init finishes, wait for it
   // rather than throwing on an unset conversation/state (the fresh-install race).
   if (!composerReady) await composerReadyPromise;
+  if (dictation?.recording) dictation.stop(); // finish any live dictation before sending
   const input = $('input');
   clearPromptSuggest();
   const raw = input.value.trim();
@@ -2848,6 +2849,7 @@ async function setPiiMode(mode) {
   state.settings = await updateSettings({ ui: { piiRedaction: { ...cur, mode } } });
   renderPrivacyBtn();
   renderPrivacyMenu();
+  schedulePiiPreview(); // mode change flips the preview's visibility/content
   toast(`🛡 Redaction: ${mode === 'off' ? 'off' : mode === 'model' ? 'on + model' : 'on'}`, 1500);
 }
 
@@ -2858,6 +2860,56 @@ async function togglePiiType(key) {
   const types = { ...(det.types || {}), [key]: !wasOn };
   state.settings = await updateSettings({ ui: { piiRedaction: { ...cur, detection: { ...det, types } } } });
   renderPrivacyMenu();
+}
+
+// ── Redaction preview — the EXACT outbound text, live above the composer ───────
+// View toggle only: the input keeps the real (unredacted) draft, this panel shows
+// the placeholders the model will receive. The WIRE is unaffected either way —
+// when privacy is on the model always gets the redacted text (streamChat
+// chokepoint); this just makes that visible. Uses the same previewRedaction()
+// pipeline as the Settings "Test a prompt" button, so it never lies.
+let _piiPreviewTimer = null;
+let _piiPreviewSeq = 0;
+
+function piiPreviewEnabled() {
+  const pii = state.settings?.ui?.piiRedaction || {};
+  return pii.preview === true && (pii.mode || 'off') !== 'off';
+}
+
+function schedulePiiPreview() {
+  const panel = $('redact-preview');
+  if (!panel) return;
+  if (!piiPreviewEnabled()) { panel.classList.add('hidden'); return; }
+  clearTimeout(_piiPreviewTimer);
+  _piiPreviewTimer = setTimeout(runPiiPreview, 600); // debounce keystrokes (model detection can be a real call)
+}
+
+async function runPiiPreview() {
+  const panel = $('redact-preview');
+  if (!panel || !piiPreviewEnabled()) return;
+  const draft = $('input').value;
+  if (!draft.trim()) { panel.classList.add('hidden'); return; }
+  const seq = ++_piiPreviewSeq;
+  try {
+    const { redacted, spans } = await previewRedaction(state.settings, draft);
+    if (seq !== _piiPreviewSeq || !piiPreviewEnabled()) return; // stale keystrokes raced us
+    let html = escapeAttr(redacted).replace(/\[\[[A-Z][A-Z0-9_]*_\d+\]\]/g, (m) => `<mark>${m}</mark>`);
+    // Pseudonyms aren't tokenized — highlight the alias text itself.
+    for (const s of spans.filter((x) => x.kind === 'alias')) {
+      const alias = escapeAttr(s.token);
+      if (alias) html = html.split(alias).join(`<mark>${alias}</mark>`);
+    }
+    panel.innerHTML = `<span class="rp-head">🛡 What the model receives</span>${html}`;
+    panel.classList.remove('hidden');
+  } catch { /* best-effort — never block typing on a preview */ }
+}
+
+async function togglePiiPreview() {
+  const cur = state.settings.ui?.piiRedaction || {};
+  state.settings = await updateSettings({ ui: { piiRedaction: { ...cur, preview: cur.preview !== true } } });
+  renderPrivacyMenu();
+  schedulePiiPreview();
+  if (piiPreviewEnabled()) runPiiPreview();
 }
 
 function renderPrivacyMenu() {
@@ -2885,6 +2937,22 @@ function renderPrivacyMenu() {
       + '</span>'
       + `${m.locked ? '<span class="badge lock">Pro</span>' : ''}`;
     item.onmousedown = (e) => { e.preventDefault(); setPiiMode(m.mode); };
+    menu.appendChild(item);
+  }
+  // Redaction preview toggle — see the exact outbound (placeholder) text live
+  // above the composer while you type/dictate. View-only; the wire is always
+  // redacted while a redaction mode is on.
+  if (mode !== 'off') {
+    const on = pii.preview === true;
+    const item = document.createElement('button');
+    item.className = 'menu-item toggle';
+    item.innerHTML =
+      `<span class="pii-box${on ? ' on' : ''}">✓</span>`
+      + '<span style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">'
+      + '<span>Show what the model sees</span>'
+      + '<span class="mi-sub">Live preview of your prompt with PII replaced by placeholders.</span>'
+      + '</span>';
+    item.onmousedown = (e) => { e.preventDefault(); togglePiiPreview(); };
     menu.appendChild(item);
   }
   // Auto-detect categories. Shown whenever redaction is on — functional in Pro
@@ -4317,6 +4385,81 @@ async function improvePrompt() {
   }
 }
 
+// 🎙 Dictation — real-time speech → text streamed straight into the composer,
+// using the browser's built-in engine. The heavy-ish module is dynamic-imported
+// at this call site so it never touches first paint (it's action-only).
+let dictation = null;        // active controller while recording, else null
+let dictationBase = '';      // composer text captured when dictation began
+let dictationCommitted = ''; // finalized transcript chunks so far this session
+
+function setMicRecording(on) {
+  const btn = $('btn-mic');
+  if (!btn) return;
+  btn.classList.toggle('recording', on);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  btn.title = on ? 'Stop dictation' : 'Dictate (voice → text)';
+}
+
+async function toggleDictation() {
+  if (dictation?.recording) { dictation.stop(); return; }
+  const { createDictation, micPermissionState, resolveDictationProvider } = await import('./js/dictation.js');
+  // The side panel can't show Chrome's mic prompt — route through the one-time
+  // grant page first; after that, dictation here just works.
+  if (await micPermissionState() !== 'granted') {
+    chrome.tabs.create({ url: chrome.runtime.getURL('mic-permission.html') });
+    toast('Allow the microphone in the new tab, then tap the mic again', 3600);
+    return;
+  }
+  // Engine auto-detect: local gateway whisper when running (private — audio never
+  // leaves the machine), else the browser engine, LABELED (Google processes it).
+  const gatewayUrl = state.settings?.gatewayUrl || state.settings?.ui?.warmSearch?.url || undefined;
+  const engine = await resolveDictationProvider({ gatewayUrl });
+  if (!engine.provider) {
+    toast('✕ Voice input isn’t supported in this browser', 2600);
+    return;
+  }
+  const input = $('input');
+  dictationBase = input.value;
+  // Keep the existing draft; separate it from dictated text with a space.
+  if (dictationBase && !/\s$/.test(dictationBase)) dictationBase += ' ';
+  dictationCommitted = '';
+  const render = (interim = '') => { input.value = dictationBase + dictationCommitted + interim; autoGrow(); };
+
+  let lastPct = -25; // throttle model-download toasts to every 25%
+  dictation = createDictation({
+    provider: engine.provider,
+    gatewayUrl,
+    onStart: () => {
+      setMicRecording(true);
+      $('btn-mic').title = `Stop dictation — ${engine.label}`;
+      // The privacy indicator: say WHICH engine is listening, every time.
+      toast(engine.private ? '🎙 Dictating — local, on-device' : '🎙 Dictating — browser engine (audio processed by Google)', 2600);
+      input.focus();
+    },
+    onStatus: ({ state: st, pct }) => {
+      if (st === 'downloading' && typeof pct === 'number' && pct - lastPct >= 25) {
+        lastPct = pct;
+        toast(`⬇ Preparing local dictation — downloading speech model ${pct}%`, 2400);
+      }
+    },
+    onInterim: (t) => render(t),
+    onFinal: (t) => { dictationCommitted += (dictationCommitted ? ' ' : '') + t.trim(); render(); },
+    onEnd: () => { setMicRecording(false); dictation = null; input.focus(); },
+    onError: ({ code, message, fatal }) => {
+      if (code === 'not-allowed' || code === 'service-not-allowed')
+        toast('✕ Microphone blocked — allow mic access for the side panel', 3200);
+      else if (code === 'network')
+        toast('✕ Voice input needs a network connection', 2800);
+      else if (code === 'gateway-unreachable')
+        toast('✕ Gateway stopped answering — tap the mic to retry', 2800);
+      else if (fatal)
+        toast('✕ Voice input error: ' + (message || code), 2800);
+      if (fatal) { setMicRecording(false); dictation = null; }
+    },
+  });
+  dictation.start();
+}
+
 // Skills (the 🎓 menu, /commands, suggestions) are a Pro feature.
 function skillsAllowed() {
   return can(state.license, 'customSkills');
@@ -4707,6 +4850,9 @@ function startSubscribe(plan = 'pro') {
 // The composer grows with content up to ~45% of the panel; a manual drag (see
 // wireComposerResize) pins an explicit height that wins until double-click reset.
 function autoGrow() {
+  // Every programmatic draft change (dictation, ✨assist, templates) funnels
+  // through here — keep the redaction preview in sync without per-site wiring.
+  schedulePiiPreview();
   const i = $('input');
   if (state.composerH) {
     i.style.height = state.composerH + 'px';
@@ -5130,6 +5276,7 @@ function wireEvents() {
     }
   };
   $('btn-assist').onclick = improvePrompt;
+  $('btn-mic').onclick = toggleDictation;
   $('btn-mcp').onclick = (e) => {
     e.stopPropagation();
     const m = $('mcp-tools-menu');
@@ -5146,6 +5293,7 @@ function wireEvents() {
   const input = $('input');
   input.oninput = () => {
     autoGrow();
+    schedulePiiPreview();
     if (!input.value.trim()) suggestSuppressed = false;
     // Slash command palette takes precedence over the natural-language chip.
     if (!renderSlashMenu()) renderSuggest();

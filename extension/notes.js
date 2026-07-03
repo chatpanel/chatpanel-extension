@@ -858,6 +858,83 @@ function applyFmt(fmt) {
     default: break;
   }
 }
+
+// ── Dictation — speech → text inserted live at the cursor ───────────────────────
+// Same capability module as the side panel (js/dictation.js): interim results
+// overwrite a tracked region; finals commit and advance it. Dynamic-imported at
+// the click site so it never touches the notes page's first paint.
+let dict = null;    // active dictation controller, else null
+let dictPos = 0;    // where the live transcript region starts in the body
+let dictLen = 0;    // length of the uncommitted (interim) text currently inserted
+
+function setDictateRecording(on) {
+  const btn = $('n-dictate');
+  if (!btn) return;
+  btn.classList.toggle('recording', on);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  btn.title = on ? 'Stop dictation' : 'Dictate (voice → text)';
+}
+
+async function toggleDictate() {
+  if (dict?.recording) { dict.stop(); return; }
+  const { createDictation, micPermissionState, resolveDictationProvider } = await import('./js/dictation.js');
+  // Extension pages can't rely on SpeechRecognition to prompt for the mic —
+  // route through the one-time grant page first (grant is per-origin).
+  if (await micPermissionState() !== 'granted') {
+    chrome.tabs.create({ url: chrome.runtime.getURL('mic-permission.html') });
+    toast('Allow the microphone in the new tab, then tap the mic again');
+    return;
+  }
+  // Engine auto-detect: local gateway whisper when running (private), else the
+  // browser engine — labeled, since Google processes that audio.
+  const settings = await (await import('./js/store.js')).getSettings();
+  const gatewayUrl = settings?.gatewayUrl || settings?.ui?.warmSearch?.url || undefined;
+  const engine = await resolveDictationProvider({ gatewayUrl });
+  if (!engine.provider) { toast('Voice input isn’t supported in this browser'); return; }
+  dictPos = bodyCursor();
+  dictLen = 0;
+  // Separate dictated text from what's already before the cursor.
+  if (dictPos > 0 && !/\s$/.test(bodyText().slice(0, dictPos))) {
+    bodyReplaceRange(' ', dictPos, dictPos);
+    dictPos += 1;
+  }
+  let lastPct = -25; // throttle model-download toasts
+  dict = createDictation({
+    provider: engine.provider,
+    gatewayUrl,
+    onStart: () => {
+      setDictateRecording(true);
+      $('n-dictate').title = `Stop dictation — ${engine.label}`;
+      toast(engine.private ? '🎙 Dictating — local, on-device' : '🎙 Dictating — browser engine (audio processed by Google)');
+      bodyFocus();
+    },
+    onStatus: ({ state: st, pct }) => {
+      if (st === 'downloading' && typeof pct === 'number' && pct - lastPct >= 25) {
+        lastPct = pct;
+        toast(`Preparing local dictation — downloading speech model ${pct}%`);
+      }
+    },
+    onInterim: (t) => {
+      bodyReplaceRange(t, dictPos, dictPos + dictLen, dictPos + t.length);
+      dictLen = t.length;
+    },
+    onFinal: (t) => {
+      const text = t.trim() + ' ';
+      bodyReplaceRange(text, dictPos, dictPos + dictLen, dictPos + text.length);
+      dictPos += text.length;
+      dictLen = 0;
+    },
+    onEnd: () => { setDictateRecording(false); dict = null; dictLen = 0; bodyFocus(); },
+    onError: ({ code, message, fatal }) => {
+      if (code === 'not-allowed' || code === 'service-not-allowed') toast('Microphone blocked — allow mic access for this page');
+      else if (code === 'network') toast('Voice input needs a network connection');
+      else if (code === 'gateway-unreachable') toast('Gateway stopped answering — tap the mic to retry');
+      else if (fatal) toast('Voice input error: ' + (message || code));
+      if (fatal) { setDictateRecording(false); dict = null; dictLen = 0; }
+    },
+  });
+  dict.start();
+}
 // ── Undo / redo history ──────────────────────────────────────────────────────────
 // The editor rewrites `textarea.value` programmatically all over (streaming @insert,
 // co-writer fixes, formatting, checkbox toggle, note switching) — every direct set
@@ -4193,6 +4270,7 @@ function init() {
 
   for (const b of $('n-mode').children) b.onclick = () => setMode(b.dataset.mode);
   for (const b of $('n-fmt').children) b.onclick = () => applyFmt(b.dataset.fmt);
+  $('n-dictate').onclick = toggleDictate;
   // Paragraph-alignment menu (reading view).
   $('n-align').onclick = (e) => { e.stopPropagation(); $('n-align-menu').classList.toggle('hidden'); };
   for (const b of $('n-align-menu').querySelectorAll('button[data-align]')) {
