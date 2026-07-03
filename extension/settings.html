@@ -616,65 +616,21 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                 </div>
                 <p class="status" id="gw-ner-status">—</p>
 
-                <div class="priv-grid">
-                  <div class="priv-col">
-                    <h3 class="priv-h">NER model (redaction)</h3>
-                    <p class="muted sm">The local detector that finds names, organizations and locations. Runs
-                      <strong>in-process</strong>. Switching downloads the model once (to <code>~/.chatpanel/models</code>);
-                      a bigger model is more accurate but a larger download.</p>
-                    <div id="gw-models" class="model-list"></div>
-                    <p class="status" id="gw-models-status">—</p>
-                    <details class="gw-stt-adv">
-                      <summary class="muted sm">Advanced — bring your own NER model</summary>
-                      <div class="field row" style="margin-top:6px">
-                        <input id="gw-ner-custom" type="text" placeholder="Xenova/bert-base-multilingual-cased-ner-hrl" style="flex:1" />
-                        <button type="button" id="gw-ner-custom-use" class="btn">Download &amp; use</button>
-                      </div>
-                      <p class="muted sm" style="margin:4px 0 0">Any transformers.js <strong>token-classification</strong>
-                        model id (<code>org/name</code>, e.g. <code>Xenova/*</code>) whose labels map to PER/ORG/LOC.
-                        Fetched from Hugging Face directly (your choice — not the ChatPanel mirror).</p>
-                    </details>
+                <h3 class="priv-h">NER model (redaction)</h3>
+                <p class="muted sm">The local detector that finds names, organizations and locations. Runs
+                  <strong>in-process</strong>. Switching downloads the model once (to <code>~/.chatpanel/models</code>);
+                  a bigger model is more accurate but a larger download.</p>
+                <div id="gw-models" class="model-list"></div>
+                <p class="status" id="gw-models-status">—</p>
+                <div class="model-reg">
+                  <div class="model-reg-bar">
+                    <input id="gw-ner-search" placeholder="Search Hugging Face for NER models — e.g. multilingual, deid, indic" />
+                    <button id="gw-ner-search-btn" class="btn" type="button">Search</button>
                   </div>
-
-                  <div class="priv-col">
-                    <h3 class="priv-h">Speech-to-text (dictation) model</h3>
-                    <p class="muted sm">Local <strong>whisper</strong> for the mic button — audio never leaves your
-                      machine. Pick by your hardware: lighter models are faster/smaller, larger ones are more accurate.
-                      Multilingual models auto-detect the spoken language.</p>
-                    <p class="muted sm" style="margin:4px 0 0"><strong>Non-Latin languages</strong> (Telugu, Hindi,
-                      Chinese, Arabic…) need <strong>Small</strong> or <strong>Large&nbsp;v3&nbsp;Turbo</strong> —
-                      Tiny/Base transcribe them poorly.</p>
-                    <div id="gw-stt-models" class="model-list"></div>
-                    <p class="status" id="gw-stt-models-status">—</p>
-                    <div class="field row" style="margin-top:8px">
-                      <label style="min-width:auto">Dictation language</label>
-                      <select id="gw-stt-lang">
-                        <option value="">Auto-detect</option>
-                        <option value="en">English</option>
-                        <option value="te">Telugu (తెలుగు)</option>
-                        <option value="hi">Hindi (हिन्दी)</option>
-                        <option value="ta">Tamil (தமிழ்)</option>
-                        <option value="kn">Kannada (ಕನ್ನಡ)</option>
-                        <option value="es">Spanish</option>
-                        <option value="fr">French</option>
-                        <option value="de">German</option>
-                        <option value="zh">Chinese</option>
-                        <option value="ja">Japanese</option>
-                        <option value="ar">Arabic</option>
-                      </select>
-                    </div>
-                    <p class="muted sm" style="margin:4px 0 0">Auto-detect works well on Small+. Pin a language if
-                      detection guesses wrong on short phrases.</p>
-                    <details class="gw-stt-adv">
-                      <summary class="muted sm">Advanced — use a custom whisper model</summary>
-                      <div class="field row" style="margin-top:6px">
-                        <input id="gw-stt-custom" type="text" placeholder="onnx-community/whisper-small.en" style="flex:1" />
-                        <button type="button" id="gw-stt-custom-use" class="btn">Download &amp; use</button>
-                      </div>
-                      <p class="muted sm" style="margin:4px 0 0">Any transformers.js whisper export
-                        (<code>onnx-community/*</code> or <code>Xenova/*</code>), fetched from Hugging Face directly.</p>
-                    </details>
-                  </div>
+                  <div id="gw-ner-search-results" class="model-reg-results hidden"></div>
+                  <p class="muted sm" style="margin:4px 0 0">Only <strong>transformers.js</strong> (ONNX) token-classification
+                    models are shown — anything listed will actually run in-process. Downloaded from Hugging Face directly
+                    (your choice, not the ChatPanel mirror), then usable by ChatPanel and any derivative app on this gateway.</p>
                 </div>
 
                 <h3 class="priv-h">Dictionary</h3>
@@ -763,7 +719,46 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                 </div>
               </div>
             </div>
-            <div class="row" style="margin-top:8px">
+            <h3 class="priv-h" style="margin-top:14px">Speech-to-text (dictation) model</h3>
+              <p class="muted sm">Local <strong>whisper</strong> for the mic button — audio never leaves your machine.
+                Pick by your hardware: lighter models are faster/smaller, larger ones more accurate. Multilingual models
+                auto-detect the spoken language.
+                <strong>Non-Latin languages</strong> (Telugu, Hindi, Chinese, Arabic…) need <strong>Small</strong> or
+                <strong>Large&nbsp;v3&nbsp;Turbo</strong> — Tiny/Base transcribe them poorly.</p>
+              <div id="gw-stt-models" class="model-list"></div>
+              <p class="status" id="gw-stt-models-status">—</p>
+              <div class="model-reg">
+                <div class="model-reg-bar">
+                  <input id="gw-stt-search" placeholder="Search Hugging Face for whisper models — e.g. large-v3-turbo, distil, medium" />
+                  <button id="gw-stt-search-btn" class="btn" type="button">Search</button>
+                </div>
+                <div id="gw-stt-search-results" class="model-reg-results hidden"></div>
+                <p class="muted sm" style="margin:4px 0 0">Only <strong>transformers.js</strong> (ONNX) whisper models are
+                  shown — anything listed will actually run. Downloaded from Hugging Face directly, then usable by ChatPanel
+                  and any derivative app on this gateway.</p>
+              </div>
+              <div class="field row" style="margin-top:8px">
+                <label style="min-width:auto">Dictation language</label>
+                <select id="gw-stt-lang">
+                  <option value="">Auto-detect</option>
+                  <option value="en">English</option>
+                  <option value="te">Telugu (తెలుగు)</option>
+                  <option value="hi">Hindi (हिन्दी)</option>
+                  <option value="ta">Tamil (தமிழ்)</option>
+                  <option value="kn">Kannada (ಕನ್ನಡ)</option>
+                  <option value="ml">Malayalam (മലയാളം)</option>
+                  <option value="es">Spanish</option>
+                  <option value="fr">French</option>
+                  <option value="de">German</option>
+                  <option value="zh">Chinese</option>
+                  <option value="ja">Japanese</option>
+                  <option value="ar">Arabic</option>
+                </select>
+              </div>
+              <p class="muted sm" style="margin:4px 0 0">Auto-detect works well on Small+. Pin a language if detection
+                guesses wrong on short phrases.</p>
+
+              <div class="row" style="margin-top:8px">
               <button type="button" id="gw-save" class="btn primary">Save to gateway</button>
               <span class="status" id="gw-save-status"></span>
             </div>

@@ -873,6 +873,7 @@ function setDictateRecording(on) {
   btn.classList.toggle('recording', on);
   btn.setAttribute('aria-pressed', on ? 'true' : 'false');
   btn.title = on ? 'Stop dictation' : 'Dictate (voice → text)';
+  btn.innerHTML = icon(on ? 'stop' : 'mic'); // stop square while recording
 }
 
 async function toggleDictate() {

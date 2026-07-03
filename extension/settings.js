@@ -36,6 +36,7 @@ import { testMcpServer } from './js/mcp-manager.js';
 import { MCP_CATALOG } from './js/mcp-catalog.js';
 import { argsToText, parseArgsInput, parseMcpConfig } from './js/mcp-config-import.js';
 import { fetchMcpRegistryPage } from './js/mcp-registry.js';
+import { searchModels, formatDownloads } from './js/model-registry.js';
 import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
 import { applyProviderPreset, orderedProviderPresets, providerBrand, providerPresetById, providerPresetForEndpoint } from './js/provider-presets.js';
@@ -1546,6 +1547,41 @@ async function selectSttModel(id) {
   if (my === _sttPollToken) { st.className = 'status'; st.textContent = 'Still downloading… it will switch when ready.'; }
 }
 
+// ── Searchable model registry (Hugging Face) — browse & download models, like the
+// MCP tools tab. task 'stt' → whisper (/stt/models); 'ner' → token-classification
+// (/ner/models). Only transformers.js (ONNX) models show, so anything listed runs.
+const MODEL_REG = {
+  stt: { input: 'gw-stt-search', btn: 'gw-stt-search-btn', results: 'gw-stt-search-results', pick: (id) => selectSttModel(id) },
+  ner: { input: 'gw-ner-search', btn: 'gw-ner-search-btn', results: 'gw-ner-search-results', pick: (id) => selectNerModel(id) },
+};
+
+async function runModelSearch(task) {
+  const ctx = MODEL_REG[task];
+  const box = $(ctx.results);
+  if (!box) return;
+  const query = ($(ctx.input).value || '').trim();
+  box.classList.remove('hidden');
+  box.innerHTML = '<p class="muted sm">Searching Hugging Face…</p>';
+  try {
+    const items = await searchModels({ task, query, limit: 30 });
+    if (!items.length) { box.innerHTML = '<p class="muted sm">No transformers.js (ONNX) models matched. Try another term.</p>'; return; }
+    box.innerHTML = items.map((m) => {
+      const meta = [`↓ ${formatDownloads(m.downloads)}`, m.likes ? `♥ ${m.likes}` : '', m.langs.length ? m.langs.join('/') : '']
+        .filter(Boolean).join(' · ');
+      return `<div class="model-reg-item">
+        <div class="mri-main">
+          <a href="${escapeAttr(m.url)}" target="_blank" rel="noopener" class="mri-id">${escapeHtml(m.id)}</a>
+          <span class="mri-meta">${escapeHtml(meta)}</span>
+        </div>
+        <button type="button" class="btn primary sm mri-use" data-id="${escapeAttr(m.id)}">Download &amp; use</button>
+      </div>`;
+    }).join('');
+    box.querySelectorAll('.mri-use').forEach((b) => { b.onclick = () => ctx.pick(b.dataset.id); });
+  } catch (e) {
+    box.innerHTML = `<p class="status err">Search failed: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
 // Privacy-tab NER health line (the "Bundled NER" detector === the gateway's NER).
 function renderPrivNerHealth(ner) {
   const el = $('priv-ner-status');
@@ -1894,15 +1930,12 @@ function wireGateway() {
   $('gw-test-preview').onclick = () => runGatewayTest(false);
   $('gw-logs-refresh').onclick = refreshGatewayLogs;
   $('gw-ner-check').onclick = checkNer;
-  $('gw-ner-custom-use').onclick = () => {
-    const id = ($('gw-ner-custom').value || '').trim();
-    if (!/^[A-Za-z0-9][\w.-]*\/[\w.-]+$/.test(id)) {
-      const st = $('gw-models-status'); st.className = 'status err';
-      st.textContent = 'Enter an org/name model id, e.g. Xenova/bert-base-multilingual-cased-ner-hrl';
-      return;
-    }
-    selectNerModel(id);
-  };
+  // Searchable model registries (Hugging Face) — browse & download, like MCP tools.
+  for (const task of ['stt', 'ner']) {
+    const ctx = MODEL_REG[task];
+    if ($(ctx.btn)) $(ctx.btn).onclick = () => runModelSearch(task);
+    if ($(ctx.input)) $(ctx.input).onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); runModelSearch(task); } };
+  }
   // Dictation language override (client-side; drives both the gateway session and
   // the browser fallback). '' = auto-detect.
   if ($('gw-stt-lang')) {
@@ -1913,16 +1946,6 @@ function wireGateway() {
       await saveSettings(settings);
     };
   }
-  $('gw-stt-custom-use').onclick = () => {
-    const id = ($('gw-stt-custom').value || '').trim();
-    if (!id) return;
-    if (!/^[A-Za-z0-9][\w.-]*\/[\w.-]+$/.test(id) || !/whisper/i.test(id)) {
-      const st = $('gw-stt-models-status'); st.className = 'status err';
-      st.textContent = 'Enter an org/name whisper id, e.g. onnx-community/whisper-small.en';
-      return;
-    }
-    selectSttModel(id);
-  };
 
   // Auto-save every config field to the gateway on change (debounced) — so users
   // never lose edits by forgetting "Save to gateway". The explicit button remains.

@@ -4401,6 +4401,9 @@ function setMicRecording(on) {
   btn.classList.toggle('recording', on);
   btn.setAttribute('aria-pressed', on ? 'true' : 'false');
   btn.title = on ? 'Stop dictation' : 'Dictate (voice → text)';
+  btn.setAttribute('aria-label', on ? 'Stop dictation' : 'Dictate');
+  // Swap the mic glyph for a stop square while recording — click again to stop.
+  btn.innerHTML = icon(on ? 'stop' : 'mic');
 }
 
 // Persistent dictation status (engine + model download % + language) — so
