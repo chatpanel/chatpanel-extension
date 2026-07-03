@@ -1570,10 +1570,10 @@ async function runModelSearch(task) {
         .filter(Boolean).join(' · ');
       return `<div class="model-reg-item">
         <div class="mri-main">
-          <a href="${escapeAttr(m.url)}" target="_blank" rel="noopener" class="mri-id">${escapeHtml(m.id)}</a>
+          <a href="${escapeHtml(m.url)}" target="_blank" rel="noopener" class="mri-id">${escapeHtml(m.id)}</a>
           <span class="mri-meta">${escapeHtml(meta)}</span>
         </div>
-        <button type="button" class="btn primary sm mri-use" data-id="${escapeAttr(m.id)}">Download &amp; use</button>
+        <button type="button" class="btn primary sm mri-use" data-id="${escapeHtml(m.id)}">Download &amp; use</button>
       </div>`;
     }).join('');
     box.querySelectorAll('.mri-use').forEach((b) => { b.onclick = () => ctx.pick(b.dataset.id); });

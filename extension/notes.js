@@ -877,7 +877,17 @@ function setDictateRecording(on) {
 }
 
 async function toggleDictate() {
-  if (dict?.recording) { dict.stop(); return; }
+  // Any click while a dictation exists is a STOP (never a restart); flip the
+  // button to idle at once even if the SSE 'end' lags on a large model.
+  if (dict) {
+    if (dict.recording) {
+      dict.stop();
+      setDictateRecording(false);
+      const d = dict;
+      setTimeout(() => { if (dict === d) dict = null; }, 6000);
+    }
+    return;
+  }
   const { createDictation, micPermissionState, resolveDictationProvider } = await import('./js/dictation.js');
   // Extension pages can't rely on SpeechRecognition to prompt for the mic —
   // route through the one-time grant page first (grant is per-origin).

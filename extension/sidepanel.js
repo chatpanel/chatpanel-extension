@@ -4431,7 +4431,20 @@ function renderDictationStatus({ engine, hidden = false, dl = null, lang = null 
 }
 
 async function toggleDictation() {
-  if (dictation?.recording) { dictation.stop(); return; }
+  // Any click while a dictation exists is a STOP (or a no-op while it's already
+  // tearing down) — never a restart. The button flips to idle immediately even
+  // though the SSE 'end' (final flush) can lag on large models; a safety timer
+  // clears the handle if 'end' never arrives, so the mic can't wedge.
+  if (dictation) {
+    if (dictation.recording) {
+      dictation.stop();
+      setMicRecording(false);
+      renderDictationStatus({ hidden: true });
+      const d = dictation;
+      setTimeout(() => { if (dictation === d) dictation = null; }, 6000);
+    }
+    return;
+  }
   const { createDictation, micPermissionState, resolveDictationProvider } = await import('./js/dictation.js');
   // The side panel can't show Chrome's mic prompt — route through the one-time
   // grant page first; after that, dictation here just works.
