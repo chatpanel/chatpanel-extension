@@ -956,8 +956,7 @@ async function toggleDictate() {
 // note, merging consecutive turns from the same speaker. Requires the gateway
 // (diarization is local-only); the browser engine can't tell speakers apart.
 let trans = null;            // active controller, else null
-let transEnd = 0;            // body index where the committed transcript ends
-let transInterimLen = 0;     // length of the pending interim shown after it
+let transInterimLen = 0;     // length of the pending interim shown at the doc's END
 let transLastSpeaker = null; // to merge consecutive same-speaker turns onto one line
 let transStarted = false;    // has the first line been written (controls leading blank line)
 
@@ -970,14 +969,24 @@ function setTranscribing(on) {
   btn.innerHTML = icon(on ? 'stop' : 'meetings');
 }
 
+// The transcript always grows at the CURRENT end of the document, and the pending
+// interim is the last `transInterimLen` chars. We recompute the end (and clamp)
+// on every write rather than tracking an absolute index — across async STT events
+// the doc can change (mode switch, note load, user edit), and a stale index throws
+// CodeMirror "Invalid change range". `transAppend` = insert `text` at the end.
+function transAppend(text) {
+  const end = bodyText().length;                 // live doc length (CM or textarea)
+  const from = Math.max(0, end - transInterimLen); // drop the pending interim first
+  bodyReplaceRange(text, from, end, from + text.length);
+}
 function transClearInterim() {
-  if (transInterimLen) { bodyReplaceRange('', transEnd, transEnd + transInterimLen); transInterimLen = 0; }
+  if (!transInterimLen) return;
+  transAppend('');           // replaces the pending interim (from..end) with nothing
+  transInterimLen = 0;
 }
 function transShowInterim(t) {
-  transClearInterim();
   const s = String(t || '').trim();
-  if (!s) return;
-  bodyReplaceRange(s, transEnd, transEnd, transEnd + s.length);
+  transAppend(s);            // overwrite the previous interim in place
   transInterimLen = s.length;
 }
 function transAppendFinal(text, label) {
@@ -993,8 +1002,7 @@ function transAppendFinal(text, label) {
     transLastSpeaker = label || null;
     transStarted = true;
   }
-  bodyReplaceRange(ins, transEnd, transEnd, transEnd + ins.length);
-  transEnd += ins.length;
+  transAppend(ins);
 }
 
 async function toggleTranscribe() {
@@ -1022,13 +1030,10 @@ async function toggleTranscribe() {
     toast('Diarized transcription needs the local ChatPanel gateway (private, on-device). Start it, then try again.');
     return;
   }
-  // Anchor the transcript at the end of the note, under a header.
-  const body = bodyText();
-  const header = `${body.trim() ? '\n\n' : ''}## Meeting transcript\n\n`;
-  transEnd = body.length;
-  bodyReplaceRange(header, transEnd, transEnd, transEnd + header.length);
-  transEnd += header.length;
+  // Start the transcript at the end of the note, under a header. (transAppend
+  // always targets the live doc end, so no absolute index is kept.)
   transInterimLen = 0; transLastSpeaker = null; transStarted = false;
+  transAppend(`${bodyText().trim() ? '\n\n' : ''}## Meeting transcript\n\n`);
   const dictLang = settings?.ui?.dictation?.lang || undefined;
   const lastPct = { stt: -25, diarize: -25 }; // per-phase toast throttle
   trans = createDictation({
