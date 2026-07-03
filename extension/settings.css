@@ -88,6 +88,14 @@ body {
 /* Model-download progress bar (NER + STT model managers). */
 .dl-bar { height: 6px; border-radius: 4px; background: var(--accent-weak); overflow: hidden; margin-top: 6px; }
 .dl-bar-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width .4s ease; }
+/* Compact model rows — the picker reused the tall endpoint-card style and looked
+   sparse. Dense list: name + inline meta + action on one row, note beneath. */
+.model-list .entity { padding: 10px 12px; margin: 8px 0; }
+.model-list .entity-head { margin-bottom: 6px; padding-bottom: 0; border-bottom: none; gap: 6px 10px; }
+.model-list .entity-head strong { font-size: 13.5px; }
+.model-list .entity-head .status { font-size: 11.5px; color: var(--muted); }
+.model-list .entity > p { font-size: 12px; line-height: 1.4; }
+.model-list .entity .btn { padding: 4px 12px; font-size: 12.5px; }
 /* End-to-end flow visual: horizontally-scrolling cards with arrows between them. */
 .priv-flow { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
 .priv-flow textarea { width: 100%; box-sizing: border-box; }

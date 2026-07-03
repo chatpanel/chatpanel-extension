@@ -622,8 +622,18 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                     <p class="muted sm">The local detector that finds names, organizations and locations. Runs
                       <strong>in-process</strong>. Switching downloads the model once (to <code>~/.chatpanel/models</code>);
                       a bigger model is more accurate but a larger download.</p>
-                    <div id="gw-models"></div>
+                    <div id="gw-models" class="model-list"></div>
                     <p class="status" id="gw-models-status">—</p>
+                    <details class="gw-stt-adv">
+                      <summary class="muted sm">Advanced — bring your own NER model</summary>
+                      <div class="field row" style="margin-top:6px">
+                        <input id="gw-ner-custom" type="text" placeholder="Xenova/bert-base-multilingual-cased-ner-hrl" style="flex:1" />
+                        <button type="button" id="gw-ner-custom-use" class="btn">Download &amp; use</button>
+                      </div>
+                      <p class="muted sm" style="margin:4px 0 0">Any transformers.js <strong>token-classification</strong>
+                        model id (<code>org/name</code>, e.g. <code>Xenova/*</code>) whose labels map to PER/ORG/LOC.
+                        Fetched from Hugging Face directly (your choice — not the ChatPanel mirror).</p>
+                    </details>
                   </div>
 
                   <div class="priv-col">
@@ -634,7 +644,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                     <p class="muted sm" style="margin:4px 0 0"><strong>Non-Latin languages</strong> (Telugu, Hindi,
                       Chinese, Arabic…) need <strong>Small</strong> or <strong>Large&nbsp;v3&nbsp;Turbo</strong> —
                       Tiny/Base transcribe them poorly.</p>
-                    <div id="gw-stt-models"></div>
+                    <div id="gw-stt-models" class="model-list"></div>
                     <p class="status" id="gw-stt-models-status">—</p>
                     <div class="field row" style="margin-top:8px">
                       <label style="min-width:auto">Dictation language</label>

@@ -1894,6 +1894,15 @@ function wireGateway() {
   $('gw-test-preview').onclick = () => runGatewayTest(false);
   $('gw-logs-refresh').onclick = refreshGatewayLogs;
   $('gw-ner-check').onclick = checkNer;
+  $('gw-ner-custom-use').onclick = () => {
+    const id = ($('gw-ner-custom').value || '').trim();
+    if (!/^[A-Za-z0-9][\w.-]*\/[\w.-]+$/.test(id)) {
+      const st = $('gw-models-status'); st.className = 'status err';
+      st.textContent = 'Enter an org/name model id, e.g. Xenova/bert-base-multilingual-cased-ner-hrl';
+      return;
+    }
+    selectNerModel(id);
+  };
   // Dictation language override (client-side; drives both the gateway session and
   // the browser fallback). '' = auto-detect.
   if ($('gw-stt-lang')) {
