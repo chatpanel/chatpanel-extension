@@ -1503,6 +1503,32 @@ function renderSttModels(data) {
   });
   host.innerHTML = rows.join('') || '<p class="muted sm">No models available.</p>';
   host.querySelectorAll('.gw-stt-use').forEach((b) => { b.onclick = () => selectSttModel(b.dataset.id); });
+  renderSttDtype(data);
+}
+
+// Precision (quantization) picker. Re-loads the ACTIVE model at the chosen dtype.
+// On the WASM binary only fp32 loads, so the rest are disabled there.
+let _sttActive = null;
+function renderSttDtype(data) {
+  const sel = $('gw-stt-dtype');
+  const note = $('gw-stt-dtype-note');
+  if (!sel) return;
+  _sttActive = data?.active || null;
+  const opts = data?.dtypes || [{ id: 'auto', label: 'Auto (recommended)' }];
+  const cur = data?.dtype || 'auto';
+  const wasm = data?.runtime === 'wasm';
+  sel.innerHTML = opts.map((o) => {
+    const disabled = wasm && o.id !== 'auto' && o.id !== 'fp32'; // only fp32 loads on WASM
+    return `<option value="${escapeHtml(o.id)}"${o.id === cur ? ' selected' : ''}${disabled ? ' disabled' : ''}>${escapeHtml(o.label)}${disabled ? ' — native only' : ''}</option>`;
+  }).join('');
+  if (note) {
+    const curNote = (opts.find((o) => o.id === cur) || {}).note || '';
+    note.textContent = curNote + (data?.loadedDtype ? `  ·  currently loaded: ${data.loadedDtype}` : '');
+  }
+  sel.onchange = () => {
+    if (!_sttActive) { $('gw-stt-models-status').textContent = 'Pick a model first, then a precision.'; return; }
+    selectSttModel(_sttActive, sel.value); // re-load the active model at this precision
+  };
 }
 
 // Show a speed advisory when the gateway is the WASM (binary) build — it's fp32-
@@ -1548,14 +1574,14 @@ async function refreshSttModels() {
 // /stt/models — the "called in a loop" bug). A large model can take minutes, so
 // poll at 2s and surface the % the whole time.
 let _sttPollToken = 0;
-async function selectSttModel(id) {
+async function selectSttModel(id, dtype) {
   const url = normalizeGatewayUrl($('gw-url').value);
   const st = $('gw-stt-models-status');
   if (!url || !id) return;
   const my = ++_sttPollToken;
-  st.className = 'status'; st.textContent = `Switching to ${id}…`;
+  st.className = 'status'; st.textContent = `Switching to ${id}${dtype && dtype !== 'auto' ? ` (${dtype})` : ''}…`;
   try {
-    await setSttModel(url, id);
+    await setSttModel(url, id, dtype);
   } catch (e) { st.className = 'status err'; st.textContent = `Switch failed: ${e.message}`; return; }
   for (let i = 0; i < 450 && my === _sttPollToken; i++) { // ~15 min ceiling; superseded by a newer click
     await new Promise((r) => setTimeout(r, 2000));

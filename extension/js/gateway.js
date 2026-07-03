@@ -66,11 +66,11 @@ export async function getSttModels(baseUrl) {
   return jfetch(`${normalizeGatewayUrl(baseUrl)}/stt/models`);
 }
 
-export async function setSttModel(baseUrl, id) {
+export async function setSttModel(baseUrl, id, dtype) {
   return jfetch(`${normalizeGatewayUrl(baseUrl)}/stt/models`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ id }),
+    body: JSON.stringify(dtype ? { id, dtype } : { id }),
   });
 }
 
