@@ -8,6 +8,7 @@ import {
 } from './js/store.js';
 import { buildIndex, bm25Search, buildGraph, tokenize } from './js/meeting-index.js';
 import { drawGraph } from './js/graph-view.js';
+import { createDashboard, renderStats, renderRelated as renderRelatedCards } from './js/corpus-dashboard.js';
 import { initialHistoryView } from './js/history-state.js';
 import { renderMarkdown } from './js/markdown.js';
 import { topicDisplayForSource } from './js/topic-extraction.js';
@@ -23,11 +24,24 @@ let bm25 = null;
 let graph = null;          // topic-overlap graph for related chats
 let current = null;        // selected store entry (+ .tab)
 let mode = 'smart';        // smart | keyword
-let inGraph = false;
 let winId = null;          // this window — to open the side panel within a gesture
 let graphDrawToken = 0;
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// Corpus dashboard (all chats): Stats / Topic graph / Related. Opened by the
+// header "Graph" button; replaces the older graph-only view. `isOpen` supersedes
+// the previous `inGraph` flag.
+const dash = createDashboard({
+  prefix: 'h',
+  onOpen: () => { $('h-empty').classList.add('hidden'); $('h-content').classList.add('hidden'); },
+  onClose: () => { $('h-empty').classList.toggle('hidden', !!current); if (current) renderDetail(); },
+  render: (tab, host) => {
+    if (tab === 'stats') renderChatStats(host);
+    else if (tab === 'related') renderChatRelated(host);
+    else drawChatGraph(host);
+  },
+});
 const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const fmtDate = (ts) => (ts ? new Date(ts).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
 function relTime(ts) {
@@ -158,7 +172,7 @@ function searchResults(q) {
 // --- list ------------------------------------------------------------------
 function renderList() {
   const results = searchResults($('h-search').value);
-  $('h-count').textContent = index.length ? `· ${index.length} chats` : '';
+  $('h-count').textContent = index.length ? `· ${index.length}` : '';
   const host = $('h-items');
   if (!results.length) {
     host.innerHTML = `<div class="list-empty">${index.length ? 'No matches.' : 'No chats yet.'}</div>`;
@@ -183,16 +197,14 @@ async function select(id) {
   graphDrawToken += 1;
   const graphHost = $('h-biggraph');
   if (graphHost?._stop) graphHost._stop();
-  inGraph = false; $('h-graph').classList.add('hidden');
-  $('h-graph-toggle').classList.remove('active');
   history.replaceState(null, '', '#' + id);
   renderList();
-  renderDetail();
+  dash.close(); // hide the dashboard (if open) and render this chat via onClose
 }
 
 function renderDetail() {
   $('h-empty').classList.add('hidden');
-  $('h-graph').classList.add('hidden');
+  $('h-dash')?.classList.add('hidden');
   const c = $('h-content'); c.classList.remove('hidden');
   const { conv, agent } = current;
   const tab = current.tab || 'chat';
@@ -338,18 +350,15 @@ function topicGraph(items, prefix) {
   return { nodes, links };
 }
 
-function showGraphView() {
-  inGraph = true;
-  $('h-empty').classList.add('hidden');
-  $('h-content').classList.add('hidden');
-  const host = $('h-graph'); host.classList.remove('hidden');
+// Topic-graph pane of the dashboard — reflects the current search (graphs only
+// the matching chats + their topics).
+function drawChatGraph(host) {
   const previousGraph = $('h-biggraph');
   if (previousGraph?._stop) previousGraph._stop();
-  // Reflect the current search/mode: graph only the matching chats (+ their topics).
   const q = $('h-search').value.trim();
   const allChats = searchResults(q).map((r) => r.d);
   const chats = allChats.slice(0, GRAPH_RENDER_LIMIT);
-  if (!allChats.length) { host.innerHTML = `<div class="empty">${q ? 'No chats match your search.' : 'No chats to graph yet.'}</div>`; return; }
+  if (!allChats.length) { host.innerHTML = `<div class="dash-empty">${q ? 'No chats match your search.' : 'No chats to graph yet.'}</div>`; return; }
   const topics = new Set(chats.flatMap((d) => d.terms || []));
   const limited = allChats.length > chats.length;
   host.innerHTML = `
@@ -369,15 +378,52 @@ function showGraphView() {
       (nd) => { if (nd.type === 'meeting') select(nd.id); else searchTopic(nd.label); });
   });
 }
-function toggleGraph() {
-  if (inGraph) {
-    graphDrawToken += 1;
-    const graphHost = $('h-biggraph');
-    if (graphHost?._stop) graphHost._stop();
-    inGraph = false; $('h-graph').classList.add('hidden'); if (current) renderDetail(); else $('h-empty').classList.remove('hidden');
+
+// Stats pane — corpus totals + top topics / agents across all chats.
+function renderChatStats(host) {
+  const items = [...store.values()];
+  if (!items.length) { renderStats(host, { metrics: [], empty: 'No chats yet.' }); return; }
+  let msgTotal = 0; let wordTotal = 0;
+  const topicFreq = new Map();
+  const agentFreq = new Map();
+  for (const d of items) {
+    const msgs = d.conv.messages || [];
+    msgTotal += msgs.length;
+    wordTotal += msgs.reduce((s, m) => s + String(m.content || '').split(/\s+/).filter(Boolean).length, 0);
+    for (const t of d.terms || []) topicFreq.set(t, (topicFreq.get(t) || 0) + 1);
+    if (d.agent) agentFreq.set(d.agent, (agentFreq.get(d.agent) || 0) + 1);
   }
-  else showGraphView();
-  $('h-graph-toggle').classList.toggle('active', inGraph);
+  const top = (m, n) => [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, n);
+  renderStats(host, {
+    metrics: [
+      { n: items.length.toLocaleString(), l: 'Chats' },
+      { n: msgTotal.toLocaleString(), l: 'Messages' },
+      { n: wordTotal.toLocaleString(), l: 'Words' },
+      { n: topicFreq.size.toLocaleString(), l: 'Topics' },
+    ],
+    clouds: [
+      { head: 'Top topics', entries: top(topicFreq, 16), empty: 'Topics appear as you chat.', chipTitle: (t) => `Find “${t}” across notes, chats & meetings`, onChip: (t) => openOmni(t) },
+      { head: 'Agents used', entries: top(agentFreq, 12), empty: 'No agents recorded.', chipTitle: (t) => `Filter chats by ${t}`, onChip: (t) => searchTopic(t) },
+    ],
+  });
+}
+
+// Related pane — the most-connected chats (topic/term overlap) + what they link to.
+function renderChatRelated(host) {
+  const ranked = [...store.values()]
+    .map((d) => ({ d, rel: graph ? graph.relatedMeetings(d.entry.id, { limit: 4 }) : [] }))
+    .filter((x) => x.rel.length)
+    .sort((a, b) => b.rel.length - a.rel.length || (b.d.entry.updatedAt || 0) - (a.d.entry.updatedAt || 0))
+    .slice(0, 24);
+  const cards = ranked.map(({ d, rel }) => {
+    const titles = rel.map((r) => store.get(r.id)?.conv.title).filter(Boolean).slice(0, 3);
+    return {
+      title: d.conv.title || 'Untitled chat',
+      meta: `${rel.length} related${titles.length ? ' · ' + titles.join(', ') : ''}`,
+      onClick: () => select(d.entry.id),
+    };
+  });
+  renderRelatedCards(host, cards, 'No connections found yet — chat more to link topics.');
 }
 
 // --- actions ---------------------------------------------------------------
@@ -386,7 +432,7 @@ function searchTopic(topic) {
   $('h-modes').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === 'keyword'));
   $('h-search').value = topic;
   renderList();
-  if (inGraph) showGraphView();
+  if (dash.isOpen && dash.tab === 'graph') dash.rerender();
 }
 function download(name, text) {
   const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown' }));
@@ -423,6 +469,14 @@ async function openInPanel() {
   // Already-open path: nudge the live panel to switch to this chat.
   chrome.runtime.sendMessage({ type: 'open-conversation', id }).catch(() => {});
   toast('Opening this chat in the side panel…');
+}
+
+// Open the ChatPanel side panel (fresh) from the header — no item attached.
+async function openPanel() {
+  try {
+    if (winId != null) await chrome.sidePanel.open({ windowId: winId });
+    else await chrome.sidePanel.open({ windowId: (await chrome.windows.getCurrent()).id });
+  } catch { toast('Open the ChatPanel side panel from the toolbar'); }
 }
 
 // --- boot ------------------------------------------------------------------
@@ -464,14 +518,16 @@ async function boot() {
   renderList();
 
   $('h-items').addEventListener('click', (e) => { const it = e.target.closest('.mitem'); if (it?.dataset.id) select(it.dataset.id); });
-  $('h-search').oninput = () => { renderList(); if (inGraph) showGraphView(); };
+  $('h-search').oninput = () => { renderList(); if (dash.isOpen && dash.tab === 'graph') dash.rerender(); };
   $('h-modes').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-mode]'); if (!b) return;
     mode = b.dataset.mode === 'keyword' ? 'keyword' : 'smart';
     $('h-modes').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-    renderList(); if (inGraph) showGraphView();
+    renderList(); if (dash.isOpen && dash.tab === 'graph') dash.rerender();
   });
-  $('h-graph-toggle').onclick = toggleGraph;
+  $('h-graph-toggle').onclick = () => dash.toggle();
+  dash.wire();
+  $('h-open-panel').onclick = openPanel;
   $('h-settings').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html') });
   wireOmni();
 
@@ -479,8 +535,7 @@ async function boot() {
   if (initialView.view === 'chat' && store.has(initialView.id)) {
     await select(initialView.id);
   } else {
-    showGraphView();
-    $('h-graph-toggle').classList.add('active');
+    dash.open();
   }
 }
 boot();

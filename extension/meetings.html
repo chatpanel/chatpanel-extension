@@ -20,12 +20,13 @@
         <button id="m-import" class="btn" type="button" data-icon="download">Import meeting</button>
         <input id="m-import-file" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple class="hidden" />
         <button id="m-graph-toggle" class="btn" type="button" data-icon="graph">Graph</button>
+        <button id="m-open-panel" class="btn" type="button" title="Open the ChatPanel side panel" data-icon="chat">Open ChatPanel</button>
         <button id="m-settings" class="btn ghost" type="button" data-icon="settings">ChatPanel settings</button>
       </div>
     </header>
     <div class="layout">
       <aside class="mlist">
-        <input id="m-search" class="search" type="search" placeholder="Search meetings, notes, transcripts, attendees…" />
+        <input id="m-search" class="search" type="search" placeholder="Search all meetings — transcripts, notes & attendees…" />
         <div class="seg" id="m-modes">
           <button data-mode="smart" class="active" type="button" title="Ranked search across title, notes, transcript and attendees">Best match</button>
           <button data-mode="keyword" type="button" title="Literal text match across title, notes, transcript and attendees">Exact text</button>
@@ -35,7 +36,20 @@
       <main class="detail">
         <div class="empty" id="m-empty">Select a meeting to see its insights.</div>
         <div id="m-content" class="hidden"></div>
-        <div id="m-graph" class="hidden"></div>
+        <!-- Corpus dashboard — a tabbed overview of all meetings (Stats / Topic graph /
+             Related), shown via the header "Graph" button. Mirrors Notes & Chats. -->
+        <div id="m-dash" class="dash hidden">
+          <div class="dash-tabs seg" role="tablist" aria-label="Dashboard view">
+            <button data-dash="stats" class="active" type="button" role="tab" data-icon="chart">Stats</button>
+            <button data-dash="graph" type="button" role="tab" data-icon="graph">Topic graph</button>
+            <button data-dash="related" type="button" role="tab" data-icon="waypoints">Related</button>
+          </div>
+          <div class="dash-body">
+            <div id="m-dash-stats" class="dash-pane" role="tabpanel"></div>
+            <div id="m-dash-graph" class="dash-pane hidden" role="tabpanel"></div>
+            <div id="m-dash-related" class="dash-pane hidden" role="tabpanel"></div>
+          </div>
+        </div>
       </main>
     </div>
     <div id="m-toast" class="toast hidden"></div>

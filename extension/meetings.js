@@ -14,6 +14,7 @@ import { streamChat } from './js/providers.js';
 import { buildIndex, bm25Search, buildGraph, tokenize } from './js/meeting-index.js';
 import { drawGraph } from './js/graph-view.js';
 import { buildMeetingTopicGraph, graphParticipantNames, graphTopicTerms } from './js/meeting-graph.js';
+import { createDashboard, renderStats, renderRelated as renderRelatedCards } from './js/corpus-dashboard.js';
 import { initialHistoryView } from './js/history-state.js';
 import { isMeetingImageValue, participantRowsOfMeeting, peopleOfMeeting, speakerCountOfMeeting } from './js/meeting-people.js';
 import { contentHash, insightTopicItemsFromNotes, makeTopicIndex, topicDisplayForMeetingSource, topicSourceTextForMeeting } from './js/topic-extraction.js';
@@ -31,9 +32,22 @@ let bm25 = null;
 let graph = null;
 let current = null;        // selected store entry (+ .tab)
 let mode = 'smart';        // search mode: smart | keyword
-let inGraph = false;       // global graph view shown?
 let winId = null;          // this window — to open the side panel within a gesture
 let graphDrawToken = 0;
+
+// Corpus dashboard (all meetings): Stats / Topic graph / Related. Opened by the
+// header "Graph" button; replaces the older graph-only view. `isOpen` supersedes
+// the previous `inGraph` flag.
+const dash = createDashboard({
+  prefix: 'm',
+  onOpen: () => { $('m-empty').classList.add('hidden'); $('m-content').classList.add('hidden'); },
+  onClose: () => { $('m-empty').classList.toggle('hidden', !!current); if (current) renderDetail(); },
+  render: (tab, host) => {
+    if (tab === 'stats') renderMeetingStats(host);
+    else if (tab === 'related') renderMeetingRelated(host);
+    else drawMeetingGraph(host);
+  },
+});
 
 // --- helpers ---------------------------------------------------------------
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -143,7 +157,7 @@ function searchResults(q) {
 function renderList() {
   const q = $('m-search').value;
   const results = searchResults(q);
-  $('m-count').textContent = index.length ? `· ${index.length} recorded` : '';
+  $('m-count').textContent = index.length ? `· ${index.length}` : '';
   const host = $('m-items');
   if (!results.length) {
     host.innerHTML = `<div class="list-empty">${index.length ? 'No matches.' : 'No meetings yet. Join a Zoom / Meet / Teams / Webex call with captions on and ChatPanel records the transcript.'}</div>`;
@@ -211,17 +225,14 @@ async function select(id) {
   graphDrawToken += 1;
   const graphHost = $('m-biggraph');
   if (graphHost?._stop) graphHost._stop();
-  inGraph = false;
-  $('m-graph').classList.add('hidden');
-  $('m-graph-toggle').classList.remove('active');
   history.replaceState(null, '', '#' + id);
   renderList();
-  renderDetail();
+  dash.close(); // hide the dashboard (if open) and render this meeting via onClose
 }
 
 function renderDetail() {
   $('m-empty').classList.add('hidden');
-  $('m-graph').classList.add('hidden');
+  $('m-dash')?.classList.add('hidden');
   const c = $('m-content'); c.classList.remove('hidden');
   const { rec, parsed } = current;
   const tab = current.tab || 'insights';
@@ -553,18 +564,15 @@ function renderTranscript() {
   paint();
 }
 
-function showGraphView() {
-  inGraph = true;
-  $('m-empty').classList.add('hidden');
-  $('m-content').classList.add('hidden');
-  const host = $('m-graph'); host.classList.remove('hidden');
+// Topic-graph pane of the dashboard — reflects the current search (graphs only
+// the matching meetings + their topics/participants).
+function drawMeetingGraph(host) {
   const previousGraph = $('m-biggraph');
   if (previousGraph?._stop) previousGraph._stop();
-  // Reflect the current search/mode: graph only the matching meetings (+ their topics).
   const q = $('m-search').value.trim();
   const allMeetings = searchResults(q).map((r) => r.d);
   const meetings = allMeetings.slice(0, GRAPH_RENDER_LIMIT);
-  if (!allMeetings.length) { host.innerHTML = `<div class="empty">${q ? 'No meetings match your search.' : 'No meetings to graph yet.'}</div>`; return; }
+  if (!allMeetings.length) { host.innerHTML = `<div class="dash-empty">${q ? 'No meetings match your search.' : 'No meetings to graph yet.'}</div>`; return; }
   const graphData = buildMeetingTopicGraph(meetings, { topicPrefix: 'm-topic:', participantPrefix: 'm-participant:', connectorQuery: q });
   const topics = graphData.nodes.filter((n) => n.type === 'topic').length;
   const participants = graphData.nodes.filter((n) => n.type === 'participant').length;
@@ -588,15 +596,52 @@ function showGraphView() {
   });
 }
 
-function toggleGraph() {
-  if (inGraph) {
-    graphDrawToken += 1;
-    const graphHost = $('m-biggraph');
-    if (graphHost?._stop) graphHost._stop();
-    inGraph = false; $('m-graph').classList.add('hidden'); if (current) renderDetail(); else $('m-empty').classList.remove('hidden');
+// Stats pane — corpus totals + top topics / participants across all meetings.
+function renderMeetingStats(host) {
+  const items = [...store.values()];
+  if (!items.length) { renderStats(host, { metrics: [], empty: 'No meetings yet.' }); return; }
+  let totalMs = 0;
+  const topicFreq = new Map();
+  const peopleFreq = new Map();
+  for (const d of items) {
+    const { rec } = d;
+    if (rec.startedAt && rec.endedAt && rec.endedAt > rec.startedAt) totalMs += rec.endedAt - rec.startedAt;
+    for (const t of d.terms || []) topicFreq.set(t, (topicFreq.get(t) || 0) + 1);
+    for (const p of d.people || []) peopleFreq.set(p, (peopleFreq.get(p) || 0) + 1);
   }
-  else showGraphView();
-  $('m-graph-toggle').classList.toggle('active', inGraph);
+  const top = (m, n) => [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, n);
+  const mins = Math.round(totalMs / 60000);
+  const totalTime = mins < 60 ? `${mins}m` : (mins % 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${Math.floor(mins / 60)}h`);
+  renderStats(host, {
+    metrics: [
+      { n: items.length.toLocaleString(), l: 'Meetings' },
+      { n: peopleFreq.size.toLocaleString(), l: 'Participants' },
+      { n: topicFreq.size.toLocaleString(), l: 'Topics' },
+      { n: totalTime, l: 'Total time' },
+    ],
+    clouds: [
+      { head: 'Top topics', entries: top(topicFreq, 16), empty: 'Topics appear as meetings are summarized.', chipTitle: (t) => `Find “${t}” across notes, chats & meetings`, onChip: (t) => openOmni(t) },
+      { head: 'Top participants', entries: top(peopleFreq, 12), empty: 'No participants recorded.', chipTitle: (t) => `Filter meetings with ${t}`, onChip: (t) => searchTopic(t) },
+    ],
+  });
+}
+
+// Related pane — the most-connected meetings (shared people/topics) + what they link to.
+function renderMeetingRelated(host) {
+  const ranked = [...store.values()]
+    .map((d) => ({ d, rel: graph ? graph.relatedMeetings(d.entry.id, { limit: 4 }) : [] }))
+    .filter((x) => x.rel.length)
+    .sort((a, b) => b.rel.length - a.rel.length || (b.d.rec.startedAt || 0) - (a.d.rec.startedAt || 0))
+    .slice(0, 24);
+  const cards = ranked.map(({ d, rel }) => {
+    const titles = rel.map((r) => store.get(r.id)?.rec.title).filter(Boolean).slice(0, 3);
+    return {
+      title: d.rec.title || 'Untitled meeting',
+      meta: `${rel.length} related${titles.length ? ' · ' + titles.join(', ') : ''}`,
+      onClick: () => select(d.entry.id),
+    };
+  });
+  renderRelatedCards(host, cards, 'No connections found yet — related meetings appear as topics & attendees overlap.');
 }
 
 // --- actions ---------------------------------------------------------------
@@ -605,7 +650,7 @@ function searchTopic(topic) {
   $('m-modes').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === 'keyword'));
   $('m-search').value = topic;
   renderList();
-  if (inGraph) showGraphView();
+  if (dash.isOpen && dash.tab === 'graph') dash.rerender();
   else if (current?.tab === 'topic-graph') renderTopicGraph();
 }
 
@@ -647,6 +692,13 @@ async function removeMeeting() {
   $('m-empty').classList.remove('hidden');
   renderList();
   toast('Meeting deleted');
+}
+// Open the ChatPanel side panel (fresh) from the header — no meeting attached.
+async function openPanel() {
+  try {
+    if (winId != null) await chrome.sidePanel.open({ windowId: winId });
+    else await chrome.sidePanel.open({ windowId: (await chrome.windows.getCurrent()).id });
+  } catch { toast('Open the ChatPanel side panel from the toolbar'); }
 }
 async function askAboutMeeting() {
   if (!current) return;
@@ -877,14 +929,16 @@ async function boot() {
   renderList();
 
   $('m-items').addEventListener('click', (e) => { const it = e.target.closest('.mitem'); if (it?.dataset.id) select(it.dataset.id); });
-  $('m-search').oninput = () => { renderList(); if (inGraph) showGraphView(); else if (current?.tab === 'topic-graph') renderTopicGraph(); };
+  $('m-search').oninput = () => { renderList(); if (dash.isOpen && dash.tab === 'graph') dash.rerender(); else if (current?.tab === 'topic-graph') renderTopicGraph(); };
   $('m-modes').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-mode]'); if (!b) return;
     mode = b.dataset.mode;
     $('m-modes').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-    renderList(); if (inGraph) showGraphView(); else if (current?.tab === 'topic-graph') renderTopicGraph();
+    renderList(); if (dash.isOpen && dash.tab === 'graph') dash.rerender(); else if (current?.tab === 'topic-graph') renderTopicGraph();
   });
-  $('m-graph-toggle').onclick = toggleGraph;
+  $('m-graph-toggle').onclick = () => dash.toggle();
+  dash.wire();
+  $('m-open-panel').onclick = openPanel;
   wireOmni();
   $('m-import').onclick = () => $('m-import-file').click();
   $('m-import-file').onchange = (e) => { const fs = e.target.files; if (fs && fs.length) importFiles(fs); e.target.value = ''; };
@@ -894,8 +948,7 @@ async function boot() {
   if (initialView.view === 'meeting' && store.has(initialView.id)) {
     await select(initialView.id);
   } else {
-    showGraphView();
-    $('m-graph-toggle').classList.add('active');
+    dash.open();
   }
 }
 boot();

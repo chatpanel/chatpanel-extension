@@ -18,6 +18,7 @@
       <div class="hdr-actions">
         <button id="omni-open" class="omni-trigger" type="button" title="Search notes, chats & meetings (⌘K)"><span data-icon="search"></span><span class="omni-trigger-label">Search everything</span><kbd>⌘K</kbd></button>
         <button id="h-graph-toggle" class="btn" type="button" data-icon="graph">Graph</button>
+        <button id="h-open-panel" class="btn" type="button" title="Open the ChatPanel side panel" data-icon="chat">Open ChatPanel</button>
         <button id="h-settings" class="btn ghost" type="button" data-icon="settings">ChatPanel settings</button>
       </div>
     </header>
@@ -33,7 +34,20 @@
       <main class="detail">
         <div class="empty" id="h-empty">Select a chat to view it.</div>
         <div id="h-content" class="hidden"></div>
-        <div id="h-graph" class="hidden"></div>
+        <!-- Corpus dashboard — a tabbed overview of all chats (Stats / Topic graph /
+             Related), shown via the header "Graph" button. Mirrors Notes & Meetings. -->
+        <div id="h-dash" class="dash hidden">
+          <div class="dash-tabs seg" role="tablist" aria-label="Dashboard view">
+            <button data-dash="stats" class="active" type="button" role="tab" data-icon="chart">Stats</button>
+            <button data-dash="graph" type="button" role="tab" data-icon="graph">Topic graph</button>
+            <button data-dash="related" type="button" role="tab" data-icon="waypoints">Related</button>
+          </div>
+          <div class="dash-body">
+            <div id="h-dash-stats" class="dash-pane" role="tabpanel"></div>
+            <div id="h-dash-graph" class="dash-pane hidden" role="tabpanel"></div>
+            <div id="h-dash-related" class="dash-pane hidden" role="tabpanel"></div>
+          </div>
+        </div>
       </main>
     </div>
     <div id="h-toast" class="toast hidden"></div>

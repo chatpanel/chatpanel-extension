@@ -334,22 +334,26 @@ export function drawGraph(host, nodes, links, onNode, onNodeOpen) {
   svg.addEventListener('pointerup', endPointer);
   svg.addEventListener('pointercancel', endPointer);
 
+  // Hover-focus uses its OWN `hfade` class (not `faded`), so it composes with —
+  // and never clobbers — an external search filter (e.g. omni-search dims
+  // non-matching nodes via `faded`). Leaving a node clears only the hover state,
+  // so the underlying filter stays intact.
   nodes.forEach((nd) => {
     nd.el.addEventListener('pointerenter', () => {
       const keep = new Set([nd.id, ...adj.get(nd.id)]);
       nodes.forEach((m) => {
         const show = keep.has(m.id);
-        m.el.classList.toggle('faded', !show);
+        m.el.classList.toggle('hfade', !show);
         m.el.classList.toggle('label-near', show);
       });
-      L.forEach((l) => l.el.classList.toggle('faded', l.s.id !== nd.id && l.t.id !== nd.id));
+      L.forEach((l) => l.el.classList.toggle('hfade', l.s.id !== nd.id && l.t.id !== nd.id));
     });
     nd.el.addEventListener('pointerleave', () => {
       nodes.forEach((m) => {
-        m.el.classList.remove('faded');
+        m.el.classList.remove('hfade');
         m.el.classList.remove('label-near');
       });
-      L.forEach((l) => l.el.classList.remove('faded'));
+      L.forEach((l) => l.el.classList.remove('hfade'));
     });
   });
 
