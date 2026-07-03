@@ -888,6 +888,7 @@ async function toggleDictate() {
     }
     return;
   }
+  if (trans?.recording) { toast('Stop meeting transcription first'); return; }
   const { createDictation, micPermissionState, resolveDictationProvider } = await import('./js/dictation.js');
   // Extension pages can't rely on SpeechRecognition to prompt for the mic —
   // route through the one-time grant page first (grant is per-origin).
@@ -947,6 +948,113 @@ async function toggleDictate() {
     },
   });
   dict.start();
+}
+
+// ── In-person meeting transcription — diarized, speaker-labelled, into the note ───
+// The no-online-meeting path: just people talking near the mic. Room mic → local
+// gateway STT with diarization ON → appends "Speaker N: …" lines at the end of the
+// note, merging consecutive turns from the same speaker. Requires the gateway
+// (diarization is local-only); the browser engine can't tell speakers apart.
+let trans = null;            // active controller, else null
+let transEnd = 0;            // body index where the committed transcript ends
+let transInterimLen = 0;     // length of the pending interim shown after it
+let transLastSpeaker = null; // to merge consecutive same-speaker turns onto one line
+let transStarted = false;    // has the first line been written (controls leading blank line)
+
+function setTranscribing(on) {
+  const btn = $('n-transcribe');
+  if (!btn) return;
+  btn.classList.toggle('recording', on);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  btn.title = on ? 'Stop transcribing' : 'Transcribe an in-person meeting (diarized)';
+  btn.innerHTML = icon(on ? 'stop' : 'meetings');
+}
+
+function transClearInterim() {
+  if (transInterimLen) { bodyReplaceRange('', transEnd, transEnd + transInterimLen); transInterimLen = 0; }
+}
+function transShowInterim(t) {
+  transClearInterim();
+  const s = String(t || '').trim();
+  if (!s) return;
+  bodyReplaceRange(s, transEnd, transEnd, transEnd + s.length);
+  transInterimLen = s.length;
+}
+function transAppendFinal(text, label) {
+  transClearInterim();
+  const clean = String(text || '').trim();
+  if (!clean) return;
+  let ins;
+  if (label && label === transLastSpeaker) {
+    ins = ' ' + clean;                                   // same speaker → continue the line
+  } else {
+    const lead = transStarted ? '\n\n' : '';
+    ins = label ? `${lead}**${label}:** ${clean}` : `${lead}${clean}`;
+    transLastSpeaker = label || null;
+    transStarted = true;
+  }
+  bodyReplaceRange(ins, transEnd, transEnd, transEnd + ins.length);
+  transEnd += ins.length;
+}
+
+async function toggleTranscribe() {
+  // Any click while transcribing is a STOP (never a restart); flip to idle at once.
+  if (trans) {
+    if (trans.recording) {
+      trans.stop();
+      setTranscribing(false);
+      const t = trans;
+      setTimeout(() => { if (trans === t) trans = null; }, 6000);
+    }
+    return;
+  }
+  if (dict?.recording) { toast('Stop dictation first'); return; }
+  const { createDictation, micPermissionState, resolveDictationProvider } = await import('./js/dictation.js');
+  if (await micPermissionState() !== 'granted') {
+    chrome.tabs.create({ url: chrome.runtime.getURL('mic-permission.html') });
+    toast('Allow the microphone in the new tab, then click transcribe again');
+    return;
+  }
+  const settings = await (await import('./js/store.js')).getSettings();
+  const gatewayUrl = settings?.gatewayUrl || settings?.ui?.warmSearch?.url || undefined;
+  const engine = await resolveDictationProvider({ gatewayUrl });
+  if (engine.provider !== 'gateway') {
+    toast('Diarized transcription needs the local ChatPanel gateway (private, on-device). Start it, then try again.');
+    return;
+  }
+  // Anchor the transcript at the end of the note, under a header.
+  const body = bodyText();
+  const header = `${body.trim() ? '\n\n' : ''}## Meeting transcript\n\n`;
+  transEnd = body.length;
+  bodyReplaceRange(header, transEnd, transEnd, transEnd + header.length);
+  transEnd += header.length;
+  transInterimLen = 0; transLastSpeaker = null; transStarted = false;
+  const dictLang = settings?.ui?.dictation?.lang || undefined;
+  const lastPct = { stt: -25, diarize: -25 }; // per-phase toast throttle
+  trans = createDictation({
+    provider: 'gateway',
+    gatewayUrl,
+    lang: dictLang,
+    diarize: true, // the whole point — who said what
+    onStart: () => { setTranscribing(true); toast('🎙 Transcribing meeting — local, on-device (diarized)'); },
+    onStatus: ({ state: st, pct }) => {
+      if ((st === 'downloading' || st === 'loading') && typeof pct === 'number' && pct - lastPct.stt >= 25) {
+        lastPct.stt = pct; toast(`Preparing local transcription — downloading model ${pct}%`);
+      } else if (st === 'diarize' && typeof pct === 'number' && pct - lastPct.diarize >= 25) {
+        lastPct.diarize = pct; toast(`Preparing speaker detection — downloading model ${pct}% (labels start once ready)`);
+      }
+    },
+    onInterim: (t) => transShowInterim(t),
+    onFinal: (t, info) => transAppendFinal(t, info?.speaker?.label || null),
+    onEnd: () => { transClearInterim(); setTranscribing(false); trans = null; },
+    onError: ({ code, message, fatal }) => {
+      if (code === 'not-allowed' || code === 'service-not-allowed') toast('Microphone blocked — allow mic access for this page');
+      else if (code === 'gateway-unreachable') toast('Gateway stopped answering — click transcribe to retry');
+      else if (fatal) toast('Transcription error: ' + (message || code));
+      if (fatal) { setTranscribing(false); trans = null; }
+    },
+  });
+  trans.start();
 }
 // ── Undo / redo history ──────────────────────────────────────────────────────────
 // The editor rewrites `textarea.value` programmatically all over (streaming @insert,
@@ -4284,6 +4392,7 @@ function init() {
   for (const b of $('n-mode').children) b.onclick = () => setMode(b.dataset.mode);
   for (const b of $('n-fmt').children) b.onclick = () => applyFmt(b.dataset.fmt);
   $('n-dictate').onclick = toggleDictate;
+  $('n-transcribe').onclick = toggleTranscribe;
   // Paragraph-alignment menu (reading view).
   $('n-align').onclick = (e) => { e.stopPropagation(); $('n-align-menu').classList.toggle('hidden'); };
   for (const b of $('n-align-menu').querySelectorAll('button[data-align]')) {

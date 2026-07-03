@@ -222,6 +222,7 @@ function createGatewayDictation({
           if (ev.type === 'interim') onInterim?.(ev.text);
           else if (ev.type === 'final') onFinal?.(ev.text, ev.speaker ? { speaker: ev.speaker } : undefined);
           else if (ev.type === 'progress' || ev.type === 'state') onStatus?.({ state: ev.state, pct: ev.pct });
+          else if (ev.type === 'diarize-progress') onStatus?.({ state: 'diarize', pct: ev.pct }); // one-time speaker-model download
           else if (ev.type === 'language') onStatus?.({ state: 'language', lang: ev.lang }); // auto-detected spoken language
           else if (ev.type === 'error') { onError?.({ code: ev.code, message: ev.message, fatal: !!ev.fatal }); if (ev.fatal) { endSessionReq(); return finish(); } }
           else if (ev.type === 'end') return finish();
