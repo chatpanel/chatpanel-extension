@@ -6,7 +6,7 @@
 import {
   getMeetingIndex, getMeeting, getMeetingNotes, saveMeetingNotes,
   getMeetingNoteVersions, setActiveMeetingNote, deleteMeetingNoteVersion,
-  deleteMeeting, meetingToMarkdown, meetingToText, persistMeeting, PLATFORMS, getMeetingTopics, saveMeetingTopics,
+  deleteMeeting, clearAllMeetings, meetingToMarkdown, meetingToText, persistMeeting, PLATFORMS, getMeetingTopics, saveMeetingTopics,
 } from './js/store-meetings.js';
 import { getSettings, getTarget } from './js/store.js';
 import { getLicense, can, subscribe } from './js/license.js';
@@ -158,6 +158,7 @@ function renderList() {
   const q = $('m-search').value;
   const results = searchResults(q);
   $('m-count').textContent = index.length ? `· ${index.length}` : '';
+  $('m-clear-all')?.classList.toggle('hidden', !index.length); // only offer clear-all when there's something to clear
   const host = $('m-items');
   if (!results.length) {
     host.innerHTML = `<div class="list-empty">${index.length ? 'No matches.' : 'No meetings yet. Join a Zoom / Meet / Teams / Webex call with captions on and ChatPanel records the transcript.'}</div>`;
@@ -209,7 +210,8 @@ async function switchVersionPage(vid) {
 async function deleteVersionPage(vid) {
   if (!current) return;
   const v = (current.versions || []).find((x) => x.id === vid);
-  if (!confirm(`Delete the ${versionLabel(v)} summary version? Other versions and the transcript are untouched.`)) return;
+  const { confirmDelete } = await import('./js/confirm-modal.js');
+  if (!(await confirmDelete({ title: 'Delete summary version?', body: `The ${versionLabel(v)} summary version will be deleted. Other versions and the transcript are untouched.`, confirmLabel: 'Delete' }))) return;
   await deleteMeetingNoteVersion(current.entry.id, vid).catch(() => {});
   await reloadCurrentNotes();
   renderDetail();
@@ -680,7 +682,8 @@ function exportMeeting() {
 }
 async function removeMeeting() {
   if (!current) return;
-  if (!confirm(`Delete “${current.rec.title || 'this meeting'}” and its transcript? This can't be undone.`)) return;
+  const { confirmDelete } = await import('./js/confirm-modal.js');
+  if (!(await confirmDelete({ title: 'Delete meeting?', body: `“${current.rec.title || 'this meeting'}” and its transcript will be permanently deleted. This can't be undone.`, confirmLabel: 'Delete' }))) return;
   const id = current.entry.id;
   await deleteMeeting(id);
   store.delete(id);
@@ -943,6 +946,21 @@ async function boot() {
   $('m-import').onclick = () => $('m-import-file').click();
   $('m-import-file').onchange = (e) => { const fs = e.target.files; if (fs && fs.length) importFiles(fs); e.target.value = ''; };
   $('m-settings').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#meetings') });
+  $('m-clear-all').onclick = async () => {
+    if (!index.length) return;
+    const { confirmDelete } = await import('./js/confirm-modal.js');
+    if (!(await confirmDelete({ title: 'Clear all meetings?', body: 'All meetings and their transcripts will be permanently deleted. This can\'t be undone.', confirmLabel: 'Clear all' }))) return;
+    await clearAllMeetings();
+    store.clear();
+    index = await getMeetingIndex();
+    rebuildIndexes();
+    current = null;
+    history.replaceState(null, '', '#');
+    $('m-content').classList.add('hidden');
+    $('m-empty').classList.remove('hidden');
+    renderList();
+    toast('All meetings cleared');
+  };
 
   const initialView = initialHistoryView(location.hash, 'meeting');
   if (initialView.view === 'meeting' && store.has(initialView.id)) {

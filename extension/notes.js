@@ -300,6 +300,72 @@ async function notesGraphModel() {
   }
   return { model, links, degree, g };
 }
+// Draw model for the GRAPH views: note nodes + TOPIC HUB nodes. A topic shared by ≥2 notes
+// becomes its own node that those notes connect to — so the graph shows what notes are ABOUT
+// (topic clusters), not just explicit [[wikilinks]]. Notes still link directly via wikilinks;
+// topics add the connective tissue the plain note→note graph was missing. Built from the
+// lightweight index (topics/tags/links), no body decrypts. Topic node ids are `topic:<lc>`.
+function graphWithTopics() {
+  const nodes = list.map((n) => ({ id: n.id, label: n.title || 'Untitled note', type: 'note' }));
+  const links = [];
+  const seen = new Set();
+  const addEdge = (s, t) => {
+    if (!s || !t || s === t) return;
+    const key = s < t ? `${s}|${t}` : `${t}|${s}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    links.push({ s, t });
+  };
+  // Explicit [[wikilinks]] — deliberate note↔note connections.
+  const byTitle = new Map(list.map((n) => [(n.title || '').toLowerCase(), n.id]));
+  for (const n of list) {
+    for (const name of n.links || []) {
+      const tgt = byTitle.get((name || '').toLowerCase());
+      if (tgt) addEdge(n.id, tgt);
+    }
+  }
+  // Topic hubs — group notes by shared auto-extracted topic; keep only topics touching ≥2 notes.
+  const topicNotes = new Map(); // lc topic -> { label, ids[] }
+  for (const n of list) {
+    for (const raw of n.topics || []) {
+      const label = String(raw).trim();
+      if (!label) continue;
+      const key = label.toLowerCase();
+      const e = topicNotes.get(key) || { label, ids: [] };
+      e.ids.push(n.id);
+      topicNotes.set(key, e);
+    }
+  }
+  for (const [key, { label, ids }] of topicNotes) {
+    if (ids.length < 2) continue; // a topic on a single note connects nothing — skip the clutter
+    const tid = `topic:${key}`;
+    nodes.push({ id: tid, label, type: 'topic' });
+    for (const nid of ids) addEdge(nid, tid);
+  }
+  return { nodes, links };
+}
+// The ego neighbourhood of `noteId` within a { nodes, links } graph: BFS out `hops` levels,
+// keeping links whose endpoints are both in-set. Focus node flagged. Topic hubs count as a
+// hop, so hops=2 surfaces sibling notes reached THROUGH a shared topic.
+function egoSubgraph(full, noteId, hops = 2) {
+  const byId = new Map(full.nodes.map((n) => [n.id, n]));
+  const adj = new Map();
+  for (const l of full.links) {
+    if (!adj.has(l.s)) adj.set(l.s, new Set());
+    if (!adj.has(l.t)) adj.set(l.t, new Set());
+    adj.get(l.s).add(l.t); adj.get(l.t).add(l.s);
+  }
+  const inSet = new Set([noteId]);
+  let frontier = new Set([noteId]);
+  for (let h = 0; h < hops; h++) {
+    const next = new Set();
+    for (const id of frontier) for (const nb of adj.get(id) || []) if (!inSet.has(nb)) { inSet.add(nb); next.add(nb); }
+    frontier = next;
+  }
+  const nodes = [...inSet].map((id) => { const m = byId.get(id); return { id, label: m?.label || 'Untitled note', type: m?.type || 'note', focus: id === noteId }; });
+  const links = full.links.filter((l) => inSet.has(l.s) && inSet.has(l.t));
+  return { nodes, links };
+}
 async function renderDash() {
   if (nDashTab === 'stats') { renderNoteStats(); return; }
   if (!list.length) {
@@ -312,8 +378,9 @@ async function renderDash() {
   if (nDashTab === 'graph') {
     try {
       if (!_graphMod) _graphMod = await import('./js/graph-view.js');
-      const nodes = list.map((n) => ({ id: n.id, label: n.title || 'Untitled note', type: 'note' }));
-      _graphMod.drawGraph($('n-dash-graph'), nodes, built.links, (nd) => openNote(nd.id), (nd) => openNote(nd.id));
+      const { nodes, links } = graphWithTopics();
+      const open = (nd) => (nd.type === 'topic' ? openOmni(nd.label) : openNote(nd.id));
+      _graphMod.drawGraph($('n-dash-graph'), nodes, links, open, open);
     } catch { $('n-dash-graph').innerHTML = '<div class="dash-empty">Graph unavailable.</div>'; }
   } else {
     // Related tab: the most-connected notes (hubs) with their strongest links.
@@ -1565,7 +1632,8 @@ async function newNote() {
 }
 async function removeCurrent() {
   if (!current) return;
-  if (!confirm(`Delete "${current.title || 'this note'}"? This can't be undone.`)) return;
+  const { confirmDelete } = await import('./js/confirm-modal.js');
+  if (!(await confirmDelete({ title: 'Delete note?', body: `“${current.title || 'this note'}” will be permanently deleted. This can't be undone.`, confirmLabel: 'Delete' }))) return;
   const id = current.id;
   await deleteNote(id);
   list = list.filter((e) => e.id !== id);
@@ -3526,38 +3594,17 @@ async function renderNoteGraph() {
   if (!list.length) { host.innerHTML = '<div class="research-empty">No notes yet.</div>'; return; }
   const noteId = current.id;
   host.innerHTML = '<div class="research-empty">Mapping connections…</div>';
-  let built;
-  try { built = await notesGraphModel(); } catch { host.innerHTML = '<div class="research-empty">Graph unavailable.</div>'; return; }
+  // Yield so the "mapping…" paint lands; graphWithTopics is a cheap index-only pass.
+  await Promise.resolve();
   if (!current || current.id !== noteId || activeSide !== 'graph') return; // superseded while building
-  const ego = noteEgoGraph(built, noteId);
+  const ego = egoSubgraph(graphWithTopics(), noteId);
   if (ego.nodes.length <= 1) { host.innerHTML = '<div class="research-empty">Not connected yet — add [[links]], tags or shared topics to relate this note.</div>'; return; }
   try {
     if (!_graphMod) _graphMod = await import('./js/graph-view.js');
     host.innerHTML = '';
-    const open = (nd) => { if (nd.id !== noteId) openNote(nd.id); };
+    const open = (nd) => { if (nd.type === 'topic') return openOmni(nd.label); if (nd.id !== noteId) openNote(nd.id); };
     _graphMod.drawGraph(host, ego.nodes, ego.links, open, open);
   } catch { host.innerHTML = '<div class="research-empty">Graph unavailable.</div>'; }
-}
-// Ego graph around noteId: BFS out `hops` levels over the relationship links, keeping only
-// the links whose endpoints are both in the neighbourhood. Focus node is flagged.
-function noteEgoGraph(built, noteId, hops = 1) {
-  const byId = new Map(list.map((n) => [n.id, n]));
-  const adj = new Map();
-  for (const l of built.links) {
-    if (!adj.has(l.s)) adj.set(l.s, new Set());
-    if (!adj.has(l.t)) adj.set(l.t, new Set());
-    adj.get(l.s).add(l.t); adj.get(l.t).add(l.s);
-  }
-  const inSet = new Set([noteId]);
-  let frontier = new Set([noteId]);
-  for (let h = 0; h < hops; h++) {
-    const next = new Set();
-    for (const id of frontier) for (const nb of adj.get(id) || []) if (!inSet.has(nb)) { inSet.add(nb); next.add(nb); }
-    frontier = next;
-  }
-  const nodes = [...inSet].map((id) => ({ id, label: byId.get(id)?.title || 'Untitled note', type: 'note', focus: id === noteId }));
-  const links = built.links.filter((l) => inSet.has(l.s) && inSet.has(l.t));
-  return { nodes, links };
 }
 function insertResearch(c) {
   const link = c.kind === 'note' ? `[[${c.title}]]` : `[${escapeMdText(c.title)}](${c.url})`;

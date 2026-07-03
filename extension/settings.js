@@ -2925,7 +2925,8 @@ function addSkill() {
 }
 
 async function resetSkills() {
-  if (!confirm('Reset all skills to ChatPanel defaults? This removes custom skills and discards edits to built-in skills.')) return;
+  const { confirmDelete } = await import('./js/confirm-modal.js');
+  if (!(await confirmDelete({ title: 'Reset skills?', body: 'Reset all skills to ChatPanel defaults? This removes custom skills and discards edits to built-in skills.', confirmLabel: 'Reset' }))) return;
   settings = await resetSkillsToDefaults();
   renderSkills();
   toast('Skills reset to defaults');
@@ -3564,7 +3565,8 @@ function wireUsage() {
   if ($('usage-groupby')) $('usage-groupby').onchange = rerender;
   if ($('usage-window')) $('usage-window').onchange = rerender;
   if ($('usage-clear')) $('usage-clear').onclick = async () => {
-    if (!confirm('Clear all token-usage history?')) return;
+    const { confirmDelete } = await import('./js/confirm-modal.js');
+    if (!(await confirmDelete({ title: 'Clear usage history?', body: 'Clear all token-usage history? This can\'t be undone.', confirmLabel: 'Clear' }))) return;
     const { clearUsage } = await import('./js/usage-meter.js');
     await clearUsage();
     renderUsage();

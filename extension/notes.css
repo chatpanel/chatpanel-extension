@@ -154,6 +154,9 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .side.collapsed { width: 0; border-left-width: 0; }
 .side-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--border); flex: none; }
 .side-tab { position: relative; font: inherit; font-size: 15px; line-height: 1; cursor: pointer; border: 1px solid transparent; background: transparent; color: var(--muted); border-radius: 8px; padding: 6px 8px; }
+/* Knowledge/connection views (related · topics · graph) sit to the RIGHT of the authoring
+   tools — this auto margin pushes them (and the tabs after) to the far edge of the row. */
+.side-tab.views-start { margin-left: auto; }
 .side-tab:hover { background: var(--field); color: var(--text); }
 .side-tab.active { color: var(--accent); background: var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 .side-badge { position: absolute; top: -3px; right: -3px; min-width: 15px; height: 15px; padding: 0 4px; font-size: 9.5px; font-weight: 700; line-height: 15px; color: #fff; background: var(--accent); border-radius: 999px; text-align: center; }
@@ -655,6 +658,8 @@ svg .gedge { stroke: var(--border-strong); stroke-width: 1; opacity: .55; transi
 svg .gnode { cursor: grab; }
 svg .gnode circle { stroke: var(--bg); stroke-width: 1.5; transition: filter .12s ease; fill: var(--accent); }
 svg .gnode.note circle { fill: var(--decision, #34d399); }
+svg .gnode.topic circle { fill: var(--topic, #a78bfa); } /* topic hubs — distinct from note nodes */
+svg .gnode.topic text { font-style: italic; opacity: .74; }
 svg .gnode.chat circle { fill: var(--question, #fbbf24); }
 svg .gnode.meeting circle { fill: var(--accent); }
 svg .gnode.focus circle { fill: var(--accent); stroke: var(--accent); stroke-width: 3; }

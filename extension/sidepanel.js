@@ -1,5 +1,6 @@
 // ChatPanel side panel controller.
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
+import { confirmDelete } from './js/confirm-modal.js';
 import {
   getSettings,
   defaultSettings,
@@ -179,40 +180,8 @@ function confirmPageAction(detail) {
   });
 }
 
-// Generic confirm for DESTRUCTIVE actions (delete a meeting / chat). Resolves true
-// only on an explicit click. Escape or clicking the backdrop cancels; Enter does NOT
-// confirm (so a stray keypress can't delete) — Cancel is focused by default.
-function confirmDelete({ title = 'Delete?', body = '', confirmLabel = 'Delete' } = {}) {
-  return new Promise((resolve) => {
-    const ov = document.createElement('div');
-    ov.className = 'cp-confirm-ov';
-    ov.setAttribute('role', 'alertdialog');
-    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.38);padding:12px';
-    const card = document.createElement('div');
-    card.style.cssText = 'width:100%;max-width:420px;background:var(--panel,#1b1d22);color:var(--fg,#e8e8ea);border:1px solid var(--border,#33363d);border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.4);padding:14px 16px;font:13px/1.45 system-ui,-apple-system,sans-serif';
-    const t = document.createElement('div'); t.textContent = title; t.style.cssText = 'font-weight:600;margin-bottom:6px';
-    const b = document.createElement('div'); b.textContent = body; b.style.cssText = 'opacity:.92;margin-bottom:12px;word-break:break-word';
-    const rowEl = document.createElement('div'); rowEl.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
-    let settled = false;
-    const done = (v) => { if (settled) return; settled = true; document.removeEventListener('keydown', onKey, true); ov.remove(); resolve(v); };
-    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(false); } };
-    const mk = (label, val, danger) => {
-      const btn = document.createElement('button');
-      btn.textContent = label;
-      btn.style.cssText = `cursor:pointer;border-radius:8px;padding:7px 12px;font:inherit;font-weight:600;${danger ? 'background:#dc2626;color:#fff;border:1px solid transparent' : 'background:transparent;color:inherit;border:1px solid var(--border,#33363d)'}`;
-      btn.onclick = () => done(val);
-      return btn;
-    };
-    const cancel = mk('Cancel', false, false);
-    rowEl.append(cancel, mk(confirmLabel, true, true));
-    card.append(t, b, rowEl);
-    ov.append(card);
-    ov.addEventListener('mousedown', (e) => { if (e.target === ov) done(false); });
-    document.addEventListener('keydown', onKey, true);
-    document.body.appendChild(ov);
-    cancel.focus(); // safe default
-  });
-}
+// confirmDelete (branded destructive-action modal) is imported from ./js/confirm-modal.js
+// at the top of this file — one shared implementation across every ChatPanel surface.
 
 async function pageToolProvider(resolvedAgent) {
   if (!state.settings.ui?.pageActions) return null; // feature off — stay silent
@@ -5549,22 +5518,9 @@ function wireEvents() {
   $('meeting-download').onclick = () => downloadMeetingActive();
   $('meeting-ask').onclick = () => askAboutMeeting();
   $('scribe-indicator').onclick = () => openMeetings();
-  // Two-click confirm (confirm() is unreliable in side panels).
-  let clearArmed = false;
   $('history-clear').onclick = async (e) => {
     e.stopPropagation();
-    const btn = $('history-clear');
-    if (!clearArmed) {
-      clearArmed = true;
-      btn.textContent = 'Click again to confirm';
-      setTimeout(() => {
-        clearArmed = false;
-        btn.textContent = 'Clear all history';
-      }, 3000);
-      return;
-    }
-    clearArmed = false;
-    btn.textContent = 'Clear all history';
+    if (!(await confirmDelete({ title: 'Clear all history?', body: 'All saved chats will be permanently deleted. This can\'t be undone.', confirmLabel: 'Clear all' }))) return;
     for (const s of state.streams.values()) s.controller.abort();
     state.streams.clear();
     state.convCache.clear();

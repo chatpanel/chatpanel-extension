@@ -446,7 +446,8 @@ function exportChat() {
 }
 async function removeChat() {
   if (!current) return;
-  if (!confirm(`Delete “${current.conv.title || 'this chat'}”? This can't be undone.`)) return;
+  const { confirmDelete } = await import('./js/confirm-modal.js');
+  if (!(await confirmDelete({ title: 'Delete chat?', body: `“${current.conv.title || 'this chat'}” will be permanently deleted. This can't be undone.`, confirmLabel: 'Delete' }))) return;
   const id = current.entry.id;
   await deleteConversation(id);
   store.delete(id);
