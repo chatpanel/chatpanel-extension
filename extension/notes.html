@@ -149,7 +149,10 @@
               <div id="n-side-resizer" class="resizer side-resizer" title="Drag to resize the panel"></div>
               <div class="side-tabs" role="tablist">
                 <button class="side-tab active" data-side="activity" role="tab" title="Team activity" aria-label="Team activity" data-icon="tools"><span class="side-badge hidden" id="n-side-badge-activity"></span></button>
-                <button class="side-tab" data-side="research" role="tab" title="Research" aria-label="Research" data-icon="research"><span class="side-badge hidden" id="n-side-badge-research"></span></button>
+                <button class="side-tab" data-side="research" role="tab" title="Research — search your workspace &amp; the web" aria-label="Research" data-icon="research"><span class="side-badge hidden" id="n-side-badge-research"></span></button>
+                <button class="side-tab" data-side="related" role="tab" title="Related notes, chats &amp; meetings" aria-label="Related" data-icon="link"><span class="side-badge hidden" id="n-side-badge-related"></span></button>
+                <button class="side-tab" data-side="topics" role="tab" title="Topics in this note" aria-label="Topics" data-icon="hash"></button>
+                <button class="side-tab" data-side="graph" role="tab" title="How this note connects to others" aria-label="Graph" data-icon="graph"></button>
                 <button class="side-tab" data-side="cowriter" role="tab" title="Co-writer" aria-label="Co-writer" data-icon="cowriter"><span class="side-badge hidden" id="n-side-badge-cowriter"></span></button>
                 <button class="side-tab" data-side="history" role="tab" title="History" aria-label="History" data-icon="history-clock"></button>
                 <button id="n-side-collapse" class="side-collapse" title="Collapse panel (⌘/)" aria-label="Collapse panel" data-icon="collapse-panel"></button>
@@ -161,15 +164,22 @@
                     <span id="n-research-count" class="research-count"></span>
                     <span id="n-research-status" class="research-status"></span>
                     <div class="research-tools">
-                      <button id="n-research-web" class="research-web" title="Search the web for this section" data-icon="web">Web</button>
+                      <button id="n-research-web" class="research-web" title="Search your workspace and the web for this section" data-icon="search">Search</button>
                     </div>
                   </div>
+                  <!-- Source-type filter: toggle which kinds are surfaced here (and in Related).
+                       Persisted; drives both the Research shelf and the Related tab. -->
+                  <div id="n-research-filter" class="src-filter" aria-label="Source types"></div>
                   <div id="n-research-cards" class="research-cards"></div>
-                  <div id="n-related" class="related-notes">
-                    <div class="related-head">Related notes, chats &amp; meetings</div>
-                    <div id="n-related-list" class="related-list"></div>
-                  </div>
                 </div>
+                <!-- Related / Topics / Graph — peers of Research, each scoped to the OPEN note.
+                     The corpus-wide equivalents live in the Graph dashboard (#n-dash). -->
+                <div id="n-related" class="related-notes side-pane" role="tabpanel" aria-label="Related">
+                  <div class="related-head">Related notes, chats &amp; meetings</div>
+                  <div id="n-related-list" class="related-list"></div>
+                </div>
+                <div id="n-topics-pane" class="topics-pane side-pane rv-pad" role="tabpanel" aria-label="Topics"></div>
+                <div id="n-graph-pane" class="graph-pane side-pane graph-host" role="tabpanel" aria-label="Note graph"></div>
                 <div id="n-activity" class="activity side-pane tab-active" role="tabpanel" aria-label="Team activity">
                   <div class="activity-head">
                     <span class="activity-name" data-icon="tools">Team activity</span>

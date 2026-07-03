@@ -177,16 +177,9 @@ const K_SETTINGS_TAB = 'chatpanel:settingsTab';
 // editor reads, so it picks changes up on next load). The @insert tool overrides
 // live in settings.ui.notes so buildTurnTools can honor them per surface.
 // --------------------------------------------------------------------------
-const NOTES_MODE_KEY = 'chatpanel.notes.mode';
 const NOTES_COWRITER_KEY = 'chatpanel.notes.cowriter';
 
 function setupNotesPrefs() {
-  const mode = $('notes-default-mode');
-  if (mode) {
-    const cur = localStorage.getItem(NOTES_MODE_KEY);
-    mode.value = ['write', 'split', 'read'].includes(cur) ? cur : 'write';
-    mode.onchange = () => localStorage.setItem(NOTES_MODE_KEY, mode.value);
-  }
   const cw = $('notes-cowriter-enabled');
   if (cw) {
     cw.checked = localStorage.getItem(NOTES_COWRITER_KEY) === '1';

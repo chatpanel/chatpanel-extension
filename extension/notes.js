@@ -159,7 +159,7 @@ function openOmni(query = '') {
 // Extensible shell — more tabs (Topics, Recent, Action items, Calendar) plug in
 // here later. Everything heavy (graph-view, BM25 graph model) is lazy-imported.
 let nDashOn = false;
-let nDashTab = 'stats';
+let nDashTab = 'graph';
 let _graphMod = null;
 const DASH_TABS = ['stats', 'graph', 'related'];
 async function openDash() {
@@ -326,8 +326,8 @@ function renderNoteStats() {
 
 // ── Related notes/chats/meetings for the OPEN note (Research side pane) ───────
 let _relatedFor = null;
-async function refreshRelated(noteId) {
-  if (!noteId || _relatedFor === noteId) return; // already showing this note's related
+async function refreshRelated(noteId, { force = false } = {}) {
+  if (!noteId || (!force && _relatedFor === noteId)) return; // already showing this note's related
   _relatedFor = noteId;
   const host = $('n-related-list');
   if (!host) return;
@@ -335,10 +335,11 @@ async function refreshRelated(noteId) {
     if (!_ragMod) _ragMod = await import('./js/history-rag.js');
     const sources = await _ragMod.loadHistorySources({ includeChats: true, includeMeetings: true, includeNotes: true });
     if (_relatedFor !== noteId) return; // a newer note superseded this
-    const related = _ragMod.relatedHistorySources(sources, `note:${noteId}`, { limit: 6 });
-    $('n-related').classList.toggle('hidden', !related.length);
+    const related = _ragMod.relatedHistorySources(sources, `note:${noteId}`, { limit: 8 }).filter((r) => srcAllowed(r.type));
+    setSideBadge('related', related.length);
     host.innerHTML = '';
-    for (const r of related) {
+    if (!related.length) { host.innerHTML = '<div class="research-empty">Nothing related yet — add [[links]], tags or keep writing.</div>'; return; }
+    for (const r of related.slice(0, 6)) {
       const kind = r.type === 'meeting' ? 'meetings' : r.type === 'chat' ? 'chat' : 'notes';
       const card = document.createElement('div');
       card.className = 'related-card';
@@ -526,8 +527,8 @@ function mirrorToCm(md = $('n-body').value) {
 // ── Assistant sidebar — Team activity / Research / Co-writer / History as tabs ───────
 // The panels used to stack at the bottom and eat the document's vertical space; now they
 // live in a collapsible right sidebar, one visible tab at a time, with count badges.
-const SIDE_TABS = ['activity', 'research', 'cowriter', 'history'];
-const SIDE_PANE = { activity: 'n-activity', research: 'n-research', cowriter: 'n-cowriter', history: 'n-history' };
+const SIDE_TABS = ['activity', 'research', 'related', 'topics', 'graph', 'cowriter', 'history'];
+const SIDE_PANE = { activity: 'n-activity', research: 'n-research', related: 'n-related', topics: 'n-topics-pane', graph: 'n-graph-pane', cowriter: 'n-cowriter', history: 'n-history' };
 let activeSide = 'activity';
 let sideCollapsed = false;
 let railCollapsed = false;
@@ -539,9 +540,16 @@ function setSideTab(t, { open = true } = {}) {
   if (open) setSideCollapsed(false);
   for (const k of SIDE_TABS) { const el = $(SIDE_PANE[k]); if (el) el.classList.toggle('tab-active', k === t); }
   document.querySelectorAll('#n-side .side-tab').forEach((b) => b.classList.toggle('active', b.dataset.side === t));
-  if (t === 'history') renderHistory();          // some panes skip work unless they're the active tab
+  renderSide(t);
+}
+// Repaint a side pane's contents (panes skip work unless they're the active tab).
+function renderSide(t = activeSide) {
+  if (t === 'history') renderHistory();
   else if (t === 'activity') renderActivity();
   else if (t === 'research') renderResearch();
+  else if (t === 'related') refreshRelated(current?.id, { force: true });
+  else if (t === 'topics') renderNoteTopicsPane();
+  else if (t === 'graph') renderNoteGraph();
   else if (t === 'cowriter') renderCowriter();   // repaint (also clears the .hidden park) so chips are live
   else refreshSideTabs();
 }
@@ -564,6 +572,7 @@ function applyRailCollapsed(c) {
   $('n-layout')?.classList.toggle('rail-collapsed', railCollapsed);
   const b = $('n-collapse');
   if (b) {
+    b.classList.toggle('on', !railCollapsed); // lit when the list is open — mirror the panel toggle
     b.innerHTML = icon(railCollapsed ? 'expand-list' : 'collapse-list');
     b.title = railCollapsed ? 'Show list' : 'Hide list (⌘\\)';
   }
@@ -787,6 +796,7 @@ async function openNote(id, preloaded = null) {
   renderActivity(); // re-attach this note's persisted command-activity trace (or hide it)
   renderList($('n-search').value);
   refreshRelated(current.id); // related notes/chats/meetings for the Research pane (best-effort, cached)
+  renderSide(); // repaint the active side pane (research/related/topics/graph) for the new note
 }
 
 function setStatus(text, saved = false) {
@@ -3067,7 +3077,9 @@ function renderResearch() {
   const shelf = $('n-research');
   const wrap = $('n-research-cards');
   if (!shelf || !wrap) return;
-  $('n-research-count').textContent = researchCards.length ? String(researchCards.length) : '';
+  renderSrcFilter();
+  const cards = researchCards.filter((c) => srcAllowed(c.kind)); // honor the source-type filter
+  $('n-research-count').textContent = cards.length ? String(cards.length) : '';
   wrap.innerHTML = '';
   if (researchQuestion) { // Researcher → Writer handoff — inline OR a spun-off note, your call
     const h = document.createElement('button');
@@ -3083,15 +3095,17 @@ function renderResearch() {
     n.onclick = () => planInNewNote(researchQuestion);
     wrap.appendChild(n);
   }
-  if (!researchCards.length) {
+  if (!cards.length) {
     const empty = document.createElement('div');
     empty.className = 'research-empty';
-    empty.textContent = researchBusy ? 'Working…' : (researchQuestion ? 'No sources found — the Writer can still answer.' : 'Nothing related yet — keep writing, or search the web.');
+    empty.textContent = researchBusy ? 'Working…'
+      : (researchCards.length ? 'No sources match your filter above.'
+      : (researchQuestion ? 'No sources found — the Writer can still answer.' : 'Nothing related yet — keep writing, or search.'));
     wrap.appendChild(empty);
     refreshSideTabs();
     return;
   }
-  for (const c of researchCards) {
+  for (const c of cards) {
     const card = document.createElement('div');
     card.className = 'rcard';
     card.innerHTML =
@@ -3108,6 +3122,124 @@ function renderResearch() {
     wrap.appendChild(card);
   }
   refreshSideTabs();
+}
+
+// ── Source-type filter — shared by Research + Related ────────────────────────────
+// Toggle which kinds (notes / chats / meetings / web) are surfaced. Persisted; applied at
+// render time so toggling is instant and never loses fetched cards. Web applies to Research
+// only (Related has no web lane).
+const SRC_KINDS = [
+  { key: 'note', label: 'Notes', icon: 'notes' },
+  { key: 'chat', label: 'Chats', icon: 'chat' },
+  { key: 'meeting', label: 'Meetings', icon: 'meetings' },
+  { key: 'web', label: 'Web', icon: 'web' },
+];
+const SRC_KEYS = new Set(SRC_KINDS.map((s) => s.key));
+let srcFilter = loadSrcFilter();
+function loadSrcFilter() {
+  try { const raw = JSON.parse(localStorage.getItem('chatpanel.notes.srcFilter') || 'null'); if (Array.isArray(raw) && raw.length) return new Set(raw.filter((k) => SRC_KEYS.has(k))); } catch { /* default below */ }
+  return new Set(SRC_KEYS);
+}
+function saveSrcFilter() { localStorage.setItem('chatpanel.notes.srcFilter', JSON.stringify([...srcFilter])); }
+const srcAllowed = (kind) => !SRC_KEYS.has(kind) || srcFilter.has(kind); // unknown kinds always pass
+function renderSrcFilter() {
+  const host = $('n-research-filter');
+  if (!host) return;
+  host.innerHTML = '';
+  for (const s of SRC_KINDS) {
+    const on = srcFilter.has(s.key);
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'src-chip' + (on ? ' on' : '');
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.title = on ? `Hide ${s.label}` : `Show ${s.label}`;
+    b.innerHTML = icon(s.icon) + escapeHtml(s.label);
+    b.onclick = () => {
+      if (srcFilter.has(s.key)) { if (srcFilter.size > 1) srcFilter.delete(s.key); } // keep at least one source on
+      else srcFilter.add(s.key);
+      saveSrcFilter();
+      renderSrcFilter();
+      renderResearch();
+      if (activeSide === 'related') refreshRelated(current?.id, { force: true });
+    };
+    host.appendChild(b);
+  }
+}
+
+// This note's topics as a chip cloud, each annotated with how many notes share it (corpus
+// signal from the lightweight index — no body decrypts). Reuses deterministicTopicPreview.
+function renderNoteTopicsPane() {
+  const host = $('n-topics-pane');
+  if (!host) return;
+  host.innerHTML = '';
+  if (!current) { host.innerHTML = '<div class="research-empty">Open a note to see its topics.</div>'; return; }
+  let items = current.topics?.items || [];
+  let pending = false;
+  if (!items.length) { items = deterministicTopicPreview(current.body || ''); pending = true; }
+  if (!items.length) { host.innerHTML = '<div class="research-empty">Topics appear as you write.</div>'; return; }
+  const freq = new Map(); // corpus frequency of each topic
+  for (const e of list) for (const t of e.topics || []) freq.set(t, (freq.get(t) || 0) + 1);
+  const head = document.createElement('div');
+  head.className = 'rv-head';
+  head.textContent = pending ? 'Topics (drafting…)' : 'This note’s topics';
+  host.appendChild(head);
+  const cloud = document.createElement('div');
+  cloud.className = 'chip-cloud';
+  for (const topic of items.slice(0, 20)) {
+    const shared = freq.get(topic) || 0;
+    const b = document.createElement('button');
+    b.className = 'topic-chip';
+    b.innerHTML = escapeHtml(topic) + (shared > 1 ? ` <span class="chip-count">${shared}</span>` : '');
+    b.title = shared > 1
+      ? `Shared with ${shared - 1} other note${shared - 1 === 1 ? '' : 's'} — find “${topic}” everywhere`
+      : `Find “${topic}” across notes, chats & meetings`;
+    b.onclick = () => openOmni(topic);
+    cloud.appendChild(b);
+  }
+  host.appendChild(cloud);
+}
+// The open note's connection neighbourhood: an ego graph (focus node + 1-hop neighbours),
+// drawn with the shared graph-view module. Same relationship model as the corpus dashboard,
+// filtered to what touches THIS note.
+async function renderNoteGraph() {
+  const host = $('n-graph-pane');
+  if (!host) return;
+  if (!current) { host.innerHTML = '<div class="research-empty">Open a note to see its graph.</div>'; return; }
+  if (!list.length) { host.innerHTML = '<div class="research-empty">No notes yet.</div>'; return; }
+  const noteId = current.id;
+  host.innerHTML = '<div class="research-empty">Mapping connections…</div>';
+  let built;
+  try { built = await notesGraphModel(); } catch { host.innerHTML = '<div class="research-empty">Graph unavailable.</div>'; return; }
+  if (!current || current.id !== noteId || activeSide !== 'graph') return; // superseded while building
+  const ego = noteEgoGraph(built, noteId);
+  if (ego.nodes.length <= 1) { host.innerHTML = '<div class="research-empty">Not connected yet — add [[links]], tags or shared topics to relate this note.</div>'; return; }
+  try {
+    if (!_graphMod) _graphMod = await import('./js/graph-view.js');
+    host.innerHTML = '';
+    const open = (nd) => { if (nd.id !== noteId) openNote(nd.id); };
+    _graphMod.drawGraph(host, ego.nodes, ego.links, open, open);
+  } catch { host.innerHTML = '<div class="research-empty">Graph unavailable.</div>'; }
+}
+// Ego graph around noteId: BFS out `hops` levels over the relationship links, keeping only
+// the links whose endpoints are both in the neighbourhood. Focus node is flagged.
+function noteEgoGraph(built, noteId, hops = 1) {
+  const byId = new Map(list.map((n) => [n.id, n]));
+  const adj = new Map();
+  for (const l of built.links) {
+    if (!adj.has(l.s)) adj.set(l.s, new Set());
+    if (!adj.has(l.t)) adj.set(l.t, new Set());
+    adj.get(l.s).add(l.t); adj.get(l.t).add(l.s);
+  }
+  const inSet = new Set([noteId]);
+  let frontier = new Set([noteId]);
+  for (let h = 0; h < hops; h++) {
+    const next = new Set();
+    for (const id of frontier) for (const nb of adj.get(id) || []) if (!inSet.has(nb)) { inSet.add(nb); next.add(nb); }
+    frontier = next;
+  }
+  const nodes = [...inSet].map((id) => ({ id, label: byId.get(id)?.title || 'Untitled note', type: 'note', focus: id === noteId }));
+  const links = built.links.filter((l) => inSet.has(l.s) && inSet.has(l.t));
+  return { nodes, links };
 }
 function insertResearch(c) {
   const link = c.kind === 'note' ? `[[${c.title}]]` : `[${escapeMdText(c.title)}](${c.url})`;
@@ -3925,6 +4057,7 @@ function init() {
   $('n-settings').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#notes') });
   // Assistant sidebar — tab switching + collapse.
   document.querySelectorAll('#n-side .side-tab').forEach((b) => { b.onclick = () => setSideTab(b.dataset.side); });
+  renderSrcFilter(); // paint the source-type filter chips (Notes/Chats/Meetings/Web)
   $('n-side-collapse').onclick = () => setSideCollapsed(true);
   $('n-side-toggle').onclick = () => setSideCollapsed(!sideCollapsed);
   $('n-activity-clear').onclick = () => {
@@ -4109,8 +4242,10 @@ function init() {
   setCowriter(cwEnabled);
 
   // Researcher: 🔎 opens the Research tab and runs research on demand (local + web).
-  $('n-research-btn').onclick = () => { setSideTab('research'); runResearch({ web: true }); };
-  $('n-research-web').onclick = () => { setSideTab('research'); runResearch({ web: true }); };
+  // Explicit Search → open Research, make sure Web is included in the filter, then run.
+  const runSearch = () => { setSideTab('research'); if (!srcFilter.has('web')) { srcFilter.add('web'); saveSrcFilter(); renderSrcFilter(); } runResearch({ web: true }); };
+  $('n-research-btn').onclick = runSearch;
+  $('n-research-web').onclick = runSearch;
 
   // History (🕓) — authorship ledger + version snapshots (opens the History tab).
   $('n-history-btn').onclick = () => setSideTab('history');
