@@ -758,6 +758,14 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
               <p class="muted sm" style="margin:4px 0 0">Auto-detect works well on Small+. Pin a language if detection
                 guesses wrong on short phrases.</p>
 
+              <h3 class="priv-h" style="margin-top:14px">Speaker model (diarization)</h3>
+              <p class="muted sm">Tells voices apart for <strong>meeting transcription</strong> — labels each line
+                <em>Speaker&nbsp;1 / Speaker&nbsp;2 / …</em> (not limited to two; scales to a roomful). Runs in-process,
+                audio never leaves your machine. One-time download; needed only for the Notes <strong>Transcribe
+                meeting</strong> button and online meeting transcription.</p>
+              <div id="gw-diarize-models" class="model-list"></div>
+              <p class="status" id="gw-diarize-status">—</p>
+
               <div class="row" style="margin-top:8px">
               <button type="button" id="gw-save" class="btn primary">Save to gateway</button>
               <span class="status" id="gw-save-status"></span>

@@ -44,7 +44,7 @@ import { filterComboboxOptions, normalizeComboboxOptions } from './js/combobox.j
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth } from './js/storage-health.js';
-import { checkGateway, getGatewayConfig, getGatewayLogs, setGatewayConfig, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel } from './js/gateway.js';
+import { checkGateway, getGatewayConfig, getGatewayLogs, setGatewayConfig, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getDiarizeModel, downloadDiarizeModel } from './js/gateway.js';
 import { createVault, redactText } from './js/pii-redact.js';
 import { detectEntities } from './js/pii-detect.js';
 import {
@@ -1316,6 +1316,7 @@ async function refreshGateway() {
     renderNerStatus(gatewayState.ner);
     refreshNerModels();
     refreshSttModels();
+    refreshDiarizeModel();
   } catch (e) {
     status.textContent = `✓ Connected, but config load failed: ${e.message}`;
   }
@@ -1545,6 +1546,62 @@ async function selectSttModel(id) {
     if (data && data.state === 'error') { st.className = 'status err'; st.textContent = 'Model failed to load — try a smaller one.'; return; }
   }
   if (my === _sttPollToken) { st.className = 'status'; st.textContent = 'Still downloading… it will switch when ready.'; }
+}
+
+// ── Speaker (diarization) model — a single model with a Download / In-use button.
+let _diarPollToken = 0;
+function renderDiarizeModel(data) {
+  const host = $('gw-diarize-models');
+  if (!host) return;
+  const esc = (s) => escapeHtml(String(s == null ? '' : s));
+  const dl = data?.progress || null;
+  const m = (data?.available || [])[0];
+  if (!m) { host.innerHTML = '<p class="muted sm">Unavailable.</p>'; return; }
+  const downloading = (dl && dl.model === m.id) || data?.state === 'downloading' || data?.state === 'loading';
+  const ready = data?.state === 'ready' && m.installed;
+  const meta = [m.approxMB ? `~${m.approxMB} MB` : '', m.installed ? 'installed' : ''].filter(Boolean).join(' · ');
+  const label = downloading ? `Downloading… ${dl?.pct || 0}%` : ready ? 'Ready' : (m.installed ? 'Load' : `Download (~${m.approxMB} MB)`);
+  const bar = downloading
+    ? `<div class="dl-bar"><div class="dl-bar-fill" style="width:${Math.max(3, dl?.pct || 0)}%"></div></div>
+       <p class="muted sm" style="margin:2px 0 0">${dl?.file ? esc(dl.file) + ' · ' : ''}${dl?.pct || 0}% — one-time.</p>`
+    : '';
+  host.innerHTML = `<div class="entity">
+      <div class="entity-head">
+        <strong style="flex:1 1 auto">${esc(m.label || m.id)}</strong>
+        <span class="status">${esc(meta)}</span>
+        <button type="button" class="btn ${ready ? '' : 'primary'} gw-diar-use" ${ready || downloading ? 'disabled' : ''}>${label}</button>
+      </div>
+      <p class="muted sm" style="margin:0">${esc(m.note || '')}</p>
+      ${bar}
+    </div>`;
+  const btn = host.querySelector('.gw-diar-use');
+  if (btn) btn.onclick = () => downloadDiarize();
+}
+async function refreshDiarizeModel() {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  if (!url) return null;
+  try { const data = await getDiarizeModel(url); renderDiarizeModel(data); return data; }
+  catch (e) {
+    const st = $('gw-diarize-status');
+    if (st) { st.className = 'status'; st.textContent = /404/.test(e.message) ? 'Update the gateway to enable speaker diarization.' : `Speaker model: ${e.message}`; }
+    return null;
+  }
+}
+async function downloadDiarize() {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const st = $('gw-diarize-status');
+  if (!url) return;
+  const my = ++_diarPollToken;
+  st.className = 'status'; st.textContent = 'Downloading speaker model…';
+  try { await downloadDiarizeModel(url); } catch (e) { st.className = 'status err'; st.textContent = `Download failed: ${e.message}`; return; }
+  for (let i = 0; i < 300 && my === _diarPollToken; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    if (my !== _diarPollToken) return;
+    const data = await refreshDiarizeModel();
+    if (data && data.state === 'ready') { st.className = 'status ok'; st.textContent = '✓ Speaker model ready'; return; }
+    if (data && data.state === 'error') { st.className = 'status err'; st.textContent = 'Model failed to load.'; return; }
+  }
+  if (my === _diarPollToken) { st.className = 'status'; st.textContent = 'Still downloading… it will be ready shortly.'; }
 }
 
 // ── Searchable model registry (Hugging Face) — browse & download models, like the

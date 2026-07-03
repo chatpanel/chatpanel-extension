@@ -74,6 +74,18 @@ export async function setSttModel(baseUrl, id) {
   });
 }
 
+// Speaker (diarization) model — the "who said what" model for meeting
+// transcription. GET → { active, state, progress, available:[{id,label,approxMB,
+// installed}] }; POST force-downloads it (explicit user action).
+export async function getDiarizeModel(baseUrl) {
+  return jfetch(`${normalizeGatewayUrl(baseUrl)}/diarize/model`);
+}
+export async function downloadDiarizeModel(baseUrl) {
+  return jfetch(`${normalizeGatewayUrl(baseUrl)}/diarize/model`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+  });
+}
+
 // Recent request summaries (counts only, no values) for the monitoring view.
 export async function getGatewayLogs(baseUrl) {
   try { return (await jfetch(`${normalizeGatewayUrl(baseUrl)}/logs`))?.entries || []; }
