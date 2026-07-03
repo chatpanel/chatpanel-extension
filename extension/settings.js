@@ -1505,10 +1505,29 @@ function renderSttModels(data) {
   host.querySelectorAll('.gw-stt-use').forEach((b) => { b.onclick = () => selectSttModel(b.dataset.id); });
 }
 
+// Show a speed advisory when the gateway is the WASM (binary) build — it's fp32-
+// only + single-thread (~10× slower). The native npm gateway loads q8 quantized.
+async function renderSttRuntimeHint() {
+  const el = $('gw-stt-runtime-hint');
+  if (!el) return;
+  const url = normalizeGatewayUrl($('gw-url').value);
+  if (!url) { el.classList.add('hidden'); return; }
+  try {
+    const h = await checkGateway(url); // /status; fall back to /health for runtime
+    let runtime = h?.stt?.runtime;
+    if (!runtime) { try { runtime = (await (await fetch(`${url}/health`)).json())?.stt?.runtime; } catch { /* ignore */ } }
+    if (runtime === 'wasm') {
+      el.classList.remove('hidden');
+      el.innerHTML = '⚡ <strong>This gateway is the standalone (WASM) build</strong> — it runs models in fp32, single-threaded (slower, and can\'t use quantized models). For <strong>~10× faster</strong> speech-to-text (quantized q8, even Small/Large in real time), install the <strong>native</strong> gateway: <code>npm i -g @chatpanel/gateway</code> then <code>chatpanel-gateway --install</code>.';
+    } else { el.classList.add('hidden'); }
+  } catch { el.classList.add('hidden'); }
+}
+
 async function refreshSttModels() {
   const url = normalizeGatewayUrl($('gw-url').value);
   const st = $('gw-stt-models-status');
   if (!url) return null;
+  renderSttRuntimeHint();
   try {
     const data = await getSttModels(url);
     renderSttModels(data);
