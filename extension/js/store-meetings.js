@@ -110,6 +110,7 @@ export async function persistMeeting(rec) {
     endedAt: capped.endedAt,
     status: capped.status,
     lines: capped.segments.length,
+    tabId: capped.tabId ?? null, // the capturing tab — lets the SW/panel tie liveness to an OPEN tab (not just heartbeat freshness)
     persistedAt: Date.now(), // last heartbeat — lets the side panel detect zombies
   };
   const i = index.findIndex((e) => e.id === capped.id);

@@ -45,6 +45,7 @@
   let observer = null;
   let flushTimer = null;
   let pollTimer = null;
+  let flushWorker = null; // un-throttled background flush heartbeat (content/flush-worker.js)
 
   let finalizedTranscript = [];        // [{ t, speaker, text }]
   let currentSpokenEntry = null;       // the in-progress utterance
@@ -211,9 +212,11 @@
   // elapsed since the last write (coalescing bursts), so the persisted transcript
   // stays within a few seconds of live and a tab-discard loses almost nothing.
   let lastFlushAt = 0;
+  let lastBufferedAt = 0; // time of the most recent caption/chat fed into the buffer
   function scheduleFlush() {
     if (!capturing) return;
     const now = Date.now();
+    lastBufferedAt = now; // mark the buffer dirty for the worker/SW flush backstops
     if (now - lastFlushAt >= FLUSH_DEBOUNCE_MS) {
       lastFlushAt = now;
       flush('live'); // timer-free → works while backgrounded
@@ -224,6 +227,16 @@
     if (!flushTimer) {
       flushTimer = setTimeout(() => { flushTimer = null; lastFlushAt = Date.now(); flush('live'); }, FLUSH_DEBOUNCE_MS);
     }
+  }
+
+  // Flush ONLY if new content was buffered since the last write. This is what the
+  // un-throttled Web Worker heartbeat (and the SW tick) call, so a BACKGROUNDED tab —
+  // where Chrome throttles main-thread setTimeout to ~1/min — still persists captured
+  // captions promptly. No new content → no write (no churn, no behaviour change).
+  function flushIfDirty() {
+    if (!capturing || lastBufferedAt <= lastFlushAt) return;
+    lastFlushAt = Date.now();
+    flush('live');
   }
 
   // ---- observer ----------------------------------------------------------
@@ -254,17 +267,20 @@
   // observer path). Foreground-reliable; setInterval throttles in a backgrounded
   // tab, but the observer path covers same-frame captions there.
   const CAPTION_POLL_MS = 2000;
+  // One scan of the adapter's poll-based captions (Webex). Reused by the poll timer
+  // AND the SW-driven CP_MEETING_TICK, so a backgrounded tab (where the poll timer is
+  // throttled) still gathers captions when the un-throttled service-worker alarm pings.
+  function scanOnce() {
+    if (!capturing || typeof adapter.scanCaptions !== 'function') return;
+    const caps = safe(() => adapter.scanCaptions());
+    if (Array.isArray(caps)) {
+      for (const c of caps) if (c && c.text) feedDiscrete(c.id, c.speaker, c.text.trim());
+    }
+  }
   function startCaptionPoll() {
     if (typeof adapter.scanCaptions !== 'function') return;
-    const tick = () => {
-      if (!capturing) return;
-      const caps = safe(() => adapter.scanCaptions());
-      if (Array.isArray(caps)) {
-        for (const c of caps) if (c && c.text) feedDiscrete(c.id, c.speaker, c.text.trim());
-      }
-    };
-    pollTimer = setInterval(tick, CAPTION_POLL_MS);
-    tick();
+    pollTimer = setInterval(scanOnce, CAPTION_POLL_MS);
+    scanOnce();
   }
 
   function safe(fn) { try { return fn(); } catch { return null; } }
@@ -441,6 +457,7 @@
     if (adapter.onStart) safe(() => adapter.onStart());
     startObserver();
     startCaptionPoll(); // for cross-iframe captions (Webex); no-op for other platforms
+    startFlushWorker();  // un-throttled background flush (best-effort; safe fallback if blocked)
     flush('live');
     tryEnableCaptions(); // fire-and-forget: turn captions on if the user left them off
     tryOpenParticipants(); // fire-and-forget: reveal the roster so we capture real names
@@ -454,7 +471,20 @@
     if (observer) { observer.disconnect(); observer = null; }
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (flushWorker) { try { flushWorker.terminate(); } catch { /* already gone */ } flushWorker = null; }
     flush('ended', reason);
+  }
+
+  // Spin up the un-throttled flush heartbeat. Best-effort: if the page's CSP blocks a
+  // worker from an extension URL, we quietly fall back to the observer's immediate flush
+  // + the service-worker tick (existing behaviour) — nothing breaks.
+  function startFlushWorker() {
+    if (flushWorker || !chrome.runtime?.id) return;
+    try {
+      flushWorker = new Worker(chrome.runtime.getURL('content/flush-worker.js'));
+      flushWorker.onmessage = () => { scanOnce(); flushIfDirty(); };
+      flushWorker.onerror = () => { try { flushWorker.terminate(); } catch { /* noop */ } flushWorker = null; };
+    } catch { flushWorker = null; /* CSP / unsupported — fall back to existing flush paths */ }
   }
 
   // No new captions for this long → assume the call ended (the user left but the
@@ -492,7 +522,10 @@
         outOfCallTicks = 0;
       }
     }
-    if (Date.now() - lastActivityTs() > IDLE_END_MS) { stop('idle'); return; }
+    // Caption SILENCE is NOT an end signal while we can still see the call is joined
+    // (inCall() above already ends a real leave). A muted/quiet-but-live call must keep
+    // recording, so only fall back to the idle timeout for adapters WITHOUT inCall().
+    if (typeof adapter.inCall !== 'function' && Date.now() - lastActivityTs() > IDLE_END_MS) { stop('idle'); return; }
   }, 3000);
 
   // Heartbeat: persist periodically while capturing (even during silence) so the
@@ -542,6 +575,13 @@
   // extension context may already be gone, so swallow anything stop() throws.
   window.addEventListener('pagehide', () => { try { if (capturing) stop('unload'); } catch { /* detached */ } }, { once: true });
 
+  // When the tab goes to the BACKGROUND, flush immediately so buffered captions land
+  // before Chrome throttles our timers (otherwise the transcript sits until the tab is
+  // foregrounded — the "had to open the tab to flush" complaint).
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && capturing) { try { scanOnce(); flush('live'); } catch { /* detached */ } }
+  });
+
   // ---- messaging ---------------------------------------------------------
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg || typeof msg.type !== 'string' || !msg.type.startsWith('CP_MEETING_')) return;
@@ -573,6 +613,19 @@
       case 'CP_MEETING_STOP':
         stop('user');
         sendResponse({ ok: true });
+        return;
+      case 'CP_MEETING_TICK':
+        // Un-throttled heartbeat from the service-worker alarm: scan poll-based
+        // captions, flush the buffer (refreshes persistedAt so the panel/SW know the
+        // meeting is still alive even while backgrounded/silent), and report whether
+        // we're still in the call. Ending stays with the watchdog / SW tab events.
+        if (capturing) { scanOnce(); flush('live'); }
+        sendResponse({
+          ok: true,
+          capturing,
+          inCall: !!safe(() => (adapter.inCall ? adapter.inCall() : adapter.isLive())),
+          meetingId,
+        });
         return;
       case 'CP_MEETING_ENABLE_CC':
         // Manual nudge from the meeting bar's "Turn on captions" button.

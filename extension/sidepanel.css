@@ -611,6 +611,7 @@ body.rail-collapsed { --rail-w: 0px; }
 .mon-refresh svg { width: 14px; height: 14px; }
 .mon-refresh.spin svg { animation: cp-mon-spin .8s linear infinite; }
 @keyframes cp-mon-spin { to { transform: rotate(360deg); } }
+.icon-btn.spin svg { animation: cp-mon-spin .8s linear infinite; }
 .mon-min-row { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
 .mon-chip { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; max-width: 100%; font-size: 11px; border: 1px solid var(--border); background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 3px 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mon-chip svg { width: 12px; height: 12px; flex: none; }

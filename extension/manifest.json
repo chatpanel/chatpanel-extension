@@ -41,6 +41,21 @@
       ],
       "all_frames": true,
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.zoom.us/wc/*",
+        "https://meet.google.com/*",
+        "https://teams.microsoft.com/*",
+        "https://*.teams.microsoft.com/*",
+        "https://teams.live.com/*",
+        "https://*.teams.live.com/*",
+        "https://*.webex.com/*"
+      ],
+      "js": ["content/keep-visible.js"],
+      "all_frames": true,
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "background": {
@@ -54,6 +69,20 @@
     "default_path": "sidepanel.html"
   },
   "options_page": "settings.html",
+  "web_accessible_resources": [
+    {
+      "resources": ["content/flush-worker.js"],
+      "matches": [
+        "https://*.zoom.us/*",
+        "https://meet.google.com/*",
+        "https://teams.microsoft.com/*",
+        "https://*.teams.microsoft.com/*",
+        "https://teams.live.com/*",
+        "https://*.teams.live.com/*",
+        "https://*.webex.com/*"
+      ]
+    }
+  ],
   "icons": {
     "16": "assets/icon16.png",
     "48": "assets/icon48.png",

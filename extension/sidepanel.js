@@ -2473,7 +2473,7 @@ function applyMonitorEdit(id, { prompt, everyMin, paused }) {
   renderMonitors();
   saveConversation(conv).catch(() => {});
   persistMonitor(m);
-  if (!m.paused) runMonitor(m); // resubmit against the latest transcript
+  if (!m.paused) runMonitor(m, { force: true }); // question changed → resubmit even if the transcript hasn't grown
 }
 
 async function addMonitor({ kind, prompt = '', skillId = '', title = '', icon = '' }) {
@@ -2524,10 +2524,11 @@ function openMonitorEditor(id) {
 }
 
 // Re-answer a SINGLE monitor now — a manual, per-question refresh that runs even if the
-// question is paused (an explicit click overrides the freeze, one-off).
+// question is paused (an explicit click overrides the freeze, one-off). Skips (with a
+// note) when nothing new has been said, so an idle click doesn't burn tokens.
 function refreshMonitor(m) {
   if (!m || m.pending) return;
-  runMonitor(m);
+  runMonitor(m).then((r) => { if (r?.skipped) toast('No new transcript since last update', 1600); });
 }
 
 // Is a monitor due for an AUTOMATIC (scribe-driven) refresh? Paused ones never are;
@@ -2627,13 +2628,20 @@ function monitorPrompt(m, summary, transcript) {
   ].filter(Boolean).join('\n\n');
 }
 
-async function runMonitor(m) {
+async function runMonitor(m, { force = false } = {}) {
   const conv = state.conv;
-  if (!conv) return;
+  if (!conv) return { skipped: false };
+  const rec = await getLiveMeetingRecord().catch(() => null);
+  const latestTs = rec?.segments?.length ? (rec.segments[rec.segments.length - 1]?.t || 0) : 0;
+  // No new speech since this question last ran → don't spend tokens re-answering the
+  // same transcript. `force` (a just-edited question) overrides. A question with no
+  // answer yet always runs.
+  if (!force && m.answer && latestTs && latestTs <= (m.lastTranscriptTs || 0)) {
+    return { skipped: true };
+  }
   m.pending = true; renderMonitors();
   const controller = new AbortController();
   try {
-    const rec = await getLiveMeetingRecord().catch(() => null);
     const transcript = rec ? meetingToText(rec, { sinceTs: Date.now() - 15 * 60_000 }) : '';
     const summary = await getLiveNotesText(m.meetingId).catch(() => '');
     const resolved = resolveTarget(agentForConv(conv), state.settings);
@@ -2661,6 +2669,7 @@ async function runMonitor(m) {
       onDelta: (d) => { out += d; },
     });
     m.answer = out.trim();
+    m.lastTranscriptTs = latestTs; // watermark: only re-run when the transcript grows past this
   } catch (e) {
     m.answer = `⚠ ${e.message || 'failed'}`;
   } finally {
@@ -2670,6 +2679,7 @@ async function runMonitor(m) {
     saveConversation(conv).catch(() => {});
     persistMonitor(m); // durably snapshot the fresh insight (appends to history)
   }
+  return { skipped: false };
 }
 
 // Re-run every monitor for a meeting once new transcript has landed (serialized so a
@@ -3477,6 +3487,9 @@ async function openStoredMeeting(id) {
     `${PLATFORM_ICON[rec.platform] || '🎙'} ${rec.title || 'Meeting'}${meetingsView.live ? ' · live' : ''}`;
   $('meetings-list-view').classList.add('hidden');
   $('meeting-view').classList.remove('hidden');
+  // "Sync now" only makes sense for a still-live meeting (pull the latest transcript
+  // from its tab without switching to it).
+  $('meeting-sync')?.classList.toggle('hidden', !meetingsView.live);
   switchMeetingTab('summary');
   // Live meeting → keep the view fresh (transcript + summary) while open.
   if (meetingsView.live) meetingsView.liveTimer = setInterval(refreshLiveMeetingView, 5000);
@@ -3595,10 +3608,13 @@ async function renderScribeIndicator(liveOpt) {
   if (!live) {
     try { live = (await getMeetingIndex()).filter((e) => e.status !== 'ended'); } catch { live = []; }
   }
-  // Drop + finalize "zombie" meetings: a live entry whose heartbeat (persistedAt)
-  // went stale means its tab/content script is gone (call left, tab closed), so it
-  // never flips to ended on its own. Finalize it so it stops auto-attaching/showing.
-  // (No persistedAt = pre-heartbeat record → also treat as stale.)
+  // Finalize a "zombie": a live entry whose heartbeat (persistedAt) went stale. The
+  // service worker now keeps persistedAt FRESH during a live call by pinging the
+  // capturing tab every ~30s (even backgrounded/silent), and it flips a meeting to
+  // 'ended' the moment inCall() goes false (leave/hangup control gone) or the tab
+  // closes/navigates — so this 90s window is purely the transient-disconnect grace /
+  // last-resort net for a crashed tab, NOT the primary ender. (Do NOT tie liveness to
+  // "tab still open": a left-but-still-on-the-URL call must stop, not linger.)
   const now = Date.now();
   const ZOMBIE_MS = 90_000;
   const fresh = [];
@@ -4046,6 +4062,39 @@ function renderTranscript() {
 }
 
 // Pull the full transcript from the capturing frame into liveNotes.transcript.
+// Force the live meeting tab to flush its latest buffer NOW (via the service worker,
+// which pings the capturing tab) and reload the transcript into whatever meeting view
+// is open — so you can pull the newest transcript WITHOUT switching to the meeting tab.
+let syncingTranscript = false;
+async function syncTranscriptNow() {
+  if (syncingTranscript) return;
+  const mid = state.liveMeeting?.id;
+  const btns = [$('meeting-sync'), $('live-notes-sync')].filter(Boolean);
+  syncingTranscript = true;
+  btns.forEach((b) => { b.classList.add('spin'); b.disabled = true; });
+  try {
+    try { await chrome.runtime.sendMessage({ type: 'CP_MEETING_SYNC_NOW' }); } catch { /* SW asleep */ }
+    await new Promise((r) => setTimeout(r, 450)); // let the flush land in storage
+    if (liveNotesDrawerOpen() && mid) {
+      const rec = await getMeeting(mid).catch(() => null);
+      if (rec) { liveNotes.transcript = meetingToText(rec, { sinceTs: 0 }); liveNotes.title = rec.title || liveNotes.title; }
+      if (liveNotes.tab === 'transcript') renderTranscript();
+      setLiveNotesStatus();
+    }
+    if (meetingsView.rec && !$('meeting-view').classList.contains('hidden')) {
+      const rec = await getMeeting(meetingsView.rec.id).catch(() => null);
+      if (rec) meetingsView.rec = rec;
+      if (meetingsView.tab === 'transcript') renderMeetingTranscript();
+      else if (meetingsView.tab === 'monitors') renderMeetingMonitors();
+      else renderMeetingSummary();
+    }
+    toast('Transcript synced', 1200);
+  } finally {
+    syncingTranscript = false;
+    btns.forEach((b) => { b.classList.remove('spin'); b.disabled = false; });
+  }
+}
+
 async function refreshTranscript() {
   const tab = state.activeTab;
   if (!tab) return;
@@ -5874,6 +5923,8 @@ function wireEvents() {
   $('live-notes-close').onclick = () => closeLiveNotes();
   $('live-notes-copy').onclick = () => copyLiveNotesActive();
   $('live-notes-download').onclick = () => downloadLiveNotesActive();
+  $('live-notes-sync').onclick = () => syncTranscriptNow();
+  $('meeting-sync').onclick = () => syncTranscriptNow();
   $('ln-tab-summary').onclick = () => switchLiveNotesTab('summary');
   $('ln-tab-transcript').onclick = () => switchLiveNotesTab('transcript');
   $('live-notes-search').oninput = () => renderTranscript();
