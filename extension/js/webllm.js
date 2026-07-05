@@ -89,7 +89,10 @@ export async function ensureEngine(modelId = DEFAULT_WEBLLM_MODEL, onProgress, c
     if (_engine) {
       // Switch model in place; if the target isn't in this engine's appConfig (e.g. a
       // custom model added after the engine was built), rebuild with the full config.
-      try { await _engine.reload(modelId); return _engine; }
+      // reload() doesn't take a progress callback and reuses the engine's stored one —
+      // so re-point it at THIS turn's callback first, or switching to a not-yet-
+      // downloaded model shows no download progress (just a silent "Working…").
+      try { _engine.setInitProgressCallback?.(cb); await _engine.reload(modelId); return _engine; }
       catch { try { await _engine.unload?.(); } catch { /* ignore */ } _engine = null; }
     }
     _engine = await mlc.CreateMLCEngine(modelId, { initProgressCallback: cb, ...(appConfig ? { appConfig } : {}) });
