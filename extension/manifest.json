@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatPanel \u2014 Privacy-First AI Agent",
-  "version": "0.17.13",
+  "version": "0.18.0",
   "description": "Chat from any tab with Claude Code, Codex, Antigravity, or your own API. Tab context, URL analysis, history, agents & skills.",
   "minimum_chrome_version": "116",
   "permissions": [
@@ -63,7 +63,13 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Open ChatPanel"
+    "default_title": "Open ChatPanel (Cmd/Ctrl+I)"
+  },
+  "commands": {
+    "open-chatpanel": {
+      "suggested_key": { "default": "Ctrl+I", "mac": "Command+I" },
+      "description": "Open ChatPanel"
+    }
   },
   "side_panel": {
     "default_path": "sidepanel.html"

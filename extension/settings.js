@@ -41,6 +41,7 @@ import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
 import { applyProviderPreset, orderedProviderPresets, providerBrand, providerPresetById, providerPresetForEndpoint } from './js/provider-presets.js';
 import { filterComboboxOptions, normalizeComboboxOptions } from './js/combobox.js';
+import { WEBLLM_MODELS, deleteModel as deleteWebllmModel } from './js/webllm.js';
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth } from './js/storage-health.js';
@@ -522,6 +523,61 @@ function populateProviderPresetSelect(input, current) {
   input.dataset.providerPreset = id;
 }
 
+// In-browser (WebLLM) endpoint editor: no baseUrl / key / provider — just a curated
+// on-device model picker (with download sizes) + a note and a "remove downloaded
+// model" button. We hide the API-endpoint fields that would only confuse here.
+function applyWebllmEndpointUi(node, q, ep) {
+  // The API-style <select> has no 'webllm' option, so ensure one exists and is
+  // selected — otherwise a Save would read the first option and silently turn this
+  // into an 'openai' endpoint (breaking in-browser routing). The field stays hidden.
+  const kindSel = q('.ep-kind');
+  if (kindSel) {
+    if (!Array.from(kindSel.options).some((o) => o.value === 'webllm')) {
+      const o = document.createElement('option');
+      o.value = 'webllm'; o.textContent = 'In-browser (WebGPU)';
+      kindSel.appendChild(o);
+    }
+    kindSel.value = 'webllm';
+  }
+  q('.ep-provider')?.closest('.endpoint-provider-grid')?.classList.add('hidden'); // Provider + API style
+  node.querySelector('.provider-help')?.classList.add('hidden');
+  q('.ep-baseurl')?.closest('.row')?.classList.add('hidden');                       // Base URL
+  node.querySelectorAll('.endpoint-section')[0]?.classList.add('hidden');           // Authentication section
+  q('.ep-acmodel')?.closest('.row')?.classList.add('hidden');                        // Autocomplete model
+  q('.ep-load')?.classList.add('hidden');                                            // Load models (N/A)
+  q('.ep-test')?.classList.add('hidden');                                            // Test (N/A)
+
+  // Curated model picker with download sizes; persists to ep.model on Save like any
+  // endpoint (so it becomes the remembered default the next time you open the panel).
+  const opts = WEBLLM_MODELS.map((m) => ({ id: m.id, label: `${m.label} · ~${m.mb} MB`, free: true }));
+  wireModelSelect(q('.ep-model'), q('.ep-model-custom'), WEBLLM_MODELS.map((m) => m.id), ep.model, opts);
+
+  const section = q('.ep-model')?.closest('.endpoint-section');
+  if (section && !section.querySelector('.ep-webllm-extra')) {
+    const extra = document.createElement('div');
+    extra.className = 'row ep-webllm-extra';
+    const note = document.createElement('p');
+    note.className = 'muted tiny';
+    note.textContent = 'Runs 100% in your browser on WebGPU — no API key, no server, works offline after a one-time download. Bigger models give better answers.';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn ghost ep-webllm-remove';
+    btn.textContent = 'Remove downloaded model';
+    btn.title = 'Delete the selected model’s weights from browser storage to reclaim disk';
+    btn.addEventListener('click', async () => {
+      const id = readModel(q('.ep-model'), q('.ep-model-custom')) || ep.model;
+      if (!id) return;
+      const was = btn.textContent; btn.disabled = true; btn.textContent = 'Removing…';
+      try { await deleteWebllmModel(id); btn.textContent = 'Removed ✓'; }
+      catch (e) { btn.textContent = 'Failed'; console.warn('[chatpanel] remove webllm model', e); }
+      setTimeout(() => { btn.textContent = was; btn.disabled = false; }, 2000);
+    });
+    extra.appendChild(note);
+    extra.appendChild(btn);
+    section.appendChild(extra);
+  }
+}
+
 function renderEndpoints() {
   const root = $('endpoints');
   root.innerHTML = '';
@@ -554,6 +610,7 @@ function endpointCard(ep) {
   gateField('advancedAgent', q('.ep-system')); // per-agent system prompt is Pro
   applyFreeSlot(node, ep, 'endpoint'); // Free uses one endpoint — the user's pick
   wireModelSelect(q('.ep-model'), q('.ep-model-custom'), ep.models, ep.model, ep.modelOptions);
+  if ((ep.kind || 'openai') === 'webllm') applyWebllmEndpointUi(node, q, ep);
   wireCombobox(
     q('.ep-acmodel'),
     normalizeStoredModelOptions(ep.models, ep.modelOptions),

@@ -97,3 +97,14 @@ export async function unload() {
   try { await _engine?.unload?.(); } catch { /* ignore */ }
   _engine = null; _loadedModel = null; _loadPromise = null;
 }
+
+// Delete a downloaded model's cached weights to reclaim disk (Settings → in-browser
+// endpoint → "Remove downloaded model"). Best-effort across WebLLM cache-util names.
+export async function deleteModel(modelId = DEFAULT_WEBLLM_MODEL) {
+  if (_loadedModel === modelId) await unload();
+  const mlc = await lib();
+  try { await mlc.deleteModelAllInfoInCache?.(modelId); }
+  catch { /* fall through */ }
+  try { await mlc.deleteModelInCache?.(modelId); } catch { /* ignore */ }
+  try { await mlc.deleteModelWasmInCache?.(modelId); } catch { /* ignore */ }
+}
