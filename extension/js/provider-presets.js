@@ -224,9 +224,22 @@ export const API_PROVIDER_PRESETS = [
     authMode: 'apiKey',
     docsUrl: 'https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html',
   },
+  {
+    // In-browser model — its own routing kind (no HTTP endpoint). Picking it swaps the
+    // endpoint card into the WebLLM catalog UI (see applyWebllmEndpointUi). No base URL,
+    // no key: it runs on WebGPU in the browser. `model` seeds the default download.
+    id: 'webllm',
+    name: 'In-browser · WebLLM (WebGPU)',
+    kind: 'webllm',
+    baseUrl: '',
+    authMode: 'apiKey',
+    model: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
+    docsUrl: 'https://llm.mlc.ai/docs/',
+    note: 'Runs 100% in your browser on WebGPU — no API key, no server, works offline after a one-time download. Pick any model from the catalog; bigger models give better answers.',
+  },
 ];
 
-const LOCAL_PROVIDER_PRESET_IDS = new Set(['ollama', 'lmstudio', 'llamacpp', 'vllm']);
+const LOCAL_PROVIDER_PRESET_IDS = new Set(['ollama', 'lmstudio', 'llamacpp', 'vllm', 'webllm']);
 
 // Monogram "logos" for the provider picker and the site: a brand-tinted rounded
 // square + a 1–2 letter mark. We use monograms (not official trademarked logos)
@@ -257,6 +270,7 @@ const PROVIDER_BRANDS = {
   lmstudio: { mark: 'LM', color: '#2563eb' },
   llamacpp: { mark: 'LC', color: '#6b7280' },
   vllm: { mark: 'VL', color: '#0ea5e9' },
+  webllm: { mark: 'WL', color: '#7c3aed' },
 };
 
 // Preset ids that ship a bundled brand SVG under assets/providers/<id>.svg.
@@ -301,6 +315,8 @@ export function providerPresetForEndpoint(endpoint = {}) {
     const explicit = providerPresetById(endpoint.providerPreset);
     if (explicit && !explicit.custom) return explicit;
   }
+  // WebLLM has no base URL, so match it by its routing kind (else it would fall to Custom).
+  if (endpoint.kind === 'webllm') return providerPresetById('webllm');
   const base = cleanBaseUrl(endpoint.baseUrl);
   if (!base) return null;
   return API_PROVIDER_PRESETS.find((preset) => (
@@ -322,6 +338,9 @@ export function applyProviderPreset(endpoint = {}) {
     kind: preset.kind,
     baseUrl: preset.baseUrl,
     authMode: preset.authMode,
+    // Presets that ship a default model (e.g. WebLLM's in-browser default) seed it when
+    // the endpoint doesn't already have one picked.
+    ...(preset.model && !endpoint.model ? { model: preset.model } : {}),
     headers: {
       ...(preset.defaultHeaders || {}),
       ...(endpoint.headers || {}),

@@ -41,7 +41,7 @@ import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
 import { applyProviderPreset, orderedProviderPresets, providerBrand, providerPresetById, providerPresetForEndpoint } from './js/provider-presets.js';
 import { filterComboboxOptions, normalizeComboboxOptions } from './js/combobox.js';
-import { WEBLLM_ALL_MODELS, WEBLLM_RECOMMENDED, deleteModel as deleteWebllmModel } from './js/webllm.js';
+import { WEBLLM_ALL_MODELS, WEBLLM_RECOMMENDED, DEFAULT_WEBLLM_MODEL, deleteModel as deleteWebllmModel } from './js/webllm.js';
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth } from './js/storage-health.js';
@@ -539,8 +539,9 @@ function applyWebllmEndpointUi(node, q, ep) {
     }
     kindSel.value = 'webllm';
   }
-  q('.ep-provider')?.closest('.endpoint-provider-grid')?.classList.add('hidden'); // Provider + API style
-  node.querySelector('.provider-help')?.classList.add('hidden');
+  // Keep the Provider picker visible (WebLLM is now a real provider choice, so the user
+  // must be able to switch back to an HTTP provider) — only the API-style select is fixed.
+  q('.ep-kind')?.closest('.field')?.classList.add('hidden');                        // API style (fixed to webllm)
   q('.ep-baseurl')?.closest('.row')?.classList.add('hidden');                       // Base URL
   node.querySelectorAll('.endpoint-section')[0]?.classList.add('hidden');           // Authentication section
   q('.ep-acmodel')?.closest('.row')?.classList.add('hidden');                        // Autocomplete model
@@ -562,7 +563,7 @@ function applyWebllmEndpointUi(node, q, ep) {
       })),
   ];
   const ids = [...custom.map((c) => c.id), ...WEBLLM_ALL_MODELS.map((m) => m.id)];
-  wireModelSelect(q('.ep-model'), q('.ep-model-custom'), ids, ep.model, opts);
+  wireModelSelect(q('.ep-model'), q('.ep-model-custom'), ids, ep.model || DEFAULT_WEBLLM_MODEL, opts);
 
   const section = q('.ep-model')?.closest('.endpoint-section');
   if (section && !section.querySelector('.ep-webllm-extra')) {
@@ -890,6 +891,20 @@ function endpointCard(ep) {
       writeConn(applyProviderPreset({ ...rawConn(), providerPreset: selected }));
     } else if (customDraft) {
       restoreCustomDraft(customDraft);
+    }
+    // WebLLM (kind 'webllm') is a different endpoint UI than the HTTP providers (catalog
+    // picker, no base URL / key / Test). When the pick crosses that boundary either way,
+    // rebuild the card from the draft so the right controls show. Only this card is
+    // replaced — other endpoints' unsaved edits are untouched.
+    const draft = rawConn();
+    const nowWebllm = (draft.kind || 'openai') === 'webllm';
+    const nodeIsWebllm = !!node.querySelector('.ep-webllm-extra');
+    if (nowWebllm !== nodeIsWebllm) {
+      // The old model id belongs to the old provider — reset model state so the fresh
+      // card starts clean (WebLLM seeds its default; HTTP providers start empty → Load).
+      const base = { ...ep, ...draft, model: nowWebllm ? DEFAULT_WEBLLM_MODEL : '', models: [], modelOptions: [] };
+      node.replaceWith(endpointCard(base));
+      return;
     }
     resetModelPickers();
     setAuthStatus('Run Load models or Test to check authentication.');

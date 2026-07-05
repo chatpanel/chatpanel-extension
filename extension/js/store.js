@@ -61,6 +61,7 @@ export function defaultSettings() {
         id: 'in-browser',
         name: 'WebLLM',
         kind: 'webllm',
+        providerPreset: 'webllm',
         baseUrl: '',
         apiKey: '',
         model: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
