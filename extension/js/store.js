@@ -60,7 +60,7 @@ export function defaultSettings() {
         kind: 'webllm',
         baseUrl: '',
         apiKey: '',
-        model: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
+        model: 'Qwen3-0.6B-q4f16_1-MLC',
         models: [],
         systemPrompt: '',
         builtin: true,

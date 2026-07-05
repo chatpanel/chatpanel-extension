@@ -13,17 +13,18 @@
 //
 // PRIVACY: inference is 100% on-device — the conversation never leaves the machine.
 
-// Default model: Qwen2.5-0.5B (q4f16) — ~350 MB download, fast on modest GPUs, and
-// coherent enough for a first-run "it works!" moment. Users can pick a bigger one.
-export const DEFAULT_WEBLLM_MODEL = 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC';
+// Default model: Qwen3-0.6B (q4f16) — a current-generation small model, ~400 MB
+// download, fast on modest GPUs, and coherent enough for a first-run "it works!"
+// moment. Users can pick a bigger one from the curated list below.
+export const DEFAULT_WEBLLM_MODEL = 'Qwen3-0.6B-q4f16_1-MLC';
 
 // A short curated menu surfaced in settings (id → label + approx download size).
 export const WEBLLM_MODELS = [
-  { id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC', label: 'Qwen2.5 0.5B — fastest', mb: 350 },
-  { id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', label: 'Llama 3.2 1B — balanced', mb: 880 },
-  { id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC', label: 'Llama 3.2 3B — best quality', mb: 2200 },
+  { id: 'Qwen3-0.6B-q4f16_1-MLC', label: 'Qwen3 0.6B — fastest', mb: 400 },
+  { id: 'Qwen3-1.7B-q4f16_1-MLC', label: 'Qwen3 1.7B — balanced', mb: 1100 },
+  { id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC', label: 'Llama 3.2 3B — quality', mb: 2200 },
+  { id: 'Qwen3-4B-q4f16_1-MLC', label: 'Qwen3 4B — best', mb: 2500 },
   { id: 'gemma-2-2b-it-q4f16_1-MLC', label: 'Gemma 2 2B', mb: 1600 },
-  { id: 'Phi-3.5-mini-instruct-q4f16_1-MLC', label: 'Phi-3.5 mini', mb: 2100 },
 ];
 
 // WebGPU is required. A headless / older / locked-down Chrome may lack it — callers

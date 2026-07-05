@@ -1587,13 +1587,14 @@ const WEBLLM_DOWNLOAD_TIPS = [
 // paint(md) receives the markdown to show in the pending bubble. Rotates the tip on a
 // timer so it advances even when download progress stalls. stop() clears the timer.
 function makeDownloadUx(paint) {
-  let pct = 0; let tip = 0; let timer = null; let done = false;
+  let pct = 0; let status = ''; let tip = 0; let timer = null; let done = false;
   const draw = () => {
-    const f = Math.max(0, Math.min(10, Math.round(pct / 10)));
-    const bar = '▰'.repeat(f) + '▱'.repeat(10 - f);
+    const f = Math.max(0, Math.min(20, Math.round(pct / 5)));
+    const bar = '▰'.repeat(f) + '▱'.repeat(20 - f);
     paint(
       `**Setting up your private in-browser AI — ${pct}%**\n\n\`${bar}\`\n\n`
-      + '_One-time download, then it runs offline on your device. Your chats never leave your machine._\n\n'
+      + (status ? `_${status}_\n\n` : '')          // live WebLLM status (shards / MB fetched) — reassuring on slow machines
+      + 'One-time download, then it runs offline on your device. Your chats never leave your machine.\n\n'
       + `**While you wait — optional power-ups:**\n\n${WEBLLM_DOWNLOAD_TIPS[tip % WEBLLM_DOWNLOAD_TIPS.length]}`,
     );
   };
@@ -1601,7 +1602,9 @@ function makeDownloadUx(paint) {
     progress(ev) {
       if (done) return;
       if (typeof ev?.progress === 'number') pct = Math.round(ev.progress * 100);
+      if (ev?.text) status = String(ev.text).replace(/^⏬\s*/, '').replace(/[`_*]/g, '').slice(0, 120);
       if (!timer) { draw(); timer = setInterval(() => { tip += 1; draw(); }, 4500); }
+      else draw();
     },
     stop() { done = true; if (timer) { clearInterval(timer); timer = null; } },
   };

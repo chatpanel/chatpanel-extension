@@ -840,7 +840,12 @@ async function streamWebLLM(agent, messages, { signal, onDelta, onEvent }) {
   const { streamChat: streamWebLLMChat, DEFAULT_WEBLLM_MODEL } = await import('./webllm.js');
   const model = (agent.model && String(agent.model).trim()) || DEFAULT_WEBLLM_MODEL;
   const msgs = [];
-  if (agent.systemPrompt && String(agent.systemPrompt).trim()) msgs.push({ role: 'system', content: String(agent.systemPrompt) });
+  // Qwen3 emits <think> reasoning by default — noisy/slow for a tiny on-device demo
+  // model. `/no_think` (recognised by the Qwen3 chat template) keeps replies concise
+  // and snappy. Folded into the system prompt so it applies every turn.
+  const sys = [String(agent.systemPrompt || '').trim(), /qwen3/i.test(model) ? '/no_think' : '']
+    .filter(Boolean).join(' ');
+  if (sys) msgs.push({ role: 'system', content: sys });
   for (const m of messages || []) {
     const content = typeof m.content === 'string' ? m.content : textFromContent(m.content);
     if (content != null && content !== '') msgs.push({ role: m.role, content });
