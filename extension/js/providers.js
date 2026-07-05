@@ -856,20 +856,6 @@ function fitWebllmMessages(chat, budget) {
   return kept;
 }
 
-// Split model output into { think, answer }: text inside <think>…</think> (and a
-// trailing unclosed <think>) is reasoning; the rest is the visible answer.
-function splitThink(s) {
-  let think = ''; let answer = '';
-  const re = /<think>([\s\S]*?)<\/think>/gi;
-  let last = 0; let m;
-  while ((m = re.exec(s))) { answer += s.slice(last, m.index); think += m[1]; last = re.lastIndex; }
-  const tail = s.slice(last);
-  const open = tail.search(/<think>/i);
-  if (open !== -1) { think += tail.slice(open + 7); answer += tail.slice(0, open); }
-  else answer += tail;
-  return { think, answer };
-}
-
 async function streamWebLLM(agent, messages, { signal, onDelta, onEvent }) {
   const { streamChat: streamWebLLMChat, DEFAULT_WEBLLM_MODEL, webllmPromptBudget } = await import('./webllm.js');
   const model = (agent.model && String(agent.model).trim()) || DEFAULT_WEBLLM_MODEL;
@@ -884,16 +870,9 @@ async function streamWebLLM(agent, messages, { signal, onDelta, onEvent }) {
 
   // A small on-device model has a tiny context window, and a full page overflows it —
   // compact to the model's budget (its question survives; context is trimmed to fit).
-  // Qwen3 emits <think> by default; /no_think in the system prompt keeps it terse.
-  const sysText = [String(agent.systemPrompt || '').trim(), isQwen3 ? '/no_think' : ''].filter(Boolean).join(' ');
+  const sysText = String(agent.systemPrompt || '').trim();
   const fitted = fitWebllmMessages(chat, webllmPromptBudget(model) - sysText.length);
   const msgs = sysText ? [{ role: 'system', content: sysText }, ...fitted] : fitted;
-  // Qwen3 honors the LATEST /no_think — also append it to the last user turn (post-trim).
-  if (isQwen3) {
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'user') { msgs[i] = { ...msgs[i], content: `${msgs[i].content}\n\n/no_think` }; break; }
-    }
-  }
 
   let lastText = '';
   const onProgress = (r) => {
@@ -901,16 +880,28 @@ async function streamWebLLM(agent, messages, { signal, onDelta, onEvent }) {
     if (text !== lastText) { lastText = text; onEvent?.({ type: 'model-load', text: `⏬ ${text}`, progress: r?.progress || 0 }); }
   };
 
-  // Route <think> reasoning to the collapsible block; stream only the answer as text —
-  // so even if a Qwen3 build ignores /no_think, the reply the user reads stays clean.
-  let raw = ''; let sentAns = 0; let sentThink = 0;
-  for await (const delta of streamWebLLMChat(model, msgs, { onProgress, signal })) {
+  // Generation controls for a tiny model: cap length + penalize repetition so it can't
+  // fall into a loop (the citation/link degeneration we saw), and turn Qwen3's <think>
+  // OFF at the source (enable_thinking:false is reliable; the /no_think text switch isn't).
+  const params = {
+    max_tokens: 800,
+    temperature: 0.7,
+    frequency_penalty: 0.6,
+    presence_penalty: 0.4,
+    ...(isQwen3 ? { extra_body: { enable_thinking: false } } : {}),
+  };
+
+  // Show the answer directly. Strip any residual <think>…</think> (and stray tags) so a
+  // build that still reasons doesn't hide the reply — but DON'T route it to a collapsible
+  // (a model that never closes </think> would look "stuck" with an empty answer).
+  const clean = (s) => s.replace(/<think>[\s\S]*?<\/think>\s*/gi, '').replace(/<\/?think>/gi, '');
+  let raw = ''; let shown = 0;
+  for await (const delta of streamWebLLMChat(model, msgs, { onProgress, signal, params })) {
     raw += delta;
-    const { think, answer } = splitThink(raw);
-    if (think.length > sentThink) { onEvent?.({ type: 'reasoning', text: think.slice(sentThink) }); sentThink = think.length; }
-    if (answer.length > sentAns) { onDelta?.(answer.slice(sentAns)); sentAns = answer.length; }
+    const vis = clean(raw);
+    if (vis.length > shown) { onDelta?.(vis.slice(shown)); shown = vis.length; }
   }
-  return splitThink(raw).answer;
+  return clean(raw);
 }
 
 async function dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools }) {

@@ -1635,14 +1635,20 @@ async function runStream(agent, assistant, conv) {
   const runOnce = async () => {
     const resolved = resolveTarget(agent, state.settings);
     const profile = runProfileForTurn(conv, assistant);
-    const rawTools = await toolsetFor(resolved, profile);
-    const tools = withToolCancellation(rawTools, assistant, conv);
+    // The in-browser model is tiny — arming tools and the citation/source instructions
+    // (written for capable models) sends it into repetition loops. Give it a clean,
+    // minimal prompt and no tools; those stay for API/bridge agents.
+    const isWebllm = resolved.kind === 'webllm';
+    const rawTools = isWebllm ? undefined : await toolsetFor(resolved, profile);
+    const tools = isWebllm ? undefined : withToolCancellation(rawTools, assistant, conv);
     // System prompt = the agent's own + (when compacted) the running summary.
     // providers.js appends tools.system once per backend, so keep it out here.
-    const systemPrompt = combineSystemPrompt(
-      systemWithSummary(resolved.systemPrompt, conv),
-      sourceCitationSystem(),
-    );
+    const systemPrompt = isWebllm
+      ? systemWithSummary(resolved.systemPrompt, conv)
+      : combineSystemPrompt(
+        systemWithSummary(resolved.systemPrompt, conv),
+        sourceCitationSystem(),
+      );
     // Reversible PII vault is per-conversation, so a placeholder stays stable turn
     // to turn — pass it into the shared redaction capability.
     const { buildRedaction } = await import('./js/turn-tools.js'); // module-cached after first turn

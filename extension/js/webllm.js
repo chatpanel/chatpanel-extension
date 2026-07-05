@@ -87,9 +87,12 @@ export async function ensureEngine(modelId = DEFAULT_WEBLLM_MODEL, onProgress) {
 // Stream a chat completion from the in-browser model. `messages` is the OpenAI shape
 // ([{role, content}]). Yields text deltas. `onProgress` fires during a first-use
 // download/load (before any token). Abort via `signal`.
-export async function* streamChat(modelId, messages, { onProgress, signal } = {}) {
+export async function* streamChat(modelId, messages, { onProgress, signal, params = {} } = {}) {
   const engine = await ensureEngine(modelId || DEFAULT_WEBLLM_MODEL, onProgress);
-  const completion = await engine.chatCompletion({ stream: true, messages });
+  // `params` carries OpenAI-style generation controls (max_tokens, penalties) plus
+  // extra_body (e.g. { enable_thinking:false } for Qwen3) — the caller sets sane caps
+  // so a tiny model can't ramble into a repetition loop.
+  const completion = await engine.chatCompletion({ stream: true, messages, ...params });
   try {
     for await (const chunk of completion) {
       if (signal?.aborted) break;
