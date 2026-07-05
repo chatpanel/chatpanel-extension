@@ -13,26 +13,28 @@
 //
 // PRIVACY: inference is 100% on-device — the conversation never leaves the machine.
 
+// The FULL WebLLM catalog (~159 models) lives in the generated webllm-models.js so
+// settings can browse it without loading the 6 MB runtime.
+export { WEBLLM_ALL_MODELS } from './webllm-models.js';
+import { WEBLLM_ALL_MODELS } from './webllm-models.js';
+
 // Default model: Qwen3-0.6B (q4f16) — a current-generation small model, ~400 MB
 // download, fast on modest GPUs, and coherent enough for a first-run "it works!"
-// moment. Users can pick a bigger one from the curated list below.
+// moment. Users can pick any model from the full catalog in Settings.
 export const DEFAULT_WEBLLM_MODEL = 'Qwen3-0.6B-q4f16_1-MLC';
 
-// A short curated menu surfaced in settings (id → label + approx download size +
-// `ctx`, a conservative PROMPT character budget for this model's context window —
-// used to compact attached page/context so a small model doesn't overflow, ~3.5
-// chars/token with room reserved for the reply).
-export const WEBLLM_MODELS = [
-  { id: 'Qwen3-0.6B-q4f16_1-MLC', label: 'Qwen3 0.6B — fastest', mb: 400, ctx: 6000 },
-  { id: 'Qwen3-1.7B-q4f16_1-MLC', label: 'Qwen3 1.7B — balanced', mb: 1100, ctx: 12000 },
-  { id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC', label: 'Llama 3.2 3B — quality', mb: 2200, ctx: 20000 },
-  { id: 'Qwen3-4B-q4f16_1-MLC', label: 'Qwen3 4B — best', mb: 2500, ctx: 24000 },
-  { id: 'gemma-2-2b-it-q4f16_1-MLC', label: 'Gemma 2 2B', mb: 1600, ctx: 10000 },
+// A short RECOMMENDED subset surfaced first in the picker (ids from the full catalog).
+export const WEBLLM_RECOMMENDED = [
+  'Qwen3-0.6B-q4f16_1-MLC', 'Qwen3-1.7B-q4f16_1-MLC', 'Llama-3.2-3B-Instruct-q4f16_1-MLC',
+  'Qwen3-4B-q4f16_1-MLC', 'gemma-2-2b-it-q4f16_1-MLC', 'Phi-3.5-mini-instruct-q4f16_1-MLC',
 ];
 
-// Prompt character budget for a model's context window (defaults small, for safety).
+// Prompt CHARACTER budget for a model's context window — derived from the model's real
+// context_window_size (≈3.5 chars/token) with ~1000 tokens reserved for the system
+// prompt + reply, so attached page context is compacted to fit whatever model is chosen.
 export function webllmPromptBudget(modelId) {
-  return WEBLLM_MODELS.find((m) => m.id === modelId)?.ctx || 6000;
+  const ctxTokens = WEBLLM_ALL_MODELS.find((m) => m.id === modelId)?.ctx || 4096;
+  return Math.max(1500, Math.round((ctxTokens - 1000) * 3.5));
 }
 
 // WebGPU is required. A headless / older / locked-down Chrome may lack it — callers

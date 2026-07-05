@@ -41,7 +41,7 @@ import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
 import { applyProviderPreset, orderedProviderPresets, providerBrand, providerPresetById, providerPresetForEndpoint } from './js/provider-presets.js';
 import { filterComboboxOptions, normalizeComboboxOptions } from './js/combobox.js';
-import { WEBLLM_MODELS, deleteModel as deleteWebllmModel } from './js/webllm.js';
+import { WEBLLM_ALL_MODELS, WEBLLM_RECOMMENDED, deleteModel as deleteWebllmModel } from './js/webllm.js';
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth } from './js/storage-health.js';
@@ -547,10 +547,17 @@ function applyWebllmEndpointUi(node, q, ep) {
   q('.ep-load')?.classList.add('hidden');                                            // Load models (N/A)
   q('.ep-test')?.classList.add('hidden');                                            // Test (N/A)
 
-  // Curated model picker with download sizes; persists to ep.model on Save like any
-  // endpoint (so it becomes the remembered default the next time you open the panel).
-  const opts = WEBLLM_MODELS.map((m) => ({ id: m.id, label: `${m.label} · ~${m.mb} MB`, free: true }));
-  wireModelSelect(q('.ep-model'), q('.ep-model-custom'), WEBLLM_MODELS.map((m) => m.id), ep.model, opts);
+  // Full on-device catalog (~159 models), searchable; recommended first, then by size.
+  // Persists to ep.model on Save (becomes the remembered default next time).
+  const rec = new Set(WEBLLM_RECOMMENDED);
+  const opts = [...WEBLLM_ALL_MODELS]
+    .sort((a, b) => (rec.has(b.id) - rec.has(a.id)) || (a.mb - b.mb))
+    .map((m) => ({
+      id: m.id,
+      label: `${rec.has(m.id) ? '★ ' : ''}${m.id.replace(/-MLC$/, '')} · ~${m.mb} MB${m.ctx ? ` · ${Math.round(m.ctx / 1024)}k ctx` : ''}`,
+      free: true,
+    }));
+  wireModelSelect(q('.ep-model'), q('.ep-model-custom'), WEBLLM_ALL_MODELS.map((m) => m.id), ep.model, opts);
 
   const section = q('.ep-model')?.closest('.endpoint-section');
   if (section && !section.querySelector('.ep-webllm-extra')) {
