@@ -887,22 +887,38 @@ function endpointCard(ep) {
     if (previous === 'custom') snapshotCustomDraft();
     const selected = readProviderPresetId();
     writeProviderPresetId(selected);
+    // The endpoint's INTENDED kind for the new provider. Compute it from the preset (or a
+    // clean reset), NOT from the .ep-kind <select> — that select has no 'webllm' option
+    // until applyWebllmEndpointUi injects one, so reading it back is unreliable exactly
+    // across the WebLLM boundary (the source of the flakiness).
+    let intendedKind;
     if (selected !== 'custom') {
-      writeConn(applyProviderPreset({ ...rawConn(), providerPreset: selected }));
+      const applied = applyProviderPreset({ ...rawConn(), providerPreset: selected });
+      writeConn(applied);
+      intendedKind = applied.kind || 'openai';
     } else if (customDraft) {
       restoreCustomDraft(customDraft);
+      intendedKind = customDraft.kind || 'openai';
+    } else {
+      // Leaving a preset for Custom with nothing stashed (e.g. WebLLM → Custom): start a
+      // clean HTTP card so no WebLLM/base-url state leaks across.
+      intendedKind = 'openai';
+      q('.ep-kind').value = 'openai';
+      q('.ep-baseurl').value = '';
     }
-    // WebLLM (kind 'webllm') is a different endpoint UI than the HTTP providers (catalog
-    // picker, no base URL / key / Test). When the pick crosses that boundary either way,
-    // rebuild the card from the draft so the right controls show. Only this card is
-    // replaced — other endpoints' unsaved edits are untouched.
-    const draft = rawConn();
-    const nowWebllm = (draft.kind || 'openai') === 'webllm';
+    // WebLLM is a different endpoint UI than the HTTP providers (catalog picker, no base
+    // URL / key / Test). When the pick crosses that boundary either way, rebuild THIS card
+    // from the intended kind so the right controls show — other endpoints are untouched.
+    const nowWebllm = intendedKind === 'webllm';
     const nodeIsWebllm = !!node.querySelector('.ep-webllm-extra');
     if (nowWebllm !== nodeIsWebllm) {
-      // The old model id belongs to the old provider — reset model state so the fresh
-      // card starts clean (WebLLM seeds its default; HTTP providers start empty → Load).
-      const base = { ...ep, ...draft, model: nowWebllm ? DEFAULT_WEBLLM_MODEL : '', models: [], modelOptions: [] };
+      // Reset model state — the old id belongs to the old provider. WebLLM seeds its
+      // default; HTTP providers start empty (→ Load models).
+      const base = {
+        ...ep, ...rawConn(), kind: intendedKind,
+        baseUrl: nowWebllm ? '' : rawConn().baseUrl,
+        model: nowWebllm ? DEFAULT_WEBLLM_MODEL : '', models: [], modelOptions: [],
+      };
       node.replaceWith(endpointCard(base));
       return;
     }
