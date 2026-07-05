@@ -55,17 +55,25 @@ async function lib() {
 
 // Has this model already been downloaded + cached (so "send" won't trigger a big
 // download)? Used by the UI to decide whether to show a first-run download notice.
-export async function isModelCached(modelId = DEFAULT_WEBLLM_MODEL) {
+export async function isModelCached(modelId = DEFAULT_WEBLLM_MODEL, customModels = []) {
   try {
     const mlc = await lib();
-    return await mlc.hasModelInCache(modelId, mlc.prebuiltAppConfig);
+    return await mlc.hasModelInCache(modelId, appConfigWith(mlc, customModels) || mlc.prebuiltAppConfig);
   } catch { return false; }
 }
 
 // Get (or build/reload) the engine for `modelId`. `onProgress` receives WebLLM's
 // InitProgressReport ({ progress: 0..1, timeElapsed, text }) during a download/load.
 // A single engine is reused across turns; switching models reloads it in place.
-export async function ensureEngine(modelId = DEFAULT_WEBLLM_MODEL, onProgress) {
+// `customModels` are user-added MLC models ({ model_id, model, model_lib }); they're
+// folded into WebLLM's appConfig so a custom id loads like any prebuilt one.
+function appConfigWith(mlc, customModels) {
+  return customModels && customModels.length
+    ? { ...mlc.prebuiltAppConfig, model_list: [...mlc.prebuiltAppConfig.model_list, ...customModels] }
+    : undefined; // undefined → WebLLM uses the built-in prebuilt catalog
+}
+
+export async function ensureEngine(modelId = DEFAULT_WEBLLM_MODEL, onProgress, customModels = []) {
   if (!webgpuAvailable()) {
     const e = new Error('This browser has no WebGPU, so the in-browser model can’t run. Add an API endpoint (a free provider key or local Ollama) in Settings, or try a Chromium browser with GPU enabled.');
     e.code = 'WEBGPU_UNAVAILABLE';
@@ -77,8 +85,14 @@ export async function ensureEngine(modelId = DEFAULT_WEBLLM_MODEL, onProgress) {
   _loadPromise = (async () => {
     const mlc = await lib();
     const cb = typeof onProgress === 'function' ? onProgress : undefined;
-    if (_engine) { await _engine.reload(modelId); return _engine; } // switch model in place
-    _engine = await mlc.CreateMLCEngine(modelId, { initProgressCallback: cb });
+    const appConfig = appConfigWith(mlc, customModels);
+    if (_engine) {
+      // Switch model in place; if the target isn't in this engine's appConfig (e.g. a
+      // custom model added after the engine was built), rebuild with the full config.
+      try { await _engine.reload(modelId); return _engine; }
+      catch { try { await _engine.unload?.(); } catch { /* ignore */ } _engine = null; }
+    }
+    _engine = await mlc.CreateMLCEngine(modelId, { initProgressCallback: cb, ...(appConfig ? { appConfig } : {}) });
     return _engine;
   })();
   try { return await _loadPromise; }
@@ -89,8 +103,8 @@ export async function ensureEngine(modelId = DEFAULT_WEBLLM_MODEL, onProgress) {
 // Stream a chat completion from the in-browser model. `messages` is the OpenAI shape
 // ([{role, content}]). Yields text deltas. `onProgress` fires during a first-use
 // download/load (before any token). Abort via `signal`.
-export async function* streamChat(modelId, messages, { onProgress, signal, params = {} } = {}) {
-  const engine = await ensureEngine(modelId || DEFAULT_WEBLLM_MODEL, onProgress);
+export async function* streamChat(modelId, messages, { onProgress, signal, params = {}, customModels = [] } = {}) {
+  const engine = await ensureEngine(modelId || DEFAULT_WEBLLM_MODEL, onProgress, customModels);
   // `params` carries OpenAI-style generation controls (max_tokens, penalties) plus
   // extra_body (e.g. { enable_thinking:false } for Qwen3) — the caller sets sane caps
   // so a tiny model can't ramble into a repetition loop.

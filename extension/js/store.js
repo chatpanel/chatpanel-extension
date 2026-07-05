@@ -43,6 +43,9 @@ export function defaultSettings() {
     // Each: { id, name, url, enabled, headers? }. stdio servers aren't reachable
     // from MV3 — front them with an HTTP bridge.
     mcpServers: [],
+    // User-added in-browser (WebLLM) models: { id, model, model_lib } — an MLC-converted
+    // HF repo URL + its model-lib WASM URL. Folded into the WebLLM catalog at load.
+    webllmCustomModels: [],
     // Free tier: one usable API endpoint + one usable local agent (the user's
     // pick). Others remain visible in the picker but require Pro. The free endpoint
     // is the in-browser model, so the free experience needs zero external setup.

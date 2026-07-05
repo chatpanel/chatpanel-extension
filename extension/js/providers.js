@@ -856,10 +856,14 @@ function fitWebllmMessages(chat, budget) {
   return kept;
 }
 
-async function streamWebLLM(agent, messages, { signal, onDelta, onEvent }) {
+async function streamWebLLM(agent, messages, { signal, onDelta, onEvent, settings }) {
   const { streamChat: streamWebLLMChat, DEFAULT_WEBLLM_MODEL, webllmPromptBudget } = await import('./webllm.js');
   const model = (agent.model && String(agent.model).trim()) || DEFAULT_WEBLLM_MODEL;
   const isQwen3 = /qwen3/i.test(model);
+  // User-added MLC models (Settings) → WebLLM appConfig shape, so a custom id loads too.
+  const customModels = (settings?.webllmCustomModels || [])
+    .filter((c) => c && c.id && c.model && c.model_lib)
+    .map((c) => ({ model_id: c.id, model: c.model, model_lib: c.model_lib }));
 
   // Fold attachments (page/selection/URL context) into the text using the SAME helper
   // the API providers use — WITHOUT this the in-browser model never saw the page context.
@@ -896,7 +900,7 @@ async function streamWebLLM(agent, messages, { signal, onDelta, onEvent }) {
   // (a model that never closes </think> would look "stuck" with an empty answer).
   const clean = (s) => s.replace(/<think>[\s\S]*?<\/think>\s*/gi, '').replace(/<\/?think>/gi, '');
   let raw = ''; let shown = 0;
-  for await (const delta of streamWebLLMChat(model, msgs, { onProgress, signal, params })) {
+  for await (const delta of streamWebLLMChat(model, msgs, { onProgress, signal, params, customModels })) {
     raw += delta;
     const vis = clean(raw);
     if (vis.length > shown) { onDelta?.(vis.slice(shown)); shown = vis.length; }
