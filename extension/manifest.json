@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ChatPanel \u2014 Privacy-First AI Agent",
   "version": "0.18.0",
-  "description": "Privacy-first AI agent in your browser side panel — Claude Code, Codex, local & in-browser models. For chats, meetings & notes.",
+  "description": "Privacy-first AI side-panel agent. Works with Claude Code, Codex, and local or in-browser models — for chats, meetings & notes.",
   "minimum_chrome_version": "116",
   "permissions": [
     "sidePanel",
