@@ -896,7 +896,6 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
               </div>
               <label class="check"><input type="checkbox" id="pref-enter" /> Send message on Enter (Shift+Enter for newline)</label>
               <label class="check"><input type="checkbox" id="pref-stream" /> Stream responses as they arrive</label>
-              <label class="check"><input type="checkbox" id="pref-webllm-bg" /> Keep the in-browser model loaded in the background <span class="sub">— runs WebLLM in an offscreen document so it stays warm across panel open/close and never blocks the UI. Uses more memory while idle; falls back automatically if unsupported.</span></label>
               <div class="row"><label>Max tools per turn <span class="sub">— fewer = faster; many enabled MCP servers
                   mean dozens of tools. Local page/history tools are always kept; only the most relevant remote tools are
                   sent. 0 = no limit.</span></label>
