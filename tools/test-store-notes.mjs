@@ -82,6 +82,32 @@ const { isEncrypted } = await import('../extension/js/meeting-crypto.js');
   assert.equal((await getNoteIndex()).length, 1);
 }
 
+// 4b) restore preserves a note's related artifacts — co-writer/agent provenance,
+// version snapshots, and the auto-extracted topic index (regression: importNotes
+// used to drop these even though exportNotes writes them into the backup).
+{
+  await clearAllNotes();
+  const attribution = [{ author: 'writer', kind: 'agent', from: 0, to: 12 }];
+  const versions = [{ label: 'draft-1', at: 111, body: 'old body' }];
+  const topics = { version: 1, hash: 'abc', items: ['warm tier', 'backup'], extractedAt: 222 };
+  await importNotes([
+    { id: 'a1', title: 'Authored', body: 'agent-written body', createdAt: 500, updatedAt: 600, attribution, versions, topics },
+  ]);
+  const rec = await getNote('a1');
+  assert.deepEqual(rec.attribution, attribution, 'attribution restored');
+  assert.deepEqual(rec.versions, versions, 'version snapshots restored');
+  assert.deepEqual(rec.topics, topics, 'topic index restored');
+  const idx = await getNoteIndex();
+  assert.deepEqual(idx.find((e) => e.id === 'a1').topics, topics.items, 'index topics restored');
+  // survives a full export → import round-trip too.
+  const dump = await exportNotes();
+  await importNotes(dump, { mode: 'replace' });
+  const rt = await getNote('a1');
+  assert.deepEqual(rt.attribution, attribution, 'attribution survives round-trip');
+  assert.deepEqual(rt.versions, versions, 'versions survive round-trip');
+  assert.deepEqual(rt.topics, topics, 'topics survive round-trip');
+}
+
 // 5) markdown + title helpers.
 {
   assert.equal(deriveTitle('## Heading\nrest'), 'Heading');

@@ -226,6 +226,13 @@ export async function importNotes(list, { mode = 'merge' } = {}) {
       tags: Array.isArray(rec.tags) ? rec.tags : [],
       createdAt: rec.createdAt || now,
       updatedAt: rec.updatedAt || now,
+      // Restore the note's related artifacts verbatim — co-writer/agent provenance,
+      // labelled version snapshots, and the auto-extracted topic index. exportNotes()
+      // already writes these into the backup; dropping them here loses authorship,
+      // revert history, and graph/omni topics on restore.
+      ...(Array.isArray(rec.attribution) ? { attribution: rec.attribution } : {}),
+      ...(Array.isArray(rec.versions) ? { versions: rec.versions } : {}),
+      ...(rec.topics ? { topics: rec.topics } : {}),
     });
     imported++;
   }

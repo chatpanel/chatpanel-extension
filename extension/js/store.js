@@ -10,6 +10,7 @@
 
 import { exportMeetings, importMeetings, meetingToMarkdown } from './store-meetings.js';
 import { exportNotes, importNotes, noteToMarkdown } from './store-notes.js';
+import { exportNotesConfig, importNotesConfig } from './notes-config.js';
 import { exportOAuthTokens, importOAuthTokens } from './oauth.js';
 import { makeZip } from './zip.js';
 import { sealJSON, openJSON } from './secret-crypto.js';
@@ -795,11 +796,14 @@ export async function importConversations(data, { mode = 'merge' } = {}) {
 }
 
 // "Export data" — the FULL portable backup: everything needed to recreate this
-// install on another machine. version 4 adds `oauthTokens` (endpoint sign-ins,
-// so a restore doesn't force a re-auth); version 3 added `settings` (endpoints
-// incl. API keys, local/bridge agents, MCP servers incl. auth, skills,
-// preferences); version 2 added `meetings`. Older files still restore (missing
-// parts come back empty). The license is NOT exported — it re-activates by
+// install on another machine. version 6 adds `notesConfig` (the Notes UI +
+// co-writer swarm config — role→model overrides, gear, source filter, layout —
+// which lives in localStorage, so it travels too); version 5 added `notes`;
+// version 4 adds `oauthTokens` (endpoint sign-ins, so a restore doesn't force a
+// re-auth); version 3 added `settings` (endpoints incl. API keys, local/bridge
+// agents, MCP servers incl. auth, skills, preferences); version 2 added
+// `meetings`. Older files still restore (missing parts come back empty). The
+// license is NOT exported — it re-activates by
 // purchase email / Pro sync. The install-id, runtime UI state, and the local
 // meeting-encryption key are also excluded (re-derived per install; meetings are
 // decrypted on export and re-encrypted under the destination's own key on
@@ -809,11 +813,12 @@ export async function exportAllData() {
   const conv = await exportConversations();
   const meetings = await exportMeetings();
   const notes = await exportNotes(); // v5 — user notes as a third first-class source
+  const notesConfig = await exportNotesConfig(); // v6 — Notes UI + co-writer config (localStorage)
   const settings = await getSettings();
   const oauthTokens = await exportOAuthTokens(); // endpoint sign-ins (v4) — see SECURITY note above
   return {
     type: BACKUP_TYPE,
-    version: 5,
+    version: 6,
     exportedAt: Date.now(),
     count: conv.count,
     conversations: conv.conversations,
@@ -821,6 +826,7 @@ export async function exportAllData() {
     meetings,
     notesCount: notes.length,
     notes,
+    notesConfig,
     settings,
     oauthTokens,
   };
@@ -834,6 +840,10 @@ export async function importAllData(data, { mode = 'merge' } = {}) {
   const conversations = await importConversations(data, { mode }); // validates the file
   const meetings = await importMeetings(data.meetings, { mode });
   const notes = await importNotes(data.notes, { mode }); // v5+; older backups have no notes
+  // v6+: Notes UI + co-writer config (localStorage). Older backups have none.
+  if (data.notesConfig && typeof data.notesConfig === 'object') {
+    await importNotesConfig(data.notesConfig, { mode });
+  }
   let settings = false;
   if (data.settings && typeof data.settings === 'object') {
     const merged = mergeSettings(defaultSettings(), data.settings); // folds in any newer fields

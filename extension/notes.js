@@ -4708,6 +4708,16 @@ function init() {
   setSideTab(localStorage.getItem('chatpanel.notes.sideTab') || 'activity', { open: false });
   setSideCollapsed(localStorage.getItem('chatpanel.notes.sideCollapsed') === '1');
   initResizers();
+
+  // Mirror the Notes UI + co-writer config (localStorage: swarm role→model overrides,
+  // gear, source filter, layout) into chrome.storage so the service-worker auto-backup
+  // can capture it — the SW has no localStorage. Dynamic-imported + deferred to stay off
+  // first paint; flushes the latest snapshot whenever the page is hidden or unloaded.
+  import('./js/notes-config.js').then(({ mirrorNotesConfig }) => {
+    mirrorNotesConfig();
+    document.addEventListener('visibilitychange', () => { if (document.hidden) mirrorNotesConfig(); });
+    window.addEventListener('pagehide', () => mirrorNotesConfig());
+  });
 }
 
 (async function start() {
