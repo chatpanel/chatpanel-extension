@@ -15,11 +15,18 @@ export function buildToolset(providers) {
 
   const specs = [];
   const route = new Map(); // tool name -> the provider.execute that owns it
+  // Tools that call a REMOTE server — from a provider flagged remote, or (fallback)
+  // whose name matches the mcp_ convention. The harness uses this exact set to keep
+  // PII off remote tools under "redact remote" (L3: no longer name-heuristic-only).
+  const remoteTools = new Set();
+  const REMOTE_NAME_RE = /^mcp[_-]/i;
   for (const p of list) {
+    const providerRemote = p.remote === true;
     for (const s of p.specs) {
       if (route.has(s.name)) continue; // first provider to claim a name wins
       specs.push(s);
       route.set(s.name, p.execute);
+      if (providerRemote || REMOTE_NAME_RE.test(String(s.name || ''))) remoteTools.add(s.name);
     }
   }
   if (!specs.length) return undefined;
@@ -34,6 +41,7 @@ export function buildToolset(providers) {
   return {
     specs,
     system,
+    remoteTools,
     async execute(name, input, meta = {}) {
       const fn = route.get(name);
       if (!fn) return JSON.stringify({ error: `Unknown tool: ${name}` });

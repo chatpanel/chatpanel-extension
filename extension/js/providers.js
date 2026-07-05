@@ -1018,6 +1018,7 @@ export async function traceFlow(settings, targetId, prompt, { tools, signal } = 
       toolData: cfg.toolData,
       redactOpts: redactOpts(tcfg, true, detected),
       redactResults: gatedScope(tcfg, true).toolResults,
+      remoteTools: tools.remoteTools, // explicit remote set (L3), not the name heuristic
     });
     tracedTools = {
       ...tools,
@@ -1124,10 +1125,10 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
   let activeCfg = cfg;
   let activeEntities = entities;
   let effIsPro = isPro;
-  // AI (full-tier) detection is Pro, but Free gets a lifetime taste counted by the
+  // AI (full-tier) detection is Pro; Free gets a lifetime allowance counted by the
   // shared quota (chat + privacy screen). Check BEFORE running the detector so an
-  // out-of-quota Free user quietly stays on deterministic redaction (no model call,
-  // no upsell wall mid-send). Pro always passes.
+  // out-of-quota Free user stays on deterministic redaction (no model call). Pro
+  // always passes.
   if (redaction.detect && cfg.mode === 'model' && await canUseFullRedaction(isPro)) {
     try {
       // Sanitize before detection too: a zero-width-split name must be rejoined here
@@ -1158,6 +1159,7 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
     vault, toolData: activeCfg.toolData,
     redactOpts: redactOpts(activeCfg, effIsPro, activeEntities),
     redactResults: gatedScope(activeCfg, effIsPro).toolResults,
+    remoteTools: tools?.remoteTools, // explicit remote set (L3), not the name heuristic
   });
   const red = redactOutbound({ messages, system: agent.systemPrompt, vault, cfg: activeCfg, isPro: effIsPro, entities: activeEntities });
   // When tools are armed, tell the model placeholders are auto-restored for tools —

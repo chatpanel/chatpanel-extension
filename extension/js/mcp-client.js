@@ -287,6 +287,10 @@ export function mcpProvider(client, serverName) {
   }));
   return {
     specs,
+    // Explicitly a REMOTE provider (its tools call a third-party MCP server). The
+    // harness uses this to keep PII off remote tools under "redact remote" rather
+    // than inferring remoteness from the mcp_ name prefix alone (L3).
+    remote: true,
     system: mcpInventorySystem(serverName, specs),
     async execute(name, input) {
       const tool = name.startsWith(prefix) ? name.slice(prefix.length) : name;
