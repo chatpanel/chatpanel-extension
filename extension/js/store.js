@@ -33,19 +33,38 @@ export function defaultSettings() {
   return {
     version: 9,
     bridgeUrl: 'http://127.0.0.1:4319',
-    activeAgentId: 'claude-code',
+    // Fresh-install target is the ZERO-SETUP in-browser model — it works on the very
+    // first message with no API key, no local bridge/gateway, nothing to run (a small
+    // model downloads once and runs on WebGPU). This is what lets a brand-new user (or
+    // a Web Store reviewer) actually chat. The bridge CLIs / API endpoints are still
+    // there to switch to; they just aren't the default dead-end anymore.
+    activeAgentId: 'in-browser',
     // MCP servers (Streamable HTTP) the in-extension agent loop can call as tools.
     // Each: { id, name, url, enabled, headers? }. stdio servers aren't reachable
     // from MV3 — front them with an HTTP bridge.
     mcpServers: [],
     // Free tier: one usable API endpoint + one usable local agent (the user's
-    // pick). Others remain visible in the picker but require Pro.
-    freeEndpointId: 'local-ollama',
+    // pick). Others remain visible in the picker but require Pro. The free endpoint
+    // is the in-browser model, so the free experience needs zero external setup.
+    freeEndpointId: 'in-browser',
     freeAgentId: 'claude-code',
     // Endpoints — the one place for API models: a connection (provider + base
     // URL + key) with a chosen model and optional system prompt/tuning. Chat
     // with one directly; no separate "agent" needed.
     endpoints: [
+      {
+        // The zero-setup default. kind:'webllm' routes to the in-browser WebGPU model
+        // (js/webllm.js) — no baseUrl/apiKey; the model id is a WebLLM prebuilt.
+        id: 'in-browser',
+        name: 'In-browser (no setup)',
+        kind: 'webllm',
+        baseUrl: '',
+        apiKey: '',
+        model: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
+        models: [],
+        systemPrompt: '',
+        builtin: true,
+      },
       {
         id: 'local-ollama',
         name: 'Local · Ollama',

@@ -832,12 +832,41 @@ export async function listBridgeModels(agent, settings) {
 // --------------------------------------------------------------------------
 // `agent` here is a RESOLVED target (see store.resolveTarget): a flat config
 // with kind 'bridge' | 'anthropic' | 'openai' and its connection fields inline.
+// In-browser model (WebLLM / WebGPU) — the zero-setup path: no key, no bridge, no
+// gateway. The ~6 MB runtime + the model weights load on first use; we surface that as
+// a `model-load` event so the UI shows download progress in the pending bubble.
+// Text-only (small on-device models don't take images/tools). 100% on-device.
+async function streamWebLLM(agent, messages, { signal, onDelta, onEvent }) {
+  const { streamChat: streamWebLLMChat, DEFAULT_WEBLLM_MODEL } = await import('./webllm.js');
+  const model = (agent.model && String(agent.model).trim()) || DEFAULT_WEBLLM_MODEL;
+  const msgs = [];
+  if (agent.systemPrompt && String(agent.systemPrompt).trim()) msgs.push({ role: 'system', content: String(agent.systemPrompt) });
+  for (const m of messages || []) {
+    const content = typeof m.content === 'string' ? m.content : textFromContent(m.content);
+    if (content != null && content !== '') msgs.push({ role: m.role, content });
+  }
+  let lastText = '';
+  const onProgress = (r) => {
+    const text = r?.text || `Preparing on-device model… ${Math.round((r?.progress || 0) * 100)}%`;
+    if (text !== lastText) { lastText = text; onEvent?.({ type: 'model-load', text: `⏬ ${text}`, progress: r?.progress || 0 }); }
+  };
+  let full = '';
+  for await (const delta of streamWebLLMChat(model, msgs, { onProgress, signal })) {
+    full += delta;
+    onDelta?.(delta);
+  }
+  return full;
+}
+
 async function dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools }) {
   const opts = { settings, signal, onDelta, onEvent, tools };
   // Bridge CLIs (Claude Code / Codex …) run their OWN agentic loop. They can now
   // ALSO use our browser tools: the bridge hosts an MCP server with the specs we
   // send and relays each call back here (see streamBridge / relayBridgeTool).
   if (agent.kind === 'bridge') return streamBridge(agent, messages, opts);
+  // In-browser model: the model defaults internally, so this must run BEFORE the
+  // "no model selected" check below.
+  if (agent.kind === 'webllm') return streamWebLLM(agent, messages, opts);
   // Model targets need a model — don't silently fall back to a default the
   // endpoint may not have (the old gpt-4o-mini default hid Ollama mistakes).
   if (!agent.model || !String(agent.model).trim()) {

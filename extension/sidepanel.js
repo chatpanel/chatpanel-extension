@@ -609,6 +609,9 @@ function agentAvailability(target) {
   }
   // Endpoint or model agent — usable once it resolves to an endpoint + a model.
   const eff = resolveTarget(target, state.settings);
+  // In-browser (WebLLM) needs no baseUrl/key — it runs on WebGPU. Always "available"
+  // here; a missing-WebGPU machine surfaces a clear error at send time instead.
+  if ((eff?.kind || target.kind) === 'webllm') return { ok: true };
   if (!eff?.baseUrl) return { ok: false, reason: 'No endpoint' };
   if (!eff.model) return { ok: false, reason: 'Pick a model' };
   return { ok: true };
@@ -1098,6 +1101,10 @@ function renderSuggestions() {
   if (state.liveMeeting) { $('empty')?.classList.add('hidden'); return; }
   const reload = $('suggest-reload');
   if (reload && !reload._wired) { reload._wired = true; reload.onclick = runManualSuggest; }
+  // Zero-setup hint: only when the active target is the in-browser model (hidden once
+  // the user switches to a configured API/bridge, so it isn't misleading).
+  const hint = $('empty-webllm-hint');
+  if (hint) hint.hidden = getTarget(state.settings, state.settings.activeAgentId)?.kind !== 'webllm';
   // Universal fallbacks paint instantly — no model call, works offline.
   paintSuggestions(box, FALLBACK_SUGGESTIONS);
   // Opt-in: replace with page-specific ideas from a small model (metadata only).
@@ -1564,6 +1571,42 @@ function isContextLimitError(e) {
   );
 }
 
+// While the in-browser model downloads on first use (a minute or two, one time), turn
+// the wait into an onboarding moment: a live progress bar plus a rotating carousel that
+// teaches what the optional Bridge & Gateway unlock — the user's ALREADY-installed
+// agents, client-side privacy redaction, on-device speech-to-text, model routing, tools.
+const WEBLLM_DOWNLOAD_TIPS = [
+  '🔌 **Use the AI agents you already have.** Install the free ChatPanel **Bridge** and chat with **Claude Code, Codex, Gemini CLI** and more — right here, using your existing logins. Nothing to re-configure.',
+  '🛡️ **Keep your data private.** Add the **Privacy Gateway** to automatically redact names, emails and secrets *before* they ever reach a cloud model.',
+  '🎙️ **Talk instead of type.** The Gateway runs **speech-to-text on your own machine** — dictate chats, notes and meetings, transcribed privately, no audio uploaded.',
+  '🔀 **One place, every model.** The Gateway can **route across providers** (and your own keys) for the best cost, speed and quality — without rewiring anything.',
+  '🧩 **Give the AI hands.** Connect **MCP tools** so it can search, read the page you’re on, and take actions for you.',
+  '🔑 **Want bigger answers?** Add your own API key (many providers have a free tier) in **Settings** to use larger models anytime — the in-browser model always stays available offline.',
+];
+
+// paint(md) receives the markdown to show in the pending bubble. Rotates the tip on a
+// timer so it advances even when download progress stalls. stop() clears the timer.
+function makeDownloadUx(paint) {
+  let pct = 0; let tip = 0; let timer = null; let done = false;
+  const draw = () => {
+    const f = Math.max(0, Math.min(10, Math.round(pct / 10)));
+    const bar = '▰'.repeat(f) + '▱'.repeat(10 - f);
+    paint(
+      `**Setting up your private in-browser AI — ${pct}%**\n\n\`${bar}\`\n\n`
+      + '_One-time download, then it runs offline on your device. Your chats never leave your machine._\n\n'
+      + `**While you wait — optional power-ups:**\n\n${WEBLLM_DOWNLOAD_TIPS[tip % WEBLLM_DOWNLOAD_TIPS.length]}`,
+    );
+  };
+  return {
+    progress(ev) {
+      if (done) return;
+      if (typeof ev?.progress === 'number') pct = Math.round(ev.progress * 100);
+      if (!timer) { draw(); timer = setInterval(() => { tip += 1; draw(); }, 4500); }
+    },
+    stop() { done = true; if (timer) { clearInterval(timer); timer = null; } },
+  };
+}
+
 // Streams a response into `conv` (which may not be the one on screen). UI is only
 // touched when conv is the active conversation, so concurrent chats don't fight.
 async function runStream(agent, assistant, conv) {
@@ -1582,6 +1625,7 @@ async function runStream(agent, assistant, conv) {
       scrollToBottom();
     }
   };
+  let dl = null; // in-browser model first-use download UX (progress + education carousel)
 
   // One streaming attempt — rebuilt each call so a retry uses the latest
   // (possibly just-compacted) history + system prompt.
@@ -1608,13 +1652,22 @@ async function runStream(agent, assistant, conv) {
       tools,
       redaction,
       onDelta: (d) => {
+        if (dl) { dl.stop(); dl = null; } // first real token → tear down the download UX
         pending += d;
         assistant.content = pending; // keep the object current for switch-back
         if (!raf) raf = requestAnimationFrame(flush);
       },
       onEvent: (ev) => {
         // Stream reasoning/thinking text into a collapsible block as it arrives.
-        if (ev.type === 'reasoning' && ev.text) {
+        if (ev.type === 'model-load') {
+          // First-use in-browser model download/compile (a minute or two, one time).
+          // Drive the progress bar + education carousel into the pending bubble until
+          // real tokens arrive and take over (onDelta stops it).
+          if (!pending) {
+            if (!dl) dl = makeDownloadUx((md) => { assistant.content = md; if (!raf) raf = requestAnimationFrame(flush); });
+            dl.progress(ev);
+          }
+        } else if (ev.type === 'reasoning' && ev.text) {
           assistant.thinking = (assistant.thinking || '') + ev.text;
           if (!raf) raf = requestAnimationFrame(flush);
         } else if (ev.type === 'tool' && ev.phase === 'start') {
@@ -1667,6 +1720,7 @@ async function runStream(agent, assistant, conv) {
       assistant.error = true;
     }
   } finally {
+    if (dl) { dl.stop(); dl = null; } // never leave the download-tip timer running
     if (raf) cancelAnimationFrame(raf);
     assistant.pending = false;
     state.streams.delete(conv.id);
