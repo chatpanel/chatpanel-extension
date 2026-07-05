@@ -414,7 +414,7 @@ npx @chatpanel/bridge</code></pre>
                 <select id="priv-mode">
                   <option value="off">Off</option>
                   <option value="deterministic">On — patterns + dictionary</option>
-                  <option value="model">On — + AI detection (Pro)</option>
+                  <option value="model">On — + AI detection (Pro · free trial)</option>
                 </select>
               </div>
               <p class="muted sm" id="priv-free-usage"></p>
@@ -572,6 +572,20 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
               every request is redacted on the way out and restored in the reply. Any other OpenAI-compatible client
               (OpenCode · Pi · aider) can point at the same <code>http://127.0.0.1:4320/v1</code>.</p>
           </details>
+
+          <!-- Shown when the gateway isn't running yet (most users, incl. Free): a preview of
+               what the gateway unlocks, so the capabilities are DISCOVERABLE before install.
+               refreshGateway() hides this and reveals #gw-config once connected. -->
+          <div id="gw-preview">
+            <p class="muted sm" style="margin-top:10px"><strong>What the gateway adds</strong> — all on your machine, once it's running:</p>
+            <ul class="gw-caps">
+              <li>🎙 <strong>Local speech-to-text</strong> — dictate into ChatPanel with a Whisper model you choose &amp; download; your audio never leaves your machine.</li>
+              <li>🛡 <strong>Local PII detection (NER)</strong> — the names / orgs / locations detector; pick from downloadable multilingual &amp; de-identification models.</li>
+              <li>🔀 <strong>Model routing</strong> — send OpenCode · Pi · aider through your Codex / Claude Code login via the bridge, redacted on the way out and restored in the reply.</li>
+              <li>🔎 <strong>Full-history search</strong> — index your chats &amp; meetings locally so on-device agents can search your whole corpus.</li>
+            </ul>
+            <p class="muted tiny">Free &amp; open-source. Install it above, then this tab manages all of the above.</p>
+          </div>
 
           <div id="gw-config" class="hidden">
             <div class="gw-flow">

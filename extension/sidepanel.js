@@ -3262,11 +3262,11 @@ function renderPrivacyMenu() {
   const modes = [
     { mode: 'off', icon: '○', label: 'Off', sub: 'Send text to models unredacted.' },
     { mode: 'deterministic', icon: '🛡', label: 'On — patterns + dictionary', sub: 'Emails, phones, cards, keys + your dictionary.' },
-    { mode: 'model', icon: '🧠', label: 'On — + model detection', sub: pro ? 'Also auto-detect names/orgs/etc. via your local detector.' : 'Pro: auto-detect names with a local model.', locked: !pro },
+    { mode: 'model', icon: '🧠', label: 'On — + model detection', sub: pro ? 'Also auto-detect names/orgs/etc. via your local detector.' : 'Free trial: auto-detect names/orgs, then patterns + dictionary.', trial: !pro },
   ];
   for (const m of modes) {
     const item = document.createElement('button');
-    item.className = `menu-item${m.locked ? ' locked' : ''}`;
+    item.className = `menu-item${m.locked ? ' locked' : ''}`; // trial items stay fully selectable
     const active = mode === m.mode;
     item.innerHTML =
       `<span class="pii-radio${active ? ' on' : ''}"></span>`
@@ -3274,7 +3274,7 @@ function renderPrivacyMenu() {
       + `<span>${escapeAttr(m.label)}</span>`
       + `<span class="mi-sub">${escapeAttr(m.sub)}</span>`
       + '</span>'
-      + `${m.locked ? '<span class="badge lock">Pro</span>' : ''}`;
+      + `${m.locked ? '<span class="badge lock">Pro</span>' : m.trial ? '<span class="badge lock">Free trial</span>' : ''}`;
     item.onmousedown = (e) => { e.preventDefault(); setPiiMode(m.mode); };
     menu.appendChild(item);
   }

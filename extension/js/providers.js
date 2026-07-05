@@ -1415,6 +1415,14 @@ export function smallestModel(ids) {
 }
 
 export async function listModelOptions(agent) {
+  if (agent.kind === 'webllm') {
+    // In-browser models have no /models endpoint — list from the static catalog (+ any
+    // stored/custom ids). Dynamic import keeps the catalog off the first-paint graph.
+    const { WEBLLM_ALL_MODELS } = await import('./webllm-models.js');
+    const stored = Array.isArray(agent.models) ? agent.models : [];
+    const ids = [...new Set([...stored, ...WEBLLM_ALL_MODELS.map((m) => m.id)])].filter(Boolean);
+    return ids.map((id) => ({ id }));
+  }
   if (agent.kind === 'anthropic') {
     const base = (agent.baseUrl || 'https://api.anthropic.com').replace(/\/$/, '');
     const headers = {

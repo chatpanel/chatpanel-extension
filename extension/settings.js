@@ -1474,15 +1474,17 @@ async function refreshGateway() {
   status.textContent = 'Checking…'; status.className = 'status';
   gatewayState = await checkGateway(url);
   if (!gatewayState.ok) {
-    status.textContent = `✕ Not reachable: ${gatewayState.error || 'no response'}`;
+    status.textContent = `✕ Not running yet — install it below to enable local dictation, PII detection & routing.`;
     status.className = 'status err';
     $('gw-config').classList.add('hidden');
+    $('gw-preview')?.classList.remove('hidden'); // show the "what you get" discovery panel
     return;
   }
   status.innerHTML = `✓ Connected — v${gatewayState.version} · backend: <strong>${gatewayState.backend}</strong> · ${gatewayState.pro?.unlocked ? 'Pro' : 'Free'}`;
   status.className = 'status ok';
   try {
     fillGatewayForm(await getGatewayConfig(url));
+    $('gw-preview')?.classList.add('hidden'); // connected — the real config replaces the preview
     $('gw-config').classList.remove('hidden');
     renderGatewayMonitor(gatewayState);
     renderNerStatus(gatewayState.ner);
@@ -3242,11 +3244,15 @@ async function renderPrivFullUsage(pro) {
     return;
   }
   const { used, cap, remaining } = await fullRedactionUsage(false);
-  el.innerHTML = `AI detection (names / orgs / locations) is a <strong>Pro</strong> feature — Free includes `
-    + `<strong>${cap} full redactions</strong> total to try it out, then it falls back to patterns + dictionary. `
-    + `<strong>${remaining} of ${cap} left.</strong> The same allowance is shared with the gateway and counts your `
-    + `ChatPanel chats too. <a href="#" class="priv-usage-upsell">Upgrade to Pro</a> for unlimited.`;
-  el.classList.toggle('warn', remaining === 0);
+  const exhausted = remaining === 0;
+  el.innerHTML = exhausted
+    ? `AI detection <strong>free trial used up</strong> (${cap}/${cap}). Detection now uses always-free patterns + `
+      + `dictionary; names/orgs/locations need Pro. <a href="#" class="priv-usage-upsell">Upgrade to Pro</a> for unlimited.`
+    : `AI detection (names / orgs / locations) — <strong>free trial: ${remaining} of ${cap} left</strong>. `
+      + `You're previewing a Pro feature; after the trial it falls back to always-free patterns + dictionary. `
+      + `The allowance is shared with the gateway and counts your ChatPanel chats. `
+      + `<a href="#" class="priv-usage-upsell">Upgrade to Pro</a> for unlimited.`;
+  el.classList.toggle('warn', exhausted);
   const up = el.querySelector('.priv-usage-upsell');
   if (up) up.onclick = (e) => { e.preventDefault(); upsell(`Free includes ${cap} AI-detection redactions. Pro unlocks unlimited.`); };
 }

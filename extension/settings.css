@@ -421,6 +421,9 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 /* ── Gateway tab: 3-way flow + compact destinations ───────────────────────── */
 /* Install / "use as a model" help — full width, command blocks that don't wrap
    mid-command (scroll horizontally instead of breaking onto cramped lines). */
+.gw-caps { margin:6px 0 4px; padding-left:2px; list-style:none; display:flex; flex-direction:column; gap:7px; }
+.gw-caps li { font-size:12.5px; line-height:1.5; color:var(--muted); }
+.gw-caps li strong { color:var(--text); font-weight:600; }
 .gw-help { margin:6px 0 14px; }
 .gw-help > summary { cursor:pointer; font-weight:600; font-size:13px; color:var(--text); margin-bottom:6px; }
 .gw-cmd { margin:6px 0 10px; background:rgba(127,127,127,.12); padding:10px 12px; border-radius:8px;
