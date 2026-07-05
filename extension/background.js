@@ -133,21 +133,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 });
 
 // Let the toolbar icon toggle the side panel open. (Requires Chrome 116+.)
-// Keyboard shortcut → open the side panel. Suggested Cmd+I (mac) / Ctrl+I (win/linux)
-// in the manifest; if that combo is already taken, Chrome silently drops the suggestion
-// and the user can set their own at chrome://extensions/shortcuts. A command is a user
-// gesture, which sidePanel.open() requires. Makes ChatPanel easy to summon when hidden.
-chrome.commands?.onCommand.addListener(async (command) => {
-  if (command !== 'open-chatpanel') return;
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    const windowId = tab?.windowId ?? (await chrome.windows.getLastFocused()).id;
-    if (windowId != null) await chrome.sidePanel.open({ windowId });
-  } catch (e) {
-    console.warn('[chatpanel] open-chatpanel command', e);
-  }
-});
-
+// Keyboard shortcut: the manifest binds Cmd+I (mac) / Ctrl+I to the reserved
+// `_execute_action` command — Chrome's "Activate the extension" — which activates the
+// toolbar action. Because setPanelBehavior({ openPanelOnActionClick: true }) is set
+// (below), activating the action opens the side panel. No onCommand handler needed:
+// _execute_action drives the action directly. If the combo is taken, Chrome drops the
+// suggestion and the user can rebind it at chrome://extensions/shortcuts.
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel
     .setPanelBehavior({ openPanelOnActionClick: true })
