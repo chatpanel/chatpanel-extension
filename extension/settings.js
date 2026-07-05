@@ -1474,7 +1474,11 @@ function renderSttModels(data) {
   const esc = (s) => escapeHtml(String(s == null ? '' : s));
   const active = data?.active || null;
   const dl = data?.progress || null;
-  const rows = (data?.available || []).map((m) => {
+  // Surface the recommended default (e.g. Parakeet) first — it's the one we steer
+  // users to. Stable sort: recommended before the rest, order otherwise preserved.
+  const avail = (data?.available || []).slice()
+    .sort((a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0));
+  const rows = avail.map((m) => {
     const isActive = m.id === active;
     const downloading = dl && dl.model === m.id;
     const meta = [
@@ -1493,7 +1497,7 @@ function renderSttModels(data) {
       : '';
     return `<div class="entity">
       <div class="entity-head">
-        <strong style="flex:1 1 auto">${esc(m.label || m.id)}</strong>
+        <strong style="flex:1 1 auto">${esc(m.label || m.id)}${m.recommended ? '<span class="reco-badge">Recommended</span>' : ''}</strong>
         <span class="status">${meta}</span>
         <button type="button" class="btn ${isActive ? '' : 'primary'} gw-stt-use" data-id="${esc(m.id)}" ${isActive || downloading ? 'disabled' : ''}>${label}</button>
       </div>
