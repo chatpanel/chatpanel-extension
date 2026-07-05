@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ChatPanel \u2014 Privacy-First AI Agent",
   "version": "0.18.0",
-  "description": "Chat from any tab with Claude Code, Codex, Antigravity, or your own API. Tab context, URL analysis, history, agents & skills.",
+  "description": "Privacy-first AI agent in your browser side panel — Claude Code, Codex, local & in-browser models. For chats, meetings & notes.",
   "minimum_chrome_version": "116",
   "permissions": [
     "sidePanel",
