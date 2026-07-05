@@ -17,7 +17,7 @@
 // Self-contained on the SYNCED engine files (pii-redact.js, tool-rank.js), so the
 // extension (browser ESM) and the gateway (npm) run the exact same code. The caller
 // passes the already-gated `redactOpts` ({tier, entities, dictionary}) it computed
-// from cfg+isPro — keeping tier/dictionary Pro-gating out of the harness.
+// from cfg+isPro — tier/dictionary selection stays out of the harness.
 
 import { restoreText, restoreWithAliases, redactResultShape } from './pii-redact.js';
 import { narrowSpecs } from './tool-rank.js';
@@ -77,12 +77,19 @@ export function placeholderToolNote({ toolData = 'real' } = {}) {
   return intro + remote + rules;
 }
 
-export function makeToolHarness({ vault = null, toolData = 'real', redactOpts = null, redactResults = true } = {}) {
+export function makeToolHarness({ vault = null, toolData = 'real', redactOpts = null, redactResults = true, remoteTools = null } = {}) {
   const on = !!vault;                       // privacy enabled for this turn?
   const redactRemote = toolData === 'redactRemote';
+  // How we decide a tool is REMOTE (must not receive real PII under redactRemote).
+  // Prefer an EXPLICIT set/predicate the caller derived from the toolset (a remote
+  // tool not named mcp_* would otherwise be misclassified as local and get real
+  // values); fall back to the mcp_* name heuristic when the caller passes nothing.
+  const isRemoteTool = typeof remoteTools === 'function' ? remoteTools
+    : (remoteTools instanceof Set ? (name) => remoteTools.has(name)
+      : isRemoteToolName);
   return {
     enabled: on,
-    isRemoteTool: isRemoteToolName,
+    isRemoteTool,
 
     // ⓪ Always-on tool selection (privacy-independent). `available` is any spec
     // list; `opts` forwards { cap, keep, name, description } to the shared ranker.
@@ -93,7 +100,7 @@ export function makeToolHarness({ vault = null, toolData = 'real', redactOpts = 
     // ② What the tool receives.
     toTool(name, args) {
       if (!on) return args;                                    // privacy off → already real
-      if (redactRemote && isRemoteToolName(name)) return args;  // keep PII off remote MCP
+      if (redactRemote && isRemoteTool(name)) return args;      // keep PII off remote MCP
       return restoreToolArgs(args, vault);                      // real values for the tool
     },
 

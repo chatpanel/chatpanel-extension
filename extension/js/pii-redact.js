@@ -9,7 +9,7 @@
 // Pure + dependency-free so it is unit-testable and runs identically for API and
 // CLI/bridge agents (both assemble their outbound payload through providers.js).
 //
-// Tiers (the licensing seam):
+// Tiers:
 //   'basic' — deterministic regex: emails, phones, IPs, cards (Luhn), SSNs, keys.
 //   'full'  — basic + entity-aware: known people/orgs (meeting roster, contacts,
 //             the user's own identity) and a user-editable custom dictionary.
@@ -74,6 +74,19 @@ function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Reject a user-supplied dictionary regex that is a likely ReDoS (catastrophic
+// backtracking) BEFORE compiling + running it on untrusted-length input. Heuristic,
+// not exhaustive: cap length, and reject the classic nested-quantifier families —
+// a quantified group whose body also has a quantifier ((a+)+ / (a*)* / (.*)+) and
+// back-to-back unbounded quantifiers (a**, .*+). A rejected pattern is skipped like a
+// syntactically-invalid one, so redaction never breaks or hangs.
+function isSafeUserPattern(p) {
+  if (typeof p !== 'string' || p.length === 0 || p.length > 200) return false;
+  if (/\([^)]*[+*}][^)]*\)\s*[+*{]/.test(p)) return false; // (…quantifier…)quantifier
+  if (/[+*]\s*[+*]/.test(p)) return false;                  // a**, a+*, .*+
+  return true;
+}
+
 // Apply many find/replace rules in a SINGLE left-to-right pass over the source.
 // Each rule is { re: <global RegExp>, repl: (match) => string }. Unlike running
 // rule[0].replace then rule[1].replace then …, text emitted by one rule is NEVER
@@ -122,18 +135,41 @@ function luhnValid(digits) {
   return sum % 10 === 0;
 }
 
+// Plausible IPv6? Controls false positives from the broad IPV6 regex: accept only a
+// `::`-compressed form (≥1 hextet) or a full 8-hextet address, hextets ≤4 hex digits.
+function isLikelyIpv6(s) {
+  if (!/^[0-9A-Fa-f:]+$/.test(s) || (s.match(/:/g) || []).length < 2) return false;
+  const parts = s.split(':');
+  if (parts.some((p) => p.length > 4)) return false;
+  if (s.includes('::')) return parts.filter(Boolean).length >= 1 && parts.filter(Boolean).length <= 7;
+  return parts.length === 8 && parts.every((p) => p.length >= 1);
+}
+
 // Deterministic detectors. Each: { type, re, valid? }. Order = priority; more
 // specific patterns run first so they win the bytes before greedier ones.
 const DETECTORS = [
+  // PEM private-key block (multi-line) — highest priority, most specific.
+  { type: 'SECRET', re: /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/g },
   { type: 'EMAIL', re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g },
-  { type: 'SSN', re: /\b\d{3}-\d{2}-\d{4}\b/g },
+  // SSN: dash- OR space-separated (bare 9-digit is left alone — too false-positive-prone).
+  { type: 'SSN', re: /\b\d{3}[-\s]\d{2}[-\s]\d{4}\b/g },
   {
+    // Vendor API keys / tokens. sk-… also covers OpenAI sk-proj-/sk-ant-. Adds Google
+    // (AIza…), Stripe (sk_live_/rk_test_…), GitHub fine-grained PATs, Slack xapp-.
     type: 'KEY',
-    re: /\b(?:sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g,
+    re: /\b(?:sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[0-9A-Za-z_]{22,}|xox[baprs]-[A-Za-z0-9-]{10,}|xapp-[0-9]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|[rs]k_(?:live|test)_[0-9A-Za-z]{16,})\b/g,
   },
+  // JWT — three base64url segments; `eyJ` is base64 of `{"…`, so this is specific.
+  { type: 'KEY', re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b/g },
   {
     type: 'IP',
     re: /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g,
+  },
+  {
+    // IPv6 (incl. :: compression). Broad match narrowed by isLikelyIpv6 to curb FPs.
+    type: 'IP',
+    re: /(?<![:\w])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![:\w])/g,
+    valid: (m) => isLikelyIpv6(m),
   },
   {
     // Phone: only count it if it has a separator or a leading + and 7–15 digits —
@@ -189,7 +225,7 @@ export function redactText(text, vault, {
     let re;
     try {
       re = d.pattern
-        ? new RegExp(d.pattern, d.flags && /g/.test(d.flags) ? d.flags : `${d.flags || ''}g`)
+        ? (isSafeUserPattern(d.pattern) ? new RegExp(d.pattern, d.flags && /g/.test(d.flags) ? d.flags : `${d.flags || ''}g`) : null)
         : (d.value ? new RegExp(`(?<![\\w])${escapeRegex(d.value)}(?![\\w])`, 'gi') : null);
     } catch {
       re = null; // a bad user regex must never break redaction
