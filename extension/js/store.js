@@ -56,7 +56,7 @@ export function defaultSettings() {
         // The zero-setup default. kind:'webllm' routes to the in-browser WebGPU model
         // (js/webllm.js) — no baseUrl/apiKey; the model id is a WebLLM prebuilt.
         id: 'in-browser',
-        name: 'In-browser (no setup)',
+        name: 'WebLLM',
         kind: 'webllm',
         baseUrl: '',
         apiKey: '',
