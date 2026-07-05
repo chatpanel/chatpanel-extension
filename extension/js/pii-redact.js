@@ -18,7 +18,7 @@
 // one reference won't restore (it shows the token) — but the privacy guarantee
 // (the real value never left the device) always holds.
 
-import { stripHidden } from './sanitize.js';
+import { stripHidden, confusablesSkeleton } from './sanitize.js';
 
 const TOKEN_RE = /\[\[([A-Z][A-Z0-9]*)_(\d+)\]\]/g;
 
@@ -255,9 +255,34 @@ export function redactText(text, vault, {
     }
   }
 
-  // 3) Deterministic detectors (all tiers).
+  // 3) Deterministic detectors (all tiers). Detect against a CONFUSABLES SKELETON so
+  //    homoglyph-obfuscated values (Cyrillic/Greek/fullwidth Latin look-alikes) match
+  //    the ASCII regexes — but REDACT the ORIGINAL span. The fold is 1:1 per code point,
+  //    so a skeleton match's indices line up with `out`, and legitimate non-Latin text
+  //    (which won't match a detector) is never rewritten. Higher-priority detectors
+  //    (earlier in DETECTORS) claim overlapping spans first, matching the old order.
+  const skel = confusablesSkeleton(out);
+  const taken = []; // non-overlapping [start,end) spans, in priority order
+  const overlaps = (s, e) => taken.some((t) => s < t.end && e > t.start);
   for (const det of DETECTORS) {
-    out = out.replace(det.re, (m) => (!det.valid || det.valid(m) ? tokenFor(v, det.type, m) : m));
+    det.re.lastIndex = 0;
+    let m;
+    while ((m = det.re.exec(skel)) !== null) {
+      if (m[0].length === 0) { det.re.lastIndex++; continue; }
+      const start = m.index, end = start + m[0].length;
+      if ((det.valid && !det.valid(m[0])) || overlaps(start, end)) continue;
+      taken.push({ start, end, type: det.type });
+    }
+  }
+  if (taken.length) {
+    taken.sort((a, b) => a.start - b.start);
+    let rebuilt = '';
+    let pos = 0;
+    for (const t of taken) {
+      rebuilt += out.slice(pos, t.start) + tokenFor(v, t.type, out.slice(t.start, t.end));
+      pos = t.end;
+    }
+    out = rebuilt + out.slice(pos);
   }
   return out;
 }

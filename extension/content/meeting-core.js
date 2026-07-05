@@ -40,6 +40,7 @@
 
   // ---- capture state -----------------------------------------------------
   let capturing = false;
+  let limitHit = false; // Free lifetime meeting cap reached — stop capturing, don't restart
   let meetingId = null;
   let startedAt = 0;
   let observer = null;
@@ -200,10 +201,26 @@
     // goes undefined and any chrome.* call throws. Skip quietly once detached.
     if (!chrome.runtime?.id) return;
     try {
-      await chrome.runtime.sendMessage({ type: 'CP_MEETING_PERSIST', record: buildRecord(status, endReason) });
+      const res = await chrome.runtime.sendMessage({ type: 'CP_MEETING_PERSIST', record: buildRecord(status, endReason) });
+      // Free lifetime cap: the worker refused to store this NEW meeting. Tear down so we
+      // don't persist into the void, and don't auto-restart (meetings are Free up to the
+      // cap; the user upgrades from the panel). Existing meetings are never blocked.
+      if (res && res.limit && !limitHit) onCaptureLimit();
     } catch {
       /* worker asleep or context gone during teardown — nothing actionable */
     }
+  }
+
+  // Stop capturing cleanly WITHOUT a final flush (the flush is exactly what's blocked),
+  // so a Free user at the cap doesn't spin trying to persist a meeting that won't save.
+  function onCaptureLimit() {
+    limitHit = true;
+    capturing = false;
+    if (observer) { observer.disconnect(); observer = null; }
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (flushWorker) { try { flushWorker.terminate(); } catch { /* already gone */ } flushWorker = null; }
+    meetingId = null;
   }
 
   // Persist as captions arrive. Triggered by the MutationObserver (a real DOM
@@ -426,6 +443,7 @@
   // an earlier, already-ended call's transcript.
   const RELOAD_RESUME_MS = 90 * 1000; // 90s
   async function start() {
+    if (limitHit) return null; // Free cap reached this page-session — don't re-attempt a capture
     if (capturing) return meetingId;
     capturing = true; // claim synchronously so a re-entrant tick can't double-start
     const key = currentMeetingKey();

@@ -51,16 +51,15 @@ export function redactOnce(text, settings) {
   return { text: out.messages[0]?.content ?? text, vault: ctx.vault };
 }
 
-// The entity (name/org) tier is Pro; Free silently falls back to deterministic
-// regex so the feature still does something useful without the upsell breaking.
+// The entity (name/org) tier is Pro; Free falls back to deterministic regex so the
+// feature still does something useful.
 export function effectiveTier(cfg, isPro) {
   const t = cfg?.tier === 'full' ? 'full' : 'basic';
   return t === 'full' && !isPro ? 'basic' : t;
 }
 
-// Free ceiling: a small taste of the custom dictionary (the first FREE_DICT_LIMIT
-// entries apply); an unlimited dictionary, wider scope, and the model layer are Pro.
-// Enforced here at runtime as defense-in-depth (the UI also surfaces the cap).
+// On Free the first FREE_DICT_LIMIT custom-dictionary entries apply; the full
+// dictionary is Pro. Enforced here at runtime as well as in the UI.
 export const FREE_DICT_LIMIT = 5;
 
 function gatedDictionary(cfg, isPro) {

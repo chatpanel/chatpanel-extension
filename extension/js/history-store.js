@@ -1,18 +1,12 @@
-// History storage seam — the provider boundary for "operational vs. warehouse".
+// History storage seam — the provider boundary for conversation storage.
 //
-// Today every conversation lives in chrome.storage.local, which is scoped to the
-// extension ID and bounded in size. As history grows we want to keep only the
-// HOT tier local (the lightweight index + recently-touched conversations, so the
-// list and search stay instant and offline) and push the COLD tier — full bodies
-// of archived conversations and ended meetings — to an external store served by
-// the ChatPanel Gateway (local or, later, cloud-hosted by ChatPanel; see the
-// Teams shared-store concept).
-//
-// This file defines that boundary so the migration is a one-file change. Callers
-// go through getHistoryStore() instead of touching chrome.storage directly; the
-// index stays local in every implementation. LocalStore is the current behavior
-// (delegates to store.js) and is the default. GatewayStore is the drop-in cold
-// tier — stubbed here, to be filled in when the gateway storage endpoint ships.
+// Every conversation lives in chrome.storage.local, which is scoped to the
+// extension ID and bounded in size. This file defines a provider boundary so a
+// future cold tier can be added as a one-file change. Callers go through
+// getHistoryStore() instead of touching chrome.storage directly; the index stays
+// local in every implementation. LocalHistoryStore is the current behavior
+// (delegates to store.js) and is the default. GatewayHistoryStore is a not-yet-
+// implemented cold-tier stub.
 //
 // CONTRACT (per provider):
 //   listIndex()            → [{id,title,agentId,updatedAt,msgs}]  (always local, hot)
@@ -58,15 +52,13 @@ export class LocalHistoryStore {
   }
 }
 
-// Cold tier served by the ChatPanel Gateway. The index stays LOCAL (so list and
-// search remain instant/offline); only full-record reads/writes hit the gateway,
-// and every body is client-side encrypted first. Endpoints (to define on the
-// gateway): GET/PUT/DELETE /v1/history/conversations/:id, GET /v1/history/index.
+// Cold tier served by the ChatPanel Gateway. The index stays local; only full-record
+// reads/writes would hit the gateway, and every body is client-side encrypted first.
+// Endpoints (to define on the gateway): GET/PUT/DELETE /v1/history/conversations/:id,
+// GET /v1/history/index.
 //
-// Stubbed deliberately — wiring this in is the next milestone (needs a
-// sync/eviction policy: which conversations are "cold", when to evict from local,
-// conflict handling on multi-device writes). Left as the explicit integration
-// point so callers don't change when it lands.
+// Not yet implemented — left as the integration point so callers don't change when
+// it lands.
 export class GatewayHistoryStore {
   constructor({ baseUrl, contentKey } = {}) {
     this.baseUrl = baseUrl; // gateway origin, e.g. http://127.0.0.1:4320 or a hosted URL

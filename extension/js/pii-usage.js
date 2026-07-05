@@ -2,16 +2,14 @@
 //
 // "Full" tier = the model/NER pass that finds names, orgs and locations (the
 // reversible [[PERSON_1]] tokens), as opposed to the always-free deterministic
-// pass (emails, keys, cards, phones via regex + dictionary). On Free this is a
-// lifetime taste — FREE_LIMITS.fullRedactions uses — then it falls back to the
-// deterministic tier until the user upgrades. Pro is unlimited.
+// pass (emails, keys, cards, phones via regex + dictionary). On Free this is
+// capped at FREE_LIMITS.fullRedactions uses, then it falls back to the
+// deterministic tier. Pro is unlimited.
 //
-// The count is intentionally SHARED: every full-tier redaction the extension
-// performs decrements it, whether it came from a normal ChatPanel chat send or
-// from the privacy "Test a prompt" run. Persisted in chrome.storage.local so it
-// survives reloads and is the same number in the side panel and the settings
-// page. (The gateway enforces its OWN equivalent allowance server-side for the
-// other clients that route through it; this is the extension-local mirror.)
+// The count is shared: every full-tier redaction the extension performs counts
+// against it, whether from a normal ChatPanel chat send or from the privacy
+// "Test a prompt" run. Persisted in chrome.storage.local so it survives reloads
+// and reads the same in the side panel and the settings page.
 
 import { FREE_LIMITS } from './license.js';
 

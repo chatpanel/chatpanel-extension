@@ -161,15 +161,17 @@ export class NoteLimitError extends Error {
   }
 }
 
-// { reached, limit, count } — reached is true when a Free user is at/over the cap.
-// Pro/Team never reach it. Counts via the lightweight index (no body decrypts). The UI
-// calls this BEFORE createNote() to show a friendly upgrade prompt instead of a throw.
+// { reached, limit, count } — reached is true when a Free user is at/over the cap;
+// Pro/Team never reach it. `count` is the lifetime number of notes ever created,
+// seeded from the current index the first time. The UI calls this before createNote()
+// to show an upgrade prompt instead of a throw.
 export async function noteLimitReached() {
   const { getLicense, isPro, FREE_LIMITS } = await import('./license.js');
+  const { usageCount } = await import('./usage-counters.js');
   const limit = FREE_LIMITS.notes;
   const license = await getLicense();
-  if (isPro(license)) return { reached: false, limit, count: 0 };
-  const count = (await getNoteIndex()).length;
+  const count = await usageCount('notesCreated', (await getNoteIndex()).length);
+  if (isPro(license)) return { reached: false, limit, count };
   return { reached: count >= limit, limit, count };
 }
 
@@ -180,11 +182,16 @@ export async function noteLimitReached() {
 export async function createNote({ title = '', body = '', attribution = null, versions = null } = {}) {
   const { reached, limit } = await noteLimitReached();
   if (reached) throw new NoteLimitError(limit);
-  return saveNote({
+  const rec = await saveNote({
     id: uid(), title, body, createdAt: Date.now(),
     ...(Array.isArray(attribution) ? { attribution } : {}),
     ...(Array.isArray(versions) ? { versions } : {}),
   });
+  // Tick the lifetime counter so the Free cap tracks notes ever created, not the
+  // current index length (noteLimitReached seeded it above, so this just adds one).
+  const { bumpUsage } = await import('./usage-counters.js');
+  await bumpUsage('notesCreated');
+  return rec;
 }
 
 export async function deleteNote(id) {

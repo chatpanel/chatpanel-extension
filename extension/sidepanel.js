@@ -5159,8 +5159,7 @@ async function removeConv(id) {
   }
 }
 
-// Export one conversation as a downloaded Markdown file (Pro). Free users get an
-// upsell — keeping the affordance visible is itself an upgrade nudge.
+// Export one conversation as Markdown (Pro; Free users see an upgrade prompt).
 async function exportConv(id) {
   if (!can(state.license, 'exportChats')) return upsell('exportChats');
   const conv = state.convCache.get(id) || (await getConversation(id));

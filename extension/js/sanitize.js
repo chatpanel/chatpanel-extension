@@ -129,5 +129,43 @@ export function stripHidden(text, opts) {
   return sanitizeUnicode(text, opts).clean;
 }
 
+// ── Confusables skeleton ─────────────────────────────────────────────────────
+// Fold single-code-point Latin LOOK-ALIKES (Cyrillic / Greek / fullwidth) to their
+// ASCII skeleton so a homoglyph-obfuscated value (jоhn@x.com with a Cyrillic 'о')
+// becomes matchable by the ASCII regexes. STRICTLY 1:1 per code point — every mapping
+// is one char → one char — so a match's indices in the skeleton line up exactly with
+// the original text. Use it for DETECTION only and redact the ORIGINAL span, so
+// legitimate Cyrillic/Greek/CJK text is never rewritten (only deceptively-Latin
+// values that actually match a detector get touched). Built from numeric code points
+// (no literal confusables in source, like the rest of this module).
+const CONFUSABLE = new Map([
+  // Cyrillic lowercase → Latin
+  [0x0430, 'a'], [0x0435, 'e'], [0x043E, 'o'], [0x0440, 'p'], [0x0441, 'c'],
+  [0x0443, 'y'], [0x0445, 'x'], [0x0455, 's'], [0x0456, 'i'], [0x0458, 'j'],
+  [0x04BB, 'h'], [0x043C, 'm'], [0x043D, 'h'], [0x0442, 't'], [0x043A, 'k'],
+  // Cyrillic uppercase → Latin
+  [0x0410, 'A'], [0x0412, 'B'], [0x0415, 'E'], [0x041A, 'K'], [0x041C, 'M'],
+  [0x041D, 'H'], [0x041E, 'O'], [0x0420, 'P'], [0x0421, 'C'], [0x0422, 'T'],
+  [0x0425, 'X'], [0x0406, 'I'], [0x0408, 'J'], [0x0405, 'S'],
+  // Greek → Latin
+  [0x03BF, 'o'], [0x03C1, 'p'], [0x03B1, 'a'], [0x03BD, 'v'], [0x03B9, 'i'],
+  [0x0391, 'A'], [0x0392, 'B'], [0x0395, 'E'], [0x0396, 'Z'], [0x0397, 'H'],
+  [0x0399, 'I'], [0x039A, 'K'], [0x039C, 'M'], [0x039D, 'N'], [0x039F, 'O'],
+  [0x03A1, 'P'], [0x03A4, 'T'], [0x03A5, 'Y'], [0x03A7, 'X'],
+]);
+
+export function confusablesSkeleton(text) {
+  if (typeof text !== 'string' || text === '') return text ?? '';
+  let out = '';
+  for (const ch of text) {
+    const cp = ch.codePointAt(0);
+    if (cp >= 0xFF01 && cp <= 0xFF5E) { out += String.fromCharCode(cp - 0xFEE0); continue; } // fullwidth ASCII
+    const mapped = CONFUSABLE.get(cp);
+    out += mapped != null ? mapped : ch;
+  }
+  return out;
+}
+
 // Exposed for tests / external auditing.
 export const SANITIZE_RANGES = RANGES;
+export const CONFUSABLE_MAP = CONFUSABLE;

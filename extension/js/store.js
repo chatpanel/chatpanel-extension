@@ -39,7 +39,7 @@ export function defaultSettings() {
     // from MV3 — front them with an HTTP bridge.
     mcpServers: [],
     // Free tier: one usable API endpoint + one usable local agent (the user's
-    // pick). Everything else stays visible in the picker but locked behind Pro.
+    // pick). Others remain visible in the picker but require Pro.
     freeEndpointId: 'local-ollama',
     freeAgentId: 'claude-code',
     // Endpoints — the one place for API models: a connection (provider + base

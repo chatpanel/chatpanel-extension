@@ -95,12 +95,51 @@ async function readStoredJSON(key) {
   return value;
 }
 
+// Thrown by callers that gate a NEW capture up front (mirrors NoteLimitError).
+export class MeetingLimitError extends Error {
+  constructor(limit) {
+    super(`Free plan is limited to ${limit} meetings`);
+    this.name = 'MeetingLimitError';
+    this.limit = limit;
+  }
+}
+
+// { reached, limit, count } — mirrors store-notes.js noteLimitReached(). `count` is the
+// lifetime number of meetings ever captured, seeded from the current index the first
+// time. Pro/Team never reach it. The panel calls this to show an upgrade prompt before
+// starting a capture.
+export async function meetingLimitReached() {
+  const { getLicense, isPro, FREE_LIMITS } = await import('./license.js');
+  const { usageCount } = await import('./usage-counters.js');
+  const limit = FREE_LIMITS.meetings;
+  const license = await getLicense();
+  const count = await usageCount('meetingsCreated', (await getMeetingIndex()).length);
+  if (isPro(license)) return { reached: false, limit, count };
+  return { reached: count >= limit, limit, count };
+}
+
 // Persist (or update) one meeting record + its index entry, capped and encrypted.
-export async function persistMeeting(rec) {
-  if (!rec?.id) return;
+// Returns { ok, id } normally, or { blocked, limit } when a Free user tries to CREATE
+// a meeting past FREE_LIMITS.meetings. Every capture path funnels through here
+// (content script → CP_MEETING_PERSIST → here), and this is the counter of
+// meetings-ever-captured.
+export async function persistMeeting(rec, { enforceLimit = true } = {}) {
+  if (!rec?.id) return { ok: false };
   const capped = capRecord(rec);
-  await chrome.storage.local.set({ [meetingKey(capped.id)]: await encryptJSON(capped) });
   const index = await getMeetingIndex();
+  const i = index.findIndex((e) => e.id === capped.id);
+  const isNew = i < 0;
+  // Only NEW captures are capped/counted. Updating an EXISTING meeting (heartbeat,
+  // resume) is always allowed — a capture already in progress must finish and save.
+  // `enforceLimit:false` (backup restore) skips BOTH the block and the counter bump:
+  // restore must never lose meetings, and re-restoring your own backup mustn't inflate
+  // the lifetime count (the counter re-seeds from the restored index on next read).
+  const gate = isNew && enforceLimit;
+  if (gate) {
+    const { reached } = await meetingLimitReached();
+    if (reached) return { blocked: true, limit: true };
+  }
+  await chrome.storage.local.set({ [meetingKey(capped.id)]: await encryptJSON(capped) });
   const entry = {
     id: capped.id,
     platform: capped.platform,
@@ -113,10 +152,15 @@ export async function persistMeeting(rec) {
     tabId: capped.tabId ?? null, // the capturing tab — lets the SW/panel tie liveness to an OPEN tab (not just heartbeat freshness)
     persistedAt: Date.now(), // last heartbeat — lets the side panel detect zombies
   };
-  const i = index.findIndex((e) => e.id === capped.id);
   if (i >= 0) index[i] = entry;
   else index.unshift(entry);
   await saveIndex(index);
+  if (gate) {
+    // Tick the lifetime counter (meetingLimitReached seeded it above, so this adds one).
+    const { bumpUsage } = await import('./usage-counters.js');
+    await bumpUsage('meetingsCreated');
+  }
+  return { ok: true, id: capped.id };
 }
 
 // Force a meeting to 'ended' (used to clean up a "zombie" live meeting whose tab/
@@ -320,7 +364,7 @@ export async function importMeetings(list, { mode = 'merge' } = {}) {
       rec.status = 'ended';
       rec.endedAt = rec.endedAt || rec.startedAt || Date.now();
     }
-    await persistMeeting(rec); // caps + encrypts + refreshes the index entry
+    await persistMeeting(rec, { enforceLimit: false }); // restore is never blocked/counted
     if (typeof item.notes === 'string' && item.notes) await saveMeetingNotes(rec.id, item.notes);
     if (item.topics) await saveMeetingTopics(rec.id, item.topics);
     imported++;

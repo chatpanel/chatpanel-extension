@@ -1219,8 +1219,7 @@ function fillGatewayForm(cfg) {
   setGwDetectorRows();
 }
 
-// Show the free trial's lifetime usage (read-only — the cap is fixed and the count
-// is server-authoritative; the gateway never accepts a client-set value).
+// Show the Free lifetime redaction usage on the gateway (read-only).
 function renderGatewayFreeUsage(pro, usage) {
   const el = $('gw-free-usage');
   if (!el) return;
@@ -1754,8 +1753,7 @@ function collectGatewayPatch() {
       narrowAll: $('gw-tools-narrowall').checked,
     },
   };
-  // The free trial cap is fixed and its usage is server-authoritative — the client
-  // only ever sends a Pro token (never a cap or usage count).
+  // The client only ever sends a Pro token — never a cap or usage count.
   const token = $('gw-pro-token').value.trim();
   if (token) patch.pro = { entitlementToken: token };
   return patch;
@@ -3152,11 +3150,10 @@ function renderPrefs() {
   }
   const proNote = $('priv-pro-note');
   if (proNote) proNote.classList.toggle('hidden', proPii);
-  // AI (model) detection is a Pro feature, but — like the gateway — Free gets a
-  // lifetime taste counted by the shared quota (FREE_LIMITS.fullRedactions). So we
-  // DON'T hard-disable the option anymore; Free can select it and the chat path
-  // falls back to deterministic once the allowance is spent. The usage line below
-  // shows how many remain.
+  // AI (model) detection is a Pro feature; Free gets a lifetime allowance counted
+  // by the shared quota (FREE_LIMITS.fullRedactions). The option is not disabled on
+  // Free — Free can select it and the chat path falls back to deterministic once the
+  // allowance is spent. The usage line below shows how many remain.
   renderPrivFullUsage(proPii);
   const det = pii.detection || {};
   // "Bundled NER" persists as an endpoint pointed at the gateway's /ner; the

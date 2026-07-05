@@ -5,7 +5,7 @@
 // Attachments have the shape:
 //   { id, kind: 'page' | 'url' | 'selection' | 'meeting', title, url, text, chars }
 
-import { meetingPlatform, meetingToText, getMeeting } from './store-meetings.js';
+import { meetingPlatform, meetingToText, getMeeting, meetingLimitReached } from './store-meetings.js';
 import { isBlockedHost as isBlockedNetHost } from './net.js';
 
 export { meetingPlatform };
@@ -342,7 +342,15 @@ export async function captureMeetingTranscript(tabId, { sinceTs = 0 } = {}) {
   if (ping.ready === false) {
     throw new Error(`Live capture for this platform isn't available yet (${ping.platform}). Zoom web client is supported today.`);
   }
-  if (!ping.capturing) await sendToTab(tabId, { type: 'CP_MEETING_START' }, f.frameId);
+  // Free lifetime cap: block STARTING a fresh capture up front with a clear message.
+  // (The background persist path also enforces the cap; this gives an up-front message
+  // on the manual path instead of a silent no-save.) We only gate when nothing is
+  // capturing yet — an in-progress capture is never interrupted.
+  if (!ping.capturing) {
+    const { reached, limit } = await meetingLimitReached();
+    if (reached) throw new Error(`You've reached the Free limit of ${limit} meetings. Upgrade to Pro for unlimited meeting capture.`);
+    await sendToTab(tabId, { type: 'CP_MEETING_START' }, f.frameId);
+  }
   const res = await sendToTab(tabId, { type: 'CP_MEETING_GET' }, f.frameId);
   const rec = res?.record;
   if (!rec) throw new Error('Capture started — no transcript yet. Make sure live captions are turned on in the meeting.');

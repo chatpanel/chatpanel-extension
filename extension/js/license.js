@@ -1,19 +1,14 @@
-// Monetization gate for ChatPanel — three tiers.
+// License / tier resolution for ChatPanel.
 //
-//   free  → ONE local agent + ONE model endpoint (the user's pick), active-tab +
-//           URL context, local history, built-in skills. One working agent is
-//           the viral hook; it costs us nothing (user's own compute).
-//   pro   → all your agents & models at once, multi-tab, custom skills, per-agent
-//           system prompts, exports (soft-gated client features), AND "bring your
-//           own" custom CLI agents. That last one is HARD-gated, not UI: the local
-//           bridge verifies a server-signed entitlement token (ECDSA P-256, this
-//           file's public key) before it will run a custom command, so it can't be
-//           unlocked by editing the open-source client.
-//   team  → cloud/server features that run on OUR infra (hard-gated, recurring).
+//   free  → one local agent + one model endpoint (user's pick), active-tab + URL
+//           context, local history, built-in skills.
+//   pro   → all agents & models at once, multi-tab, custom skills, per-agent system
+//           prompts, exports, and "bring your own" custom CLI agents (the bridge
+//           verifies a server-signed entitlement token before running one).
+//   team  → cloud/server features that run on ChatPanel infra.
 //
-// Pro/Team entitlement is verified by the ChatPanel server. Activation happens
-// in-app and follows the user's purchase across their devices (with a one-tap
-// email restore as a fallback).
+// Pro/Team entitlement is verified by the ChatPanel server; activation happens
+// in-app and follows the purchase across the user's devices.
 
 const K_LICENSE = 'chatpanel:license'; // local: the active entitlement
 const K_INSTALL = 'chatpanel:install'; // local: this device's stable id
@@ -73,17 +68,22 @@ export const FEATURE_TIER = {
   multiTab: 'pro',
   unlimitedAgents: 'pro',
   customSkills: 'pro',
-  customAgents: 'pro', // "bring your own" CLI agent — HARD-gated, verified by the bridge
+  customAgents: 'pro', // "bring your own" CLI agent — requires Pro (verified by the bridge)
   advancedAgent: 'pro',
   unlimitedNotes: 'pro', // Free is capped at FREE_LIMITS.notes; Pro/Team is unlimited
+  unlimitedMeetings: 'pro', // Free is capped at FREE_LIMITS.meetings; Pro/Team is unlimited
   structuredInsert: 'pro', // native-format insert for canvas apps (Excalidraw, …)
   exportChats: 'pro',
   autoBackup: 'pro', // scheduled daily backup of all data to disk (survives a reinstall)
   promptLibrary: 'pro',
   fileAttachments: 'pro',
-  liveMeetings: 'pro',
+  // The meeting scribe is free, capped at FREE_LIMITS.meetings lifetime captures
+  // (unlimited via the unlimitedMeetings feature), mirroring notes. Keeping this 'free' unlocks
+  // every can(license,'liveMeetings') gate (capture, dashboard, meeting history
+  // search, meeting tools) in one place.
+  liveMeetings: 'free',
   watch: 'pro',
-  // team — server-side / collaboration (enforced once the backend ships)
+  // team-tier features
   cloudSync: 'team',
   sharedLibrary: 'team',
   hostedBridge: 'team',
@@ -93,6 +93,7 @@ export const FEATURE_TIER = {
 // Human-readable feature lists for the upgrade UI.
 export const PRO_FEATURES = {
   unlimitedNotes: 'Unlimited notes — Free keeps your first 10',
+  unlimitedMeetings: 'Unlimited meetings — Free keeps your first 10',
   multiTab: 'Attach several tabs at once',
   unlimitedAgents: 'Unlimited custom agents',
   customSkills: 'Create & edit your own skills',
@@ -100,7 +101,6 @@ export const PRO_FEATURES = {
   structuredInsert: 'Clean diagrams on Excalidraw, draw.io & tldraw — shapes placed as data, not pixel-drawn',
   exportChats: 'Export conversations as Markdown',
   autoBackup: 'Automatic daily backup of all your data to disk',
-  liveMeetings: 'Live meeting scribe — capture & summarize Zoom, Google Meet, Teams & Webex',
   watch: 'Watch a page & act on changes — the agent reacts as the page updates',
 };
 export const TEAM_FEATURES = {
@@ -110,10 +110,13 @@ export const TEAM_FEATURES = {
   sso: 'SSO & admin controls',
 };
 
-// Free-tier ceilings. Free gives one usable API endpoint AND one usable local
-// CLI agent — the user picks which. Everything else stays visible but locked.
+// Free-tier ceilings. Free gives one usable API endpoint and one usable local
+// CLI agent — the user picks which.
 export const FREE_LIMITS = {
-  notes: 10, // saved notes on Free — Pro is unlimited (enforced at the note-create factory)
+  notes: 10, // lifetime notes ever created on Free; Pro is unlimited. Enforced at the
+  // note-create factory (createNote).
+  meetings: 10, // lifetime meetings ever captured on Free; Pro is unlimited. Enforced at
+  // store-meetings.js persistMeeting.
   apiEndpoints: 1, // usable API/BYO endpoints on Free
   bridgeAgents: 1, // usable local CLI agents (Claude Code / Codex / Antigravity) on Free
   customAgents: 1, // saved custom agent configs before Pro is required
@@ -122,10 +125,8 @@ export const FREE_LIMITS = {
   gatewayDestinations: 1, // routable gateway destinations on Free — Pro is unlimited
   webSearchEngines: 3, // enabled web-search engines on Free — Pro is unlimited
   webSearchesPerDay: 50, // web searches/day on Free — Pro is unlimited
-  fullRedactions: 25, // LIFETIME AI (full-tier) redactions on Free — a taste of
-  // name/org/location detection before Pro. Counted locally across the chat path
-  // AND the privacy screen (see js/pii-usage.js); Pro is unlimited. Mirrors the
-  // gateway's own "25 free full redactions" allowance.
+  fullRedactions: 25, // lifetime full-tier redactions on Free; Pro is unlimited. Counted
+  // locally across the chat path and the privacy screen (see js/pii-usage.js).
 };
 
 export async function getLicense() {
@@ -188,7 +189,7 @@ export function freeEndpointId(settings) {
   return eps[0]?.id || null;
 }
 export function freeAgentId(settings) {
-  // Custom "bring your own" agents are Pro-only, so they can never be the single
+  // Custom "bring your own" agents require Pro, so they are never the single
   // free agent slot — only built-in bridge CLIs are eligible.
   const bridge = (settings.agents || []).filter((a) => a.kind === 'bridge' && a.bridgeAgent !== 'custom');
   const saved = settings.freeAgentId;
@@ -202,8 +203,8 @@ export function freeAgentId(settings) {
 export function canUseAgent(license, settings, target) {
   if (!target) return false;
   if (isPro(license)) return true;
-  // Custom "bring your own" CLI agents are Pro-only (hard-gated by the bridge);
-  // never usable on Free even if designated as the free slot.
+  // Custom "bring your own" CLI agents require Pro; never usable on Free even if
+  // designated as the free slot.
   if (target.kind === 'bridge' && target.bridgeAgent === 'custom') return false;
   if (target.kind === 'bridge') return target.id === freeAgentId(settings);
   return target.id === freeEndpointId(settings);

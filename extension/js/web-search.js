@@ -369,7 +369,7 @@ export async function webSearchUsage() {
   return { used: u.used, cap, remaining: Math.max(0, cap - u.used) };
 }
 
-// Throw a clear upsell if a Free user is out of daily searches. No-op for Pro.
+// Throw a clear error if a Free user is out of daily searches. No-op for Pro.
 async function assertDailySearchQuota(isPro) {
   if (isPro) return;
   const { used } = await readSearchUsage();
@@ -395,7 +395,7 @@ export async function webSearch(query, opts = {}) {
   if (!q) throw new Error('Empty search query.');
 
   // Free tier: a daily search cap (Pro is unlimited). Checked BEFORE any fetch so a
-  // capped user gets a clean upsell instead of burning bandwidth.
+  // capped user gets a clean error instead of burning bandwidth.
   const isPro = opts.isPro === true;
   await assertDailySearchQuota(isPro);
 

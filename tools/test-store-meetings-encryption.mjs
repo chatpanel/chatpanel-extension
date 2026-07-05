@@ -68,7 +68,7 @@ for (let i = 0; i < 80; i++) {
     endedAt: now - i * 60_000 + 30_000,
     status: 'ended',
     segments: [{ t: now - i * 60_000, speaker: 'Alex', text: `Recent meeting transcript ${i}` }],
-  });
+  }, { enforceLimit: false }); // this test exercises pruning, not the Free capture cap (a user with this many meetings is Pro)
 }
 assert.equal(
   await pruneMeetings(),
@@ -87,7 +87,7 @@ for (let i = 0; i < 650; i++) {
     endedAt: now - i * 60_000 + 30_000,
     status: 'ended',
     segments: [{ t: now - i * 60_000, speaker: 'Alex', text: `Retained meeting transcript ${i}` }],
-  });
+  }, { enforceLimit: false }); // pruning test — bypass the Free capture cap (see above)
 }
 assert.equal(await pruneMeetings(), 0, 'Default meeting pruning should not enforce a meeting-count retention cap.');
 assert.equal((await getMeetingIndex()).length, 650);

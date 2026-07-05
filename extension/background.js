@@ -245,8 +245,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const frameId = sender?.frameId ?? 0;
     if (tabId != null) msg.record.tabId = tabId;
     persistMeeting(msg.record)
-      .then(() => trackMeetingTab(tabId, frameId, msg.record).catch(() => {}))
-      .then(() => sendResponse?.({ ok: true }))
+      .then((r) => {
+        // Free lifetime cap hit: the new meeting was NOT stored. Don't track its tab;
+        // tell the content script so it can stop capturing + show the upgrade prompt.
+        if (r?.blocked) return sendResponse?.({ ok: false, limit: true });
+        return trackMeetingTab(tabId, frameId, msg.record)
+          .catch(() => {})
+          .then(() => sendResponse?.({ ok: true }));
+      })
       .catch((e) => sendResponse?.({ ok: false, error: String(e) }));
     return true; // async response
   }

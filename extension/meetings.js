@@ -9,7 +9,7 @@ import {
   deleteMeeting, clearAllMeetings, meetingToMarkdown, meetingToText, persistMeeting, PLATFORMS, getMeetingTopics, saveMeetingTopics,
 } from './js/store-meetings.js';
 import { getSettings, getTarget } from './js/store.js';
-import { getLicense, can, subscribe } from './js/license.js';
+import { getLicense, can, subscribe, FREE_LIMITS } from './js/license.js';
 import { streamChat } from './js/providers.js';
 import { buildIndex, bm25Search, buildGraph, tokenize } from './js/meeting-index.js';
 import { drawGraph } from './js/graph-view.js';
@@ -853,7 +853,11 @@ async function importFiles(files) {
     if (!p.segments.length && !p.chat.length && !p.participants.length) { toast(`No transcript lines found in ${file.name}`); continue; }
     const id = `imp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     const rec = { id, platform: 'imported', meetingKey: 'import:' + id, title: p.title, startedAt: p.startedAt, endedAt: p.endedAt, status: 'ended', segments: p.segments, chat: p.chat, participants: p.participants };
-    await persistMeeting(rec);
+    const saved = await persistMeeting(rec);
+    if (saved?.blocked) { // Free lifetime cap — an imported transcript is a new meeting too
+      toast(`Free includes ${FREE_LIMITS.meetings} meetings — upgrade to Pro to import more.`);
+      break;
+    }
     const d = { entry: { id, platform: 'imported', title: p.title, startedAt: p.startedAt, endedAt: p.endedAt, status: 'ended', lines: p.segments.length }, rec, notes: '', parsed: parseNotes(''), people: peopleOf(rec), terms: [], text: '' };
     refreshDoc(d);
     store.set(id, d);
