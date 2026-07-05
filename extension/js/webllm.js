@@ -18,14 +18,15 @@
 export { WEBLLM_ALL_MODELS } from './webllm-models.js';
 import { WEBLLM_ALL_MODELS } from './webllm-models.js';
 
-// Default model: Qwen3-0.6B (q4f16) — a current-generation small model, ~400 MB
-// download, fast on modest GPUs, and coherent enough for a first-run "it works!"
-// moment. Users can pick any model from the full catalog in Settings.
-export const DEFAULT_WEBLLM_MODEL = 'Qwen3-0.6B-q4f16_1-MLC';
+// Default model: Llama-3.2-1B (q4f16) — the best zero-setup balance. It needs the least
+// VRAM of the small models (~879 MB, so it runs on more GPUs), follows instructions
+// well, and emits NO <think> reasoning (unlike the tiny Qwen3 models), so first-run
+// answers are clean and steady. Users can pick a bigger/smarter model in Settings.
+export const DEFAULT_WEBLLM_MODEL = 'Llama-3.2-1B-Instruct-q4f16_1-MLC';
 
 // A short RECOMMENDED subset surfaced first in the picker (ids from the full catalog).
 export const WEBLLM_RECOMMENDED = [
-  'Qwen3-0.6B-q4f16_1-MLC', 'Qwen3-1.7B-q4f16_1-MLC', 'Llama-3.2-3B-Instruct-q4f16_1-MLC',
+  'Llama-3.2-1B-Instruct-q4f16_1-MLC', 'Qwen3-1.7B-q4f16_1-MLC', 'Llama-3.2-3B-Instruct-q4f16_1-MLC',
   'Qwen3-4B-q4f16_1-MLC', 'gemma-2-2b-it-q4f16_1-MLC', 'Phi-3.5-mini-instruct-q4f16_1-MLC',
 ];
 
