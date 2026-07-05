@@ -45,7 +45,7 @@ import { WEBLLM_ALL_MODELS, WEBLLM_RECOMMENDED, DEFAULT_WEBLLM_MODEL, deleteMode
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth } from './js/storage-health.js';
-import { checkGateway, getGatewayConfig, getGatewayLogs, setGatewayConfig, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getDiarizeModel, downloadDiarizeModel } from './js/gateway.js';
+import { checkGateway, getGatewayConfig, getGatewayLogs, setGatewayConfig, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
 import { createVault, redactText } from './js/pii-redact.js';
 import { detectEntities } from './js/pii-detect.js';
 import {
@@ -1482,17 +1482,29 @@ async function refreshGateway() {
   }
   status.innerHTML = `✓ Connected — v${gatewayState.version} · backend: <strong>${gatewayState.backend}</strong> · ${gatewayState.pro?.unlocked ? 'Pro' : 'Free'}`;
   status.className = 'status ok';
+  // Admin routes (GET /config) need the token because Chrome omits Origin on GET to a
+  // permitted host. Seed any manually-entered token, then auto-handshake (a POST DOES
+  // carry our extension Origin, so the gateway hands back the token) so most users never
+  // touch the field. A pre-0.6.31 gateway has no handshake → fall back to the manual token.
+  setGatewayToken(settings.gatewayToken || '');
+  await handshakeGatewayToken(url);
   try {
     fillGatewayForm(await getGatewayConfig(url));
     $('gw-preview')?.classList.add('hidden'); // connected — the real config replaces the preview
     $('gw-config').classList.remove('hidden');
+    $('gw-token-row')?.classList.add('hidden'); // authorized — hide the manual token fallback
+    $('gw-token-hint')?.classList.add('hidden');
     renderGatewayMonitor(gatewayState);
     renderNerStatus(gatewayState.ner);
     refreshNerModels();
     refreshSttModels();
     refreshDiarizeModel();
   } catch (e) {
-    status.textContent = `✓ Connected, but config load failed: ${e.message}`;
+    const isAuth = /admin route|token required|403/i.test(e.message || '');
+    status.innerHTML = isAuth
+      ? `✓ Connected, but the admin API needs a token. Update the gateway (v0.6.31+) so it authorizes automatically, or paste the token below.`
+      : `✓ Connected, but config load failed: ${e.message}`;
+    if (isAuth) { $('gw-token-row')?.classList.remove('hidden'); $('gw-token-hint')?.classList.remove('hidden'); } // reveal manual token field
   }
 }
 
@@ -2180,6 +2192,14 @@ function wireGateway() {
     settings.gatewayUrl = normalizeGatewayUrl($('gw-url').value);
     await saveSettings(settings);
     refreshGateway();
+  };
+  if ($('gw-token')) $('gw-token').value = settings.gatewayToken || '';
+  const saveTok = $('gw-token-save');
+  if (saveTok) saveTok.onclick = async () => {
+    settings.gatewayToken = ($('gw-token').value || '').trim();
+    await saveSettings(settings);
+    setGatewayToken(settings.gatewayToken);
+    refreshGateway(); // retry the admin API with the pasted token
   };
   $('gw-det-backend').onchange = () => { setGwDetectorRows(); renderNerStatus(gatewayState && gatewayState.ner); };
   $('gw-det-url').oninput = setGwDetectorRows; // live cloud-warning for a manual URL

@@ -541,6 +541,16 @@ npx @chatpanel/bridge</code></pre>
             <button type="button" id="gw-check" class="btn">Check</button>
           </div>
           <p class="status" id="gw-status">Not connected.</p>
+          <!-- Manual admin-token fallback. Normally hidden: the extension auto-handshakes the
+               token on connect (v0.6.31+). Revealed only when an older gateway rejects the
+               admin API, so the user can paste the token from ~/.chatpanel/gateway-token. -->
+          <div class="row hidden" id="gw-token-row">
+            <label>Admin token</label>
+            <input id="gw-token" type="password" placeholder="paste from ~/.chatpanel/gateway-token" autocomplete="off" />
+            <button type="button" id="gw-token-save" class="btn">Save</button>
+          </div>
+          <p class="muted tiny hidden" id="gw-token-hint">Only needed for older gateways. Find it in
+            <code>~/.chatpanel/gateway-token</code> (macOS/Linux) — or just update the gateway and it authorizes automatically.</p>
           <label class="check" title="Push your chats & meetings to this local gateway so it (and other on-device tools/agents) can search your full history off the browser thread. Data is sent to your LOCAL gateway only — it never leaves your machine.">
             <input type="checkbox" id="gw-warm-search" /> Index my history to this gateway for fast full-corpus search
           </label>

@@ -4,6 +4,14 @@
 
 const TIMEOUT_MS = 4000;
 
+// Admin token for the gateway's guarded routes (GET /config, /logs). The gateway
+// normally trusts the extension by its chrome-extension:// Origin, but Chrome omits
+// Origin on GET requests to a host the extension has permission for — so config READS
+// need the token. Set from Settings (settings.gatewayToken) or the auto-handshake.
+let ADMIN_TOKEN = '';
+export function setGatewayToken(token) { ADMIN_TOKEN = String(token || '').trim(); }
+export function getGatewayToken() { return ADMIN_TOKEN; }
+
 export function normalizeGatewayUrl(url) {
   let u = String(url || '').trim();
   if (!u) return '';
@@ -15,7 +23,9 @@ async function jfetch(url, opts = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
-    const res = await fetch(url, { ...opts, signal: ctrl.signal });
+    // Attach the admin token when set — harmless on open routes, required on GET /config.
+    const headers = ADMIN_TOKEN ? { ...(opts.headers || {}), Authorization: `Bearer ${ADMIN_TOKEN}` } : opts.headers;
+    const res = await fetch(url, { ...opts, headers, signal: ctrl.signal });
     const text = await res.text();
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch { /* non-JSON */ }
@@ -37,6 +47,21 @@ export async function checkGateway(baseUrl) {
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
+}
+
+// Auto-handshake: fetch the gateway's admin token via a POST. POSTs DO carry the
+// chrome-extension:// Origin (unlike GETs to a permitted host), so the gateway can
+// authorize us by Origin and hand back the token we then use on GET admin routes. No-op
+// against an older gateway with no /admin/token — falls back to any manual token. Returns
+// true if a token is set afterward.
+export async function handshakeGatewayToken(baseUrl) {
+  const base = normalizeGatewayUrl(baseUrl);
+  if (!base) return false;
+  try {
+    const r = await jfetch(`${base}/admin/token`, { method: 'POST' });
+    if (r?.token) { setGatewayToken(r.token); return true; }
+  } catch { /* old gateway, or not authorized — keep any manually-entered token */ }
+  return !!ADMIN_TOKEN;
 }
 
 export async function getGatewayConfig(baseUrl) {
