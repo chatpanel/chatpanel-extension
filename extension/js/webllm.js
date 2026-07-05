@@ -109,6 +109,14 @@ export async function* streamChat(modelId, messages, { onProgress, signal, param
   // extra_body (e.g. { enable_thinking:false } for Qwen3) — the caller sets sane caps
   // so a tiny model can't ramble into a repetition loop.
   const completion = await engine.chatCompletion({ stream: true, messages, ...params });
+  // STOP responsiveness: interrupt the GPU generation the MOMENT the caller aborts —
+  // not just at the next chunk boundary (a stuck/looping model may not yield for a
+  // while, so waiting for the loop check left Stop feeling dead).
+  const onAbort = () => { try { engine.interruptGenerate(); } catch { /* ignore */ } };
+  if (signal) {
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  }
   try {
     for await (const chunk of completion) {
       if (signal?.aborted) break;
@@ -116,7 +124,8 @@ export async function* streamChat(modelId, messages, { onProgress, signal, param
       if (delta) yield delta;
     }
   } finally {
-    if (signal?.aborted) { try { await engine.interruptGenerate(); } catch { /* ignore */ } }
+    signal?.removeEventListener('abort', onAbort);
+    try { await engine.interruptGenerate(); } catch { /* ignore */ }
   }
 }
 

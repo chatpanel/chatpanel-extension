@@ -888,10 +888,10 @@ async function streamWebLLM(agent, messages, { signal, onDelta, onEvent, setting
   // fall into a loop (the citation/link degeneration we saw), and turn Qwen3's <think>
   // OFF at the source (enable_thinking:false is reliable; the /no_think text switch isn't).
   const params = {
-    max_tokens: 800,
+    max_tokens: 512,        // bound runaway length (a slow on-device model can't ramble forever)
     temperature: 0.7,
-    frequency_penalty: 0.6,
-    presence_penalty: 0.4,
+    frequency_penalty: 0.7, // discourage the tiny-model repetition loop harder
+    presence_penalty: 0.5,
     ...(isQwen3 ? { extra_body: { enable_thinking: false } } : {}),
   };
 
