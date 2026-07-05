@@ -44,6 +44,12 @@ let saveTimer = null;
 // wrongly block a paying user; createNote() is the authoritative backstop regardless.
 let isProUser = true;
 let noteCap = 10;       // FREE_LIMITS.notes, cached from license.js
+// Lifetime notes EVER created (Free cap counts these, not the current list — deleting a
+// note does NOT free a slot, matching createNote()'s authoritative check). Cached; the
+// header shows current(deleted)/cap and the New-note gate uses this, so UI + enforcement
+// agree (they diverged before: the header used list.length, so after deletes it showed
+// free slots while createNote() silently threw — the "nothing happens" confusion).
+let noteCreatedCount = 0;
 
 // ── utilities ─────────────────────────────────────────────────────────────────
 // Pure helpers (relTime/escapeHtml/highlight/snippetOf/…) live in js/notes-util.js.
@@ -92,6 +98,21 @@ async function refreshLicense() {
     noteCap = FREE_LIMITS.notes;
     isProUser = isPro(await getLicense());
   } catch { /* fail-open: leave Pro=true; the store backstop still enforces */ }
+  await refreshNoteUsage();
+}
+
+// Refresh the cached lifetime notes-created count from the usage counter (seeded from
+// the current index the first time). Cheap storage read — call on load and after a
+// create; the header then repaints from cache on every list change.
+async function refreshNoteUsage() {
+  try {
+    const { usageCount } = await import('./js/usage-counters.js');
+    // Seed from the ACTUAL index length (not a maybe-empty `list` mid-load) so an
+    // existing user's notes count as already-created — and it matches the identical
+    // seed store-notes.noteLimitReached() uses. usageCount ignores the seed once set.
+    const seed = list.length || (await getNoteIndex()).length;
+    noteCreatedCount = await usageCount('notesCreated', seed);
+  } catch { noteCreatedCount = Math.max(noteCreatedCount, list.length); }
   renderNoteCap();
 }
 
@@ -101,21 +122,26 @@ async function refreshLicense() {
 function renderNoteCap() {
   const el = $('n-count');
   if (!el) return;
-  if (!list.length) { el.textContent = ''; el.classList.remove('capped'); el.removeAttribute('title'); return; }
-  if (isProUser) { el.textContent = `· ${list.length}`; el.classList.remove('capped'); el.removeAttribute('title'); return; }
-  const atCap = list.length >= noteCap;
-  el.textContent = `· ${list.length}/${noteCap}`;
+  const current = list.length;
+  const created = Math.max(noteCreatedCount, current); // lifetime is always ≥ current
+  if (!current && !created) { el.textContent = ''; el.classList.remove('capped'); el.removeAttribute('title'); return; }
+  if (isProUser) { el.textContent = `· ${current}`; el.classList.remove('capped'); el.removeAttribute('title'); return; }
+  const deleted = Math.max(0, created - current);
+  const atCap = created >= noteCap; // the cap is on notes EVER created, not the current list
+  // e.g. "· 8(2)/10" — 8 current, 2 deleted, of the 10 lifetime Free cap.
+  el.textContent = deleted > 0 ? `· ${current}(${deleted})/${noteCap}` : `· ${current}/${noteCap}`;
   el.classList.toggle('capped', atCap);
   el.title = atCap
-    ? `Free plan holds ${noteCap} notes — upgrade to Pro for unlimited`
-    : `${noteCap - list.length} of ${noteCap} free notes left`;
+    ? `You've created ${created} of ${noteCap} free notes${deleted ? ` (${deleted} deleted — deleting doesn't free a slot)` : ''}. Upgrade to Pro for unlimited.`
+    : `${noteCap - created} of ${noteCap} free notes left${deleted ? ` (${deleted} deleted count toward the cap)` : ''}`;
 }
 
-// Pre-flight the note cap before creating, from cached entitlement (no storage read on
-// this hot path). Returns true (and shows the upsell) when a Free user is at the limit,
-// so callers bail: `if (noteCapBlocked()) return;`. createNote() re-checks authoritatively.
+// Pre-flight the note cap before creating, from cached state (no storage read on this hot
+// path). Uses the LIFETIME created count — so it matches createNote()'s authoritative
+// check even after deletes. Returns true (and shows the upsell) when a Free user is at the
+// limit, so callers bail: `if (noteCapBlocked()) return;`.
 function noteCapBlocked() {
-  if (isProUser || list.length < noteCap) return false;
+  if (isProUser || noteCreatedCount < noteCap) return false;
   noteCapReached(noteCap);
   return true;
 }
@@ -1622,7 +1648,10 @@ async function maybeExtractNoteTopics(rec) {
 async function newNote() {
   if (noteCapBlocked()) return; // Free tier: first 10 notes only
   await flushSave();
-  const rec = await createNote({ body: '' });
+  let rec;
+  try { rec = await createNote({ body: '' }); }
+  catch (e) { if (e instanceof NoteLimitError) { noteCapReached(e.limit); return; } throw e; } // backstop: never fail silently
+  noteCreatedCount += 1; // lifetime cap tracks notes ever created
   updateEntry(rec);
   await openNote(rec.id, rec);           // finish editor setup before we place the cursor
   setMode('live', false, { focus: false }); // a blank note opens in the live editor (don't change the saved default); don't let CM's async focus steal the title
@@ -1966,7 +1995,10 @@ async function planInNewNote(explicitTopic) {
   // 1) Create the plan note; 2) replace the selection in THIS note with a link to it.
   const clean = topic.replace(/[#*_`>~[\]]/g, '').replace(/\s+/g, ' ').trim();
   const title = `Plan: ${clean.slice(0, 60)}`;
-  const plan = await createNote({ title, body: '' });
+  let plan;
+  try { plan = await createNote({ title, body: '' }); }
+  catch (e) { if (e instanceof NoteLimitError) { noteCapReached(e.limit); return; } throw e; } // backstop: never fail silently
+  noteCreatedCount += 1;
   bodyReplaceRange(`[[${title}]]`, s0, s1); // replace the selection with a link (classic or CM)
   await flushSave(); // persist the link in the source note before we switch away
 
@@ -3005,6 +3037,7 @@ function makeNoteTools(job) {
           if (e instanceof NoteLimitError) return JSON.stringify({ error: `Note limit reached — the Free plan keeps ${e.limit} notes. Write this content into the current note instead of creating a new one (Pro unlocks unlimited notes).` });
           throw e;
         }
+        noteCreatedCount += 1; // keep the header cap count in sync with the lifetime counter
         await reloadIndex();
         renderList($('n-search').value);
         if (current?.id === job.noteId) logActivity(job.modelLabel, `created “${rec.title}”`);
