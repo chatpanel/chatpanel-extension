@@ -494,3 +494,11 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .gw-detail-list .ent .val { color:var(--text); }
 .gw-detail-list .ent .arrow { color:var(--muted); padding:0 4px; }
 .gw-detail-list .ent .ty { color:var(--muted); }
+
+/* WebLLM custom-model manager */
+.ep-webllm-cm { display: flex; flex-direction: column; gap: 8px; }
+.ep-webllm-cm-list { display: flex; flex-direction: column; gap: 4px; }
+.ep-webllm-cm-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; border-radius: 8px; background: var(--surface-2, rgba(127,127,127,0.08)); }
+.ep-webllm-cm-item .btn { padding: 2px 8px; }
+.ep-webllm-cm-form { display: flex; flex-wrap: wrap; gap: 6px; }
+.ep-webllm-cm-form .ep-webllm-cm-input { flex: 1 1 180px; min-width: 140px; }

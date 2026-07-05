@@ -547,17 +547,22 @@ function applyWebllmEndpointUi(node, q, ep) {
   q('.ep-load')?.classList.add('hidden');                                            // Load models (N/A)
   q('.ep-test')?.classList.add('hidden');                                            // Test (N/A)
 
-  // Full on-device catalog (~159 models), searchable; recommended first, then by size.
-  // Persists to ep.model on Save (becomes the remembered default next time).
+  // Full on-device catalog (~159 models) + any user-added custom models, searchable;
+  // customs and recommended first, then by size. Persists to ep.model on Save.
   const rec = new Set(WEBLLM_RECOMMENDED);
-  const opts = [...WEBLLM_ALL_MODELS]
-    .sort((a, b) => (rec.has(b.id) - rec.has(a.id)) || (a.mb - b.mb))
-    .map((m) => ({
-      id: m.id,
-      label: `${rec.has(m.id) ? '★ ' : ''}${m.id.replace(/-MLC$/, '')} · ~${m.mb} MB${m.ctx ? ` · ${Math.round(m.ctx / 1024)}k ctx` : ''}`,
-      free: true,
-    }));
-  wireModelSelect(q('.ep-model'), q('.ep-model-custom'), WEBLLM_ALL_MODELS.map((m) => m.id), ep.model, opts);
+  const custom = (settings.webllmCustomModels || []).filter((c) => c && c.id);
+  const opts = [
+    ...custom.map((c) => ({ id: c.id, label: `⚙ ${c.id} · custom`, free: true })),
+    ...[...WEBLLM_ALL_MODELS]
+      .sort((a, b) => (rec.has(b.id) - rec.has(a.id)) || (a.mb - b.mb))
+      .map((m) => ({
+        id: m.id,
+        label: `${rec.has(m.id) ? '★ ' : ''}${m.id.replace(/-MLC$/, '')} · ~${m.mb} MB${m.ctx ? ` · ${Math.round(m.ctx / 1024)}k ctx` : ''}`,
+        free: true,
+      })),
+  ];
+  const ids = [...custom.map((c) => c.id), ...WEBLLM_ALL_MODELS.map((m) => m.id)];
+  wireModelSelect(q('.ep-model'), q('.ep-model-custom'), ids, ep.model, opts);
 
   const section = q('.ep-model')?.closest('.endpoint-section');
   if (section && !section.querySelector('.ep-webllm-extra')) {
@@ -583,6 +588,63 @@ function applyWebllmEndpointUi(node, q, ep) {
     extra.appendChild(btn);
     section.appendChild(extra);
   }
+  if (section && !section.querySelector('.ep-webllm-cm')) {
+    section.appendChild(buildWebllmCustomModelsUi());
+  }
+}
+
+// Advanced: manage user-added MLC models ({ id, model, model_lib }). They're global
+// (settings.webllmCustomModels) and appear in the model picker with a ⚙ marker.
+function buildWebllmCustomModelsUi() {
+  const wrap = document.createElement('div');
+  wrap.className = 'row ep-webllm-cm';
+  const title = document.createElement('p');
+  title.className = 'muted tiny';
+  title.innerHTML = 'Custom MLC models (advanced) — add an <a href="https://github.com/mlc-ai/web-llm#custom-models" target="_blank" rel="noopener">MLC-converted</a> model: an id, its weights URL (HF repo), and its model-lib WASM URL.';
+  const list = document.createElement('div');
+  list.className = 'ep-webllm-cm-list';
+  const renderList = () => {
+    list.innerHTML = '';
+    for (const c of settings.webllmCustomModels || []) {
+      const row = document.createElement('div');
+      row.className = 'ep-webllm-cm-item';
+      const label = document.createElement('span');
+      label.className = 'muted tiny';
+      label.textContent = c.id;
+      const del = document.createElement('button');
+      del.type = 'button'; del.className = 'btn ghost'; del.textContent = '✕';
+      del.title = 'Remove this custom model';
+      del.addEventListener('click', async () => {
+        settings.webllmCustomModels = (settings.webllmCustomModels || []).filter((x) => x.id !== c.id);
+        await saveSettings(settings);
+        renderEndpoints();
+      });
+      row.append(label, del);
+      list.appendChild(row);
+    }
+  };
+  renderList();
+  const mkInput = (ph) => { const i = document.createElement('input'); i.placeholder = ph; i.className = 'ep-webllm-cm-input'; return i; };
+  const idIn = mkInput('model id — e.g. MyModel-q4f16_1-MLC');
+  const modelIn = mkInput('weights URL — MLC-converted HF repo/folder');
+  const libIn = mkInput('model-lib .wasm URL');
+  const add = document.createElement('button');
+  add.type = 'button'; add.className = 'btn accent'; add.textContent = 'Add model';
+  const flash = (t) => { const was = add.textContent; add.textContent = t; setTimeout(() => { add.textContent = was; }, 1600); };
+  add.addEventListener('click', async () => {
+    const id = idIn.value.trim(); const model = modelIn.value.trim(); const model_lib = libIn.value.trim();
+    if (!id || !model || !model_lib) return flash('All three required');
+    settings.webllmCustomModels = settings.webllmCustomModels || [];
+    if (settings.webllmCustomModels.some((x) => x.id === id)) return flash('Already added');
+    settings.webllmCustomModels.push({ id, model, model_lib });
+    await saveSettings(settings);
+    renderEndpoints();
+  });
+  const form = document.createElement('div');
+  form.className = 'ep-webllm-cm-form';
+  form.append(idIn, modelIn, libIn, add);
+  wrap.append(title, list, form);
+  return wrap;
 }
 
 function renderEndpoints() {
