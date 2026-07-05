@@ -836,31 +836,81 @@ export async function listBridgeModels(agent, settings) {
 // gateway. The ~6 MB runtime + the model weights load on first use; we surface that as
 // a `model-load` event so the UI shows download progress in the pending bubble.
 // Text-only (small on-device models don't take images/tools). 100% on-device.
-async function streamWebLLM(agent, messages, { signal, onDelta, onEvent }) {
-  const { streamChat: streamWebLLMChat, DEFAULT_WEBLLM_MODEL } = await import('./webllm.js');
-  const model = (agent.model && String(agent.model).trim()) || DEFAULT_WEBLLM_MODEL;
-  const msgs = [];
-  // Qwen3 emits <think> reasoning by default — noisy/slow for a tiny on-device demo
-  // model. `/no_think` (recognised by the Qwen3 chat template) keeps replies concise
-  // and snappy. Folded into the system prompt so it applies every turn.
-  const sys = [String(agent.systemPrompt || '').trim(), /qwen3/i.test(model) ? '/no_think' : '']
-    .filter(Boolean).join(' ');
-  if (sys) msgs.push({ role: 'system', content: sys });
-  for (const m of messages || []) {
-    const content = typeof m.content === 'string' ? m.content : textFromContent(m.content);
-    if (content != null && content !== '') msgs.push({ role: m.role, content });
+// Trim a chat list to ~budget chars, NEWEST-first. The current (last) turn is kept and
+// its tail truncated — renderContent puts the user's question FIRST and the attached
+// page context AFTER, so this preserves the question and as much leading context as
+// fits; older turns are dropped once the budget runs out.
+function fitWebllmMessages(chat, budget) {
+  const kept = [];
+  let left = Math.max(400, budget);
+  for (let i = chat.length - 1; i >= 0; i--) {
+    let c = chat[i].content;
+    if (c.length > left) {
+      if (i === chat.length - 1) c = c.slice(0, left) + '\n\n…[context truncated to fit this model]';
+      else break; // no room for older turns
+    }
+    kept.unshift({ ...chat[i], content: c });
+    left -= c.length;
+    if (left <= 0) break;
   }
+  return kept;
+}
+
+// Split model output into { think, answer }: text inside <think>…</think> (and a
+// trailing unclosed <think>) is reasoning; the rest is the visible answer.
+function splitThink(s) {
+  let think = ''; let answer = '';
+  const re = /<think>([\s\S]*?)<\/think>/gi;
+  let last = 0; let m;
+  while ((m = re.exec(s))) { answer += s.slice(last, m.index); think += m[1]; last = re.lastIndex; }
+  const tail = s.slice(last);
+  const open = tail.search(/<think>/i);
+  if (open !== -1) { think += tail.slice(open + 7); answer += tail.slice(0, open); }
+  else answer += tail;
+  return { think, answer };
+}
+
+async function streamWebLLM(agent, messages, { signal, onDelta, onEvent }) {
+  const { streamChat: streamWebLLMChat, DEFAULT_WEBLLM_MODEL, webllmPromptBudget } = await import('./webllm.js');
+  const model = (agent.model && String(agent.model).trim()) || DEFAULT_WEBLLM_MODEL;
+  const isQwen3 = /qwen3/i.test(model);
+
+  // Fold attachments (page/selection/URL context) into the text using the SAME helper
+  // the API providers use — WITHOUT this the in-browser model never saw the page context.
+  const chat = (messages || [])
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => ({ role: m.role, content: renderContent(m) }))
+    .filter((m) => m.content != null && m.content !== '');
+
+  // A small on-device model has a tiny context window, and a full page overflows it —
+  // compact to the model's budget (its question survives; context is trimmed to fit).
+  // Qwen3 emits <think> by default; /no_think in the system prompt keeps it terse.
+  const sysText = [String(agent.systemPrompt || '').trim(), isQwen3 ? '/no_think' : ''].filter(Boolean).join(' ');
+  const fitted = fitWebllmMessages(chat, webllmPromptBudget(model) - sysText.length);
+  const msgs = sysText ? [{ role: 'system', content: sysText }, ...fitted] : fitted;
+  // Qwen3 honors the LATEST /no_think — also append it to the last user turn (post-trim).
+  if (isQwen3) {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'user') { msgs[i] = { ...msgs[i], content: `${msgs[i].content}\n\n/no_think` }; break; }
+    }
+  }
+
   let lastText = '';
   const onProgress = (r) => {
     const text = r?.text || `Preparing on-device model… ${Math.round((r?.progress || 0) * 100)}%`;
     if (text !== lastText) { lastText = text; onEvent?.({ type: 'model-load', text: `⏬ ${text}`, progress: r?.progress || 0 }); }
   };
-  let full = '';
+
+  // Route <think> reasoning to the collapsible block; stream only the answer as text —
+  // so even if a Qwen3 build ignores /no_think, the reply the user reads stays clean.
+  let raw = ''; let sentAns = 0; let sentThink = 0;
   for await (const delta of streamWebLLMChat(model, msgs, { onProgress, signal })) {
-    full += delta;
-    onDelta?.(delta);
+    raw += delta;
+    const { think, answer } = splitThink(raw);
+    if (think.length > sentThink) { onEvent?.({ type: 'reasoning', text: think.slice(sentThink) }); sentThink = think.length; }
+    if (answer.length > sentAns) { onDelta?.(answer.slice(sentAns)); sentAns = answer.length; }
   }
-  return full;
+  return splitThink(raw).answer;
 }
 
 async function dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools }) {

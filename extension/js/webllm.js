@@ -18,14 +18,22 @@
 // moment. Users can pick a bigger one from the curated list below.
 export const DEFAULT_WEBLLM_MODEL = 'Qwen3-0.6B-q4f16_1-MLC';
 
-// A short curated menu surfaced in settings (id → label + approx download size).
+// A short curated menu surfaced in settings (id → label + approx download size +
+// `ctx`, a conservative PROMPT character budget for this model's context window —
+// used to compact attached page/context so a small model doesn't overflow, ~3.5
+// chars/token with room reserved for the reply).
 export const WEBLLM_MODELS = [
-  { id: 'Qwen3-0.6B-q4f16_1-MLC', label: 'Qwen3 0.6B — fastest', mb: 400 },
-  { id: 'Qwen3-1.7B-q4f16_1-MLC', label: 'Qwen3 1.7B — balanced', mb: 1100 },
-  { id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC', label: 'Llama 3.2 3B — quality', mb: 2200 },
-  { id: 'Qwen3-4B-q4f16_1-MLC', label: 'Qwen3 4B — best', mb: 2500 },
-  { id: 'gemma-2-2b-it-q4f16_1-MLC', label: 'Gemma 2 2B', mb: 1600 },
+  { id: 'Qwen3-0.6B-q4f16_1-MLC', label: 'Qwen3 0.6B — fastest', mb: 400, ctx: 6000 },
+  { id: 'Qwen3-1.7B-q4f16_1-MLC', label: 'Qwen3 1.7B — balanced', mb: 1100, ctx: 12000 },
+  { id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC', label: 'Llama 3.2 3B — quality', mb: 2200, ctx: 20000 },
+  { id: 'Qwen3-4B-q4f16_1-MLC', label: 'Qwen3 4B — best', mb: 2500, ctx: 24000 },
+  { id: 'gemma-2-2b-it-q4f16_1-MLC', label: 'Gemma 2 2B', mb: 1600, ctx: 10000 },
 ];
+
+// Prompt character budget for a model's context window (defaults small, for safety).
+export function webllmPromptBudget(modelId) {
+  return WEBLLM_MODELS.find((m) => m.id === modelId)?.ctx || 6000;
+}
 
 // WebGPU is required. A headless / older / locked-down Chrome may lack it — callers
 // use this to fall back to a "configure an API key" path with a clear message.
