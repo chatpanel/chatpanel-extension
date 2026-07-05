@@ -182,6 +182,10 @@ export function defaultSettings() {
       watch: { intervalMs: 10000, onlyWhenChanged: true, instruction: '' },
       // Right icon-rail collapsed state.
       railCollapsed: false,
+      // In-browser (WebLLM) model: run it in an offscreen document so it stays loaded
+      // across panel open/close and never blocks the UI thread. Opt-in; if the offscreen
+      // path fails to start the panel falls back to its in-panel engine automatically.
+      webllmBackground: false,
       // WARM search tier (opt-in). When enabled, the extension pushes its DECRYPTED
       // history to the LOCAL gateway's index so it (and other on-device tools/agents)
       // can search the full corpus off the browser thread. Off by default — it sends

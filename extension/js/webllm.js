@@ -104,11 +104,77 @@ export async function ensureEngine(modelId = DEFAULT_WEBLLM_MODEL, onProgress, c
   finally { _loadPromise = null; }
 }
 
+// ── Offscreen (background) engine — opt-in "stay warm" path ──────────────────
+// Runs the engine in an offscreen document so the model stays loaded across panel
+// open/close. The panel is a CLIENT that streams over chrome.runtime messages. Guarded
+// so a failure to set up the offscreen doc falls back to the in-panel engine.
+let _offscreenReady = null;
+export async function ensureOffscreenDoc() {
+  if (typeof chrome === 'undefined' || !chrome.offscreen) throw new Error('offscreen API unavailable');
+  if (_offscreenReady) return _offscreenReady;
+  _offscreenReady = (async () => {
+    if (!(await chrome.offscreen.hasDocument?.())) {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['WORKERS'],
+        justification: 'Run the on-device AI model off the UI thread so it stays loaded when the side panel closes.',
+      });
+    }
+  })();
+  try { return await _offscreenReady; } catch (e) { _offscreenReady = null; throw e; }
+}
+
+let _reqSeq = 0;
+async function* streamChatBackground(model, messages, { onProgress, signal, params = {}, customModels = [] }) {
+  await ensureOffscreenDoc();
+  const reqId = `wl${++_reqSeq}`;
+  const queue = []; let finished = false; let error = null; let wake = null;
+  const listener = (msg) => {
+    if (!msg || msg.target !== 'webllm-panel' || msg.reqId !== reqId) return;
+    if (msg.type === 'progress') onProgress?.(msg.report);
+    else if (msg.type === 'delta') { queue.push(msg.delta); wake?.(); }
+    else if (msg.type === 'done') { finished = true; wake?.(); }
+    else if (msg.type === 'error') { error = new Error(msg.error); finished = true; wake?.(); }
+  };
+  chrome.runtime.onMessage.addListener(listener);
+  const onAbort = () => { try { chrome.runtime.sendMessage({ target: 'offscreen-webllm', type: 'stop', reqId }); } catch { /* ignore */ } };
+  if (signal) { if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }); }
+  chrome.runtime.sendMessage({ target: 'offscreen-webllm', type: 'chat', reqId, model, messages, params, customModels });
+  try {
+    while (!finished || queue.length) {
+      if (signal?.aborted) break;
+      while (queue.length) yield queue.shift();
+      if (!finished && !queue.length) await new Promise((r) => { wake = r; });
+    }
+    if (error) throw error;
+  } finally {
+    chrome.runtime.onMessage.removeListener(listener);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
 // Stream a chat completion from the in-browser model. `messages` is the OpenAI shape
 // ([{role, content}]). Yields text deltas. `onProgress` fires during a first-use
-// download/load (before any token). Abort via `signal`.
-export async function* streamChat(modelId, messages, { onProgress, signal, params = {}, customModels = [] } = {}) {
-  const engine = await ensureEngine(modelId || DEFAULT_WEBLLM_MODEL, onProgress, customModels);
+// download/load (before any token). Abort via `signal`. `background:true` routes to the
+// offscreen engine (stays warm), with automatic fallback to the in-panel engine if the
+// offscreen path can't start.
+export async function* streamChat(modelId, messages, { onProgress, signal, params = {}, customModels = [], background = false } = {}) {
+  const model = modelId || DEFAULT_WEBLLM_MODEL;
+  if (background) {
+    let started = false;
+    try { await ensureOffscreenDoc(); started = true; } catch { started = false; } // no offscreen → in-panel
+    if (started) {
+      let yielded = false;
+      try {
+        for await (const d of streamChatBackground(model, messages, { onProgress, signal, params, customModels })) { yielded = true; yield d; }
+        return;
+      } catch (e) {
+        if (yielded) throw e;         // mid-stream failure — don't re-run on the main thread
+        // else fall through to the in-panel engine (offscreen couldn't produce output)
+      }
+    }
+  }
+  const engine = await ensureEngine(model, onProgress, customModels);
   // `params` carries OpenAI-style generation controls (max_tokens, penalties) plus
   // extra_body (e.g. { enable_thinking:false } for Qwen3) — the caller sets sane caps
   // so a tiny model can't ramble into a repetition loop.
@@ -143,6 +209,13 @@ export async function unload() {
 // endpoint → "Remove downloaded model"). Best-effort across WebLLM cache-util names.
 export async function deleteModel(modelId = DEFAULT_WEBLLM_MODEL) {
   if (_loadedModel === modelId) await unload();
+  // If the offscreen engine is holding this model, ask it to unload + purge too, so the
+  // background "stay warm" path doesn't keep stale weights loaded after a Remove.
+  try {
+    if (typeof chrome !== 'undefined' && chrome.offscreen && (await chrome.offscreen.hasDocument?.())) {
+      chrome.runtime.sendMessage({ target: 'offscreen-webllm', type: 'delete', model: modelId });
+    }
+  } catch { /* ignore */ }
   const mlc = await lib();
   try { await mlc.deleteModelAllInfoInCache?.(modelId); }
   catch { /* fall through */ }

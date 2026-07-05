@@ -899,8 +899,9 @@ async function streamWebLLM(agent, messages, { signal, onDelta, onEvent, setting
   // build that still reasons doesn't hide the reply — but DON'T route it to a collapsible
   // (a model that never closes </think> would look "stuck" with an empty answer).
   const clean = (s) => s.replace(/<think>[\s\S]*?<\/think>\s*/gi, '').replace(/<\/?think>/gi, '');
+  const background = !!settings?.ui?.webllmBackground; // opt-in "stay warm" offscreen engine
   let raw = ''; let shown = 0;
-  for await (const delta of streamWebLLMChat(model, msgs, { onProgress, signal, params, customModels })) {
+  for await (const delta of streamWebLLMChat(model, msgs, { onProgress, signal, params, customModels, background })) {
     raw += delta;
     const vis = clean(raw);
     if (vis.length > shown) { onDelta?.(vis.slice(shown)); shown = vis.length; }

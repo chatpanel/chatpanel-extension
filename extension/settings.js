@@ -3209,6 +3209,7 @@ function renderPrefs() {
   $('pref-language').value = settings.ui.language || '';
   $('pref-enter').checked = settings.ui.sendOnEnter !== false;
   $('pref-stream').checked = settings.ui.streamResponses !== false;
+  $('pref-webllm-bg').checked = settings.ui.webllmBackground === true;
   $('pref-max-tools').value = String(settings.ui.maxToolsPerTurn ?? 24);
   const ws = settings.ui.webSearch || {};
   $('pref-websearch-enabled').checked = ws.enabled !== false;
@@ -3570,6 +3571,7 @@ async function savePrefs() {
   settings.ui.language = $('pref-language').value;
   settings.ui.sendOnEnter = $('pref-enter').checked;
   settings.ui.streamResponses = $('pref-stream').checked;
+  settings.ui.webllmBackground = $('pref-webllm-bg').checked;
   settings.ui.maxToolsPerTurn = Math.max(0, Number($('pref-max-tools').value) || 0);
   const clampN = (v, d) => Math.min(10, Math.max(1, Number(v) || d));
   const engines = collectWebSearchEngines();

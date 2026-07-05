@@ -16,7 +16,8 @@
     "downloads",
     "unlimitedStorage",
     "webNavigation",
-    "debugger"
+    "debugger",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>"
