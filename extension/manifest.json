@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "ChatPanel \u2014 Privacy-First AI Agent",
+  "name": "ChatPanel — Privacy-First AI Agent",
   "version": "0.18.0",
-  "description": "Privacy-first side panel: works with existing AI agents & local/remote models; brings meetings, chats & notes to your browsing.",
+  "description": "Works with Claude Code, Codex or any AI agents & local/remote models — a privacy-first side panel for meetings, chats & notes.",
   "minimum_chrome_version": "116",
   "permissions": [
     "sidePanel",
@@ -52,7 +52,9 @@
         "https://*.teams.live.com/*",
         "https://*.webex.com/*"
       ],
-      "js": ["content/keep-visible.js"],
+      "js": [
+        "content/keep-visible.js"
+      ],
       "all_frames": true,
       "run_at": "document_start",
       "world": "MAIN"
@@ -67,7 +69,10 @@
   },
   "commands": {
     "_execute_action": {
-      "suggested_key": { "default": "Ctrl+I", "mac": "Command+I" }
+      "suggested_key": {
+        "default": "Ctrl+I",
+        "mac": "Command+I"
+      }
     }
   },
   "side_panel": {
@@ -76,7 +81,9 @@
   "options_page": "settings.html",
   "web_accessible_resources": [
     {
-      "resources": ["content/flush-worker.js"],
+      "resources": [
+        "content/flush-worker.js"
+      ],
       "matches": [
         "https://*.zoom.us/*",
         "https://meet.google.com/*",
