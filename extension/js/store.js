@@ -12,6 +12,7 @@ import { exportMeetings, importMeetings, meetingToMarkdown } from './store-meeti
 import { exportNotes, importNotes, noteToMarkdown } from './store-notes.js';
 import { exportOAuthTokens, importOAuthTokens } from './oauth.js';
 import { makeZip } from './zip.js';
+import { sealJSON, openJSON } from './secret-crypto.js';
 
 const K_SETTINGS = 'chatpanel:settings';
 const K_INDEX = 'chatpanel:convIndex';
@@ -401,10 +402,43 @@ if (typeof chrome !== 'undefined') {
   });
 }
 
+// Secrets are encrypted at rest (secret-crypto.js): on-disk these fields are AES-GCM
+// envelopes, everything in memory / returned / backed-up stays plaintext. We seal
+// only inside writeSettings() and open only inside getSettings(), so every caller —
+// and the portable backup — keeps seeing real values. Sealed per-entry (not the whole
+// blob) so a lost/rotated key costs only these fields, not the entire config.
+const SECRET_ARRAYS = ['endpoints', 'mcpServers']; // arrays whose entries carry secrets
+const SECRET_ENTRY_FIELDS = ['apiKey', 'headers'];  // API keys + MCP auth headers
+
+async function transformSecrets(settings, fn) {
+  if (!settings || typeof settings !== 'object') return settings;
+  const out = { ...settings };
+  for (const arr of SECRET_ARRAYS) {
+    if (!Array.isArray(settings[arr])) continue;
+    out[arr] = await Promise.all(settings[arr].map(async (item) => {
+      if (!item || typeof item !== 'object') return item;
+      const copy = { ...item };
+      for (const f of SECRET_ENTRY_FIELDS) {
+        if (f in copy && copy[f] != null && copy[f] !== '') copy[f] = await fn(copy[f]);
+      }
+      return copy;
+    }));
+  }
+  return out;
+}
+const sealSettings = (s) => transformSecrets(s, sealJSON);
+const openSettings = (s) => transformSecrets(s, openJSON);
+
+// The ONLY path that persists settings — seals secrets first. All three set sites
+// (migration re-save, saveSettings, backup import) go through here.
+async function writeSettings(obj) {
+  await chrome.storage.local.set({ [K_SETTINGS]: await sealSettings(obj) });
+}
+
 export async function getSettings() {
   if (_settingsCache) return _settingsCache;
   const got = await chrome.storage.local.get(K_SETTINGS);
-  const stored = got[K_SETTINGS];
+  const stored = await openSettings(got[K_SETTINGS]); // decrypt secrets before merge
   // Merge over defaults so new fields appear after upgrades without wiping
   // a user's saved agents/skills.
   const base = defaultSettings();
@@ -412,7 +446,7 @@ export async function getSettings() {
   // Persist a one-time migration (legacy agents → endpoints) so ids are stable
   // and the side panel & options page stay in agreement.
   if (stored && (stored.version || 0) < base.version) {
-    await chrome.storage.local.set({ [K_SETTINGS]: _settingsCache });
+    await writeSettings(_settingsCache);
   }
   return _settingsCache;
 }
@@ -556,7 +590,7 @@ export async function saveSettings(settings) {
   }
   if (settings && typeof settings === 'object') settings.version = defaultSettings().version;
   _settingsCache = settings;
-  await chrome.storage.local.set({ [K_SETTINGS]: settings });
+  await writeSettings(settings);
   return settings;
 }
 
@@ -803,7 +837,7 @@ export async function importAllData(data, { mode = 'merge' } = {}) {
   let settings = false;
   if (data.settings && typeof data.settings === 'object') {
     const merged = mergeSettings(defaultSettings(), data.settings); // folds in any newer fields
-    await chrome.storage.local.set({ [K_SETTINGS]: merged }); // onChanged clears the cache
+    await writeSettings(merged); // seals secrets at rest; onChanged clears the cache
     _settingsCache = null;
     settings = true;
   }

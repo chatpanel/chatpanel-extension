@@ -4,6 +4,8 @@
 // clients and return access tokens accepted by their model API. It is not a
 // ChatGPT/Claude.ai web-session bridge.
 
+import { sealJSON, openJSON } from './secret-crypto.js';
+
 const K_OAUTH = 'chatpanel:oauthTokens';
 const EXPIRY_SKEW_MS = 60_000;
 const OAUTH_MODES = new Set(['openrouter', 'huggingface', 'gemini']);
@@ -84,13 +86,25 @@ function tokenStoreKey(endpoint) {
   return endpoint?.id || endpoint?.oauth?.providerId || endpoint?.name || 'default';
 }
 
+// Tokens are encrypted at rest (secret-crypto.js): on disk each entry is an AES-GCM
+// envelope; load opens them so every caller (incl. exportOAuthTokens → the portable
+// backup) sees plaintext, save seals them. Reads tolerate legacy plaintext entries,
+// so the migration is transparent (old plaintext → sealed on the next save).
 async function loadTokenStore() {
   const got = await chrome.storage.local.get(K_OAUTH);
-  return got[K_OAUTH] && typeof got[K_OAUTH] === 'object' ? got[K_OAUTH] : {};
+  const store = got[K_OAUTH] && typeof got[K_OAUTH] === 'object' ? got[K_OAUTH] : {};
+  const out = {};
+  for (const [k, v] of Object.entries(store)) {
+    const opened = await openJSON(v);
+    if (opened !== undefined) out[k] = opened; // a decrypt failure drops that entry (re-auth), not the whole store
+  }
+  return out;
 }
 
 async function saveTokenStore(tokens) {
-  await chrome.storage.local.set({ [K_OAUTH]: tokens });
+  const sealed = {};
+  for (const [k, v] of Object.entries(tokens || {})) sealed[k] = await sealJSON(v);
+  await chrome.storage.local.set({ [K_OAUTH]: sealed });
 }
 
 // Backup hooks — the whole OAuth token store travels in the portable backup so a
