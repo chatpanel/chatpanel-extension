@@ -13,6 +13,8 @@
 //     chat — redaction silently falls back to the deterministic layer.
 //   - input is length-capped so a huge transcript can't stall detection.
 
+import { assertEndpointUrl } from './net.js';
+
 const cache = new Map(); // key -> [{value,type}]
 const CACHE_MAX = 300;
 
@@ -151,6 +153,11 @@ export async function detectEntities(text, cfg, { signal, fetchImpl = globalThis
   const run = det.backend === 'endpoint' ? detectViaEndpoint : detectViaOpenAI;
   let ents = [];
   try {
+    // SSRF guard before RAW (pre-redaction) text leaves for the detector: http(s)
+    // only, never cloud metadata. Loopback/LAN allowed — a local NER server / Ollama
+    // is the normal case. A blocked URL fails open (deterministic-only), or surfaces
+    // to the Test button in strict mode.
+    assertEndpointUrl(det.url);
     ents = await withTimeout(run(capped, det, signal, fetchImpl), det.timeoutMs || 1500, signal);
   } catch (e) {
     if (strict) throw e; // surface errors to the Test button

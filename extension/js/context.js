@@ -6,6 +6,7 @@
 //   { id, kind: 'page' | 'url' | 'selection' | 'meeting', title, url, text, chars }
 
 import { meetingPlatform, meetingToText, getMeeting } from './store-meetings.js';
+import { isBlockedHost as isBlockedNetHost } from './net.js';
 
 export { meetingPlatform };
 
@@ -367,21 +368,12 @@ export async function captureMeetingTranscript(tabId, { sinceTs = 0 } = {}) {
 // the LAN and ship the response to the configured model. Block private/loopback/
 // link-local/metadata hosts and non-http(s) schemes — on the initial URL AND on
 // the final URL after redirects.
+// Strict WEB policy: a page fetch must never reach loopback, any private/LAN range,
+// or cloud metadata. The host CLASSIFICATION is the shared, vendored net.js (the same
+// one the gateway and bridge use) so this guard can't drift from the proxied paths;
+// this file pins only the policy + the user-facing messages. See docs/secure-data-plane.md.
 function isBlockedHost(hostname) {
-  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
-  if (!h || h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
-  // IPv6 loopback / unspecified / unique-local (fc00::/7) / link-local (fe80::/10)
-  if (h === '::1' || h === '::' || h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea') || h.startsWith('feb')) return true;
-  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (m) {
-    const a = Number(m[1]), b = Number(m[2]);
-    if (a === 0 || a === 127 || a === 10) return true;        // this-host / loopback / RFC1918
-    if (a === 169 && b === 254) return true;                  // link-local + cloud metadata (169.254.169.254)
-    if (a === 172 && b >= 16 && b <= 31) return true;         // RFC1918
-    if (a === 192 && b === 168) return true;                  // RFC1918
-    if (a === 100 && b >= 64 && b <= 127) return true;        // CGNAT
-  }
-  return false;
+  return isBlockedNetHost(hostname, { allowLoopback: false, allowPrivate: false });
 }
 
 // Strip resource-referencing tags from fetched HTML BEFORE handing it to

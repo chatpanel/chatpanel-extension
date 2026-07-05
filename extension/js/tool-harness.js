@@ -19,7 +19,7 @@
 // passes the already-gated `redactOpts` ({tier, entities, dictionary}) it computed
 // from cfg+isPro — keeping tier/dictionary Pro-gating out of the harness.
 
-import { restoreText, restoreWithAliases, redactText } from './pii-redact.js';
+import { restoreText, restoreWithAliases, redactResultShape } from './pii-redact.js';
 import { narrowSpecs } from './tool-rank.js';
 
 // MCP / remote tools are server-prefixed (mcp_server__tool). Local tools
@@ -97,14 +97,12 @@ export function makeToolHarness({ vault = null, toolData = 'real', redactOpts = 
       return restoreToolArgs(args, vault);                      // real values for the tool
     },
 
-    // ③ What the model sees back (re-redacted). Handles a string or a { text } shape.
+    // ③ What the model sees back (re-redacted). Walks string / { text } / array /
+    // MCP { content:[{text}] } shapes so a tool result can't leak PII to the model
+    // via a nested field the old string/{text}-only path skipped.
     toModelResult(name, raw) {
       if (!on || !redactResults || !redactOpts) return raw;
-      if (typeof raw === 'string') return redactText(raw, vault, redactOpts);
-      if (raw && typeof raw === 'object' && typeof raw.text === 'string') {
-        return { ...raw, text: redactText(raw.text, vault, redactOpts) };
-      }
-      return raw;
+      return redactResultShape(raw, vault, redactOpts);
     },
 
     // ④ The final reply the user sees.

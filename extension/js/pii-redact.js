@@ -18,6 +18,8 @@
 // one reference won't restore (it shows the token) — but the privacy guarantee
 // (the real value never left the device) always holds.
 
+import { stripHidden } from './sanitize.js';
+
 const TOKEN_RE = /\[\[([A-Z][A-Z0-9]*)_(\d+)\]\]/g;
 
 // Bracket-TOLERANT match of the same token. Smaller models routinely drop or mangle
@@ -160,9 +162,16 @@ export function redactText(text, vault, {
   tier = 'basic',
   entities = [],
   dictionary = [],
+  sanitize = true,
+  sanitizeOpts = undefined,
 } = {}) {
   if (text == null || text === '') return text;
-  let out = String(text);
+  // De-steganography BEFORE detection, in-band: an obfuscated value
+  // (j<ZWSP>o<ZWSP>hn@x.com, homoglyphs, ASCII-smuggled Tag chars) must become
+  // matchable so the regex/NER can't be trivially bypassed. Callers used to have to
+  // remember to stripHidden() first; folding it in here makes the engine safe on its
+  // own — the sanitize:false escape hatch is only for a caller that already did it.
+  let out = sanitize ? stripHidden(String(text), sanitizeOpts) : String(text);
   const v = vault || createVault();
 
   const entityTier = tier === 'full' || tier === 'entities';
@@ -215,6 +224,29 @@ export function redactText(text, vault, {
     out = out.replace(det.re, (m) => (!det.valid || det.valid(m) ? tokenFor(v, det.type, m) : m));
   }
   return out;
+}
+
+// Re-redact a tool RESULT before the model sees it, walking the shapes tools
+// actually return: a bare string, a { text } object, an array, and the
+// MCP-standard { content: [{ type:'text', text }] } (incl. an embedded
+// { resource: { text } }). Only text-bearing fields are redacted — arbitrary
+// fields (ids, urls, mime types) are left intact so tool results stay valid.
+// Restore is the inverse concern; this only runs on the model-facing direction.
+export function redactResultShape(raw, vault, opts) {
+  if (raw == null || typeof raw === 'string') {
+    return raw == null ? raw : redactText(raw, vault, opts);
+  }
+  if (Array.isArray(raw)) return raw.map((r) => redactResultShape(r, vault, opts));
+  if (typeof raw === 'object') {
+    let out = raw;
+    if (typeof raw.text === 'string') out = { ...out, text: redactText(raw.text, vault, opts) };
+    if (Array.isArray(raw.content)) out = { ...out, content: raw.content.map((c) => redactResultShape(c, vault, opts)) };
+    if (raw.resource && typeof raw.resource === 'object' && typeof raw.resource.text === 'string') {
+      out = { ...out, resource: { ...raw.resource, text: redactText(raw.resource.text, vault, opts) } };
+    }
+    return out;
+  }
+  return raw;
 }
 
 // Swap placeholders back to their originals. Unknown tokens are left untouched.
