@@ -15,4 +15,8 @@ jobs:
         with:
           node-version: 22
       - run: npm test
+      # Keep the single package Chrome- AND Edge-ready on every change: the
+      # preflight fails the build if the manifest grows a Chrome-only key that
+      # would break Edge certification (update_url, oauth2, …).
+      - run: npm run verify:edge
       - run: npm run package

@@ -1,11 +1,16 @@
-# Build the extension, attach it to a GitHub Release, and (separately) publish to
-# the Chrome Web Store. These are DECOUPLED so you can test before publishing:
+# Build the extension ONCE and, separately, publish that same zip to BOTH the
+# Chrome Web Store and the Microsoft Edge Add-ons store. Edge is Chromium and
+# uses the identical MV3 package — one codebase, one build, two stores. These
+# steps are DECOUPLED so you can test before publishing:
 #
 #   • Push a tag `ext-v*`  → builds the zip + creates the GitHub Release ONLY.
-#                            Nothing goes to the Web Store. Download the zip from
+#                            Nothing goes to either store. Download the zip from
 #                            the release (or dl.chatpanel.net) and test it.
-#   • Run this workflow manually (workflow_dispatch) with publish=true → uploads
-#                            the build to the Chrome Web Store for review.
+#   • Run this workflow manually (workflow_dispatch) → publishes to the store(s)
+#                            you selected (publish_chrome / publish_edge). Each
+#                            store is gated independently on BOTH its input AND
+#                            its secrets being configured, so you can enable one
+#                            store now and the other later with no code change.
 #
 # So the flow is: tag → test the GitHub build → manually dispatch to publish.
 # The version that ships is whatever is in extension/manifest.json.
@@ -22,8 +27,12 @@ on:
     tags: ['ext-v*']
   workflow_dispatch:
     inputs:
-      publish:
-        description: 'Publish to the Web Store (false = build only)'
+      publish_chrome:
+        description: 'Publish to the Chrome Web Store'
+        type: boolean
+        default: true
+      publish_edge:
+        description: 'Publish to Microsoft Edge Add-ons'
         type: boolean
         default: true
 
@@ -35,12 +44,18 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CWS_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+      EDGE_KEY: ${{ secrets.EDGE_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      # Fail fast if the manifest carries anything that breaks Edge before we
+      # publish to either store (the same preflight CI runs on every push).
+      - name: Edge preflight
+        run: npm run verify:edge
 
       - name: Package extension
         run: node tools/package-extension.mjs
@@ -57,9 +72,10 @@ jobs:
           if-no-files-found: error
 
       - name: Publish to Chrome Web Store
-        # Decoupled from tagging: ONLY a manual workflow_dispatch with publish=true
-        # submits to the store. A tag push builds + releases but never publishes.
-        if: ${{ env.CWS_TOKEN != '' && github.event_name == 'workflow_dispatch' && inputs.publish }}
+        # Decoupled from tagging: ONLY a manual workflow_dispatch with
+        # publish_chrome=true submits to the store. A tag push builds + releases
+        # but never publishes.
+        if: ${{ env.CWS_TOKEN != '' && github.event_name == 'workflow_dispatch' && inputs.publish_chrome }}
         env:
           CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
@@ -106,9 +122,24 @@ jobs:
           fi
           echo "Submitted for review."
 
-      - name: Skip notice
+      - name: Publish to Microsoft Edge Add-ons
+        # Same decoupling as Chrome: ONLY a manual workflow_dispatch with
+        # publish_edge=true submits. Uploads the SAME dist/chatpanel-extension.zip
+        # via the Edge Add-ons Update REST API v1.1 (tools/publish-edge.mjs).
+        if: ${{ env.EDGE_KEY != '' && github.event_name == 'workflow_dispatch' && inputs.publish_edge }}
+        env:
+          EDGE_PRODUCT_ID: ${{ secrets.EDGE_PRODUCT_ID }}
+          EDGE_CLIENT_ID: ${{ secrets.EDGE_CLIENT_ID }}
+          EDGE_API_KEY: ${{ secrets.EDGE_API_KEY }}
+        run: node tools/publish-edge.mjs
+
+      - name: Chrome skip notice
         if: ${{ env.CWS_TOKEN == '' }}
-        run: echo "::notice::Built the zip but skipped Web Store publish — set CHROME_EXTENSION_ID, CHROME_CLIENT_ID, CHROME_CLIENT_SECRET, CHROME_REFRESH_TOKEN to enable."
+        run: echo "::notice::Built the zip but skipped Chrome Web Store publish — set CHROME_EXTENSION_ID, CHROME_CLIENT_ID, CHROME_CLIENT_SECRET, CHROME_REFRESH_TOKEN to enable."
+
+      - name: Edge skip notice
+        if: ${{ env.EDGE_KEY == '' }}
+        run: echo "::notice::Built the zip but skipped Microsoft Edge Add-ons publish — set EDGE_PRODUCT_ID, EDGE_CLIENT_ID, EDGE_API_KEY (Partner Center → Publish API) to enable."
 
       - name: Attach zips to the GitHub Release
         if: startsWith(github.ref, 'refs/tags/')

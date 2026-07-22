@@ -22,6 +22,42 @@ Run the preflight before packaging:
 npm run verify:edge      # node tools/verify-manifest.mjs
 ```
 
+## Automated publishing (CI/CD)
+
+After the one-time Partner Center setup, every release goes to **both** stores
+from the same build — no fork, no separate zip. This is wired into
+`.github/workflows/extension-release.yml`:
+
+- A tag push `ext-v*` builds the zip and creates the GitHub Release only.
+- A manual **workflow_dispatch** publishes to the store(s) you tick:
+  `publish_chrome` and/or `publish_edge`. Each is gated on its own secrets, so
+  you can turn Edge on independently of Chrome.
+
+Enable Edge in CI once:
+
+1. In Partner Center → **Microsoft Edge → Publish API**, click **Enable** (the
+   v1.1 API-key experience), then **Create API credentials**. Copy the
+   **Client ID** and **API key**.
+2. Get the **Product ID** from **Microsoft Edge → Overview →** the extension
+   (it's the GUID in the dashboard URL).
+3. Add three GitHub repo secrets:
+   - `EDGE_PRODUCT_ID` — the product GUID
+   - `EDGE_CLIENT_ID` — Publish API Client ID
+   - `EDGE_API_KEY` — Publish API key (note its expiry; rotate before it lapses)
+
+CI then runs `npm run publish:edge` (`tools/publish-edge.mjs`), which uploads
+the zip via the **Edge Add-ons Update REST API v1.1**, waits for validation, and
+submits for certification. You can also run it locally with those three env vars
+set. Set `EDGE_SKIP_PUBLISH=1` to upload the draft without submitting for review.
+
+> The Edge Update REST API only **updates** an already-published add-on — the
+> very first submission must be done by hand in Partner Center. After that, CI
+> handles every update.
+
+`npm run verify:edge` runs in CI on every push and again before each release, so
+the single package can never drift into something that breaks Edge
+certification (e.g. a stray `update_url` or `oauth2` key).
+
 ## What is identical across Chrome and Edge
 
 `sidePanel`, `storage`, `unlimitedStorage`, `tabs`, `activeTab`, `scripting`,
@@ -34,10 +70,24 @@ npm run verify:edge      # node tools/verify-manifest.mjs
 
 - **CRX ID (runtime extension ID):** `jkmmbleapaognlonbnllpaoeibmfkjmp`
 - **Chrome extension ID (for comparison):** `icemacffhbgnfoofclgdbcdmnlkkklem`
+- **Store ID (public store link):** `0RDCKFF4BTNH` — appears in the customer-facing
+  store URL once the extension is published.
+- **Public key** (the key Edge hashed to derive the CRX ID above; there is no `key`
+  in the manifest, so this is informational only):
+  ```
+  MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAio7QmFubE20TxUT7b/nv
+  6ixuQBZmDB6lNlL9GIcZKlFaZy73d+Bl7SRT8Qm7YM1VLEi291KOkxQiXnJP5LCL
+  S2Xm9JFBvpFp8cGY2SEgyn9DEBo032/8IKBRd2NrDnL2q+NmlvigQi5XhitERlSg
+  ahYbPjrWQM7OT7nTHZa1hXPHuNDNhYXUfR9NrdeMI2b3Nb54r/gljqH1uDWKcppG
+  EiaP+yitqRcnwvWt1KNJ3TIkFosre7suYiUfG4JEkKcchdmZPuhMLNfT/zjo8huA
+  iUTYa6HRByvBtiW22mYNPewfa4ib3hoKmB1s/SfDdEyDNril09aVZvpnHK5yw/F5
+  qwIDAQAB
+  ```
 
-> The **Product ID** and **Store ID** are Partner Center account identifiers — look
-> them up in the dashboard rather than committing them to this public repo. Neither
-> appears in any redirect URI, so neither is needed here.
+> The **Product ID** (`30ba8cb0-…`) is the Partner Center account identifier the
+> publish API targets. It's kept out of this public tree: locally it lives in the
+> gitignored `.env` (`EDGE_PRODUCT_ID`, template in `.env.example`), and in CI it's
+> the `EDGE_PRODUCT_ID` GitHub Actions secret. It doesn't appear in any redirect URI.
 
 ⚠️ **Only the CRX ID drives OAuth redirects.** The CRX ID is the 32-char `[a-p]`
 string Edge assigns at install time; it's what `chrome.identity.getRedirectURL()`
