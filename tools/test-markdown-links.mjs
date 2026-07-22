@@ -5,7 +5,7 @@ globalThis.chrome = { runtime: { id: 'abc' } };
 const { renderMarkdown } = await import('../extension/js/markdown.js');
 
 const localLink = renderMarkdown('[Open meeting](chrome-extension://abc/meetings.html#m1)');
-assert.match(localLink, /<a href="chrome-extension:\/\/abc\/meetings\.html#m1"/);
+assert.match(localLink, /<a class="md-link" href="chrome-extension:\/\/abc\/meetings\.html#m1"/);
 
 const foreignLink = renderMarkdown('[Other extension](chrome-extension://other/meetings.html#m1)');
 assert.doesNotMatch(foreignLink, /<a href=/);
@@ -25,7 +25,7 @@ const rawUrl = renderMarkdown('Source: https://confluence.example.com/confluence
 assert.match(rawUrl, /<a class="md-link" data-href="https:\/\/confluence\.example\.com\/confluence\/pages\/viewpage\.action\?pageId=20650912079"/);
 
 const rawLocalUrl = renderMarkdown('Open: chrome-extension://abc/meetings.html#m1');
-assert.match(rawLocalUrl, /<a href="chrome-extension:\/\/abc\/meetings\.html#m1"/);
+assert.match(rawLocalUrl, /<a class="md-link" href="chrome-extension:\/\/abc\/meetings\.html#m1"/);
 
 const rawForeignLocalUrl = renderMarkdown('Open: chrome-extension://other/meetings.html#m1');
 assert.doesNotMatch(rawForeignLocalUrl, /<a href="chrome-extension:\/\/other/);

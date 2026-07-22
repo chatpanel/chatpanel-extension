@@ -12,11 +12,11 @@ const ordered = orderedProviderPresets();
 
 assert.equal(ordered[0].id, 'custom', 'Custom should stay first in provider picker');
 assert.deepEqual(
-  ordered.slice(-4).map((p) => p.id),
-  ['ollama', 'lmstudio', 'llamacpp', 'vllm'],
+  ordered.slice(-5).map((p) => p.id),
+  ['ollama', 'lmstudio', 'llamacpp', 'vllm', 'webllm'],
   'Local/self-hosted provider presets should stay at the bottom',
 );
-const hostedNames = ordered.slice(1, -4).map((p) => p.name);
+const hostedNames = ordered.slice(1, -5).map((p) => p.name);
 assert.deepEqual(
   hostedNames,
   hostedNames.slice().sort((a, b) => a.localeCompare(b)),
