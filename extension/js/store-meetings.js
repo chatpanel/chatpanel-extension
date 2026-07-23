@@ -14,6 +14,13 @@
 
 import { encryptJSON, decryptJSON, isEncrypted } from './meeting-crypto.js';
 import { monitorsKey } from './store-monitors.js';
+// STATIC, not `await import()`. persistMeeting runs in the MV3 service worker (the
+// content-script flush path goes content → SW → here), and service workers FORBID
+// dynamic import() — it throws TypeError, which rejected persistMeeting and silently
+// dropped every new meeting on every platform. Both are dependency-free leaf modules,
+// so importing them eagerly costs nothing and can't cycle.
+import { getLicense, isPro, FREE_LIMITS } from './license.js';
+import { usageCount, bumpUsage } from './usage-counters.js';
 
 export const MEETING_SCHEMA_VERSION = 1;
 
@@ -109,8 +116,6 @@ export class MeetingLimitError extends Error {
 // time. Pro/Team never reach it. The panel calls this to show an upgrade prompt before
 // starting a capture.
 export async function meetingLimitReached() {
-  const { getLicense, isPro, FREE_LIMITS } = await import('./license.js');
-  const { usageCount } = await import('./usage-counters.js');
   const limit = FREE_LIMITS.meetings;
   const license = await getLicense();
   const count = await usageCount('meetingsCreated', (await getMeetingIndex()).length);
@@ -157,7 +162,6 @@ export async function persistMeeting(rec, { enforceLimit = true } = {}) {
   await saveIndex(index);
   if (gate) {
     // Tick the lifetime counter (meetingLimitReached seeded it above, so this adds one).
-    const { bumpUsage } = await import('./usage-counters.js');
     await bumpUsage('meetingsCreated');
   }
   return { ok: true, id: capped.id };

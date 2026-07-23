@@ -1,6 +1,6 @@
 {
   "name": "chatpanel-extension",
-  "version": "0.18.1",
+  "version": "0.18.2",
   "private": true,
   "type": "module",
   "description": "ChatPanel — a browser side-panel chatbot for Claude Code, Codex, Antigravity CLI (formerly Gemini CLI), or any model/API you bring.",

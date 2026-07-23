@@ -10,6 +10,11 @@
 // keeping them in the extension rather than a separate app.
 
 import { encryptJSON, decryptJSON, isEncrypted } from './meeting-crypto.js';
+// STATIC, not `await import()` — captureToInbox()/createNote() run in the MV3 service
+// worker, where dynamic import() throws TypeError and silently aborts the write (the
+// same defect that dropped every meeting). Both are dependency-free leaf modules.
+import { getLicense, isPro, FREE_LIMITS } from './license.js';
+import { usageCount, bumpUsage } from './usage-counters.js';
 
 // Same id shape as store.js's uid(), inlined so the notes page never pulls in the
 // whole store.js module graph (oauth, zip, meetings…) on load — that was the bulk of
@@ -166,8 +171,6 @@ export class NoteLimitError extends Error {
 // seeded from the current index the first time. The UI calls this before createNote()
 // to show an upgrade prompt instead of a throw.
 export async function noteLimitReached() {
-  const { getLicense, isPro, FREE_LIMITS } = await import('./license.js');
-  const { usageCount } = await import('./usage-counters.js');
   const limit = FREE_LIMITS.notes;
   const license = await getLicense();
   const count = await usageCount('notesCreated', (await getNoteIndex()).length);
@@ -189,7 +192,6 @@ export async function createNote({ title = '', body = '', attribution = null, ve
   });
   // Tick the lifetime counter so the Free cap tracks notes ever created, not the
   // current index length (noteLimitReached seeded it above, so this just adds one).
-  const { bumpUsage } = await import('./usage-counters.js');
   await bumpUsage('notesCreated');
   return rec;
 }

@@ -120,6 +120,51 @@ async function meetingHeartbeat() {
   if (dirty) { await setLiveTabs(map); syncMeetingAlarm(map); }
 }
 
+// URL patterns that carry the meeting content scripts (keep in sync with manifest
+// content_scripts[0].matches).
+const MEETING_MATCHES = [
+  'https://*.zoom.us/wc/*', 'https://meet.google.com/*',
+  'https://teams.microsoft.com/*', 'https://*.teams.microsoft.com/*',
+  'https://teams.live.com/*', 'https://*.teams.live.com/*', 'https://*.webex.com/*',
+];
+
+// Reloading/updating the extension ORPHANS the content scripts in already-open tabs:
+// chrome.runtime.id goes undefined there, so meeting-core's flush() returns early and the
+// capture records into NOTHING — silently, forever, until that tab happens to be reloaded.
+// Chrome does not re-inject automatically, and we can't safely inject over a still-running
+// orphan (its observers/adapters would double up). So detect it and SAY so — the missing
+// piece that let capture sit dead across every platform at once after a reload.
+const MEETING_JS = [
+  'content/adapter-zoom.js', 'content/adapter-meet.js',
+  'content/adapter-teams.js', 'content/adapter-webex.js', 'content/meeting-core.js',
+];
+
+async function warnOrphanedMeetingTabs() {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: MEETING_MATCHES }); } catch { return; }
+  for (const t of tabs) {
+    if (t.id == null) continue;
+    try {
+      await chrome.tabs.sendMessage(t.id, { type: 'CP_MEETING_PING' });
+      continue; // answered → a LIVE script owns this tab; leave it alone
+    } catch { /* nothing answered → orphaned (or never injected) → re-inject below */ }
+    // Re-inject so the tab heals itself instead of demanding a manual reload. Safe now
+    // that meeting-core's guard is runtime-id aware: the fresh copy supersedes the dead
+    // one (which retires via superseded()), and a still-live script never reaches here.
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: t.id, allFrames: true }, files: MEETING_JS });
+      await chrome.scripting.executeScript({
+        target: { tabId: t.id, allFrames: true }, world: 'MAIN', files: ['content/keep-visible.js'],
+      }).catch(() => {});
+    } catch {
+      // Not injectable (tab discarded, pre-render, permissions) — fall back to telling the
+      // user, since a reload is then the only way to resume recording.
+      chrome.runtime.sendMessage({ type: 'CP_MEETING_ORPHANED', tabId: t.id, title: t.title || 'Meeting' })
+        .catch(() => { /* no panel open */ });
+    }
+  }
+}
+
 // A capturing tab closed → its meeting is over.
 chrome.tabs.onRemoved.addListener((tabId) => { endMeetingForTab(tabId).catch(() => {}); });
 // A capturing tab navigated OFF its meeting platform → over. (Same-platform URL tweaks,
@@ -143,6 +188,10 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel
     .setPanelBehavior({ openPanelOnActionClick: true })
     .catch((e) => console.warn('[chatpanel] setPanelBehavior', e));
+
+  // This same event is what orphaned the content scripts in any open meeting tab —
+  // flag those tabs so recording can't die quietly (see warnOrphanedMeetingTabs).
+  warnOrphanedMeetingTabs().catch(() => {});
 
   // onInstalled fires on install AND on every update/reload; the context menu
   // persists across those, so create() would throw "duplicate id". Clear first.
@@ -254,10 +303,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then((r) => {
         // Free lifetime cap hit: the new meeting was NOT stored. Don't track its tab;
         // tell the content script so it can stop capturing + show the upgrade prompt.
-        if (r?.blocked) return sendResponse?.({ ok: false, limit: true });
+        // Also BROADCAST it: the content script tears down silently, so without this the
+        // user sees a confident "Live 12m" bar while nothing is ever saved (exactly how
+        // this went unnoticed for weeks). Best-effort — no panel open is fine.
+        if (r?.blocked) {
+          chrome.runtime.sendMessage({ type: 'CP_MEETING_BLOCKED', reason: 'limit' }).catch(() => {});
+          return sendResponse?.({ ok: false, limit: true });
+        }
+        // persistMeeting also returns {ok:false} WITHOUT throwing (e.g. a record with no
+        // id). Reporting {ok:true} regardless made a failed write indistinguishable from a
+        // real one — the capture looks healthy while nothing reaches the index.
+        if (r?.ok === false) return sendResponse?.({ ok: false, error: r.error || 'persist refused (no record id?)' });
         return trackMeetingTab(tabId, frameId, msg.record)
           .catch(() => {})
-          .then(() => sendResponse?.({ ok: true }));
+          .then(() => sendResponse?.({ ok: true, id: r?.id }));
       })
       .catch((e) => sendResponse?.({ ok: false, error: String(e) }));
     return true; // async response

@@ -21,8 +21,21 @@
 // side panel, which only sends START for entitled users.
 (function () {
   'use strict';
-  if (window.__cpMeetingCoreLoaded) return;
+  // Re-injection guard that SURVIVES AN EXTENSION RELOAD. A reload orphans this script —
+  // chrome.runtime.id goes undefined so it can never persist again — but its globals stay
+  // on `window`, so a plain `if (loaded) return` would lock the tab out of recovery
+  // permanently (capture keeps "running" and records into nothing). Stamp the runtime id:
+  // an id MISMATCH means the resident copy is a dead orphan, so the fresh copy takes over.
+  const RID = (() => { try { return chrome.runtime?.id || null; } catch { return null; } })();
+  // Same live extension already resident → a genuine duplicate injection; do nothing.
+  if (window.__cpMeetingCoreLoaded && RID && window.__cpMeetingCoreRid === RID) return;
   window.__cpMeetingCoreLoaded = true;
+  window.__cpMeetingCoreRid = RID;
+  // Newest instance wins. Any older copy sharing this isolated world sees the mismatch and
+  // retires itself, so we never end up with two observers/flush loops fighting.
+  const MY_ID = `${Date.now()}.${Math.random().toString(36).slice(2)}`;
+  window.__cpMeetingCoreActive = MY_ID;
+  const superseded = () => window.__cpMeetingCoreActive !== MY_ID;
 
   const SCHEMA_VERSION = 1;
   const FLUSH_DEBOUNCE_MS = 4000;
@@ -47,6 +60,12 @@
   let flushTimer = null;
   let pollTimer = null;
   let flushWorker = null; // un-throttled background flush heartbeat (content/flush-worker.js)
+  // Persist telemetry — surfaced via CP_MEETING_PING. A capture whose flushes all fail
+  // looks IDENTICAL to a healthy one from the outside ("Live 12m"), so count them.
+  let flushOk = 0;
+  let flushErr = 0;
+  let lastFlushOkAt = 0;
+  let lastFlushErr = '';
 
   let finalizedTranscript = [];        // [{ t, speaker, text }]
   let currentSpokenEntry = null;       // the in-progress utterance
@@ -206,8 +225,22 @@
       // don't persist into the void, and don't auto-restart (meetings are Free up to the
       // cap; the user upgrades from the panel). Existing meetings are never blocked.
       if (res && res.limit && !limitHit) onCaptureLimit();
-    } catch {
-      /* worker asleep or context gone during teardown — nothing actionable */
+      // A round-trip is NOT a success: the worker answers {ok:false,error} when
+      // persistMeeting throws. Counting those as wins hides the very failure we're
+      // hunting (capture "healthy", nothing in the index) — so check the reply.
+      if (res && res.ok === false) {
+        flushErr += 1;
+        lastFlushErr = String(res.error || (res.limit ? 'limit reached' : 'worker refused'));
+      } else {
+        flushOk += 1;
+        lastFlushOkAt = Date.now();
+      }
+    } catch (e) {
+      // A failure here means the capture is recording into the VOID — the bar still says
+      // "Live", but nothing reaches storage. Swallowing it silently is what let capture
+      // stay broken for weeks, so keep counters + the last message for CP_MEETING_PING.
+      flushErr += 1;
+      lastFlushErr = String((e && (e.message || e)) || 'unknown');
     }
   }
 
@@ -522,6 +555,7 @@
   // Finalizing flips status→'ended', so it stops showing as live and lands in Past Meetings.
   let outOfCallTicks = 0;
   setInterval(() => {
+    if (superseded()) return; // a newer instance owns this tab now
     if (!capturing) { outOfCallTicks = 0; return; }
     if (currentMeetingKey() !== activeMeetingKey) {
       stop('switch');
@@ -549,7 +583,7 @@
   // Heartbeat: persist periodically while capturing (even during silence) so the
   // side panel can tell a live meeting is still alive vs a zombie (tab closed /
   // call left, so this script is gone and the record stops getting fresh writes).
-  setInterval(() => { if (capturing) flush('live'); }, 20000);
+  setInterval(() => { if (superseded()) return; if (capturing) flush('live'); }, 20000);
 
   // Captions watcher (every 3s while capturing): (a) keep trying to auto-enable
   // captions — toolbars load late and some platforms reset them — and (b) notify
@@ -623,6 +657,16 @@
           // the most elements as the authoritative capture frame.
           isTop: window === window.top,
           els: document.querySelectorAll('*').length,
+          // Capture was REFUSED by the worker (Free lifetime cap) and torn down. Exposed
+          // so "capturing:false with a live call" is diagnosable instead of a mystery.
+          limitHit,
+          lastFlushAt,
+          // Did the buffer actually REACH storage? flushErr > 0 with flushOk === 0 means
+          // we're recording into the void — the exact failure this session chased blind.
+          flushOk,
+          flushErr,
+          lastFlushErr,
+          sinceOkMs: lastFlushOkAt ? Date.now() - lastFlushOkAt : null,
         });
         return; // sync response
       case 'CP_MEETING_START':

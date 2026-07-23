@@ -501,6 +501,18 @@ async function init() {
       chrome.storage.local.remove('chatpanel:openMeetingId').catch(() => {});
       $('meetings-drawer').classList.remove('hidden');
       openStoredMeeting(msg.id);
+    } else if (msg?.type === 'CP_MEETING_ORPHANED' && msg.tabId != null) {
+      // The extension was reloaded/updated while this meeting tab stayed open, so its
+      // content script is detached and CANNOT record — reloading the tab is the only
+      // recovery, so offer it in one click instead of failing silently.
+      toastAction('Meeting tab disconnected — not recording.', 'Reload tab',
+        () => chrome.tabs.reload(msg.tabId).catch(() => {}), 10000);
+    } else if (msg?.type === 'CP_MEETING_BLOCKED') {
+      // A capture was REFUSED (Free lifetime cap). Never fail silently: say so and offer
+      // the upgrade, since the meeting is not being saved at all. Pro/Team should never
+      // land here — if it does, that's a licensing bug, so say that instead of upselling.
+      if (isPro(state.license)) toast('Meeting not saved — capture was refused despite Pro. Check Settings → License.', 6000);
+      else showMeetingLimitPrompt();
     } else if (msg?.type === 'CP_MEETING_JOINED' || msg?.type === 'CP_MEETING_CAPTIONS') {
       // JOINED: the user joined a call (inCall flipped) → auto-start now.
       // CAPTIONS: live-caption state flipped → refresh so the "captions off" warning
@@ -5314,6 +5326,18 @@ function toast(text, ms = 1400) {
   t.classList.remove('hidden');
   clearTimeout(toast._t);
   toast._t = setTimeout(() => t.classList.add('hidden'), ms);
+}
+
+// A REFUSED meeting capture is a high-intent moment — and, unlike most gates, one where
+// something is actively being lost: the call is happening and nothing is being recorded.
+// So state that plainly and offer the upgrade inline (no surprise tab), long enough to read.
+function showMeetingLimitPrompt() {
+  toastAction(
+    `Meeting not being saved — Free keeps your first ${FREE_LIMITS.meetings} meetings.`,
+    'Upgrade',
+    () => startSubscribe('pro'),
+    9000,
+  );
 }
 
 // Toast with an action button (used for Undo).
