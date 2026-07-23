@@ -89,9 +89,11 @@ async function poll(kind, url, { tries = 60, everyMs = 5000 } = {}) {
     const status = json.status || (res.ok ? 'InProgress' : `HTTP ${res.status}`);
     if (status === 'Succeeded') return json;
     if (status === 'Failed' || res.status >= 400) {
+      // Report message AND errors[]: Edge's `message` is often the useless generic
+      // "An error occurred while performing the operation", while `errors` carries the
+      // actual reason (missing listing metadata, product not yet published, …).
       const detail =
-        json.message ||
-        (json.errors && JSON.stringify(json.errors)) ||
+        [json.message, json.errors && JSON.stringify(json.errors)].filter(Boolean).join(' | ') ||
         body ||
         `HTTP ${res.status}`;
       die(`${kind} failed: ${detail}`);
