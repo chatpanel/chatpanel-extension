@@ -107,8 +107,26 @@ function cursorInPage(x, y) {
 
 // Viewport size in CSS pixels — the coordinate space the model should use for
 // click_at / draw_path (it reasons over the screenshot, which maps to this).
+// `pointerLock` tells the caller the page is in reticle-aim mode, where click
+// coordinates are ignored and mouse moves are turns — see the pointer-lock note
+// in page-actions-cdp.js. Reported alongside the size so one screenshot answers
+// both "where can I click" and "can I click by coordinate at all".
 function viewportInfoInPage() {
-  return { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 };
+  // `canvasApp` = one <canvas> covers most of the viewport. Combined with
+  // pointerLock:false that is the state where mouse-look silently does nothing,
+  // so the screenshot can warn instead of inviting a doomed aiming loop.
+  let area = 0;
+  for (const c of document.querySelectorAll('canvas')) {
+    const r = c.getBoundingClientRect();
+    area = Math.max(area, r.width * r.height);
+  }
+  return {
+    w: window.innerWidth,
+    h: window.innerHeight,
+    dpr: window.devicePixelRatio || 1,
+    pointerLock: !!document.pointerLockElement,
+    canvasApp: area >= window.innerWidth * window.innerHeight * 0.5,
+  };
 }
 export async function viewportInfo(tabId) {
   try {

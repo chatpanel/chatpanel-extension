@@ -1,5 +1,7 @@
 // ChatPanel side panel controller.
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
+// Tiny, no transitive deps — the one place browser-engine feature detection lives.
+import { hasDebugger } from './js/browser-api.js';
 import { confirmDelete } from './js/confirm-modal.js';
 import {
   getSettings,
@@ -118,8 +120,27 @@ const HISTORY_PAGE_SIZE = 25;
 // trusted the site for this session or turned the gate off. Read-only tools
 // (inspect/screenshot/scroll) never prompt, so the agent can still see & plan.
 const trustedActionOrigins = new Set(); // origins the user OK'd this panel session
-const READONLY_PAGE_TOOLS = new Set(['inspect_page', 'screenshot', 'marked_screenshot', 'scroll', 'read_canvas']);
+// move_mouse sits here with scroll: it moves the pointer but commits nothing, and
+// steering (hover menus, aiming) fires many calls in a row — confirming each one
+// would be pure prompt fatigue. Anything that actually PRESSES still confirms.
+// save_app_controls writes only to ChatPanel's own learned-controls store — it
+// never touches the page — so it belongs with the no-confirm reads.
+// The sensing tools only READ (canvas pixels, the app's own JS state) — the same
+// information a screenshot already exposes, so they sit with the other no-confirm
+// reads. calibrate_turn is not here: it moves the view.
+const READONLY_PAGE_TOOLS = new Set([
+  'inspect_page', 'screenshot', 'marked_screenshot', 'scroll', 'read_canvas', 'move_mouse',
+  'save_app_controls', 'sense_canvas', 'probe_app_state', 'read_app_state',
+]);
 const pageActionNeedsConfirm = (name) => !READONLY_PAGE_TOOLS.has(name);
+
+// Tools whose confirmation can NEVER be waived — not by "Allow for this site", and
+// not by turning "Confirm before page actions" off. Running arbitrary JavaScript in
+// a logged-in page is a universal capability (read anything the user can see, act
+// as them on same-origin APIs), so a blanket approval given for ordinary clicking
+// must not silently extend to it. Every call is shown in full and approved on its
+// own, and approving one never marks the origin trusted.
+const ALWAYS_CONFIRM_TOOLS = new Set(['eval_js']);
 const originOf = (url) => { try { return new URL(url).origin; } catch { return ''; } };
 
 function describePageAction(name, input = {}, host = 'this page') {
@@ -130,10 +151,31 @@ function describePageAction(name, input = {}, host = 'this page') {
     case 'click_element':
     case 'click_by_text': return `Click “${clip(input.text || input.selector || 'an element')}” on ${host}`;
     case 'click_mark': return `Click marked element #${input.mark ?? '?'} on ${host}`;
-    case 'click_at': return `Click at (${Math.round(input.x)}, ${Math.round(input.y)}) on ${host}`;
+    case 'click_at': {
+      const b = input.button && input.button !== 'left' ? `${input.button}-click` : 'Click';
+      const dbl = Number(input.clicks) > 1 ? 'Double-' : '';
+      return `${dbl}${dbl ? b.toLowerCase() : b} at (${Math.round(input.x)}, ${Math.round(input.y)}) on ${host}`;
+    }
+    case 'move_mouse':
+      return Number.isFinite(input.dx) || Number.isFinite(input.dy)
+        ? `Move the pointer by (${Math.round(input.dx || 0)}, ${Math.round(input.dy || 0)}) on ${host}`
+        : `Move the pointer to (${Math.round(input.x)}, ${Math.round(input.y)}) on ${host}`;
+    case 'capture_pointer': return `Focus ${host} and let it capture the mouse`;
+    case 'calibrate_turn': return `Measure turn sensitivity on ${host} (turns the view and back)`;
+    // Show the ACTUAL code, not a summary — the user cannot judge this without
+    // reading it, and a paraphrase is exactly how a bad call would slip through.
+    case 'eval_js':
+      return `RUN JAVASCRIPT on ${host} — it can read and change anything on this page as you:\n\n${clip(input.code, 600)}`;
     case 'type_text': return `Type “${clip(input.text)}” on ${host}`;
-    case 'press_key': return `Press ${clip(input.key, 24)} on ${host}`;
+    case 'press_key':
+      return input.holdMs > 0
+        ? `Hold ${clip(input.key, 24)} for ${Math.round(input.holdMs)}ms on ${host}`
+        : `Press ${clip(input.key, 24)} on ${host}`;
     case 'draw_path': return `Draw / drag on ${host}`;
+    case 'input_sequence': {
+      const n = Array.isArray(input.steps) ? input.steps.length : 0;
+      return `Run ${n || ''} combined input${n === 1 ? '' : 's'} (keys + mouse) on ${host}`;
+    }
     case 'structured_insert': return `Insert content into the editor on ${host}`;
     default: return `Run “${name}” on ${host}`;
   }
@@ -199,13 +241,33 @@ async function pageToolProvider(resolvedAgent) {
     toast('▶️ Act on page can’t run: no readable web tab is active');
     return null;
   }
-  const cdp = !!state.settings.ui?.pageActionsCdp;
+  // High-reliability control is ON unless the user explicitly turned it off.
+  //
+  // Defaulting on is the right call because "Act on page" is ITSELF opt-in (above),
+  // so this never expands what a user who hasn't asked for automation gets. For
+  // someone who HAS asked, the synthetic path is the weaker half of the feature:
+  // the entire coordinate/computer-use toolset (click_at, press_key,
+  // input_sequence, capture_pointer, calibrate_turn, draw_path) is CDP-only, so
+  // leaving it off means the agent hits a wall mid-task and asks the user to go
+  // change a setting — the exact cliff we don't want.
+  //
+  // `!== false` (not `!!`) so an explicit opt-out is still honoured. Gated on
+  // hasDebugger because on a browser without the CDP API, claiming cdp:true makes
+  // fill_form surface `no-debugger-perm` instead of falling back to synthetic.
+  const cdp = hasDebugger && state.settings.ui?.pageActionsCdp !== false;
   console.info('[chatpanel] page actions attached for', resolvedAgent.kind, 'on tab', state.activeTab.id, cdp ? '(trusted/CDP)' : '(synthetic)');
 
   // Load the heavy page-automation + canvas-adapter modules on first use only (they
   // and their transitive graph stay off the panel's initial load path).
-  const [{ PAGE_TOOL_SPECS, makePageToolExecutor, PAGE_AUTOMATION_SYSTEM }, { detectCanvasAdapter }] =
-    await Promise.all([import('./js/page-tools.js'), import('./js/canvas-adapters.js')]);
+  const [
+    { PAGE_TOOL_SPECS, makePageToolExecutor, PAGE_AUTOMATION_SYSTEM, EVAL_JS_TOOL_SPEC },
+    { detectCanvasAdapter },
+    appControls,
+  ] = await Promise.all([
+    import('./js/page-tools.js'),
+    import('./js/canvas-adapters.js'),
+    import('./js/app-controls.js'),
+  ]);
 
   // Structured-editor adapter (Excalidraw, …): when the active tab is a canvas app
   // with a native data format, expose a `structured_insert` tool so the agent
@@ -232,18 +294,52 @@ async function pageToolProvider(resolvedAgent) {
     console.info('[chatpanel] structured-insert (', candidate.id, ') is a Pro feature — not offered');
   }
 
-  const baseExecute = makePageToolExecutor(state.activeTab.id, { cdp, adapter });
+  // Developer-only JavaScript execution: off unless explicitly enabled, and only
+  // meaningful with trusted events on. Two gates, deliberately: the spec is
+  // withheld here so the model never learns the tool exists, and the executor
+  // refuses independently if it is somehow called anyway.
+  const devJs = !!state.settings.ui?.pageActionsDevJs && cdp;
+  const basePageExecute = makePageToolExecutor(state.activeTab.id, { cdp, adapter, devJs });
   const pageOrigin = originOf(state.activeTab.url || '');
+  if (devJs) {
+    specs = [...specs, EVAL_JS_TOOL_SPEC];
+    console.info('[chatpanel] eval_js is ENABLED (developer setting) — every call requires approval');
+  }
+
+  // Learned control schemes: offer the recorder, and fold anything already known
+  // about THIS origin into the prompt so the agent doesn't rediscover it. Only
+  // useful when it can actually drive the app, so keep it with the CDP tools.
+  const saveControls = appControls.makeSaveControlsExecutor(pageOrigin);
+  if (cdp) {
+    specs = [...specs, appControls.SAVE_CONTROLS_TOOL_SPEC];
+    try {
+      const known = await appControls.getControlScheme(pageOrigin);
+      const block = appControls.describeControlScheme(known);
+      if (block) system = `${system}\n\n${block}`;
+    } catch (e) {
+      console.warn('[chatpanel] could not load learned controls for', pageOrigin, e);
+    }
+  }
+  const baseExecute = async (name, input, meta) => {
+    if (name === 'save_app_controls') return JSON.stringify(await saveControls(input));
+    return basePageExecute(name, input, meta);
+  };
   const guardedExecute = async (name, input, meta) => {
     const confirmOn = state.settings.ui?.pageActionConfirm !== false; // default ON
-    if (confirmOn && pageActionNeedsConfirm(name) && !trustedActionOrigins.has(pageOrigin)) {
+    // An always-confirm tool ignores BOTH escape hatches: the global confirm
+    // preference and any per-site trust already granted.
+    const always = ALWAYS_CONFIRM_TOOLS.has(name);
+    const needs = always || (confirmOn && pageActionNeedsConfirm(name) && !trustedActionOrigins.has(pageOrigin));
+    if (needs) {
       const host = pageOrigin ? pageOrigin.replace(/^https?:\/\//, '') : 'this page';
       const decision = await confirmPageAction(describePageAction(name, input, host));
       if (decision === 'deny') {
         toast('🖋 Action declined');
         return JSON.stringify({ error: 'The user DECLINED this page action. Do not retry it — stop and ask the user how to proceed.' });
       }
-      if (decision === 'site' && pageOrigin) trustedActionOrigins.add(pageOrigin);
+      // "Allow for this site" must never grant standing permission to an
+      // always-confirm tool — treat it as a one-time allow and record nothing.
+      if (decision === 'site' && pageOrigin && !always) trustedActionOrigins.add(pageOrigin);
     }
     return baseExecute(name, input, meta);
   };
@@ -598,7 +694,13 @@ function ensureUsableActiveAgent() {
   if (isPro(state.license)) return;
   const cur = getTarget(state.settings, state.settings.activeAgentId);
   if (cur && canUseAgent(state.license, state.settings, cur)) return;
-  const id = freeAgentId(state.settings) || freeEndpointId(state.settings);
+  // Prefer the free ENDPOINT when the current target is an endpoint, or when the
+  // bridge isn't running: dropping an API user onto a local CLI agent they may not
+  // have installed is a worse landing than their own configured model.
+  const preferEndpoint = !cur || cur.kind !== 'bridge' || !state.bridge?.ok;
+  const id = preferEndpoint
+    ? freeEndpointId(state.settings) || freeAgentId(state.settings)
+    : freeAgentId(state.settings) || freeEndpointId(state.settings);
   if (id && id !== state.settings.activeAgentId) {
     state.settings.activeAgentId = id;
     updateSettings({ activeAgentId: id });
@@ -860,11 +962,28 @@ function stepLabel(s) {
     case 'screenshot': return 'Took a screenshot';
     case 'marked_screenshot': return 'Tagged clickable elements';
     case 'click_mark': return `Clicked element #${i.n}`;
-    case 'click_at': return `Clicked at (${Math.round(i.x)}, ${Math.round(i.y)})`;
+    case 'click_at': {
+      const kind = Number(i.clicks) > 1 ? 'Double-clicked' : i.button && i.button !== 'left' ? `${i.button.replace(/^./, (c) => c.toUpperCase())}-clicked` : 'Clicked';
+      return `${kind} at (${Math.round(i.x)}, ${Math.round(i.y)})`;
+    }
+    // "Turned" only when the page actually held the pointer — otherwise a relative
+    // move just slid the cursor, and calling that a turn misreads the log.
+    case 'move_mouse':
+      return Number.isFinite(i.dx) || Number.isFinite(i.dy)
+        ? `Moved by (${Math.round(i.dx || 0)}, ${Math.round(i.dy || 0)})`
+        : `Moved to (${Math.round(i.x)}, ${Math.round(i.y)})`;
+    case 'capture_pointer': return 'Captured the pointer';
+    case 'sense_canvas': return `Read the canvas as a ${i.cols || 32}×${i.rows || 32} grid`;
+    case 'probe_app_state': return 'Probed the app’s state';
+    case 'read_app_state': return `Read app state (${(i.paths || []).length} path(s))`;
+    case 'calibrate_turn': return 'Calibrated turn sensitivity';
+    case 'eval_js': return `Ran JavaScript (${String(i.code || '').length} chars)`;
     case 'type_text': return `Typed “${String(i.text || '').slice(0, 40)}”`;
-    case 'press_key': return `Pressed ${i.key}`;
+    case 'press_key': return i.holdMs > 0 ? `Held ${i.key} for ${Math.round(i.holdMs)}ms` : `Pressed ${i.key}`;
     case 'scroll': return `Scrolled ${i.dy > 0 ? 'down' : 'up'}`;
     case 'draw_path': return `Drew a stroke (${i.points?.length || 0} pts)`;
+    case 'input_sequence': return `Combined input (${i.steps?.length || 0} steps)`;
+    case 'save_app_controls': return `Learned how to control ${String(i.app || 'this app').slice(0, 40)}`;
     default: {
       const mcp = /^mcp_(.+?)__(.+)$/.exec(s.tool || '');
       if (mcp) return `${displayMcpServer(mcp[1])} / ${mcp[2]}`;
@@ -887,10 +1006,19 @@ function stepIcon(s) {
     case 'click_by_text':
     case 'click_mark':
     case 'click_at':
+    case 'move_mouse':
     case 'scroll': return icon('mouse-pointer-click');
     case 'screenshot': return icon('camera');
     case 'marked_screenshot': return icon('hash');
     case 'draw_path': return icon('pencil');
+    case 'input_sequence': return icon('keyboard');
+    case 'capture_pointer': return icon('mouse-pointer-click');
+    case 'sense_canvas':
+    case 'probe_app_state':
+    case 'read_app_state': return icon('search');
+    case 'calibrate_turn': return icon('wrench');
+    case 'eval_js': return icon('wrench');
+    case 'save_app_controls': return icon('wrench');
     default:
       return /^mcp_(.+?)__(.+)$/.test(s.tool || '') ? '' : icon('wrench');
   }
@@ -913,8 +1041,9 @@ function displayMcpServer(slug) {
 // its call arguments so the log reads like a real activity trace.
 const LABELED_TOOLS = new Set([
   'inspect_page', 'fill_form', 'fill_combobox', 'click_element', 'click_by_text',
-  'screenshot', 'marked_screenshot', 'click_mark', 'click_at', 'type_text',
-  'press_key', 'scroll', 'draw_path',
+  'screenshot', 'marked_screenshot', 'click_mark', 'click_at', 'move_mouse', 'type_text',
+  'press_key', 'scroll', 'draw_path', 'input_sequence', 'capture_pointer', 'save_app_controls',
+  'sense_canvas', 'probe_app_state', 'read_app_state', 'calibrate_turn', 'eval_js',
 ]);
 
 // A compact one-line view of a tool call's arguments (for MCP / generic tools).
@@ -6072,6 +6201,9 @@ function wireEvents() {
     if (changes['chatpanel:settings']) {
       state.settings = await getSettings();
       applyTheme();
+      // Settings may have moved the Free slot (e.g. the user just added their own
+      // API endpoint) — follow it instead of sitting on a now-locked target.
+      ensureUsableActiveAgent();
       renderAgentName();
       renderMcpToolsBtn();
       renderHistoryContextBtn();

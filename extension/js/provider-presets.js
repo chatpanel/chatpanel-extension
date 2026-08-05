@@ -293,6 +293,25 @@ export function providerBrand(id) {
   return { ...base, logo: PROVIDER_LOGO_IDS.has(id) ? `assets/providers/${id}.svg` : null };
 }
 
+// Brand marks for the local CLI agents, in the SAME { mark, color, logo } shape
+// as providerBrand — so the settings cards colour-code agents and API endpoints
+// with one code path. Claude Code and Codex reuse the vendor logos we already
+// bundle; the rest get a coloured monogram rather than a borrowed mark.
+const AGENT_BRANDS = {
+  claude: { mark: 'CC', color: '#d97757', logo: 'assets/providers/anthropic.svg' },
+  codex: { mark: 'CX', color: '#10a37f', logo: 'assets/providers/openai.svg' },
+  antigravity: { mark: 'AG', color: '#1a73e8' },
+  pi: { mark: 'PI', color: '#8b5cf6' },
+  opencode: { mark: 'OC', color: '#0ea5e9' },
+  kiro: { mark: 'KI', color: '#a855f7' },
+  custom: { mark: 'BYO', color: '#64748b' },
+};
+
+export function agentBrand(kind) {
+  const base = AGENT_BRANDS[kind] || AGENT_BRANDS.custom;
+  return { logo: null, ...base };
+}
+
 function cleanBaseUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '');
 }

@@ -269,6 +269,93 @@ select {
 .entity-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
 .fields { border-top: 1px dashed var(--border); padding-top: 10px; margin-top: 6px; }
 
+/* Branded, collapsible cards (API endpoints + bridge agents) ---------------
+   One endpoint or agent is a LONG configuration (auth + models + generation +
+   advanced + system prompt), so stacked cards ran together and you couldn't see
+   where one ended and the next began. Every such card carries its provider's (or
+   CLI's) brand colour on a left rail, a tinted head band, and a matching foot
+   band repeating its name — an unmistakable start and end — plus a wide gutter
+   between cards. --ep-accent is set per card in settings.js (applyCardBrand);
+   the fallback keeps this readable if it ever isn't.
+   Cards start COLLAPSED (see .collapsed below) so a long list stays scannable. */
+/* Dense when collapsed (the default — the list reads like a list), roomy around
+   whichever card is actually open. */
+#endpoints, #bridge-agents { display: flex; flex-direction: column; gap: 12px; }
+.brand-card:not(.collapsed) { margin: 14px 0; }
+.brand-card {
+  --ep-accent: var(--accent);
+  margin: 0;
+  border-left: 4px solid var(--ep-accent);
+  transition: margin .12s ease;
+  box-shadow: var(--shadow);
+  /* A whisper of the brand colour across the whole body, so consecutive cards
+     differ in tone and the card doesn't sit white-on-white in its parent. */
+  background: color-mix(in srgb, var(--ep-accent) 3.5%, var(--elev));
+}
+/* Full-bleed bands: pull out to the card's padding edge, keep the inner radius. */
+.brand-card .entity-head {
+  margin: -16px -16px 16px; padding: 12px 16px; border-radius: 11px 11px 0 0;
+  border-bottom-color: color-mix(in srgb, var(--ep-accent) 28%, var(--border));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--ep-accent) 18%, transparent), transparent 74%);
+}
+.brand-card .entity-foot {
+  margin: 18px -16px -16px; padding: 12px 16px; border-radius: 0 0 11px 11px;
+  border-top-color: color-mix(in srgb, var(--ep-accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--ep-accent) 9%, transparent);
+}
+/* Collapsed: only the header row shows. Body stays in the DOM (unsaved edits and
+   in-flight combobox state survive a collapse), it's just not painted. */
+.brand-card.collapsed > *:not(.entity-head) { display: none; }
+/* Collapsed, the card IS the header row — drop the card padding and the head's
+   negative full-bleed margins together, or the body's padding leaves a stripe of
+   empty tinted card hanging below the row. */
+.brand-card.collapsed { padding: 0; }
+.brand-card.collapsed .entity-head { margin: 0; border-bottom: none; border-radius: 11px; cursor: pointer; }
+/* Controls that only matter while editing; the summary already states the kind. */
+.brand-card.collapsed .ba-kind, .brand-card.collapsed .ba-avail { display: none; }
+.brand-card:not(.collapsed) .entity-head { cursor: pointer; }
+.brand-card .entity-head input, .brand-card .entity-head select, .brand-card .entity-head label { cursor: auto; }
+/* Chevron: points down when collapsed, up when open. */
+.card-toggle {
+  flex: 0 0 auto; display: inline-grid; place-items: center; width: 24px; height: 24px;
+  padding: 0; border: none; border-radius: 6px; background: transparent; color: var(--muted);
+  cursor: pointer; transition: transform .15s ease, background .12s ease;
+}
+.card-toggle:hover { background: rgba(127,127,127,.14); color: var(--text); }
+.card-toggle .ico { width: 16px; height: 16px; }
+.card-toggle[aria-expanded="true"] { transform: rotate(180deg); }
+.card-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* One-line "what is this" summary — the whole point of collapsing. Once the card
+   is open the fields themselves say it, so it steps out of the header layout. */
+.brand-card:not(.collapsed) .card-summary { display: none; }
+.card-summary {
+  flex: 1 1 160px; min-width: 0; font-size: 12px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Ordinal + brand chip: which card this is, at a glance. */
+.card-index {
+  flex: 0 0 auto; min-width: 20px; text-align: center; font-size: 11.5px; font-weight: 700;
+  font-variant-numeric: tabular-nums; color: var(--ep-accent, var(--muted)); opacity: .85;
+}
+.brand-chip {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 7px; display: inline-grid; place-items: center;
+  font-size: 10.5px; font-weight: 800; letter-spacing: -.02em; color: #fff;
+  background: var(--ep-accent, var(--muted)); overflow: hidden;
+}
+/* Full-colour vendor marks need a light plate — they're unreadable on the brand fill. */
+.brand-chip.has-logo { background: #fff; border: 1px solid var(--border); }
+.brand-chip img { width: 17px; height: 17px; object-fit: contain; display: block; }
+.card-foot-name { margin-right: auto; font-size: 12px; font-weight: 600; color: var(--muted); }
+.card-foot-name::before { content: "End of "; font-weight: 400; opacity: .8; }
+/* Add button repeated under the list — the header one is far away once you've
+   scrolled through several open cards. */
+.btn.add-row {
+  display: block; width: 100%; margin-top: 20px; padding: 12px;
+  border-style: dashed; border-color: var(--border-strong); color: var(--muted);
+  background: transparent; font-weight: 600;
+}
+.btn.add-row:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-weak); }
+
 /* Skill card header: small icon swatch · name · command pill */
 .entity-head .s-icon { flex: 0 0 48px; width: 48px; text-align: center; font-size: 19px; padding: 8px 4px; }
 .entity-head .s-cmd { flex: 0 0 150px; font-family: var(--mono); font-size: 12.5px; color: var(--muted); }

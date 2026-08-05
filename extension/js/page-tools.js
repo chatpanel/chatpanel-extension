@@ -20,8 +20,11 @@ import {
 } from './page-actions.js';
 import {
   cdpFillForm, cdpClickElement, cdpClickByText, cdpFillCombobox, cdpScreenshot,
-  cdpClickAt, cdpTypeText, cdpPressKey, cdpScroll, cdpDrag,
+  cdpClickAt, cdpMoveMouse, cdpTypeText, cdpPressKey, cdpScroll, cdpDrag, cdpInputSequence,
+  cdpCapturePointer, cdpEvaluate,
 } from './page-actions-cdp.js';
+import { SENSE_TOOL_SPECS, makeSenseExecutor } from './page-sense.js';
+import { CALIBRATE_TOOL_SPEC, calibrateTurn } from './page-calibrate.js';
 
 // Harness guidance folded into the system prompt when page tools are armed.
 // Structured numbered loop (it gave the best drawing results) — keep it explicit,
@@ -59,6 +62,68 @@ export const PAGE_AUTOMATION_SYSTEM =
   'SWALLOW the first Enter, so if the cell is still in edit mode press Enter ONCE MORE (repeated Enter ' +
   'is allowed and expected here — it is not a loop). A committed cell shows the COMPUTED value, not the ' +
   'raw "=…" text. Do not give up after a single Enter; press again, then validate.\n' +
+  '3b) BEYOND LEFT-CLICK. Your input vocabulary is wider than a tap: click_at takes ' +
+  '`button:"right"|"middle"` and `clicks:2`; press_key takes `holdMs` to HOLD a key down; move_mouse ' +
+  'aims without pressing, absolutely {x,y} or as a relative turn {dx,dy}; draw_path drags with any ' +
+  'button. Never report an action as impossible because a single left-click can’t do it — check these ' +
+  'first. Common conventions across apps: right-click = secondary/context action, double-click = open ' +
+  'or select-word, held key = a continuous action (move, sprint, pan), drag = draw or reposition.\n' +
+  '3c) COMBINATIONS. Real apps need inputs held TOGETHER, which no single-shot tool can express — use ' +
+  'input_sequence for those: a modifier held across a click or drag (Shift+drag to constrain, Ctrl+click ' +
+  'to multi-select), Space held while dragging to pan, two direction keys at once for diagonal movement, ' +
+  'a button held while the view turns. It releases everything at the end, so prefer ONE input_sequence ' +
+  'over a fragile string of separate calls whenever the inputs overlap in time.\n' +
+  '3d) CANVAS APPS AND GAMES — FIND THE CONTROLS, DON’T ASSUME THEM. A <canvas> exposes no DOM, so ' +
+  'inspect_page will look empty; that does NOT mean the app is uncontrollable. Work out its real control ' +
+  'scheme BEFORE acting, in this order: (a) if a KNOWN CONTROLS block appears below, start from it; ' +
+  '(b) screenshot and read the on-screen UI — toolbars, a legend, a help/“?” overlay, a pause or settings ' +
+  'menu often lists the keys; (c) try the app’s own help (press_key "Escape" or "h", or a visible ' +
+  'Help/Controls button); (d) if it is still unclear, use web_search for the app or game NAME plus ' +
+  '"controls" / "keyboard shortcuts" and follow what you find. State the scheme you are going to use ' +
+  'before you drive it, and once you have CONFIRMED it works, call save_app_controls so later turns on ' +
+  'this app skip the whole discovery step. Typical desktop conventions worth trying: WASD or the arrow ' +
+  'keys to move, Space to jump/confirm, Shift to sprint, Escape to pause or release the pointer, number ' +
+  'keys to select a tool or slot, scroll to zoom or cycle, and the two mouse buttons for the primary and ' +
+  'secondary action.\n' +
+  '3d-i) SENSE, DON’T STARE. A screenshot costs a full round-trip and hands you pixels you then have to ' +
+  'interpret; the app’s real state is usually readable EXACTLY and far more cheaply. Before falling back ' +
+  'to vision on a canvas app: probe_app_state to find where the app keeps its model, read_app_state to ' +
+  'read it, and sense_canvas to get a grid/tile board as characters rather than an image. On a grid game ' +
+  '(Snake, chess, puzzles) sense_canvas with cols/rows matching the real board gives you the exact ' +
+  'position of everything — use that instead of screenshotting between moves. Keep screenshots for ' +
+  'things structure cannot tell you (3D scenes, unknown layouts, final validation).\n' +
+  '3d-ii) IN A FIRST-PERSON APP, CALIBRATE BEFORE AIMING. After capture_pointer, call calibrate_turn ' +
+  'ONCE: it measures how far a mouse delta actually turns the view and returns viewPixelsPerDelta, so ' +
+  'you can COMPUTE the turn that puts a target under the reticle (dx ≈ pixels-off-centre ÷ ' +
+  'viewPixelsPerDelta) instead of guessing and re-screenshotting. Also build a mental map before you ' +
+  'work: look around and note where you are, what is around you, and whether you are somewhere you can ' +
+  'actually act — do not start a construction task while submerged, cornered, or facing empty sky.\n' +
+  '3e) PREFER BUILDING OVER MIMING. Simulated input is the LAST resort, not the first. If the app can be ' +
+  'given its content directly — a structured_insert tool offered for this page, an import/paste-JSON or ' +
+  '“edit as code/source” panel, a command palette, a text or formula field, a URL that encodes state — ' +
+  'construct the result in the app’s OWN language and hand it over in one step. That is exact, ' +
+  'verifiable, and immune to a misplaced pixel; dozens of synthesized clicks and drags are none of those. ' +
+  'Drive by pointer only when the app genuinely offers no data path in — a game, or a canvas with no ' +
+  'import.\n' +
+  '3f) FIRST-PERSON / 3D APPS — CAPTURE THE POINTER BEFORE YOU AIM. These apps only turn the view while ' +
+  'they hold POINTER LOCK, and they can only take it from a click on a focused page — which is NOT the ' +
+  'default here. Until they hold it, movement keys and clicks appear to work while mouse-look does ' +
+  'nothing at all, so every aim attempt silently fails and you cannot line anything up. The order is: ' +
+  '(1) screenshot — if it reports `canvasApp` without `pointerLock`, or a move_mouse {dx,dy} comes back ' +
+  'with a pointerLock:false warning, you are in this state; (2) clear any splash / menu / “click to ' +
+  'play” overlay; (3) call capture_pointer and CHECK it — it verifies the app really took the pointer; ' +
+  '(4) only now aim with move_mouse {dx, dy}, re-screenshotting to see where you point.\n' +
+  '3g) ONCE CAPTURED, coordinates stop meaning anything: click_at x/y is IGNORED and the app acts at its ' +
+  'reticle (viewport centre). Clicking different coordinates changes NOTHING — that is why an action can ' +
+  '“succeed” with no visible effect. AIM with move_mouse {dx, dy} until the target sits under the ' +
+  'reticle, confirm on a screenshot, THEN click. If a click reports pointerLock:true, do not retry it at ' +
+  'new coordinates — turn first. Escape releases the lock and restores ordinary coordinate clicking.\n' +
+  '3h) IF TWO ATTEMPTS AT A PHYSICAL ACTION CHANGE NOTHING ON SCREEN, STOP AND RE-DIAGNOSE — do not ' +
+  'keep varying coordinates. Ask what STATE you are in rather than what to click: is the pointer ' +
+  'captured; is a menu or splash swallowing input; is the app paused; is your avatar stuck, submerged, ' +
+  'or facing a surface that cannot be acted on. Fix the state (capture the pointer, close the overlay, ' +
+  'move somewhere workable) before repeating the action. Report the state you were stuck in, not just ' +
+  'that it failed.\n' +
   '4) VALIDATE — at the END, and EARLY on any failure. When the checklist is complete, take ONE ' +
   'screenshot and check every item against what is on screen. A tool replying "ok"/"verified" means ' +
   'the action LANDED — the end screenshot (or a tool’s verified:true) is your proof the GOAL is met. ' +
@@ -316,12 +381,43 @@ export const PAGE_TOOL_SPECS = [
   {
     name: 'click_at',
     description:
-      'Click at viewport pixel coordinates — for CANVAS apps (Sheets, Excalidraw, Figma) or anything with no DOM selector. ' +
-      'Take a screenshot first; aim within the viewport size it reports. Needs High-reliability mode.',
+      'Click at viewport pixel coordinates — for CANVAS apps (Sheets, Excalidraw, Figma), games, or anything with no DOM selector. ' +
+      'Take a screenshot first; aim within the viewport size it reports. Pass `button:"right"` for the ' +
+      'secondary / context-menu action, or `clicks:2` for a double-click (open an item, select a word). ' +
+      'If the screenshot reports `pointerLock`, coordinates are ignored — aim with move_mouse {dx,dy} first. ' +
+      'Needs High-reliability mode.',
     parameters: {
       type: 'object',
-      properties: { x: { type: 'number' }, y: { type: 'number' } },
+      properties: {
+        x: { type: 'number' },
+        y: { type: 'number' },
+        button: {
+          type: 'string',
+          enum: ['left', 'right', 'middle'],
+          description: 'Mouse button (default left).',
+        },
+        clicks: { type: 'number', description: '1 = single (default), 2 = double-click.' },
+      },
       required: ['x', 'y'],
+    },
+  },
+  {
+    name: 'move_mouse',
+    description:
+      'Move the pointer WITHOUT clicking. Absolute {x, y} to hover a spot — opening a hover-only menu, ' +
+      'revealing a tooltip, previewing under the cursor. Relative {dx, dy} to TURN — this is the only ' +
+      'mode a pointer-locked app (first-person view, 3D canvas) understands: positive dx looks right, ' +
+      'positive dy looks down. When a screenshot reports pointerLock, aim with {dx, dy} and re-screenshot ' +
+      'to check before clicking. Needs High-reliability mode.',
+    parameters: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: 'Absolute viewport x. Use with y.' },
+        y: { type: 'number', description: 'Absolute viewport y. Use with x.' },
+        dx: { type: 'number', description: 'Relative turn, pixels right. Use with dy.' },
+        dy: { type: 'number', description: 'Relative turn, pixels down. Use with dx.' },
+      },
+      required: [],
     },
   },
   {
@@ -335,8 +431,21 @@ export const PAGE_TOOL_SPECS = [
       'Press one key or a modifier CHORD. Single keys: Enter, Tab, Escape, Backspace, Delete, ' +
       'Home, End, Space, Arrow{Up,Down,Left,Right}, a letter, or a digit. Chords use "+": e.g. ' +
       '"Shift+1" (Excalidraw zoom-to-fit), "Cmd+A"/"Ctrl+A" (select all), "Ctrl+Enter". ' +
-      'Needs High-reliability mode.',
-    parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] },
+      'Pass `holdMs` to HOLD the key down for that long instead of tapping it — that is how you drive any ' +
+      'continuous, press-and-hold control: moving or panning (key:"w", holdMs:800), sprinting ("Shift+w"), ' +
+      'charging an action. ' +
+      'Max hold is 5000ms; the key is always released. Needs High-reliability mode.',
+    parameters: {
+      type: 'object',
+      properties: {
+        key: { type: 'string' },
+        holdMs: {
+          type: 'number',
+          description: 'Hold the key down this many ms (max 5000). Omit for a normal tap.',
+        },
+      },
+      required: ['key'],
+    },
   },
   {
     name: 'scroll',
@@ -348,14 +457,84 @@ export const PAGE_TOOL_SPECS = [
     parameters: { type: 'object', properties: { dy: { type: 'number' } }, required: ['dy'] },
   },
   {
+    name: 'capture_pointer',
+    description:
+      'Give a first-person / 3D canvas app control of the mouse, so mouse-look works. Such apps only ' +
+      'turn the view once they hold POINTER LOCK, and they can only take it from a click on a FOCUSED ' +
+      'page — which is not the default when driving from the side panel. Symptom you are missing this: ' +
+      'keys work and clicks land, but the view never turns and aiming changes nothing. Call this BEFORE ' +
+      'aiming, and check the result: it verifies the app actually took the pointer rather than assuming. ' +
+      'Not needed for flat canvas apps (whiteboards, editors, board games) — those take normal ' +
+      'coordinate clicks. Needs High-reliability mode.',
+    parameters: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: 'Optional click point; defaults to the canvas centre.' },
+        y: { type: 'number' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'input_sequence',
+    description:
+      'Perform several inputs together, with things held DOWN across each other — the only way to express ' +
+      'a combination: Shift held while dragging (constrain), Space held while dragging (pan), two direction ' +
+      'keys at once (diagonal movement), a modifier held across a click (multi-select), a mouse button held ' +
+      'while the view turns. Steps run in order and everything still held is released at the end, so you ' +
+      'never have to unwind it yourself. Step types: ' +
+      '{type:"key_down"|"key_up", key} (key may be a modifier: shift/ctrl/alt/meta), ' +
+      '{type:"mouse_down"|"mouse_up", button}, ' +
+      '{type:"move", dx, dy} relative or {type:"move", x, y} absolute, ' +
+      '{type:"type", text}, {type:"wait", ms}. ' +
+      'Example — Shift-constrained drag: [{"type":"key_down","key":"shift"},{"type":"mouse_down","button":"left"},' +
+      '{"type":"move","dx":120,"dy":0},{"type":"mouse_up","button":"left"},{"type":"key_up","key":"shift"}]. ' +
+      'Max 40 steps. Needs High-reliability mode.',
+    parameters: {
+      type: 'object',
+      properties: {
+        steps: {
+          type: 'array',
+          description: 'Ordered input steps.',
+          items: {
+            type: 'object',
+            properties: {
+              type: {
+                type: 'string',
+                enum: ['key_down', 'key_up', 'mouse_down', 'mouse_up', 'move', 'type', 'wait'],
+              },
+              key: { type: 'string', description: 'For key_down/key_up.' },
+              button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'For mouse_down/mouse_up.' },
+              x: { type: 'number' },
+              y: { type: 'number' },
+              dx: { type: 'number' },
+              dy: { type: 'number' },
+              text: { type: 'string', description: 'For type.' },
+              ms: { type: 'number', description: 'For wait.' },
+            },
+            required: ['type'],
+          },
+        },
+      },
+      required: ['steps'],
+    },
+  },
+  ...SENSE_TOOL_SPECS,
+  CALIBRATE_TOOL_SPEC,
+  {
     name: 'draw_path',
     description:
       'Draw a freehand stroke by dragging the mouse through a path of viewport points (button held) — e.g. the ' +
       'Excalidraw pencil. Select the pencil/tool first with click_at, then call this with ordered points. ' +
-      'Needs High-reliability mode.',
+      'Pass `button:"right"` to drag with the secondary button. Needs High-reliability mode.',
     parameters: {
       type: 'object',
       properties: {
+        button: {
+          type: 'string',
+          enum: ['left', 'right', 'middle'],
+          description: 'Button to hold during the drag (default left).',
+        },
         points: {
           type: 'array',
           description: 'Ordered path points in viewport pixels.',
@@ -370,6 +549,29 @@ export const PAGE_TOOL_SPECS = [
     },
   },
 ];
+
+// Developer-only. NOT part of PAGE_TOOL_SPECS: the caller adds it explicitly, and
+// only when the developer setting is on (see sidepanel.js `pageToolProvider`), so
+// an ordinary session never even sees that it exists.
+export const EVAL_JS_TOOL_SPEC = {
+  name: 'eval_js',
+  description:
+    'Run JavaScript in the page and return its value. Use this only when reading or driving the app ' +
+    'through its own code is genuinely better than the input tools — reading exact state that ' +
+    'read_app_state cannot reach, or installing a fast in-page control loop for a real-time app that a ' +
+    'per-action round-trip is too slow for. The expression\'s value is returned (promises are awaited). ' +
+    'The user must approve EVERY call and sees your exact code, so keep it short, single-purpose, and ' +
+    'obviously safe to read. Never use it to read credentials, tokens, cookies, or personal data, and ' +
+    'never to send data anywhere.',
+  parameters: {
+    type: 'object',
+    properties: {
+      code: { type: 'string', description: 'JavaScript expression to evaluate in the page.' },
+      timeoutMs: { type: 'number', description: 'Give up after this long (default 5000).' },
+    },
+    required: ['code'],
+  },
+};
 
 // Keep tool results small — the model re-reads them every step, and a big form
 // page can have dozens of fields. Trim option lists and string lengths.
@@ -419,11 +621,12 @@ const blockedPageResult = () =>
     blocked: true,
   });
 
-export function makePageToolExecutor(tabId, { cdp = false, adapter = null } = {}) {
+export function makePageToolExecutor(tabId, { cdp = false, adapter = null, devJs = false } = {}) {
   const doFill = cdp ? cdpFillForm : fillForm;
   const doClick = cdp ? cdpClickElement : clickElement;
   const doClickText = cdp ? cdpClickByText : clickByText;
   const doCombobox = cdp ? cdpFillCombobox : fillCombobox;
+  const sense = makeSenseExecutor(tabId); // deterministic reads; returns null if not its tool
   let lastMarks = []; // Set-of-Mark from the latest marked_screenshot (for click_mark)
   // A result is "trouble" if it errored, didn't take, or couldn't be confirmed.
   const resultIndicatesError = (r) =>
@@ -455,6 +658,41 @@ export function makePageToolExecutor(tabId, { cdp = false, adapter = null } = {}
       // matched an adapter AND the user is entitled (gated where the tool is added).
       if (adapter && adapter.handles(name)) {
         return JSON.stringify(await adapter.run(tabId, name, input, { cdp }));
+      }
+      // Deterministic sensing (sense_canvas / probe_app_state / read_app_state).
+      // Read-only and CDP-independent — an app's own state is readable whether or
+      // not trusted events are on.
+      {
+        const sensed = await sense(name, input);
+        if (sensed !== null) return JSON.stringify(sensed);
+      }
+      if (name === 'eval_js') {
+        // Second, independent gate. The spec is only offered when the developer
+        // setting is on; this refuses even if a caller somehow asks anyway, so
+        // the capability can never be reached by a model that was handed a stale
+        // or hand-written tool list.
+        if (!devJs) {
+          return JSON.stringify({
+            error: 'Running JavaScript in the page is a developer-only feature and is turned OFF. Use the ' +
+              'regular page tools (read_app_state, sense_canvas, click_at, …) instead.',
+          });
+        }
+        if (!cdp) {
+          return JSON.stringify({
+            error: 'This needs High-reliability page control (trusted events) — turn it on in Settings → page control.',
+          });
+        }
+        const r = await cdpEvaluate(tabId, input?.code, { timeoutMs: input?.timeoutMs });
+        return JSON.stringify(r);
+      }
+      if (name === 'calibrate_turn') {
+        if (!cdp) {
+          return JSON.stringify({
+            error: 'This needs High-reliability page control (trusted events) — turn it on in Settings → page control.',
+          });
+        }
+        const vp = await viewportInfo(tabId);
+        return JSON.stringify(await calibrateTurn(tabId, { delta: input?.delta, viewportWidth: vp?.w }));
       }
       if (name === 'inspect_page') {
         return JSON.stringify(compactInspect(await inspectForms(tabId)));
@@ -499,13 +737,29 @@ export function makePageToolExecutor(tabId, { cdp = false, adapter = null } = {}
         // Return BOTH text and the image; the provider loop feeds the image to the model.
         const vp = await viewportInfo(tabId);
         const gridded = await annotateGrid(image, vp); // labelled coordinate grid → accurate clicks
+        // Under pointer lock the grid is a trap — coordinates do nothing — so say
+        // so instead of inviting the model to read pixels off it.
+        const grid = `Screenshot attached WITH a red coordinate grid (labels are viewport pixels). READ the grid to pick click_at/draw_path coordinates — do not guess. Aim within 0..${
+          vp?.w ?? '?'
+        } × 0..${vp?.h ?? '?'}. For ordinary forms, inspect_page gives selectors.`;
+        let note;
+        if (vp?.pointerLock) {
+          // Under lock the grid is a trap — coordinates do nothing.
+          note = `Screenshot attached. This page holds POINTER LOCK: click_at coordinates are IGNORED and the app acts at its reticle (centre, about ${Math.round((vp.w || 0) / 2)},${Math.round((vp.h || 0) / 2)}). Do NOT pick coordinates off the grid. AIM by turning the view with move_mouse {dx, dy} (positive dx = right, positive dy = down), re-screenshot to see where you are pointing, then click_at. Press Escape to release the lock and get normal coordinate clicking back.`;
+        } else if (vp?.canvasApp) {
+          // The state that silently defeats aiming: a canvas app that has NOT taken
+          // the pointer. Movement keys work, clicks land, the view never turns.
+          note = `${grid}\nNOTE: this page is dominated by a <canvas> and does NOT currently hold the pointer. If it is a first-person / 3D app, mouse-look will do NOTHING until you call capture_pointer (it focuses the tab and clicks the canvas, which is what lets the app take the pointer). Do that BEFORE trying to aim with move_mouse {dx, dy}. If instead this is a flat canvas app (a whiteboard, a board game, an editor), ignore this and click coordinates normally.`;
+        } else {
+          note = grid;
+        }
         return {
           text: JSON.stringify({
             ok: true,
             viewport: vp ? { w: vp.w, h: vp.h } : undefined,
-            note: `Screenshot attached WITH a red coordinate grid (labels are viewport pixels). READ the grid to pick click_at/draw_path coordinates — do not guess. Aim within 0..${
-              vp?.w ?? '?'
-            } × 0..${vp?.h ?? '?'}. For ordinary forms, inspect_page gives selectors.`,
+            pointerLock: vp?.pointerLock || undefined,
+            canvasApp: vp?.canvasApp || undefined,
+            note,
           }),
           image: gridded,
         };
@@ -514,7 +768,7 @@ export function makePageToolExecutor(tabId, { cdp = false, adapter = null } = {}
       // result is purely VISUAL, and weak models won't screenshot on their own, so
       // we ATTACH a fresh screenshot of the result — this is what lets the model
       // SEE its mistake (a misplaced stroke) and self-correct.
-      if (['click_at', 'type_text', 'press_key', 'scroll', 'draw_path'].includes(name)) {
+      if (['click_at', 'move_mouse', 'type_text', 'press_key', 'scroll', 'draw_path', 'input_sequence', 'capture_pointer'].includes(name)) {
         if (!cdp) {
           return JSON.stringify({
             error: 'This needs High-reliability page control (trusted events) — turn it on in Settings → page control.',
@@ -524,11 +778,26 @@ export function makePageToolExecutor(tabId, { cdp = false, adapter = null } = {}
         // the costly per-step screenshot here — the model stops on atBottom. The
         // other coordinate tools are visual-only, so they keep the result shot.
         if (name === 'scroll') return JSON.stringify(await cdpScroll(tabId, undefined, undefined, input?.dy));
+        // move_mouse is likewise cheap and non-committal (hover / aim), and is
+        // often called several times in a row to steer — don't pay for a
+        // screenshot on each one; the model shoots when it wants to look.
+        if (name === 'move_mouse') {
+          return JSON.stringify(await cdpMoveMouse(tabId, {
+            x: input?.x, y: input?.y, dx: input?.dx, dy: input?.dy,
+          }));
+        }
+        // capture_pointer's outcome is invisible in a screenshot (the view looks
+        // identical whether or not the app took the pointer), so its verified
+        // text result is the whole point — don't spend a shot on it.
+        if (name === 'capture_pointer') {
+          return JSON.stringify(await cdpCapturePointer(tabId, { x: input?.x, y: input?.y }));
+        }
         let r;
-        if (name === 'click_at') r = await cdpClickAt(tabId, input?.x, input?.y);
+        if (name === 'click_at') r = await cdpClickAt(tabId, input?.x, input?.y, input?.button, input?.clicks);
         else if (name === 'type_text') r = await cdpTypeText(tabId, input?.text);
-        else if (name === 'press_key') r = await cdpPressKey(tabId, input?.key);
-        else r = await cdpDrag(tabId, input?.points);
+        else if (name === 'press_key') r = await cdpPressKey(tabId, input?.key, input?.holdMs);
+        else if (name === 'input_sequence') r = await cdpInputSequence(tabId, input?.steps);
+        else r = await cdpDrag(tabId, input?.points, input?.button);
         return actionResult(r);
       }
       if (name === 'fill_form') {

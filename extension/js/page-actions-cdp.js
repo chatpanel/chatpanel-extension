@@ -28,11 +28,19 @@ const truthy = (v) =>
 // --------------------------------------------------------------------------
 const sessions = new Map(); // tabId → { timer }
 
+// Tabs whose pointer we captured. Detaching drops the focus emulation that keeps
+// the lock alive, and a page that loses focus loses the pointer — so a captured
+// tab gets a much longer idle window, and re-applies focus emulation if Chrome
+// detaches us anyway (navigation, banner dismissed) and we re-attach.
+const capturedTabs = new Set();
+const CAPTURED_IDLE_DETACH_MS = 30000;
+
 function bump(tabId) {
   const s = sessions.get(tabId);
   if (!s) return;
   clearTimeout(s.timer);
-  s.timer = setTimeout(() => detach(tabId), IDLE_DETACH_MS);
+  const idle = capturedTabs.has(tabId) ? CAPTURED_IDLE_DETACH_MS : IDLE_DETACH_MS;
+  s.timer = setTimeout(() => detach(tabId), idle);
 }
 
 async function ensureAttached(tabId) {
@@ -50,11 +58,26 @@ async function ensureAttached(tabId) {
     } catch (e) {
       // Already attached by another client (DevTools open on this tab) → unusable.
       if (/already attached/i.test(e.message)) {
-        throw new Error('Close DevTools on this tab to use high-reliability mode.');
+        // Now that high-reliability is the default, this is the failure a
+        // developer with DevTools open will actually meet — so name both ways out.
+        throw new Error(
+          'Chrome DevTools is open on this tab, and only one debugger can attach at a time. ' +
+          'Close DevTools on this tab, or turn off "High-reliability page control" in ChatPanel ' +
+          'settings to fall back to synthetic events.',
+        );
       }
       throw e;
     }
     sessions.set(tabId, {});
+    // Re-arm focus emulation on a fresh session for a tab we had captured —
+    // otherwise the page silently loses focus, and with it the pointer.
+    if (capturedTabs.has(tabId)) {
+      try {
+        await send(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true });
+      } catch {
+        /* best effort — capture_pointer reports the real state anyway */
+      }
+    }
   }
   bump(tabId);
 }
@@ -77,6 +100,7 @@ export async function detach(tabId) {
   if (!s) return;
   clearTimeout(s.timer);
   sessions.delete(tabId);
+  pointerPos.delete(tabId); // the virtual position is only meaningful within a session
   try {
     await api.debugger.detach({ tabId });
   } catch {
@@ -94,6 +118,8 @@ function ensureDetachHook() {
   detachHooked = true;
   api.debugger.onDetach.addListener((src) => {
     if (src.tabId == null) return;
+    pointerPos.delete(src.tabId);
+    capturedTabs.delete(src.tabId); // tab closed / navigated / user cancelled the banner
     const s = sessions.get(src.tabId);
     if (s) {
       clearTimeout(s.timer);
@@ -112,14 +138,113 @@ async function script(tabId, func, args = []) {
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function trustedClick(tabId, x, y) {
-  await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
-  await send(tabId, 'Input.dispatchMouseEvent', {
-    type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1,
-  });
-  await send(tabId, 'Input.dispatchMouseEvent', {
-    type: 'mouseReleased', x, y, button: 'left', buttons: 1, clickCount: 1,
-  });
+// --------------------------------------------------------------------------
+// POINTER LOCK — the mode that breaks coordinate-based control
+//
+// When a page calls requestPointerLock() (3D games, first-person views, some map
+// and CAD tools), the OS cursor is hidden and the page STOPS receiving positions.
+// It reads only `movementX/movementY` deltas, and whatever the app acts on sits at
+// a fixed reticle — usually the viewport centre. Two consequences:
+//
+//   • a click's x/y is IGNORED — you cannot click a thing by aiming at its pixels;
+//     you must first turn the view until the target is under the reticle;
+//   • a mouse move is a TURN, not a jump — so moving "to" a coordinate before
+//     clicking silently rotates the view away from the target.
+//
+// Chrome derives the movement delta from the difference between CONSECUTIVE
+// dispatched positions, so relative motion is expressed by dispatching a position
+// offset from the last one. While locked the page never reads the absolute value,
+// so we let that virtual position drift outside the viewport instead of clamping —
+// clamping at an edge would silently swallow every further turn in that direction.
+// --------------------------------------------------------------------------
+const pointerPos = new Map(); // tabId → { x, y } virtual position we last dispatched
+
+// Also report the biggest <canvas>. A page dominated by one is almost certainly a
+// canvas app, and "big canvas + NOT locked" is the exact state in which relative
+// aiming silently does nothing — so the caller can say so instead of letting an
+// agent turn an uncaptured pointer in circles.
+function pointerStateInPage() {
+  let best = null;
+  for (const c of document.querySelectorAll('canvas')) {
+    const r = c.getBoundingClientRect();
+    const area = r.width * r.height;
+    if (!best || area > best.area) best = { area, w: Math.round(r.width), h: Math.round(r.height), x: Math.round(r.left), y: Math.round(r.top) };
+  }
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const dominant = !!best && best.area >= vw * vh * 0.5;
+  return {
+    locked: !!document.pointerLockElement,
+    w: vw,
+    h: vh,
+    hasFocus: document.hasFocus(),
+    canvas: best ? { w: best.w, h: best.h, cx: Math.round(best.x + best.w / 2), cy: Math.round(best.y + best.h / 2) } : null,
+    canvasApp: dominant,
+  };
+}
+// Aiming is a BURST — many small turns in a row — and probing the page before each
+// one would put a scripting round-trip on the hot path. Cache it briefly. Lock
+// state changes on a click (canvases grab the pointer on click) or a key (Escape
+// releases it), so those invalidate the cache explicitly; the TTL is just a
+// backstop for a page that locks on its own.
+const POINTER_STATE_TTL_MS = 500;
+const pointerState = new Map(); // tabId → { at, val }
+const invalidatePointerState = (tabId) => pointerState.delete(tabId);
+
+async function readPointerState(tabId) {
+  const hit = pointerState.get(tabId);
+  if (hit && Date.now() - hit.at < POINTER_STATE_TTL_MS) return hit.val;
+  try {
+    const val = await script(tabId, pointerStateInPage);
+    pointerState.set(tabId, { at: Date.now(), val });
+    // Self-correcting: the moment the page is seen WITHOUT the lock it stops
+    // earning the long idle window, so a tab that navigated away from a game (or
+    // where the user pressed Escape) goes back to the normal short session.
+    if (!val?.locked) capturedTabs.delete(tabId);
+    return val;
+  } catch {
+    return null;
+  }
+}
+// Where the virtual pointer is now — defaults to the viewport centre, which is
+// also where a locked app's reticle sits.
+function pointerAt(tabId, st) {
+  const cur = pointerPos.get(tabId);
+  if (cur) return cur;
+  const c = { x: Math.round((st?.w || 800) / 2), y: Math.round((st?.h || 600) / 2) };
+  pointerPos.set(tabId, c);
+  return c;
+}
+
+// CDP's `buttons` is a bitmask of what's held DOWN; `button` names the one that
+// changed. Keep them consistent or apps that read either field misbehave.
+const BUTTON_MASK = { left: 1, right: 2, middle: 4 };
+const normButton = (b) => {
+  const s = String(b || 'left').toLowerCase();
+  return BUTTON_MASK[s] ? s : 'left';
+};
+
+// One trusted click. `button` reaches right/middle (context menus, and the
+// secondary action in most canvas apps and games); `clickCount` 2 makes a real
+// double-click — dispatched as two press/release pairs with an incrementing
+// count, which is what Chrome turns into a `dblclick`.
+//
+// `move:false` suppresses the leading mouseMoved. That matters under POINTER LOCK,
+// where a move is not "go to this spot" but "turn the camera by this delta" — so
+// moving before a click would swing the aim off target and the click lands
+// somewhere else entirely.
+async function trustedClick(tabId, x, y, button = 'left', clickCount = 1, { move = true } = {}) {
+  const b = normButton(button);
+  const buttons = BUTTON_MASK[b];
+  if (move) await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  for (let n = 1; n <= Math.max(1, Math.min(3, clickCount)); n++) {
+    await send(tabId, 'Input.dispatchMouseEvent', {
+      type: 'mousePressed', x, y, button: b, buttons, clickCount: n,
+    });
+    await send(tabId, 'Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x, y, button: b, buttons, clickCount: n,
+    });
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -162,6 +287,19 @@ async function trustedKey(tabId, name) {
 
 // CDP modifier bitmask, for key CHORDS (Shift+1, Cmd+A, Ctrl+Enter…).
 const MODS = { alt: 1, option: 1, ctrl: 2, control: 2, meta: 4, cmd: 4, command: 4, win: 4, super: 4, shift: 8 };
+
+// The modifier keys as keys in their OWN right — needed by input_sequence, where
+// Shift is held across other events rather than folded into one chord.
+const MOD_KEY_DEFS = {
+  shift: { bit: 8, def: { windowsVirtualKeyCode: 16, key: 'Shift', code: 'ShiftLeft' } },
+  control: { bit: 2, def: { windowsVirtualKeyCode: 17, key: 'Control', code: 'ControlLeft' } },
+  alt: { bit: 1, def: { windowsVirtualKeyCode: 18, key: 'Alt', code: 'AltLeft' } },
+  meta: { bit: 4, def: { windowsVirtualKeyCode: 91, key: 'Meta', code: 'MetaLeft' } },
+};
+const MOD_ALIAS = {
+  shift: 'shift', ctrl: 'control', control: 'control', alt: 'alt', option: 'alt',
+  meta: 'meta', cmd: 'meta', command: 'meta', win: 'meta', super: 'meta',
+};
 const namedKey = (name) => Object.keys(KEY_DEFS).find((k) => k.toLowerCase() === String(name).toLowerCase());
 // A CDP key descriptor for a single letter/digit/named key (no modifiers here).
 function keyDefFor(name) {
@@ -195,6 +333,32 @@ export async function cdpKeyChord(tabId, def, modifiers = 0) {
   }
 }
 
+// HOLD a key down for a while, then release — how you walk in a game (hold W),
+// sprint (hold Shift), or drive any "while pressed" control. Deliberately
+// self-releasing rather than exposing raw down/up: an unmatched keyDown would
+// leave the page with a stuck key after the turn ends or we idle-detach.
+//
+// The hold is capped, the idle timer is bumped THROUGH it so the debugger can't
+// detach mid-hold, and the keyUp goes out in a `finally` via sendResilient — so
+// even a detach-and-reattach still releases the key.
+const MAX_HOLD_MS = 5000;
+export async function cdpKeyHold(tabId, def, modifiers = 0, holdMs = 300) {
+  await ensureAttached(tabId);
+  const ms = Math.max(0, Math.min(MAX_HOLD_MS, Math.round(holdMs) || 0));
+  const keepAlive = setInterval(() => bump(tabId), Math.floor(IDLE_DETACH_MS / 2));
+  try {
+    await sendResilient(tabId, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers, ...def });
+    await delay(ms);
+    return { ok: true, heldMs: ms };
+  } finally {
+    clearInterval(keepAlive);
+    // Always release, even if the hold above threw — a stuck key breaks the page.
+    await sendResilient(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', modifiers, ...def })
+      .catch(() => {});
+    bump(tabId);
+  }
+}
+
 // --------------------------------------------------------------------------
 // Coordinate-based "computer use" — the model reads a screenshot and drives the
 // page by COORDINATES, so it works on canvas apps (Google Sheets/Docs, Figma)
@@ -202,12 +366,212 @@ export async function cdpKeyChord(tabId, def, modifiers = 0) {
 // (0..innerWidth × 0..innerHeight) — the same space the screenshot tool reports.
 // CDP-only (needs trusted events).
 // --------------------------------------------------------------------------
-export async function cdpClickAt(tabId, x, y) {
+export async function cdpClickAt(tabId, x, y, button = 'left', clicks = 1) {
   await ensureAttached(tabId);
   try {
+    const st = await readPointerState(tabId);
+    const b = normButton(button);
+    const n = Math.max(1, Math.min(3, Math.round(clicks) || 1));
+    if (st?.locked) {
+      // Locked: coordinates mean nothing and moving would turn the view. Click
+      // exactly where we already are, and TELL the caller its x/y was ignored so
+      // it re-aims with move_mouse deltas instead of retrying the same click.
+      const at = pointerAt(tabId, st);
+      await trustedClick(tabId, at.x, at.y, b, n, { move: false });
+      return {
+        ok: true,
+        button: b,
+        clicks: n,
+        pointerLock: true,
+        note:
+          'This page holds POINTER LOCK, so the x/y you passed was ignored — the click went to the ' +
+          'app\'s reticle (centre of the viewport). To act on something else, AIM first with ' +
+          'move_mouse {dx, dy} until the target sits under the reticle, then click again.',
+      };
+    }
     await showCursor(tabId, x, y); // glide the agent cursor to the click point
-    await trustedClick(tabId, Math.round(x), Math.round(y));
-    return { ok: true, clickedAt: { x: Math.round(x), y: Math.round(y) } };
+    await trustedClick(tabId, Math.round(x), Math.round(y), b, n);
+    pointerPos.set(tabId, { x: Math.round(x), y: Math.round(y) });
+    return { ok: true, clickedAt: { x: Math.round(x), y: Math.round(y) }, button: b, clicks: n };
+  } finally {
+    // A click on a canvas is the usual way a page GRABS the pointer, so never
+    // trust the cached lock state across one.
+    invalidatePointerState(tabId);
+    bump(tabId);
+  }
+}
+
+// --------------------------------------------------------------------------
+// CAPTURE THE POINTER — the step that makes a first-person app controllable
+//
+// A canvas app takes the pointer by calling requestPointerLock() from a click
+// handler. Chrome grants that only if the click is a real user gesture AND the
+// page's document is FOCUSED. Driving from the side panel, neither is guaranteed:
+// focus usually sits on the panel, so the page's request is rejected and the app
+// stays in its uncaptured state — clicks land, movement keys work, but the view
+// never turns, which reads as "the controls are accepted and nothing happens".
+//
+// So focus the window and tab first, then click, then VERIFY against
+// document.pointerLockElement rather than assuming the click worked.
+// --------------------------------------------------------------------------
+// What is actually AT the click point, so a failure can say "you hit the splash
+// overlay", not just "it didn't work".
+function topElementInPage(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el) return null;
+  return {
+    tag: el.tagName.toLowerCase(),
+    id: el.id || '',
+    cls: (typeof el.className === 'string' ? el.className : '').slice(0, 80),
+    text: (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+  };
+}
+
+export async function cdpCapturePointer(tabId, { x, y } = {}) {
+  await ensureAttached(tabId);
+  try {
+    invalidatePointerState(tabId);
+    let st = await readPointerState(tabId);
+    if (st?.locked) return { ok: true, alreadyCaptured: true, pointerLock: true };
+
+    // Getting the page's DOCUMENT focused is the whole game. Activating the tab is
+    // NOT enough on its own: within the window, focus can still sit on the side
+    // panel, and a document that isn't focused has its lock request rejected. So
+    // do all three, cheapest last:
+    //   Emulation.setFocusEmulationEnabled — makes the renderer treat the page as
+    //     focused regardless of where OS/browser focus actually is. This is the one
+    //     that fixes the side-panel case;
+    //   Page.bringToFront — activates the CDP target itself;
+    //   tabs/windows.update — moves real browser focus.
+    const focusErrors = [];
+    let focusEmulated = false;
+    try {
+      await send(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true });
+      focusEmulated = true;
+    } catch (e) {
+      focusErrors.push(`focusEmulation: ${e?.message || e}`);
+    }
+    try {
+      await send(tabId, 'Page.bringToFront');
+    } catch (e) {
+      focusErrors.push(`bringToFront: ${e?.message || e}`);
+    }
+    try {
+      const tab = await api.tabs.get(tabId);
+      await api.tabs.update(tabId, { active: true });
+      if (tab?.windowId != null) await api.windows.update(tab.windowId, { focused: true });
+    } catch (e) {
+      focusErrors.push(`tabFocus: ${e?.message || e}`);
+    }
+
+    // Click the canvas centre by default — that is what the app's handler listens on.
+    const cx = Number.isFinite(x) ? Math.round(x) : st?.canvas?.cx ?? Math.round((st?.w || 800) / 2);
+    const cy = Number.isFinite(y) ? Math.round(y) : st?.canvas?.cy ?? Math.round((st?.h || 600) / 2);
+    await trustedClick(tabId, cx, cy, 'left', 1);
+    pointerPos.set(tabId, { x: cx, y: cy });
+
+    // The lock is granted asynchronously — poll briefly rather than reading once.
+    for (let i = 0; i < 10; i++) {
+      await delay(100);
+      invalidatePointerState(tabId);
+      st = await readPointerState(tabId);
+      if (st?.locked) {
+        capturedTabs.add(tabId); // hold the session open so the lock survives
+        bump(tabId);
+        return { ok: true, pointerLock: true, capturedAt: { x: cx, y: cy }, focusEmulated };
+      }
+    }
+
+    // Still not captured — report WHAT WE HIT and whether the page thinks it is
+    // focused, so the next move is a diagnosis rather than another blind retry.
+    const hit = await script(tabId, topElementInPage, [cx, cy]).catch(() => null);
+    const hitCanvas = hit?.tag === 'canvas';
+    return {
+      ok: false,
+      pointerLock: false,
+      clickedAt: { x: cx, y: cy },
+      pageFocused: st?.hasFocus ?? null,
+      focusEmulated,
+      elementAtPoint: hit || undefined,
+      ...(focusErrors.length ? { focusErrors } : {}),
+      error:
+        (hitCanvas
+          ? 'Clicked the canvas itself, but the app did not take the pointer. '
+          : `The click landed on <${hit?.tag || 'unknown'}>${hit?.text ? ` ("${hit.text}")` : ''}, NOT the canvas — something is covering it. Dismiss that splash / menu / "click to play" overlay first (click it, or press Escape), then call capture_pointer again. `) +
+        'If the canvas was hit and it still will not capture, this app may simply not use pointer lock ' +
+        '(then drive it with ordinary click_at / move_mouse {x, y}), or Chrome is refusing the request ' +
+        'because the page is not really focused. Do NOT keep aiming — mouse-look cannot work until it ' +
+        'captures. Ask the user to click once inside the app and then say continue.',
+    };
+  } finally {
+    bump(tabId);
+  }
+}
+
+// Move the pointer WITHOUT pressing. Two modes:
+//   {x, y}   absolute — hover menus, tooltips, canvas previews under the cursor;
+//   {dx, dy} relative — a TURN. The only mode a pointer-locked app understands,
+//            and also handy for nudging a hover target.
+// Relative is resolved against the virtual position (see the pointer-lock note
+// above), which is why it keeps working across a long series of small turns.
+export async function cdpMoveMouse(tabId, { x, y, dx, dy } = {}) {
+  await ensureAttached(tabId);
+  try {
+    const st = await readPointerState(tabId);
+    const rel = Number.isFinite(dx) || Number.isFinite(dy);
+    let nx;
+    let ny;
+    if (rel) {
+      const at = pointerAt(tabId, st);
+      nx = Math.round(at.x + (Number(dx) || 0));
+      ny = Math.round(at.y + (Number(dy) || 0));
+      // Unlocked, the position is real and must stay on screen; locked, it is a
+      // pure delta carrier and is allowed to drift off-viewport.
+      if (!st?.locked && st) {
+        nx = Math.max(0, Math.min(st.w - 1, nx));
+        ny = Math.max(0, Math.min(st.h - 1, ny));
+      }
+    } else {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return { ok: false, error: 'move_mouse needs either {x, y} or {dx, dy}' };
+      }
+      if (st?.locked) {
+        return {
+          ok: false,
+          pointerLock: true,
+          error:
+            'This page holds POINTER LOCK, so it cannot be pointed at absolute coordinates. ' +
+            'Turn the view with move_mouse {dx, dy} instead — positive dx looks right, positive dy looks down.',
+        };
+      }
+      nx = Math.round(x);
+      ny = Math.round(y);
+    }
+    if (!st?.locked) await showCursor(tabId, nx, ny);
+    await sendResilient(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: nx, y: ny });
+    pointerPos.set(tabId, { x: nx, y: ny });
+    if (st?.locked) {
+      return { ok: true, pointerLock: true, turnedBy: { dx: Number(dx) || 0, dy: Number(dy) || 0 } };
+    }
+    // A relative move on an UNCAPTURED page is not a camera turn — it just slides
+    // the cursor, clamped to the viewport. Reporting a bare "ok" here is what lets
+    // an agent believe it is looking around while the view never moves, so say
+    // plainly what happened and what to do about it.
+    if (rel) {
+      return {
+        ok: true,
+        movedTo: { x: nx, y: ny },
+        pointerLock: false,
+        warning:
+          'This page does NOT hold pointer lock, so this was a cursor move, not a view turn — ' +
+          (st?.canvasApp
+            ? 'and the page is dominated by a <canvas>, so if it is a first-person / 3D app you must ' +
+              'capture the pointer FIRST with capture_pointer, then aim with {dx, dy}. Repeating turns ' +
+              'before capturing will keep doing nothing.'
+            : 'if you meant to hover a spot, pass absolute {x, y} instead.'),
+      };
+    }
+    return { ok: true, movedTo: { x: nx, y: ny } };
   } finally {
     bump(tabId);
   }
@@ -222,7 +586,7 @@ export async function cdpTypeText(tabId, text) {
     bump(tabId);
   }
 }
-export async function cdpPressKey(tabId, key) {
+export async function cdpPressKey(tabId, key, holdMs = 0) {
   await ensureAttached(tabId);
   const chord = parseChord(key);
   if (!chord) return { ok: false, error: `unknown key "${key}"` };
@@ -235,12 +599,20 @@ export async function cdpPressKey(tabId, key) {
     return { ok: false, error: 'clipboard shortcuts (paste/cut/copy) are disabled for safety' };
   }
   try {
+    // A requested HOLD always goes through the hold path — that's the only way to
+    // drive "while pressed" controls (walking in a game, sprint, press-and-hold).
+    const hold = Math.round(Number(holdMs)) || 0;
+    if (hold > 0) {
+      const r = await cdpKeyHold(tabId, chord.def, chord.modifiers, hold);
+      return { ...r, key };
+    }
     // Plain named key (Enter/Space/…) keeps the text-producing keyDown path;
     // anything with a modifier (or a letter/digit) goes through the chord helper.
     if (chord.plainNamed) await trustedKey(tabId, chord.plainNamed);
     else await cdpKeyChord(tabId, chord.def, chord.modifiers);
     return { ok: true, key };
   } finally {
+    invalidatePointerState(tabId); // Escape releases pointer lock — re-probe next time
     bump(tabId);
   }
 }
@@ -302,33 +674,268 @@ export async function cdpScroll(tabId, x, y, dy) {
   };
 }
 
+// --------------------------------------------------------------------------
+// COMPOSITE INPUT — several keys and/or buttons held AT THE SAME TIME
+//
+// The single-shot tools each model one input in isolation, which cannot express
+// what real apps constantly ask for: Shift held while dragging (constrain), Space
+// held while dragging (pan), two direction keys at once (diagonal movement), a
+// modifier held across a click (multi-select), a button held while the view turns.
+//
+// So this runs an ordered STEP LIST and tracks what is currently held, because CDP
+// events are stateless: every event must carry the modifier bitmask and the button
+// bitmask that are down AT THAT MOMENT, or the page sees a plain click instead of a
+// Shift-click. Anything still held when the list ends — or when a step throws — is
+// released in the `finally`, so a sequence can never strand the page with a stuck
+// key or a button down.
+// --------------------------------------------------------------------------
+const MAX_SEQUENCE_STEPS = 40;
+const MAX_SEQUENCE_WAIT_MS = 8000;
+
+// Resolve a step's `key` to a CDP descriptor + the modifier bit it contributes.
+function resolveStepKey(name) {
+  const raw = String(name || '').trim();
+  const mod = MOD_ALIAS[raw.toLowerCase()];
+  if (mod) return { def: MOD_KEY_DEFS[mod].def, bit: MOD_KEY_DEFS[mod].bit, name: mod };
+  const named = namedKey(raw);
+  if (named) return { def: KEY_DEFS[named], bit: 0, name: named };
+  const def = keyDefFor(raw);
+  return def ? { def, bit: 0, name: raw.toLowerCase() } : null;
+}
+
+export async function cdpInputSequence(tabId, steps) {
+  await ensureAttached(tabId);
+  const list = Array.isArray(steps) ? steps : [];
+  if (!list.length) return { ok: false, error: 'input_sequence needs at least one step' };
+  if (list.length > MAX_SEQUENCE_STEPS) {
+    return { ok: false, error: `too many steps (${list.length}); max is ${MAX_SEQUENCE_STEPS} — split it across calls` };
+  }
+
+  const heldKeys = new Map(); // name → { def, bit }
+  let modifiers = 0;
+  let heldButtons = 0;
+  let waited = 0;
+  const done = [];
+  // Keep the debugger alive across the whole sequence — a long one can outlast the
+  // idle window, and detaching mid-sequence is what strands a held input.
+  const keepAlive = setInterval(() => bump(tabId), Math.floor(IDLE_DETACH_MS / 2));
+
+  const st = await readPointerState(tabId);
+  let pos = pointerAt(tabId, st);
+
+  try {
+    for (const [i, raw] of list.entries()) {
+      const step = raw || {};
+      const type = String(step.type || '').toLowerCase();
+      switch (type) {
+        case 'key_down':
+        case 'key_up': {
+          const k = resolveStepKey(step.key);
+          if (!k) return { ok: false, error: `step ${i + 1}: unknown key "${step.key}"`, completed: done };
+          if (type === 'key_down') {
+            // Same clipboard rule as press_key — holding the modifier separately
+            // must not become a back door to Cmd/Ctrl+V.
+            const withMods = modifiers | k.bit;
+            if ((withMods & (MODS.ctrl | MODS.meta)) && ['v', 'x', 'c'].includes(String(k.def.key || '').toLowerCase())) {
+              return { ok: false, error: 'clipboard shortcuts (paste/cut/copy) are disabled for safety', completed: done };
+            }
+            if (k.bit) modifiers |= k.bit;
+            heldKeys.set(k.name, k);
+            await sendResilient(tabId, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers, ...k.def });
+          } else {
+            heldKeys.delete(k.name);
+            if (k.bit) modifiers &= ~k.bit;
+            await sendResilient(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', modifiers, ...k.def });
+          }
+          break;
+        }
+        case 'type': {
+          // Text typed WITH whatever is currently held (e.g. Shift for capitals is
+          // implicit in the text itself; a held Ctrl makes these shortcuts).
+          for (const ch of String(step.text ?? '')) {
+            await sendResilient(tabId, 'Input.dispatchKeyEvent', {
+              type: 'keyDown', modifiers, text: ch, unmodifiedText: ch,
+            });
+            await sendResilient(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', modifiers });
+          }
+          break;
+        }
+        case 'mouse_down':
+        case 'mouse_up': {
+          const b = normButton(step.button);
+          const mask = BUTTON_MASK[b];
+          if (type === 'mouse_down') heldButtons |= mask;
+          else heldButtons &= ~mask;
+          await sendResilient(tabId, 'Input.dispatchMouseEvent', {
+            type: type === 'mouse_down' ? 'mousePressed' : 'mouseReleased',
+            x: pos.x, y: pos.y, button: b, buttons: heldButtons, clickCount: 1, modifiers,
+          });
+          break;
+        }
+        case 'move': {
+          const rel = Number.isFinite(step.dx) || Number.isFinite(step.dy);
+          let nx;
+          let ny;
+          if (rel) {
+            nx = Math.round(pos.x + (Number(step.dx) || 0));
+            ny = Math.round(pos.y + (Number(step.dy) || 0));
+            if (!st?.locked && st) {
+              nx = Math.max(0, Math.min(st.w - 1, nx));
+              ny = Math.max(0, Math.min(st.h - 1, ny));
+            }
+          } else if (Number.isFinite(step.x) && Number.isFinite(step.y)) {
+            if (st?.locked) {
+              return { ok: false, error: `step ${i + 1}: page holds pointer lock — use {dx, dy}, not {x, y}`, completed: done };
+            }
+            nx = Math.round(step.x);
+            ny = Math.round(step.y);
+          } else {
+            return { ok: false, error: `step ${i + 1}: move needs {x, y} or {dx, dy}`, completed: done };
+          }
+          pos = { x: nx, y: ny };
+          pointerPos.set(tabId, pos);
+          await sendResilient(tabId, 'Input.dispatchMouseEvent', {
+            type: 'mouseMoved', x: nx, y: ny, buttons: heldButtons, modifiers,
+            ...(heldButtons ? { button: normButton(step.button) } : {}),
+          });
+          break;
+        }
+        case 'wait': {
+          const ms = Math.max(0, Math.min(MAX_SEQUENCE_WAIT_MS - waited, Math.round(Number(step.ms)) || 0));
+          waited += ms;
+          await delay(ms);
+          break;
+        }
+        default:
+          return { ok: false, error: `step ${i + 1}: unknown step type "${step.type}"`, completed: done };
+      }
+      done.push(type);
+    }
+    return {
+      ok: true,
+      steps: done.length,
+      ...(st?.locked ? { pointerLock: true } : {}),
+    };
+  } finally {
+    clearInterval(keepAlive);
+    // Release EVERYTHING, in the reverse order it went down. Best-effort: a page
+    // that navigated mid-sequence is already rid of the state anyway.
+    for (const mask of [1, 2, 4]) {
+      if (heldButtons & mask) {
+        const b = Object.keys(BUTTON_MASK).find((k) => BUTTON_MASK[k] === mask);
+        heldButtons &= ~mask;
+        await sendResilient(tabId, 'Input.dispatchMouseEvent', {
+          type: 'mouseReleased', x: pos.x, y: pos.y, button: b, buttons: heldButtons, clickCount: 1, modifiers,
+        }).catch(() => {});
+      }
+    }
+    for (const k of [...heldKeys.values()].reverse()) {
+      if (k.bit) modifiers &= ~k.bit;
+      await sendResilient(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', modifiers, ...k.def })
+        .catch(() => {});
+    }
+    invalidatePointerState(tabId);
+    bump(tabId);
+  }
+}
+
+// --------------------------------------------------------------------------
+// EVALUATE JAVASCRIPT IN THE PAGE — the sharpest tool here, and the most dangerous
+//
+// This is a universal capability: page JS can read anything the logged-in user can
+// see, call any same-origin API as them, and change the page at will. It therefore
+// sits behind a developer setting that is OFF by default, and — unlike every other
+// page action — its confirmation can never be waived by "allow for this site" (see
+// ALWAYS_CONFIRM_TOOLS in sidepanel.js). Nothing here may weaken either gate.
+//
+// Runs via CDP rather than an injected `new Function`, because injection into the
+// MAIN world is subject to the page's own CSP and would fail on exactly the strict
+// sites where this is most useful. Results come back by value, size-capped, with
+// secret-looking keys stripped by the caller.
+// --------------------------------------------------------------------------
+const MAX_EVAL_RESULT = 20000;
+
+export async function cdpEvaluate(tabId, expression, { timeoutMs = 5000 } = {}) {
+  await ensureAttached(tabId);
+  const code = String(expression ?? '');
+  if (!code.trim()) return { ok: false, error: 'no code given' };
+  try {
+    const r = await Promise.race([
+      sendResilient(tabId, 'Runtime.evaluate', {
+        expression: code,
+        returnByValue: true,
+        awaitPromise: true,
+        userGesture: false, // never launder this into a user gesture
+        allowUnsafeEvalBlockedByCSP: true,
+      }),
+      delay(timeoutMs).then(() => ({ __timeout: true })),
+    ]);
+    if (r?.__timeout) {
+      return { ok: false, error: `evaluation did not finish within ${timeoutMs}ms` };
+    }
+    if (r?.exceptionDetails) {
+      const ex = r.exceptionDetails;
+      return {
+        ok: false,
+        error: `page threw: ${ex.exception?.description || ex.text || 'unknown error'}`.slice(0, 1000),
+      };
+    }
+    const value = r?.result?.value;
+    let out = value;
+    if (typeof value === 'string' && value.length > MAX_EVAL_RESULT) {
+      out = `${value.slice(0, MAX_EVAL_RESULT)}… [truncated]`;
+    } else if (value && typeof value === 'object') {
+      const json = JSON.stringify(value);
+      if (json && json.length > MAX_EVAL_RESULT) {
+        out = `${json.slice(0, MAX_EVAL_RESULT)}… [truncated]`;
+      }
+    }
+    return { ok: true, type: r?.result?.type, value: out === undefined ? null : out };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  } finally {
+    invalidatePointerState(tabId); // arbitrary code can lock/unlock or navigate
+    bump(tabId);
+  }
+}
+
 // Drag the mouse through a path with the button held — i.e. a freehand stroke.
 // This is how you DRAW (Excalidraw pencil) or drag-and-drop. `points` is an
 // ordered [{x,y}, …] in CSS-viewport space; we press at the first, move through
 // each, and release at the last.
-export async function cdpDrag(tabId, points) {
+export async function cdpDrag(tabId, points, button = 'left') {
   await ensureAttached(tabId);
+  const b = normButton(button);
+  const buttons = BUTTON_MASK[b];
+  let pressed = false;
+  let last = null;
   try {
     const pts = (points || [])
       .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
       .map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }));
     if (pts.length < 2) return { ok: false, error: 'drag needs at least 2 points' };
+    last = pts[0];
     await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: pts[0].x, y: pts[0].y });
     await send(tabId, 'Input.dispatchMouseEvent', {
-      type: 'mousePressed', x: pts[0].x, y: pts[0].y, button: 'left', buttons: 1, clickCount: 1,
+      type: 'mousePressed', x: pts[0].x, y: pts[0].y, button: b, buttons, clickCount: 1,
     });
+    pressed = true;
     for (let i = 1; i < pts.length; i++) {
       await send(tabId, 'Input.dispatchMouseEvent', {
-        type: 'mouseMoved', x: pts[i].x, y: pts[i].y, button: 'left', buttons: 1,
+        type: 'mouseMoved', x: pts[i].x, y: pts[i].y, button: b, buttons,
       });
+      last = pts[i];
       await delay(8); // small pace so the app samples the path like a real stroke
     }
-    const last = pts[pts.length - 1];
-    await send(tabId, 'Input.dispatchMouseEvent', {
-      type: 'mouseReleased', x: last.x, y: last.y, button: 'left', buttons: 1, clickCount: 1,
-    });
-    return { ok: true, strokePoints: pts.length };
+    return { ok: true, strokePoints: pts.length, button: b };
   } finally {
+    // Release in `finally` for the same reason a held key does: a button left
+    // down mid-stroke leaves the app dragging forever.
+    if (pressed) {
+      await sendResilient(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x: last.x, y: last.y, button: b, buttons, clickCount: 1,
+      }).catch(() => {});
+    }
     bump(tabId);
   }
 }

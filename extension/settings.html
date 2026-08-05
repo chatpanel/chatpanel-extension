@@ -33,12 +33,17 @@
         <div class="card">
           <div class="card-head">
             <h2>API endpoints</h2>
-            <button id="add-endpoint" class="btn primary">+ Add endpoint</button>
+            <div class="card-actions">
+              <button id="toggle-endpoints" class="btn ghost" type="button">Expand all</button>
+              <button id="add-endpoint" class="btn primary">+ Add endpoint</button>
+            </div>
           </div>
           <p class="muted">
             Connect to any model — a local server (Ollama, LM Studio) or a hosted
             API (OpenAI, Anthropic, OpenRouter). Pick a model and chat; this is all
-            most people need. <strong>Free uses one endpoint</strong>; Pro unlocks them all.
+            most people need. <strong>Free connects one endpoint of your own</strong> —
+            add it here and it replaces the built-in in-browser model as your active
+            one. Pro unlocks unlimited endpoints, all usable at once.
           </p>
           <details class="tip">
             <summary>Using local Ollama? Fix the <code>403 Forbidden</code> first</summary>
@@ -61,6 +66,9 @@
             </p>
           </details>
           <div id="endpoints"></div>
+          <!-- Second add button: with several endpoints open, the header one has
+               scrolled far away by the time you reach the end of the list. -->
+          <button id="add-endpoint-bottom" class="btn add-row" type="button">+ Add endpoint</button>
         </div>
       </section>
 
@@ -69,7 +77,10 @@
         <div class="card">
           <div class="card-head">
             <h2>Agents <span class="sub">— Claude Code, Codex, Antigravity CLI</span></h2>
-            <button id="add-agent" class="btn primary">+ Add agent</button>
+            <div class="card-actions">
+              <button id="toggle-agents" class="btn ghost" type="button">Expand all</button>
+              <button id="add-agent" class="btn primary">+ Add agent</button>
+            </div>
           </div>
           <p class="muted">
             Use the coding agents already installed on your machine. Install &amp; start the
@@ -96,6 +107,7 @@ npx @chatpanel/bridge</code></pre>
           <div id="bridge-status" class="status"></div>
           <div id="bridge-update" class="status hidden"></div>
           <div id="bridge-agents"></div>
+          <button id="add-agent-bottom" class="btn add-row" type="button">+ Add agent</button>
         </div>
       </section>
 
@@ -865,11 +877,13 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
 
           <div class="row" id="subscribe-row">
             <button id="btn-subscribe-pro" class="btn primary">Subscribe to Pro</button>
+            <button id="btn-check-purchase" class="btn">Check for my purchase</button>
             <button id="license-deactivate" class="btn ghost hidden">Deactivate</button>
           </div>
           <p class="muted tiny" id="subscribe-hint">
             Opens secure checkout. Pro activates here automatically when you're done,
-            and follows your purchase email across your devices.
+            and follows your purchase email across your devices. Already paid and still
+            seeing Free? Hit <strong>Check for my purchase</strong> — no email needed.
           </p>
 
           <!-- Already paid on another device / reinstalled? Restore by email. -->
@@ -974,11 +988,31 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                   <span>High-reliability page control</span>
                 </label>
                 <p class="muted tiny" id="pref-pageact-cdp-note">
-                  When the agent fills forms or clicks (<span class="inline-ico" data-icon="play"></span> Act on page), use trusted
+                  When the agent acts on a page (<span class="inline-ico" data-icon="play"></span> Act on page), use trusted
                   browser events instead of synthetic ones — far more reliable on heavy
-                  web apps like Google Flights. Chrome shows a <strong>“ChatPanel is
-                  debugging this browser”</strong> banner while it’s active. Off by
-                  default. API agents only.
+                  web apps like Google Flights, and <strong>required</strong> for anything that
+                  works by coordinates rather than form fields: canvas apps, drawing, games, and
+                  keyboard-driven controls. Chrome shows a <strong>“ChatPanel is
+                  debugging this browser”</strong> banner while the agent is acting; it goes away
+                  a few seconds after it stops. <strong>On by default</strong> (it only ever
+                  applies once you’ve turned Act on page on). Turn it off if you keep DevTools
+                  open on the pages you automate — the two can’t attach at the same time.
+                  Chromium browsers only; elsewhere ChatPanel falls back automatically.
+                </p>
+              </div>
+              <div class="pref-item">
+                <label class="check" id="pref-pageact-devjs-row">
+                  <input type="checkbox" id="pref-pageact-devjs" />
+                  <span>Developer: let the agent run JavaScript on the page</span>
+                </label>
+                <p class="muted tiny" id="pref-pageact-devjs-note">
+                  For developers and power users. Lets the agent read an app’s real state or install a
+                  fast in-page loop for real-time apps — far more precise than clicking and looking.
+                  <strong>This is the most powerful thing you can grant:</strong> page JavaScript can read
+                  and change anything on that page that you can, as you. ChatPanel asks you to approve
+                  <strong>every single call</strong> and shows the exact code — that prompt
+                  <strong>cannot</strong> be turned off or waived with <em>Allow for this site</em>.
+                  Requires High-reliability page control. <strong>Off by default.</strong>
                 </p>
                 <p class="muted tiny">
                   <strong>Heads up:</strong> acting on the page is best-effort automation
@@ -1100,9 +1134,13 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
 
     <!-- Endpoint editor template -->
     <template id="endpoint-tpl">
-        <div class="entity">
+        <div class="entity ep-entity brand-card">
           <div class="entity-head">
+            <button class="card-toggle" type="button" aria-expanded="false" title="Expand"><span class="inline-ico" data-icon="chevron-down"></span></button>
+            <span class="card-index" aria-hidden="true"></span>
+            <span class="brand-chip card-brand" aria-hidden="true"></span>
             <input class="ep-name" placeholder="Endpoint name (e.g. OpenAI)" />
+            <span class="card-summary"></span>
           <label class="enabled-lbl" title="Uncheck to temporarily disable this endpoint without deleting it (hidden from the model picker, autocomplete & gateway)"><input type="checkbox" class="ep-enabled" checked /> Enabled</label>
           <button class="btn danger ep-del">Delete</button>
         </div>
@@ -1187,7 +1225,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
         </details>
 
         <div class="row"><label>System prompt</label><textarea class="ep-system" rows="2" placeholder="Optional system / role instructions"></textarea></div>
-        <div class="entity-foot"><span class="ep-status status"></span><button class="btn primary ep-save">Save</button></div>
+        <div class="entity-foot"><span class="card-foot-name"></span><span class="ep-status status"></span><button class="btn primary ep-save">Save</button></div>
       </div>
     </template>
 
@@ -1230,9 +1268,13 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
 
     <!-- Bridge agent template (Claude Code / Codex / Antigravity CLI) -->
     <template id="bridge-agent-tpl">
-      <div class="entity">
+      <div class="entity ba-entity brand-card">
         <div class="entity-head">
+          <button class="card-toggle" type="button" aria-expanded="false" title="Expand"><span class="inline-ico" data-icon="chevron-down"></span></button>
+          <span class="card-index" aria-hidden="true"></span>
+          <span class="brand-chip card-brand" aria-hidden="true"></span>
           <input class="ba-name" placeholder="Agent name" />
+          <span class="card-summary"></span>
           <select class="ba-kind">
             <option value="claude">Claude (Claude Code)</option>
             <option value="codex">Codex</option>
@@ -1283,7 +1325,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
         </div>
         <label class="check"><input type="checkbox" class="ba-local" /> Use my local skills, MCP &amp; config (uncheck = isolated &amp; faster)</label>
         <div class="row"><label>System prompt</label><textarea class="ba-system" rows="2" placeholder="Optional system / role instructions"></textarea></div>
-        <div class="entity-foot"><span class="ba-status status"></span><button class="btn primary ba-save">Save</button></div>
+        <div class="entity-foot"><span class="card-foot-name"></span><span class="ba-status status"></span><button class="btn primary ba-save">Save</button></div>
       </div>
     </template>
 

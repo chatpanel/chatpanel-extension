@@ -85,7 +85,7 @@ const docText = (entry, conv) => [
 ].join('\n');
 
 // --- assistant tool actions (mirror the side panel's "Actions" log) --------
-const LABELED_TOOLS = new Set(['inspect_page', 'fill_form', 'fill_combobox', 'click_element', 'click_by_text', 'screenshot', 'marked_screenshot', 'click_mark', 'click_at', 'type_text', 'press_key', 'scroll', 'draw_path']);
+const LABELED_TOOLS = new Set(['inspect_page', 'fill_form', 'fill_combobox', 'click_element', 'click_by_text', 'screenshot', 'marked_screenshot', 'click_mark', 'click_at', 'move_mouse', 'type_text', 'press_key', 'scroll', 'draw_path', 'input_sequence', 'capture_pointer', 'save_app_controls', 'sense_canvas', 'probe_app_state', 'read_app_state', 'calibrate_turn', 'eval_js']);
 function displayMcpServer(slug) {
   const s = String(slug || 'mcp').replace(/_/g, ' ');
   if (/^deepwiki$/i.test(s)) return 'DeepWiki';
@@ -104,10 +104,26 @@ function stepLabel(s) {
     case 'screenshot': return `${icon('camera')} Took a screenshot`;
     case 'marked_screenshot': return `${icon('hash')} Tagged clickable elements`;
     case 'click_mark': return `${icon('mouse-pointer-click')} Clicked element #${esc(String(i.n))}`;
-    case 'click_at': return `${icon('mouse-pointer-click')} Clicked at (${Math.round(i.x)}, ${Math.round(i.y)})`;
+    case 'click_at': {
+      const kind = Number(i.clicks) > 1 ? 'Double-clicked' : i.button && i.button !== 'left' ? `${String(i.button).replace(/^./, (c) => c.toUpperCase())}-clicked` : 'Clicked';
+      return `${icon('mouse-pointer-click')} ${esc(kind)} at (${Math.round(i.x)}, ${Math.round(i.y)})`;
+    }
+    case 'move_mouse': return Number.isFinite(i.dx) || Number.isFinite(i.dy)
+      ? `${icon('mouse-pointer-click')} Moved by (${Math.round(i.dx || 0)}, ${Math.round(i.dy || 0)})`
+      : `${icon('mouse-pointer-click')} Moved to (${Math.round(i.x)}, ${Math.round(i.y)})`;
+    case 'capture_pointer': return `${icon('mouse-pointer-click')} Captured the pointer`;
+    case 'sense_canvas': return `${icon('search')} Read the canvas as a ${i.cols || 32}×${i.rows || 32} grid`;
+    case 'probe_app_state': return `${icon('search')} Probed the app’s state`;
+    case 'read_app_state': return `${icon('search')} Read app state (${(i.paths || []).length} path(s))`;
+    case 'calibrate_turn': return `${icon('wrench')} Calibrated turn sensitivity`;
+    case 'eval_js': return `${icon('wrench')} Ran JavaScript (${String(i.code || '').length} chars)`;
     case 'type_text': return `${icon('keyboard')} Typed “${esc(String(i.text || '').slice(0, 40))}”`;
-    case 'press_key': return `${icon('keyboard')} Pressed ${esc(String(i.key))}`;
+    case 'press_key': return i.holdMs > 0
+      ? `${icon('keyboard')} Held ${esc(String(i.key))} for ${Math.round(i.holdMs)}ms`
+      : `${icon('keyboard')} Pressed ${esc(String(i.key))}`;
     case 'scroll': return `${icon('mouse-pointer-click')} Scrolled ${i.dy > 0 ? 'down' : 'up'}`;
+    case 'input_sequence': return `${icon('keyboard')} Combined input (${i.steps?.length || 0} steps)`;
+    case 'save_app_controls': return `${icon('wrench')} Learned how to control ${esc(String(i.app || 'this app').slice(0, 40))}`;
     default: { const m = /^mcp_(.+?)__(.+)$/.exec(s.tool || ''); return m ? `${esc(displayMcpServer(m[1]))} / ${esc(m[2])}` : `${icon('wrench')} ${esc(String(s.tool))}`; }
   }
 }

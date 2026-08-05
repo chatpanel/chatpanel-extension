@@ -360,9 +360,28 @@ export async function claimFromSync() {
 // Subscribe / restore (user-initiated)
 // --------------------------------------------------------------------------
 
-// Open checkout for `plan`, then poll until the webhook seats this device and the
+// How long subscribe() keeps watching for the purchase to land. Checkout is a
+// multi-step flow on a slow network — card entry, 3-D Secure, a bank app — so a
+// short window used to expire mid-purchase and strand the buyer on Free.
+const SUBSCRIBE_POLL_MS = 15 * 60 * 1000;
+
+// One-shot "has my purchase landed yet?" check. Tries this device's seat first,
+// then the portable sync claim (a sub bought on another device of the same Chrome
+// profile). Returns the Pro license or null.
+//
+// `explicit` marks a user-initiated check ("Check for my purchase"), which also
+// clears a previous "Deactivate" opt-out — same intent as Subscribe/Restore.
+// Background/visibility checks must NOT pass it, or they'd silently undo a
+// deliberate device release.
+export async function recheckEntitlement({ explicit = false } = {}) {
+  if (explicit) await clearOptOut();
+  const lic = (await fetchEntitlement()) || (await claimFromSync());
+  return lic && isPro(lic) ? lic : null;
+}
+
+// Open checkout for `plan`, then poll until this device is seated and the
 // entitlement is live. `onActivated(license)` fires when Pro flips on. Returns a
-// stop() function; polling also self-stops after ~5 minutes.
+// stop() function; polling also self-stops after SUBSCRIBE_POLL_MS.
 export async function subscribe(plan = 'pro', { onActivated, openTab } = {}) {
   await clearOptOut(); // explicit intent to have Pro on this device
   const installId = await getInstallId();
@@ -372,22 +391,33 @@ export async function subscribe(plan = 'pro', { onActivated, openTab } = {}) {
   else window.open(url, '_blank');
 
   let stopped = false;
-  const deadline = Date.now() + 5 * 60 * 1000;
+  const deadline = Date.now() + SUBSCRIBE_POLL_MS;
+  let wake = null; // resolves the current sleep early
+  // Coming back to this tab is the strongest "I just finished checkout" signal
+  // there is — check immediately instead of sitting out the backoff.
+  const onVisible = () => { if (document.visibilityState === 'visible') wake?.(); };
+  const doc = typeof document !== 'undefined' ? document : null;
+  doc?.addEventListener('visibilitychange', onVisible);
+  const finish = () => { stopped = true; doc?.removeEventListener('visibilitychange', onVisible); };
+
   (async () => {
     // Poll a little faster at first, then back off.
     let delay = 3000;
     while (!stopped && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, delay));
+      await new Promise((r) => { wake = r; setTimeout(r, delay); });
+      wake = null;
       if (stopped) break;
-      const lic = await fetchEntitlement();
-      if (lic && isPro(lic)) {
+      const lic = await recheckEntitlement();
+      if (lic) {
+        finish();
         onActivated?.(lic);
         return;
       }
-      delay = Math.min(delay + 1000, 8000);
+      delay = Math.min(delay + 1000, 10000);
     }
+    finish();
   })();
-  return () => { stopped = true; };
+  return finish;
 }
 
 // Ask the server to email a magic link that restores Pro on THIS device. Used

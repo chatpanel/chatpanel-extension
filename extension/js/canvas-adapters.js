@@ -946,12 +946,16 @@ const TLDRAW_FORMAT =
   '- geo: { id?, type:"rectangle"|"ellipse"|"diamond"|"triangle"|"rhombus"|"oval"|"cloud"|"star"|' +
   '"hexagon"|"pentagon", x, y, width, height, text?, color?, fill? }\n' +
   '- text: { type:"text", x, y, text, color? }\n' +
-  '- arrow: { type:"arrow", x, y, width, height }  (straight arrow from x,y by width/height)\n' +
+  '- arrow: { type:"arrow", from:<shapeId>, to:<shapeId>, text? }  — CONNECT two shapes. The arrow ' +
+  'BINDS to both and snaps edge-to-edge, staying connected even if a node moves. ALWAYS prefer this ' +
+  'for flowcharts/diagrams. (Fallback for a free-floating arrow with no endpoints: give x, y, width, ' +
+  'height for a straight segment instead.)\n' +
   'tldraw uses NAMED colors, NOT hex: black, grey, blue, light-blue, green, light-green, red, ' +
   'light-red, orange, yellow, violet, light-violet, white. fill: none | semi | solid | pattern.\n' +
-  'To UPDATE a shape, reuse its id (from read_canvas).\n' +
-  'Example: [ {"id":"a","type":"rectangle","x":120,"y":100,"width":160,"height":80,"text":"Start","color":"green"},' +
-  ' {"id":"b","type":"ellipse","x":120,"y":260,"width":160,"height":80,"text":"End","color":"blue"} ]';
+  'To UPDATE a shape, reuse its id (from read_canvas). Give each node an id so arrows can reference it.\n' +
+  'Example — two connected nodes: [ {"id":"a","type":"rectangle","x":120,"y":100,"width":160,"height":80,"text":"Start","color":"green"},' +
+  ' {"id":"b","type":"ellipse","x":120,"y":260,"width":160,"height":80,"text":"End","color":"blue"},' +
+  ' {"type":"arrow","from":"a","to":"b","text":"next"} ]';
 
 function tldrawReadScript() {
   try {
@@ -1019,7 +1023,17 @@ function tldrawInsertScript(payloadJson) {
       const x = Number(el.x) || 0;
       const y = Number(el.y) || 0;
       if (raw === 'arrow' || raw === 'line') {
-        return { shape: { id, type: 'arrow', x, y, props: { start: { x: 0, y: 0 }, end: { x: Number(el.width) || 120, y: Number(el.height) || 0 } } }, label: null };
+        // A connected arrow references two shapes by id (from/to); it BINDS to them
+        // and snaps edge-to-edge. Falls back to a free straight segment (width/height)
+        // when no endpoints are given.
+        const ref = (v) => (v == null || v === '' || typeof v === 'object' ? null : normId(v));
+        const from = ref(el.from != null ? el.from : el.source != null ? el.source : el.start);
+        const to = ref(el.to != null ? el.to : el.target != null ? el.target : el.end);
+        return {
+          shape: { id, type: 'arrow', x, y, props: { start: { x: 0, y: 0 }, end: { x: Number(el.width) || 120, y: Number(el.height) || 0 } } },
+          label: el.text != null ? el.text : null,
+          bind: from || to ? { from, to } : null,
+        };
       }
       if (raw === 'text') {
         const props = {};
@@ -1059,10 +1073,35 @@ function tldrawInsertScript(payloadJson) {
     const items = native
       ? native.map((sh) => ({ shape: { ...(sh || {}), id: normId(sh && sh.id), type: (sh && sh.type) || 'geo' }, label: null }))
       : skeletons.map(baseShape);
+    // Create nodes BEFORE arrows so an arrow's bind targets already exist when we
+    // wire it up (the model may list them in any order).
+    const ordered = [...items.filter((it) => it.shape.type !== 'arrow'), ...items.filter((it) => it.shape.type === 'arrow')];
+    // Bind an arrow to the shape(s) it connects, so it snaps edge-to-edge and stays
+    // attached. A "loose" binding (centre anchor, non-precise) lets tldraw auto-route
+    // to the borders — exactly the connected look. Only bind to targets that exist.
+    const bindArrow = (arrowId, bind) => {
+      if (!bind || typeof ed.createBindings !== 'function') return;
+      const mk = (toId, terminal) => ({
+        fromId: arrowId,
+        toId,
+        type: 'arrow',
+        props: { terminal, normalizedAnchor: { x: 0.5, y: 0.5 }, isExact: false, isPrecise: false },
+      });
+      const bindings = [];
+      if (bind.from && existing.has(bind.from)) bindings.push(mk(bind.from, 'start'));
+      if (bind.to && existing.has(bind.to)) bindings.push(mk(bind.to, 'end'));
+      if (bindings.length) {
+        try {
+          ed.createBindings(bindings);
+        } catch {
+          /* leave the arrow as a free segment if binding is unsupported */
+        }
+      }
+    };
     let added = 0;
     let updated = 0;
     const failed = [];
-    for (const { shape, label } of items) {
+    for (const { shape, label, bind } of ordered) {
       const isUpdate = existing.has(shape.id);
       const r = apply(isUpdate ? ed.updateShapes.bind(ed) : ed.createShapes.bind(ed), shape, label);
       if (!r.ok) {
@@ -1075,6 +1114,7 @@ function tldrawInsertScript(payloadJson) {
         existing.add(shape.id);
         added += 1;
       }
+      if (shape.type === 'arrow' && bind) bindArrow(shape.id, bind);
     }
     try {
       if (typeof ed.zoomToFit === 'function') ed.zoomToFit();
@@ -1110,8 +1150,11 @@ const tldrawAdapter = {
       'This page is tldraw. Build shapes as DATA with `structured_insert` — do NOT pixel-draw. If ' +
       'the canvas is NOT empty, FIRST call `read_canvas` for existing shapes (ids + bounding box), ' +
       'then place new shapes in free space or UPDATE one by reusing its id. tldraw uses NAMED colors ' +
-      '(blue/green/red/…), not hex. It applies instantly via tldraw’s API and zooms to fit. Take ONE ' +
-      'screenshot at the end to validate; do not re-insert.'
+      '(blue/green/red/…), not hex. For flowcharts/diagrams, give every node an id and CONNECT them with ' +
+      'arrows that reference those ids — {type:"arrow", from:<id>, to:<id>} — so each arrow BINDS to its ' +
+      'shapes and snaps edge-to-edge; do NOT hand-position arrows by x/y/width/height (they end up ' +
+      'disconnected). It applies instantly via tldraw’s API and zooms to fit. Take ONE screenshot at the ' +
+      'end to validate; do not re-insert.'
     );
   },
   toolSpecs() {

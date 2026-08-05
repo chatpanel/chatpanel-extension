@@ -39,7 +39,8 @@ import { fetchMcpRegistryPage } from './js/mcp-registry.js';
 import { searchModels, formatDownloads } from './js/model-registry.js';
 import { assistPrompt } from './js/assist.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
-import { applyProviderPreset, orderedProviderPresets, providerBrand, providerPresetById, providerPresetForEndpoint } from './js/provider-presets.js';
+import { agentBrand, applyProviderPreset, orderedProviderPresets, providerBrand, providerPresetById, providerPresetForEndpoint } from './js/provider-presets.js';
+import { anyExpanded, forgetCard, setAllExpanded, setExpanded, wireCollapsible } from './js/collapse-cards.js';
 import { filterComboboxOptions, normalizeComboboxOptions } from './js/combobox.js';
 import { WEBLLM_ALL_MODELS, WEBLLM_RECOMMENDED, DEFAULT_WEBLLM_MODEL, deleteModel as deleteWebllmModel } from './js/webllm.js';
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
@@ -56,7 +57,7 @@ import {
   deactivate,
   subscribe,
   restoreByEmail,
-  fetchEntitlement,
+  recheckEntitlement,
   isOptedOut,
   planOf,
   planLabel,
@@ -77,19 +78,20 @@ async function init() {
   settings = await getSettings();
   license = await getLicense();
   // Catch a just-completed checkout / sync-restore the moment Settings opens —
-  // unless the user deliberately released Pro on this device (opt-out).
+  // unless the user deliberately released Pro on this device (opt-out). Also
+  // re-check whenever this tab regains focus: buying happens in ANOTHER tab, so
+  // coming back here is the moment the purchase is most likely to have landed.
   isOptedOut().then((opted) => {
     if (opted) return;
-    fetchEntitlement().then((lic) => {
-      if (lic && isPro(lic)) {
-        license = lic;
-        renderLicense();
-        renderEndpoints();
-        renderBridgeAgents();
-        renderMcpServers();
-        renderSkills();
-        renderPrefs(); // re-enable the Pro-gated Autocomplete toggle
-      }
+    const check = () =>
+      recheckEntitlement().then((lic) => {
+        // Announce only a real change — an already-Pro user reopening Settings
+        // shouldn't be told "Pro is now active" every time.
+        if (lic) onProActivated(lic, planOf(license) === 'free');
+      });
+    check();
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && planOf(license) === 'free') check();
     });
   });
 
@@ -481,6 +483,12 @@ function customEndpointCount() {
   return (settings.endpoints || []).filter((e) => !e.builtin).length;
 }
 
+// Free may configure its own endpoints up to FREE_LIMITS.apiEndpoints; the
+// shipped built-ins (in-browser WebLLM, local Ollama) don't count against it.
+function endpointAddLocked() {
+  return !isPro(license) && customEndpointCount() >= FREE_LIMITS.apiEndpoints;
+}
+
 function providerPresetDisplayName(id) {
   return providerPresetById(id)?.name || providerPresetById('custom')?.name || 'Custom / self-hosted';
 }
@@ -664,11 +672,71 @@ function buildWebllmCustomModelsUi() {
   return wrap;
 }
 
+const endpointKey = (ep) => `endpoint:${ep.id}`;
+
 function renderEndpoints() {
   const root = $('endpoints');
   root.innerHTML = '';
-  for (const ep of settings.endpoints || []) root.appendChild(endpointCard(ep));
+  const list = settings.endpoints || [];
+  list.forEach((ep, i) => {
+    const node = endpointCard(ep);
+    setCardIndex(node, i, list.length, 'Endpoint'); // "N of M" — one card, one unit
+    root.appendChild(node);
+  });
+  wireExpandAll('toggle-endpoints', list.map(endpointKey), renderEndpoints);
   renderGateBadges();
+}
+
+// Paint a card in its provider's / CLI's brand colour: the left rail, the head
+// band, the foot band and the chip all read from --ep-accent. These configuration
+// blocks are long and looked identical; this makes the boundary between one and
+// the next unmistakable while scrolling. Shared by endpoints and bridge agents —
+// `brand` is whatever providerBrand()/agentBrand() returned.
+function applyCardBrand(node, brand, name, fallbackName = 'Untitled') {
+  node.style.setProperty('--ep-accent', brand.color);
+  const chip = node.querySelector('.card-brand');
+  if (chip) {
+    chip.classList.toggle('has-logo', !!brand.logo);
+    if (brand.logo) {
+      const img = chip.querySelector('img') || Object.assign(document.createElement('img'), { alt: '' });
+      if (img.getAttribute('src') !== brand.logo) img.src = brand.logo;
+      if (!img.isConnected) { chip.textContent = ''; chip.appendChild(img); }
+    } else {
+      chip.textContent = brand.mark;
+    }
+  }
+  const foot = node.querySelector('.card-foot-name');
+  // The foot repeats which card you just finished configuring — the "end of this
+  // block" marker the cards were missing.
+  if (foot) foot.textContent = (name || '').trim() || fallbackName;
+}
+
+// host:port of a base URL, for a collapsed card's summary line ("localhost:11434").
+function hostLabel(url) {
+  try {
+    const u = new URL(/^https?:\/\//i.test(url) ? url : `http://${url}`);
+    return u.host || url;
+  } catch {
+    return String(url || '').trim();
+  }
+}
+
+// Set the ordinal shown at the start of a card head ("3" of 5).
+function setCardIndex(node, i, total, label) {
+  const idx = node?.querySelector('.card-index');
+  if (!idx) return;
+  idx.textContent = String(i + 1);
+  idx.title = `${label} ${i + 1} of ${total}`;
+}
+
+// Flip a whole list open/closed from its header button, and keep that button's
+// label honest about what it will do next.
+function wireExpandAll(btnId, keys, rerender) {
+  const btn = $(btnId);
+  if (!btn) return;
+  btn.textContent = anyExpanded(keys) ? 'Collapse all' : 'Expand all';
+  btn.disabled = !keys.length;
+  btn.onclick = () => { setAllExpanded(keys, !anyExpanded(keys)); rerender(); };
 }
 
 function endpointCard(ep) {
@@ -695,6 +763,18 @@ function endpointCard(ep) {
   q('.ep-acmodel').value = ep.autocompleteModel || '';
   gateField('advancedAgent', q('.ep-system')); // per-agent system prompt is Pro
   applyFreeSlot(node, ep, 'endpoint'); // Free uses one endpoint — the user's pick
+  // Collapsed by default (addEndpoint opens the one it just created); the summary
+  // is what you read at rest, so it has to say what this endpoint actually is.
+  const card = wireCollapsible(node, endpointKey(ep));
+  const syncCardSummary = () => {
+    const bits = [providerPresetDisplayName(readProviderPresetId())];
+    const model = (q('.ep-model')?.value || ep.model || '').trim();
+    if (model) bits.push(model);
+    else if (q('.ep-baseurl')?.value.trim()) bits.push(hostLabel(q('.ep-baseurl').value));
+    else bits.push('not configured');
+    if (q('.ep-enabled')?.checked === false) bits.push('disabled');
+    card.setSummary(bits.filter(Boolean).join(' · '));
+  };
   wireModelSelect(q('.ep-model'), q('.ep-model-custom'), ep.models, ep.model, ep.modelOptions);
   if ((ep.kind || 'openai') === 'webllm') applyWebllmEndpointUi(node, q, ep);
   wireCombobox(
@@ -813,6 +893,8 @@ function endpointCard(ep) {
 
   const syncProviderHelp = () => {
     const preset = providerPresetById(readProviderPresetId());
+    applyCardBrand(node, providerBrand(preset?.id || readProviderPresetId() || 'custom'), q('.ep-name').value, 'Untitled endpoint');
+    syncCardSummary();
     const links = q('.ep-provider-links');
     const note = q('.ep-provider-note');
     links.innerHTML = '';
@@ -919,13 +1001,22 @@ function endpointCard(ep) {
         baseUrl: nowWebllm ? '' : rawConn().baseUrl,
         model: nowWebllm ? DEFAULT_WEBLLM_MODEL : '', models: [], modelOptions: [],
       };
-      node.replaceWith(endpointCard(base));
+      const fresh = endpointCard(base);
+      // Rebuilt in place — carry the ordinal over (renderEndpoints owns it).
+      const idx = node.querySelector('.card-index');
+      const freshIdx = fresh.querySelector('.card-index');
+      if (idx && freshIdx) { freshIdx.textContent = idx.textContent; freshIdx.title = idx.title; }
+      node.replaceWith(fresh);
       return;
     }
     resetModelPickers();
     setAuthStatus('Run Load models or Test to check authentication.');
     syncAuthMode();
     syncProviderHelp();
+  };
+  q('.ep-name').oninput = () => {
+    const foot = q('.card-foot-name');
+    if (foot) foot.textContent = q('.ep-name').value.trim() || 'Untitled endpoint';
   };
   q('.ep-baseurl').oninput = () => {
     markCustomProviderIfEdited();
@@ -1016,6 +1107,7 @@ function endpointCard(ep) {
     await saveSettings(settings);
     updateOAuthRedirect();
     updateOAuthStatus();
+    syncCardSummary(); // the collapsed line must reflect what was just saved
     setStatus(q('.ep-status'), '✓ Saved', 'ok');
   };
 
@@ -1066,6 +1158,7 @@ function endpointCard(ep) {
 
   q('.ep-enabled').onchange = async () => {
     ep.enabled = q('.ep-enabled').checked;
+    syncCardSummary();
     await saveSettings(settings);
     setStatus(q('.ep-status'), ep.enabled ? 'Enabled' : 'Disabled — hidden from pickers, autocomplete & gateway', ep.enabled ? 'ok' : '');
   };
@@ -1074,7 +1167,14 @@ function endpointCard(ep) {
     if ((settings.endpoints || []).length <= 1) {
       return setStatus(q('.ep-status'), 'Keep at least one endpoint', 'err');
     }
+    const { confirmDelete } = await import('./js/confirm-modal.js');
+    const name = (q('.ep-name').value || ep.name || 'this endpoint').trim();
+    if (!(await confirmDelete({
+      title: `Delete “${name}”?`,
+      body: 'This removes the endpoint along with its base URL, API key and model settings. This can\'t be undone.',
+    }))) return;
     settings.endpoints = settings.endpoints.filter((e) => e !== ep);
+    forgetCard(endpointKey(ep));
     await saveSettings(settings);
     renderEndpoints();
   };
@@ -1082,10 +1182,19 @@ function endpointCard(ep) {
   return node;
 }
 
-function addEndpoint() {
-  if (!isPro(license)) return upsell('Adding endpoints is a Pro feature. Free includes one endpoint — set it up below.');
+// Free is "one endpoint of YOUR choosing" — not "whatever we shipped". The
+// built-ins (in-browser WebLLM, local Ollama) are zero-setup onboarding defaults,
+// so gating Add behind Pro meant a Free user could never point ChatPanel at their
+// own provider — the single most basic thing a Free user needs to do. Free adds up
+// to FREE_LIMITS.apiEndpoints endpoints of their own; beyond that it's Pro.
+async function addEndpoint() {
+  if (endpointAddLocked()) {
+    return upsell(
+      `Free includes ${FREE_LIMITS.apiEndpoints} endpoint of your own, plus the built-in ones. Upgrade to Pro for unlimited endpoints.`,
+    );
+  }
   settings.endpoints = settings.endpoints || [];
-  settings.endpoints.push({
+  const ep = {
     id: uid(),
     name: 'New endpoint',
     kind: 'openai',
@@ -1094,10 +1203,22 @@ function addEndpoint() {
     model: '',
     models: [],
     systemPrompt: '',
-  });
-  saveSettings(settings);
+  };
+  settings.endpoints.push(ep);
+  // Hand the free slot over to the endpoint they just added, as long as it's still
+  // sitting on a built-in default. Without this they'd configure their own provider,
+  // hit send, and be told it needs Pro — the endpoint exists but isn't usable.
+  const currentFree = (settings.endpoints || []).find((e) => e.id === freeEndpointId(settings));
+  const claimedFreeSlot = !isPro(license) && (!currentFree || currentFree.builtin);
+  if (claimedFreeSlot) settings.freeEndpointId = ep.id;
+  setExpanded(endpointKey(ep), true); // you added it to configure it — open it
+  await saveSettings(settings);
   renderEndpoints();
-  $('endpoints').lastElementChild?.scrollIntoView({ behavior: 'smooth' });
+  const node = $('endpoints').lastElementChild;
+  node?.scrollIntoView({ behavior: 'smooth' });
+  if (claimedFreeSlot && node) {
+    setStatus(node.querySelector('.ep-status'), '★ This is now your Free endpoint — set it up and Save.', 'ok');
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -2343,14 +2464,29 @@ function bridgeAgents() {
   return (settings.agents || []).filter((a) => a.kind === 'bridge');
 }
 
+const agentKey = (a) => `agent:${a.id}`;
+
 function renderBridgeAgents() {
   const root = $('bridge-agents');
   root.innerHTML = '';
-  for (const a of bridgeAgents()) root.appendChild(bridgeAgentCard(a));
+  const list = bridgeAgents();
+  list.forEach((a, i) => {
+    const node = bridgeAgentCard(a);
+    setCardIndex(node, i, list.length, 'Agent');
+    root.appendChild(node);
+  });
+  wireExpandAll('toggle-agents', list.map(agentKey), renderBridgeAgents);
 }
+
+// Human label for a CLI kind, used in the collapsed summary line.
+const AGENT_KIND_LABEL = {
+  claude: 'Claude Code', codex: 'Codex', antigravity: 'Antigravity',
+  pi: 'Pi', opencode: 'OpenCode', kiro: 'Kiro', custom: 'Custom CLI',
+};
 
 function bridgeAgentCard(agent) {
   const node = $('bridge-agent-tpl').content.firstElementChild.cloneNode(true);
+  hydrate(node); // the collapse chevron is a data-icon
   const q = (sel) => node.querySelector(sel);
   q('.ba-name').value = agent.name || '';
   q('.ba-enabled').checked = agent.enabled !== false;
@@ -2375,6 +2511,22 @@ function bridgeAgentCard(agent) {
   q('.ba-trusttoolsarg').value = agent.trustToolsArg || '';
   gateField('advancedAgent', q('.ba-system')); // per-agent system prompt is Pro
   applyFreeSlot(node, agent, 'bridge'); // Free uses one agent — the user's pick
+  // Collapsed by default (addBridgeAgent opens the one it just created).
+  const card = wireCollapsible(node, agentKey(agent));
+  const syncCardSummary = () => {
+    const kind = q('.ba-kind')?.value || agent.bridgeAgent || 'claude';
+    const bits = [AGENT_KIND_LABEL[kind] || kind];
+    const model = (q('.ba-model')?.value || agent.model || '').trim();
+    if (model) bits.push(model);
+    if (kind === 'custom' && q('.ba-command')?.value.trim()) bits.push(q('.ba-command').value.trim());
+    if (q('.ba-workdir')?.value.trim()) bits.push(q('.ba-workdir').value.trim());
+    if (q('.ba-enabled')?.checked === false) bits.push('disabled');
+    card.setSummary(bits.filter(Boolean).join(' · '));
+  };
+  q('.ba-name').oninput = () => {
+    const foot = q('.card-foot-name');
+    if (foot) foot.textContent = q('.ba-name').value.trim() || 'Untitled agent';
+  };
 
   const proCustom = can(license, 'customAgents'); // BYO CLI is a hard Pro gate
 
@@ -2420,6 +2572,9 @@ function bridgeAgentCard(agent) {
   const syncKind = () => {
     const kind = q('.ba-kind').value;
     const isCustom = kind === 'custom';
+    // Colour-code the card by CLI, exactly like the endpoint cards are by provider.
+    applyCardBrand(node, agentBrand(kind), q('.ba-name').value, 'Untitled agent');
+    syncCardSummary();
     q('.ba-custom').classList.toggle('hidden', !isCustom);
     // local skills/MCP & per-agent system prompt only apply to the built-in CLIs.
     q('.ba-local').closest('.check').classList.toggle('hidden', isCustom);
@@ -2497,16 +2652,25 @@ function bridgeAgentCard(agent) {
       trustToolsArg: q('.ba-trusttoolsarg').value.trim(),
     });
     await saveSettings(settings);
+    syncCardSummary(); // the collapsed line must reflect what was just saved
     setStatus(q('.ba-status'), '✓ Saved', 'ok');
   };
 
   q('.ba-enabled').onchange = async () => {
     agent.enabled = q('.ba-enabled').checked;
+    syncCardSummary();
     await saveSettings(settings);
   };
 
   q('.ba-del').onclick = async () => {
+    const { confirmDelete } = await import('./js/confirm-modal.js');
+    const name = (q('.ba-name')?.value || agent.name || 'this agent').trim();
+    if (!(await confirmDelete({
+      title: `Delete “${name}”?`,
+      body: 'This removes the agent and its command, working directory and prompt settings. This can\'t be undone.',
+    }))) return;
     settings.agents = settings.agents.filter((a) => a !== agent);
+    forgetCard(agentKey(agent));
     await saveSettings(settings);
     renderBridgeAgents();
   };
@@ -2530,10 +2694,10 @@ async function showCustomAvailability(agent, q, cmd) {
   }
 }
 
-function addBridgeAgent() {
+async function addBridgeAgent() {
   if (!isPro(license)) return upsell('Adding agents is a Pro feature. Free includes the built-in agents — pick your one with “Use on Free”.');
   settings.agents = settings.agents || [];
-  settings.agents.push({
+  const agent = {
     id: uid(),
     name: 'New agent',
     kind: 'bridge',
@@ -2542,8 +2706,10 @@ function addBridgeAgent() {
     permissionMode: 'acceptEdits',
     useLocalConfig: true,
     systemPrompt: '',
-  });
-  saveSettings(settings);
+  };
+  settings.agents.push(agent);
+  setExpanded(agentKey(agent), true); // you added it to configure it — open it
+  await saveSettings(settings);
   renderBridgeAgents();
   $('bridge-agents').lastElementChild?.scrollIntoView({ behavior: 'smooth' });
 }
@@ -2694,6 +2860,12 @@ function mcpServerCard(server, index = 0) {
   };
 
   q('.mcp-del').onclick = async () => {
+    const { confirmDelete } = await import('./js/confirm-modal.js');
+    const name = (q('.mcp-name')?.value || server.name || 'this server').trim();
+    if (!(await confirmDelete({
+      title: `Delete “${name}”?`,
+      body: 'This removes the MCP server and its URL, credentials and tool settings. This can\'t be undone.',
+    }))) return;
     settings.mcpServers = (settings.mcpServers || []).filter((x) => x !== server);
     await saveSettings(settings);
     renderMcpServers(); // also refreshes the Discover catalog's Added state
@@ -3104,6 +3276,12 @@ function skillCard(skill) {
     setStatus(q('.s-status'), '✓ Saved', 'ok');
   };
   q('.s-del').onclick = async () => {
+    const { confirmDelete } = await import('./js/confirm-modal.js');
+    const name = (q('.s-name')?.value || skill.name || 'this skill').trim();
+    if (!(await confirmDelete({
+      title: `Delete “${name}”?`,
+      body: 'This removes the skill and its prompt. This can\'t be undone.',
+    }))) return;
     settings.skills = settings.skills.filter((s) => s !== skill);
     await saveSettings(settings);
     renderSkills();
@@ -3321,8 +3499,9 @@ function renderPrefs() {
   ac.checked = pro && !!settings.ui.autocomplete;
   ac.disabled = !pro;
   $('pref-autocomplete-row').classList.toggle('locked', !pro);
-  $('pref-pageact-cdp').checked = !!settings.ui.pageActionsCdp;
+  $('pref-pageact-cdp').checked = settings.ui.pageActionsCdp !== false; // default ON
   $('pref-pageact-confirm').checked = settings.ui.pageActionConfirm !== false; // default ON
+  $('pref-pageact-devjs').checked = !!settings.ui.pageActionsDevJs; // default OFF
   // Meetings tab — live scribe behavior.
   $('pref-live-notes').value = String(settings.ui.liveNotesIntervalMin ?? 2);
   $('pref-meeting-window').value = String(settings.ui.meetingWindowMin ?? 0);
@@ -3815,6 +3994,7 @@ function renderLicense() {
   renderPlanFeatures();
   // Subscribe + restore + key entry are for Free users; active users see Deactivate.
   $('btn-subscribe-pro').classList.toggle('hidden', active);
+  $('btn-check-purchase').classList.toggle('hidden', active);
   $('subscribe-hint').classList.toggle('hidden', active);
   $('restore-box').classList.toggle('hidden', active);
   $('license-deactivate').classList.toggle('hidden', !active);
@@ -3879,7 +4059,7 @@ async function renderAbout() {
 }
 
 // Flip the whole UI to Pro once an entitlement goes live.
-function onProActivated(lic) {
+function onProActivated(lic, announce = true) {
   license = lic;
   renderLicense();
   renderEndpoints();
@@ -3888,7 +4068,7 @@ function onProActivated(lic) {
   renderSkills();
   renderPrefs(); // re-enable the Pro-gated Autocomplete toggle
   renderGateBadges(); // re-enable MCP add + Meetings controls
-  setStatus($('license-msg'), '✓ Pro is now active. Thank you!', 'ok');
+  if (announce) setStatus($('license-msg'), '✓ Pro is now active. Thank you!', 'ok');
 }
 
 // Seamless, keyless subscribe used by every "Upgrade"/"Subscribe" affordance:
@@ -3900,8 +4080,13 @@ async function subscribePro(btn) {
     if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || 'Subscribe to Pro'; }
   };
   await subscribe('pro', { onActivated: (lic) => { restore(); onProActivated(lic); } });
-  // Re-enable after the poll window so a cancelled checkout isn't stuck.
-  setTimeout(() => { if (planOf(license) === 'free') restore(); }, 5 * 60 * 1000 + 1000);
+  // Re-enable after the poll window so a cancelled checkout isn't stuck, and point
+  // at the manual check rather than leaving a buyer staring at "Waiting…".
+  setTimeout(() => {
+    if (planOf(license) !== 'free') return;
+    restore();
+    setStatus($('license-msg'), 'Finished checkout? Click “Check for my purchase”.', '');
+  }, 15 * 60 * 1000 + 1000);
 }
 
 // --------------------------------------------------------------------------
@@ -3943,9 +4128,18 @@ function mcpAddLocked() {
 
 function renderGateBadges() {
   badgeButton($('add-skill'), !can(license, 'customSkills'));
-  // Agents & endpoints: free uses the built-ins (one active each); adding more is Pro.
+  // Agents: free uses the built-in CLIs (one active) — adding more is Pro.
   const proLocked = !isPro(license);
-  ['add-agent', 'add-endpoint'].forEach((id) => { const b = $(id); if (b) { badgeButton(b, proLocked); b.classList.toggle('locked', proLocked); } });
+  ['add-agent', 'add-agent-bottom'].forEach((id) => {
+    const b = $(id);
+    if (b) { badgeButton(b, proLocked); b.classList.toggle('locked', proLocked); }
+  });
+  // Endpoints: Free gets FREE_LIMITS.apiEndpoints of its OWN (the built-ins are
+  // just zero-setup defaults — a Free user must be able to point ChatPanel at
+  // their own provider). Badge it once the allowance is spent, but never add
+  // `.locked`: that sets pointer-events:none, which made the button silently
+  // dead instead of explaining why. Clicking still surfaces the upsell.
+  ['add-endpoint', 'add-endpoint-bottom'].forEach((id) => badgeButton($(id), endpointAddLocked()));
   // MCP: free can search/discover + add one; adding beyond the free limit is Pro.
   const mcpLocked = mcpAddLocked();
   ['add-mcp', 'import-mcp'].forEach((id) => { const b = $(id); if (b) { badgeButton(b, mcpLocked); b.classList.toggle('locked', mcpLocked); } });
@@ -3992,6 +4186,10 @@ function applyFreeSlot(node, item, kind) {
 function wire() {
   $('add-endpoint').onclick = addEndpoint;
   $('add-agent').onclick = addBridgeAgent;
+  // Duplicated under each list so "add another" is in reach after scrolling past
+  // the cards above it.
+  $('add-endpoint-bottom').onclick = addEndpoint;
+  $('add-agent-bottom').onclick = addBridgeAgent;
   $('add-mcp').onclick = addMcpServer;
   $('add-websearch').onclick = addWebSearchEngine;
   $('import-mcp').onclick = () => {
@@ -4061,6 +4259,21 @@ function wire() {
     settings.ui.pageActionConfirm = e.currentTarget.checked;
     await saveSettings(settings);
   };
+  // Developer JS execution. Opt-in only, and pointless without trusted events —
+  // so turning it on turns High-reliability on too rather than failing silently
+  // at the first call. Every call still prompts; that is not configurable.
+  $('pref-pageact-devjs').onchange = async (e) => {
+    const on = e.currentTarget.checked;
+    settings.ui.pageActionsDevJs = on;
+    // Only meaningful if high-reliability control is on; it defaults on, so this
+    // only has to undo an explicit opt-out.
+    if (on && settings.ui.pageActionsCdp === false) {
+      settings.ui.pageActionsCdp = true;
+      $('pref-pageact-cdp').checked = true;
+      toast('High-reliability page control turned back on — running JavaScript needs it');
+    }
+    await saveSettings(settings);
+  };
 
   $('check-updates').onclick = async (e) => {
     const btn = e.currentTarget;
@@ -4069,6 +4282,26 @@ function wire() {
   };
 
   $('btn-subscribe-pro').onclick = () => subscribePro($('btn-subscribe-pro'));
+
+  // Explicit "I paid, look again" — the escape hatch when the automatic poll was
+  // closed with the tab or the purchase landed late. Checks this device's seat
+  // AND the sync claim, so it also covers a sub bought on another device.
+  $('btn-check-purchase').onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    setStatus($('license-msg'), 'Checking…', '');
+    try {
+      const lic = await recheckEntitlement({ explicit: true });
+      if (lic) return onProActivated(lic);
+      setStatus(
+        $('license-msg'),
+        '✕ No active subscription found for this device yet. If you just paid, give it a few seconds and try again — or restore by email below.',
+        'err',
+      );
+    } finally {
+      btn.disabled = false;
+    }
+  };
 
   $('open-meetings-dashboard')?.addEventListener('click', () => {
     if (!can(license, 'liveMeetings')) return upsell('The meeting scribe & dashboard are a Pro feature.');

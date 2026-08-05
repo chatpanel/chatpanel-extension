@@ -99,7 +99,8 @@ function blockedToolResult(name, message, extra = {}) {
 // FAILING call (ok:false — unknown key, nothing at point, …) does NOT reset, so a
 // genuinely stuck call still trips the guard.
 const INPUT_PROGRESS_TOOLS = new Set([
-  'press_key', 'type_text', 'click_at', 'click_mark', 'draw_path', 'click_element', 'click_by_text',
+  'press_key', 'type_text', 'click_at', 'move_mouse', 'click_mark', 'draw_path', 'input_sequence',
+  'click_element', 'click_by_text',
 ]);
 
 // A tool whose repetition signals a LOOP (search/query/fetch tools), vs one that's
