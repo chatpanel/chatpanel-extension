@@ -55,6 +55,17 @@ const MAX_STALLED_ROUNDS = Number(globalThis.CHATPANEL_MAX_STALLED_ROUNDS) || 2;
 // don't count toward the loop guard at all.
 const OBSERVATION_TOOLS = new Set(['inspect_page', 'read_canvas', 'screenshot', 'marked_screenshot']);
 
+// A DISPATCHER tool carries the real action in its arguments — `page` with
+// {action:'screenshot'} rather than a tool literally named `screenshot`. Every
+// name-based policy below has to see through that, or the exemptions silently stop
+// applying: a screenshot takes {} every time, so four in a row look like a stuck loop and
+// get blocked, and the agent is left flailing for an argument it can vary. That is
+// exactly what happened once page tools moved behind one registered tool.
+function effectiveToolName(name, input) {
+  const action = input && typeof input === 'object' ? input.action : null;
+  return typeof action === 'string' && action ? action : name;
+}
+
 // Parse a tool-call argument string, tolerating the empty/partial case (a tool
 // with no inputs streams "" or "{}").
 function safeJson(s) {
@@ -108,6 +119,12 @@ const INPUT_PROGRESS_TOOLS = new Set([
 // round signature, so a legit re-read/scroll never looks like a stalled loop.
 function isLoopableTool(name) {
   return !OBSERVATION_TOOLS.has(name) && !INPUT_PROGRESS_TOOLS.has(name) && name !== 'scroll';
+}
+
+// Same question, asked of a call rather than a bare name — use this wherever the
+// arguments are in hand, so a dispatched action is judged on what it actually is.
+export function isMutatingCall(name, input) {
+  return isMutatingTool(effectiveToolName(name, input));
 }
 
 // Some tools are meant to be called repeatedly. Treat such a call as progress —
@@ -175,7 +192,7 @@ export function createToolLoopGuard({
     check(name, input) {
       // Reads are idempotent observations — re-reading after an action is correct,
       // so they never count toward the loop guard.
-      if (OBSERVATION_TOOLS.has(name)) return { blocked: false };
+      if (OBSERVATION_TOOLS.has(effectiveToolName(name, input))) return { blocked: false };
 
       const key = stableToolCallKey(name, input);
       const count = (counts.get(key) || 0) + 1;

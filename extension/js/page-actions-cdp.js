@@ -256,7 +256,23 @@ async function trustedClick(tabId, x, y, button = 'left', clickCount = 1, { move
 // Type `text` as individual keystrokes. `perCharMs` paces it like a human so
 // debounced autocompletes keep up.
 async function trustedType(tabId, text, perCharMs = 30) {
-  for (const ch of String(text)) {
+  for (const ch of String(text).replace(/\r\n/g, '\n')) {
+    // A newline must be a real Enter, not the character '\n'. Dispatched as text it is
+    // silently swallowed by most web apps — which is how "Score\n55\n62\n…" ended up
+    // concatenated into a single Google Sheets cell, and then cost thirty actions to
+    // undo. Treating \n as Enter matches what anyone writing the call expects, and a
+    // tool that quietly does nothing is worse than one that errors.
+    if (ch === '\n') {
+      const enter = KEY_DEFS.Enter;
+      await send(tabId, 'Input.dispatchKeyEvent', {
+        type: 'rawKeyDown', windowsVirtualKeyCode: enter.windowsVirtualKeyCode, key: enter.key, code: enter.code,
+      });
+      await send(tabId, 'Input.dispatchKeyEvent', {
+        type: 'keyUp', windowsVirtualKeyCode: enter.windowsVirtualKeyCode, key: enter.key, code: enter.code,
+      });
+      if (perCharMs) await delay(perCharMs);
+      continue;
+    }
     await send(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', text: ch, unmodifiedText: ch });
     await send(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp' });
     if (perCharMs) await delay(perCharMs);
@@ -264,8 +280,13 @@ async function trustedType(tabId, text, perCharMs = 30) {
 }
 
 // Named non-printable keys (Enter, ArrowDown, Backspace…) for nav/selection.
+//
+// ALIASES ARE NOT CLUTTER. A model that asks for "Return" or "Esc" means the key everyone
+// else calls Enter and Escape; rejecting it burns a round trip and teaches nothing. The
+// vocabulary should be as wide as the intent is unambiguous.
 const KEY_DEFS = {
   Enter: { windowsVirtualKeyCode: 13, key: 'Enter', code: 'Enter' },
+  Return: { windowsVirtualKeyCode: 13, key: 'Enter', code: 'Enter' },
   Tab: { windowsVirtualKeyCode: 9, key: 'Tab', code: 'Tab' },
   ArrowDown: { windowsVirtualKeyCode: 40, key: 'ArrowDown', code: 'ArrowDown' },
   ArrowUp: { windowsVirtualKeyCode: 38, key: 'ArrowUp', code: 'ArrowUp' },
@@ -274,6 +295,8 @@ const KEY_DEFS = {
   Backspace: { windowsVirtualKeyCode: 8, key: 'Backspace', code: 'Backspace' },
   Delete: { windowsVirtualKeyCode: 46, key: 'Delete', code: 'Delete' },
   Escape: { windowsVirtualKeyCode: 27, key: 'Escape', code: 'Escape' },
+  Esc: { windowsVirtualKeyCode: 27, key: 'Escape', code: 'Escape' },
+  Del: { windowsVirtualKeyCode: 46, key: 'Delete', code: 'Delete' },
   Home: { windowsVirtualKeyCode: 36, key: 'Home', code: 'Home' },
   End: { windowsVirtualKeyCode: 35, key: 'End', code: 'End' },
   Space: { windowsVirtualKeyCode: 32, key: ' ', code: 'Space', text: ' ' },
