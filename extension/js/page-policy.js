@@ -38,10 +38,25 @@ export const SITE_STATES = Object.freeze({ GRANTED: 'granted', DENIED: 'denied' 
 
 export const DEFAULT_MODE = PAGE_MODES.ASK;
 
-/** Legacy boolean -> mode. `true` keeps meaning "every readable tab" — no regression. */
+/**
+ * Legacy value -> mode. Three cases, and collapsing any two of them is a bug:
+ *
+ *   true       -> 'always'  — an existing user who switched it on keeps every readable
+ *                             tab. No regression.
+ *   false      -> 'off'     — an EXPLICIT opt-out. Someone who turned this off meant it,
+ *                             so we do not quietly re-enable anything, not even an offer.
+ *   undefined  -> 'ask'     — never set, i.e. a new install. `ask` is the safe default
+ *                             because it arms NOTHING; it only lets a recognised app
+ *                             surface a one-click offer. Defaulting to 'off' here is what
+ *                             made the feature undiscoverable in the first place.
+ *
+ * `store.js` writes no default for `pageActions`, which is what makes the distinction
+ * between "never set" and "set to false" available at all.
+ */
 export function migratePageActions(value) {
   if (value === true) return PAGE_MODES.ALWAYS;
-  if (value === false || value == null) return PAGE_MODES.OFF;
+  if (value === false) return PAGE_MODES.OFF;
+  if (value == null) return DEFAULT_MODE;
   const v = String(value).toLowerCase();
   return Object.values(PAGE_MODES).includes(v) ? v : DEFAULT_MODE;
 }

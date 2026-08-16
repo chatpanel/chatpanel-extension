@@ -95,6 +95,7 @@ import {
 } from './js/tool-policy.js';
 // Pure, tiny, no transitive graph — safe on the first-paint path (the heavy
 // canvas-adapters / page-actions bodies stay dynamic-imported inside pageToolProvider).
+import { KIND_VERB } from './js/page-match.js';
 import {
   PAGE_MODES,
   PAGE_DECISIONS,
@@ -103,6 +104,7 @@ import {
   shouldArm,
   grantSite,
   forgetSite,
+  denySite,
 } from './js/page-policy.js';
 import { paginateEntries, rankConversationEntries } from './js/conversation-search.js';
 import { rankMeetingEntries } from './js/meeting-search.js';
@@ -3248,10 +3250,14 @@ function renderPageActBtn() {
 
   const where = d.label || d.siteKey || 'this page';
   const titles = {
-    [PAGE_DECISIONS.ASK]: `${d.label || 'This app'} detected — click to let the agent act on ${where}`,
+    [PAGE_DECISIONS.ASK]: `${d.label || 'This app'} detected — click to let the agent ${KIND_VERB[d.kind] || 'act on'} ${where} · Alt-click to block`,
     [PAGE_DECISIONS.ARM]: `Act on page is ON for ${where} — click to turn it off here`,
     [PAGE_DECISIONS.DENIED]: `Act on page is blocked on ${where} — click to allow it again`,
-    [PAGE_DECISIONS.OFF]: 'Act on page — let the agent fill forms & click for you',
+    // The OFF title names the site, because clicking here grants exactly one site and
+    // that is the only way to reach an app ChatPanel has no rule for.
+    [PAGE_DECISIONS.OFF]: d.siteKey
+      ? `Act on page — click to let the agent fill forms & click on ${d.siteKey}`
+      : 'Act on page — open a web page to enable it there',
   };
   btn.title = titles[d.decision] || titles[PAGE_DECISIONS.OFF];
   btn.setAttribute('aria-label', btn.title);
@@ -6143,6 +6149,16 @@ function wireEvents() {
     const mode = migratePageActions(state.settings.ui?.pageActions);
     const sites = state.settings.ui?.pageSites;
     let next = { pageSites: sites };
+
+    // Alt-click blocks. Accepting an offer costs one click, so refusing one should too —
+    // otherwise the only way to say no is a trip to Settings, and an offer you cannot
+    // decline in place is a nag.
+    if (e.altKey && d.siteKey && d.decision !== PAGE_DECISIONS.DENIED) {
+      state.settings = await updateSettings({ ui: { pageSites: denySite(sites, d.siteKey) } });
+      renderPageActBtn();
+      toast(`Act on page blocked on ${d.siteKey}`);
+      return;
+    }
 
     if (d.decision === PAGE_DECISIONS.ARM && mode === PAGE_MODES.ALWAYS) {
       next = { pageActions: PAGE_MODES.OFF };              // legacy blanket ON -> off, as before
