@@ -259,18 +259,27 @@ async function pageToolProvider(resolvedAgent) {
     toast('▶️ Act on page can’t run: no readable web tab is active');
     return null;
   }
-  // Per-site decision. ARM only: 'ask' produces an offer in the UI rather than silent
-  // authority, and a denied site outranks every mode — auto-activation may narrow what
-  // is available, never widen it.
+  // The MODEL decides whether this page matters; the USER decides whether it may act.
+  //
+  // Hiding the tools until a site was pre-approved put judgment in the harness, and the
+  // symptom was the agent truthfully reporting it had no way to touch the page — on
+  // Google Sheets, on sketch.io, on anything absent from a curated list. No list is ever
+  // complete, so there is no list.
+  //
+  // So: the tools are VISIBLE wherever a readable tab exists, and the first action on a
+  // site the user has not granted is GATED — it prompts with the agent's own concrete
+  // intent ("fill 50 values into this sheet") rather than an abstract permission. Only a
+  // DENIED site hides them, because a deny must be final.
   const pagePolicy = resolvePageDecision({
     mode: pageMode,
     sites: state.settings.ui?.pageSites,
     url: state.activeTab.url,
   });
-  if (!shouldArm(pagePolicy.decision)) {
-    console.info('[chatpanel] page actions not armed —', pagePolicy.decision, pagePolicy.reason);
+  if (pagePolicy.decision === PAGE_DECISIONS.DENIED) {
+    console.info('[chatpanel] page actions hidden — blocked on', pagePolicy.siteKey);
     return null;
   }
+  const siteGranted = shouldArm(pagePolicy.decision);
 
   // High-reliability control is ON unless the user explicitly turned it off.
   //
@@ -360,7 +369,11 @@ async function pageToolProvider(resolvedAgent) {
     // An always-confirm tool ignores BOTH escape hatches: the global confirm
     // preference and any per-site trust already granted.
     const always = ALWAYS_CONFIRM_TOOLS.has(name);
-    const needs = always || (confirmOn && pageActionNeedsConfirm(name) && !trustedActionOrigins.has(pageOrigin));
+    // The capability gate. On a site the user has never granted, the FIRST action asks —
+    // whatever the confirm preference says — because that prompt IS the grant.
+    const ungranted = !siteGranted && !trustedActionOrigins.has(pageOrigin);
+    const needs = always || ungranted
+      || (confirmOn && pageActionNeedsConfirm(name) && !trustedActionOrigins.has(pageOrigin));
     if (needs) {
       const host = pageOrigin ? pageOrigin.replace(/^https?:\/\//, '') : 'this page';
       const decision = await confirmPageAction(describePageAction(name, input, host));
@@ -370,7 +383,19 @@ async function pageToolProvider(resolvedAgent) {
       }
       // "Allow for this site" must never grant standing permission to an
       // always-confirm tool — treat it as a one-time allow and record nothing.
-      if (decision === 'site' && pageOrigin && !always) trustedActionOrigins.add(pageOrigin);
+      if (decision === 'site' && pageOrigin && !always) {
+        trustedActionOrigins.add(pageOrigin);
+        // Durable, not just this panel session: the user answered a question about a
+        // site, and re-asking every restart is how a permission prompt becomes noise
+        // people click through. Recorded under the same per-tenant key the settings
+        // list shows and can revoke.
+        if (pagePolicy.siteKey) {
+          state.settings = await updateSettings({
+            ui: { pageSites: grantSite(state.settings.ui?.pageSites, pagePolicy.siteKey) },
+          });
+          renderPageActBtn();
+        }
+      }
     }
     return baseExecute(name, input, meta);
   };
@@ -3243,21 +3268,19 @@ function renderPageActBtn() {
   const d = pageDecisionNow();
   const armed = shouldArm(d.decision);
   btn.classList.toggle('active', armed);
-  btn.classList.toggle('offered', d.decision === PAGE_DECISIONS.ASK);
+  btn.classList.toggle('offered', d.decision === PAGE_DECISIONS.ASK && !!d.ruleId);
   btn.classList.toggle('denied', d.decision === PAGE_DECISIONS.DENIED);
   btn.setAttribute('aria-pressed', armed ? 'true' : 'false');
   btn.dataset.decision = d.decision;
 
-  const where = d.label || d.siteKey || 'this page';
+  // The titles describe the GRANT, not availability — the agent can always reach for the
+  // page; what changes is whether it must ask first.
+  const where = d.siteKey || 'this page';
   const titles = {
-    [PAGE_DECISIONS.ASK]: `${d.label || 'This app'} detected — click to let the agent ${KIND_VERB[d.kind] || 'act on'} ${where} · Alt-click to block`,
-    [PAGE_DECISIONS.ARM]: `Act on page is ON for ${where} — click to turn it off here`,
-    [PAGE_DECISIONS.DENIED]: `Act on page is blocked on ${where} — click to allow it again`,
-    // The OFF title names the site, because clicking here grants exactly one site and
-    // that is the only way to reach an app ChatPanel has no rule for.
-    [PAGE_DECISIONS.OFF]: d.siteKey
-      ? `Act on page — click to let the agent fill forms & click on ${d.siteKey}`
-      : 'Act on page — open a web page to enable it there',
+    [PAGE_DECISIONS.ASK]: `The agent can act on ${where} and will ask before its first action · click to allow now · Alt-click to block`,
+    [PAGE_DECISIONS.ARM]: `Allowed on ${where} — the agent can act without asking each time · click to revoke`,
+    [PAGE_DECISIONS.DENIED]: `Blocked on ${where} — the agent cannot act here · click to unblock`,
+    [PAGE_DECISIONS.OFF]: 'Act on page is off — turn it on in Settings',
   };
   btn.title = titles[d.decision] || titles[PAGE_DECISIONS.OFF];
   btn.setAttribute('aria-label', btn.title);
