@@ -440,6 +440,33 @@ function logEvent(type, payload, causes = []) {
     .catch(() => {});
 }
 
+// Arguments and results are SUMMARISED, never copied: the log records what happened, and
+// a tool payload can carry page text or user data. Bounded so a chatty tool cannot make
+// the log grow without limit.
+const CAP = 200;
+function summarizeArgs(input) {
+  try {
+    const o = input && typeof input === 'object' ? input : {};
+    const keys = Object.keys(o).slice(0, 8);
+    const shape = {};
+    for (const k of keys) {
+      const v = o[k];
+      shape[k] = Array.isArray(v) ? `array(${v.length})`
+        : v && typeof v === 'object' ? `object(${Object.keys(v).length})`
+          : typeof v === 'string' ? `string(${v.length})` : typeof v;
+    }
+    return shape;
+  } catch { return {}; }
+}
+function isToolError(out) {
+  const t = typeof out === 'string' ? out : JSON.stringify(out ?? '');
+  return /"error"\s*:/.test(t) || /^\s*error[: ]/i.test(t);
+}
+function summarizeResult(out) {
+  const t = typeof out === 'string' ? out : JSON.stringify(out ?? '');
+  return t.length > CAP ? `${t.slice(0, CAP)}…` : t;
+}
+
 // Rough token estimate — the same 4-chars-per-token rule the dispatcher budget uses.
 const approxTokens = (v) => (v == null ? 0 : Math.round(JSON.stringify(v).length / 4));
 
@@ -450,7 +477,7 @@ const approxTokens = (v) => (v == null ? 0 : Math.round(JSON.stringify(v).length
 // two can never drift. Returns undefined when nothing is armed.
 async function toolsetFor(
   resolvedAgent,
-  { historyRag = null, skillRun = null, mcpMode = MCP_TURN_MODES.AUTO, userText = '', attachments = [], pageTools = true } = {},
+  { turnId = null, historyRag = null, skillRun = null, mcpMode = MCP_TURN_MODES.AUTO, userText = '', attachments = [], pageTools = true } = {},
 ) {
   // Page-action tools need a live tab + confirm dialogs — skip them for background
   // callers (e.g. auto-refreshing live monitors) that shouldn't drive the tab.
@@ -483,7 +510,7 @@ async function toolsetFor(
   // per turn, on real toolsets. Without it, "why was that turn expensive?" stays a guess.
   const specs = built?.specs || [];
   logEvent('context.assembled', {
-    turnId: state.conv?.id || 'unknown',
+    turnId: turnId || state.conv?.id || 'unknown',
     budget: 0, // no ceiling enforced yet — F2.3 introduces one
     used: approxTokens(specs) + approxTokens(built?.system),
     parts: {
@@ -501,12 +528,16 @@ async function toolsetFor(
 }
 
 function runProfileForTurn(conv, assistant) {
+  // The TURN id is the assistant message. Using conv.id made every turn in a
+  // conversation share one identity, so nothing in the log could be grouped.
+  const turnId = assistant.id;
   const idx = conv.messages.findIndex((m) => m.id === assistant.id);
   const stop = idx >= 0 ? idx - 1 : conv.messages.length - 1;
   for (let i = stop; i >= 0; i--) {
     const m = conv.messages[i];
     if (m.role === 'user') {
       return {
+        turnId,
         historyRag: m.historyRag || null,
         skillRun: m.skillRun || null,
         mcpMode: m.mcpMode || MCP_TURN_MODES.AUTO,
@@ -576,8 +607,46 @@ function withToolCancellation(tools, assistant, conv) {
       // later. Observe that rejection so it does not become an unhandled promise.
       running.catch(() => {});
       state.toolCancels.set(callId, { cancel, tool: name, convId: conv.id, assistantId: assistant.id });
+      // Every tool call, in one place. Without this, six identical failures look like a
+      // confused model instead of a harness dropping arguments — which is exactly how the
+      // structured_insert regression read from the outside.
+      //
+      // `effects` is uniformly non-replayable for now: over-claiming caution is safe,
+      // under-claiming is not, and the real value arrives with the capability declaration
+      // (Stage 3) rather than being guessed from a tool name here.
+      const startedAt = Date.now();
+      logEvent('capability.invoked', {
+        capability: name,
+        actor: { kind: 'model', id: assistant.agentId || 'agent' },
+        scope: { kind: 'session', id: conv.id },
+        effects: 'non-replayable',
+        idempotencyKey: callId,
+        turnId: assistant.id,
+        args: summarizeArgs(input),
+      });
       try {
-        return await Promise.race([running, skipped]);
+        const out = await Promise.race([running, skipped]);
+        logEvent('capability.resulted', {
+          capability: name,
+          ok: !isToolError(out),
+          classUsed: 'X',
+          cost: { ms: Date.now() - startedAt },
+          turnId: assistant.id,
+          idempotencyKey: callId,
+          summary: summarizeResult(out),
+        });
+        return out;
+      } catch (err) {
+        logEvent('capability.resulted', {
+          capability: name,
+          ok: false,
+          classUsed: 'X',
+          cost: { ms: Date.now() - startedAt },
+          turnId: assistant.id,
+          idempotencyKey: callId,
+          summary: String(err?.message || err).slice(0, 200),
+        });
+        throw err;
       } finally {
         state.toolCancels.delete(callId);
       }
