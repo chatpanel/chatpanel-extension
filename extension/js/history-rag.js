@@ -14,6 +14,7 @@ import {
 } from './history-rag-core.js';
 import { rankHistorySources } from './search-engine.js';
 import { searchGateway, fuseHistoryResults, capHotSources } from './warm-query.js';
+import { registerSource, loadFromSources } from './source-registry.js';
 
 // Cap the browser-side (HOT) index to the most-recent N sources when warm search is
 // on — warm holds the tail. Coarse memory bound (count, not bytes); only bites for
@@ -331,23 +332,23 @@ async function loadNoteSources() {
   return out;
 }
 
-export async function loadHistorySources({ includeChats = true, includeMeetings = false, includeNotes = true } = {}) {
+// The three built-ins register through the same contract anything else will use — so the
+// path a new source takes is the path chats, meetings and notes already take, and it
+// cannot rot from disuse.
+registerSource({ kind: 'chat', label: 'Chats', reads: ['chats'], load: loadChatSources, builtIn: true, enabledByDefault: true });
+registerSource({ kind: 'meeting', label: 'Meetings', reads: ['meetings'], load: loadMeetingSources, builtIn: true, enabledByDefault: false });
+registerSource({ kind: 'note', label: 'Notes', reads: ['notes'], load: loadNoteSources, builtIn: true, enabledByDefault: true });
+
+export async function loadHistorySources({ includeChats = true, includeMeetings = false, includeNotes = true, include } = {}) {
   const cacheable = wireSourceCache();
   // Drop a stale burst before reusing, so an idle cache can't serve old data.
   if (cacheable && _srcCache.at && Date.now() - _srcCache.at > SRC_CACHE_TTL_MS) releaseSrcCache();
-  const sources = [];
-  if (includeChats) {
-    if (cacheable) { if (!_srcCache.chats) _srcCache.chats = await loadChatSources(); sources.push(..._srcCache.chats); }
-    else sources.push(...(await loadChatSources()));
-  }
-  if (includeMeetings) {
-    if (cacheable) { if (!_srcCache.meetings) _srcCache.meetings = await loadMeetingSources(); sources.push(..._srcCache.meetings); }
-    else sources.push(...(await loadMeetingSources()));
-  }
-  if (includeNotes) {
-    if (cacheable) { if (!_srcCache.notes) _srcCache.notes = await loadNoteSources(); sources.push(..._srcCache.notes); }
-    else sources.push(...(await loadNoteSources()));
-  }
+  // One loop over the registry, in registration order, so chats/meetings/notes come back
+  // exactly as before and a fourth source needs no edit here.
+  const sources = await loadFromSources(
+    { includeChats, includeMeetings, includeNotes, include },
+    { cache: cacheable ? _srcCache : null },
+  );
   if (cacheable) touchSrcCacheTTL();
   return sources;
 }
