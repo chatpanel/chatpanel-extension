@@ -2481,7 +2481,9 @@ function renderBridgeAgents() {
 // Human label for a CLI kind, used in the collapsed summary line.
 const AGENT_KIND_LABEL = {
   claude: 'Claude Code', codex: 'Codex', antigravity: 'Antigravity',
-  pi: 'Pi', opencode: 'OpenCode', kiro: 'Kiro', custom: 'Custom CLI',
+  pi: 'Pi', opencode: 'OpenCode', kiro: 'Kiro', copilot: 'GitHub Copilot',
+  deepseek: 'DeepSeek Harness',
+  custom: 'Custom CLI',
 };
 
 function bridgeAgentCard(agent) {
@@ -2539,6 +2541,8 @@ function bridgeAgentCard(agent) {
     pi: 'provider/model  (blank = default · “Load models” for the list)',
     opencode: 'provider/model  (blank = default · “Load models” for the list)',
     kiro: 'model id  (blank = default · “Load models” for the list)',
+    copilot: 'auto · gpt-5.4 · claude-sonnet-5  (blank = CLI default · “Load models” for the list)',
+    deepseek: 'deepseek-v4-flash · deepseek-v4-pro  (blank = the dsh profile’s model)',
   };
   // Common model ids per engine, offered through the same custom combobox while
   // still accepting any custom string. The newer CLIs expose a "Load models"
@@ -2550,6 +2554,10 @@ function bridgeAgentCard(agent) {
     pi: [],
     opencode: [],
     kiro: [],
+    // Seeded so the picker is useful before "Load models" runs; the live list
+    // comes from `copilot help config` and can differ per account entitlement.
+    copilot: ['auto'],
+    deepseek: ['deepseek-v4-flash', 'deepseek-v4-pro'],
   };
   let bridgeModelOptions = [];
   const wireBridgeModelFields = (kind, options = bridgeModelOptions) => {
@@ -2670,6 +2678,14 @@ function bridgeAgentCard(agent) {
       body: 'This removes the agent and its command, working directory and prompt settings. This can\'t be undone.',
     }))) return;
     settings.agents = settings.agents.filter((a) => a !== agent);
+    // Remember deleted built-ins: settings-merge back-fills any built-in missing
+    // from a saved list (so new ones appear after an upgrade), and without this
+    // the one you just deleted would come straight back on the next load.
+    if (agent.builtin && agent.id) {
+      const gone = new Set(settings.removedBuiltinAgents || []);
+      gone.add(agent.id);
+      settings.removedBuiltinAgents = [...gone];
+    }
     forgetCard(agentKey(agent));
     await saveSettings(settings);
     renderBridgeAgents();

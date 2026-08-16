@@ -149,6 +149,28 @@ export function defaultSettings() {
         useLocalConfig: true,
         builtin: true,
       },
+      {
+        id: 'copilot',
+        name: 'GitHub Copilot',
+        kind: 'bridge',
+        bridgeAgent: 'copilot',
+        systemPrompt: '',
+        workingDir: '',
+        permissionMode: 'default',
+        useLocalConfig: true,
+        builtin: true,
+      },
+      {
+        id: 'deepseek-harness',
+        name: 'DeepSeek Harness',
+        kind: 'bridge',
+        bridgeAgent: 'deepseek',
+        systemPrompt: '',
+        workingDir: '',
+        permissionMode: 'default',
+        useLocalConfig: true,
+        builtin: true,
+      },
     ],
     skills: defaultSkills(),
     ui: {
@@ -485,6 +507,21 @@ function mergeSettings(base, stored) {
   out.ui = { ...base.ui, ...(stored.ui || {}) };
   // Keep the user's agents/skills verbatim if present; otherwise the defaults.
   out.agents = Array.isArray(stored.agents) && stored.agents.length ? stored.agents : base.agents;
+  // Back-fill built-in agents introduced AFTER this user's list was saved. The
+  // line above keeps the stored array verbatim, which silently froze the agent
+  // list at whatever it held on first write: every built-in shipped since (Kiro,
+  // GitHub Copilot, …) was invisible forever, and the list looked capped at its
+  // original count. Deletions are tracked separately so a back-fill can never
+  // resurrect a built-in the user deliberately removed.
+  const removedBuiltins = new Set(
+    Array.isArray(stored.removedBuiltinAgents) ? stored.removedBuiltinAgents : [],
+  );
+  out.removedBuiltinAgents = [...removedBuiltins];
+  const haveAgentIds = new Set(out.agents.map((a) => a?.id));
+  const missingBuiltins = base.agents.filter(
+    (a) => a.builtin && !haveAgentIds.has(a.id) && !removedBuiltins.has(a.id),
+  );
+  if (missingBuiltins.length) out.agents = [...out.agents, ...missingBuiltins];
   out.skills = Array.isArray(stored.skills) ? stored.skills : base.skills;
   // Inject newer built-in skills that didn't exist when the user's skills were
   // saved. Safe one-time add (a brand-new built-in can't have been user-deleted).

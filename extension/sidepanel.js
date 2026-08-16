@@ -4589,7 +4589,8 @@ function readImageFile(file) {
 
 // Bridge agents that can receive images (the bridge writes them to temp files and
 // attaches them, e.g. `codex exec -i`). Others have no image channel yet.
-const IMAGE_CAPABLE_BRIDGE = new Set(['codex', 'claude', 'antigravity', 'pi', 'opencode']);
+// Copilot takes images via --attachment (non-interactive mode only).
+const IMAGE_CAPABLE_BRIDGE = new Set(['codex', 'claude', 'antigravity', 'pi', 'opencode', 'copilot']);
 function warnIfNoVision() {
   const agent = resolveTarget(agentForConv(state.conv), state.settings);
   if (agent?.kind !== 'bridge') return;

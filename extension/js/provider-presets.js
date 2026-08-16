@@ -304,6 +304,8 @@ const AGENT_BRANDS = {
   pi: { mark: 'PI', color: '#8b5cf6' },
   opencode: { mark: 'OC', color: '#0ea5e9' },
   kiro: { mark: 'KI', color: '#a855f7' },
+  copilot: { mark: 'GH', color: '#24292f' },
+  deepseek: { mark: 'DS', color: '#4d6bfe' },
   custom: { mark: 'BYO', color: '#64748b' },
 };
 
