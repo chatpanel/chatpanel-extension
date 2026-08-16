@@ -399,7 +399,18 @@ async function pageToolProvider(resolvedAgent) {
     }
     return baseExecute(name, input, meta);
   };
-  return { specs, execute: guardedExecute, system };
+  // PROGRESSIVE DISCLOSURE. Registering all ~20 page schemas costs ~3,300 tokens on every
+  // turn with a web tab open, paid whether or not the turn touches the page — and on a
+  // small local model that can be half the context before the user has typed. One
+  // dispatcher carries the same reach for a quarter of it, with each action's full schema
+  // one `describe` call away. The guard stays underneath, on the REAL action name, so the
+  // dispatcher is never a route around the confirmation gate or the site grant.
+  const { buildDispatchSpec, makeDispatchExecutor } = await import('./js/page-dispatch.js');
+  return {
+    specs: [buildDispatchSpec(specs)],
+    execute: makeDispatchExecutor(specs, guardedExecute),
+    system,
+  };
 }
 
 // Build the full toolset for a turn. The side-panel-specific part — page-action
