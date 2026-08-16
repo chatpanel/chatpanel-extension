@@ -280,6 +280,17 @@ async function pageToolProvider(resolvedAgent) {
     return null;
   }
   const siteGranted = shouldArm(pagePolicy.decision);
+  // A durable fact, not a console line: a rule made a capability available on a site,
+  // and the reason it did. This is the actor='rule' / scope='site' shape the schema was
+  // designed against — no model turn is involved in the decision.
+  logEvent('capability.activated', {
+    capability: 'page.actions',
+    classUsed: 'R',
+    siteKey: pagePolicy.siteKey,
+    granted: siteGranted,
+    reason: pagePolicy.reason,
+    ruleId: pagePolicy.ruleId || null,
+  });
 
   // High-reliability control is ON unless the user explicitly turned it off.
   //
@@ -379,6 +390,7 @@ async function pageToolProvider(resolvedAgent) {
       const decision = await confirmPageAction(describePageAction(name, input, host));
       if (decision === 'deny') {
         toast('🖋 Action declined');
+        logEvent('policy.guard_denied', { capability: 'page.actions', reason: `user-declined:${name}` });
         return JSON.stringify({ error: 'The user DECLINED this page action. Do not retry it — stop and ask the user how to proceed.' });
       }
       // "Allow for this site" must never grant standing permission to an
@@ -394,6 +406,12 @@ async function pageToolProvider(resolvedAgent) {
             ui: { pageSites: grantSite(state.settings.ui?.pageSites, pagePolicy.siteKey) },
           });
           renderPageActBtn();
+          logEvent('capability.granted', {
+            capability: 'page.actions',
+            actor: { kind: 'user', id: 'local' },
+            siteKey: pagePolicy.siteKey,
+            viaAction: name,
+          });
         }
       }
     }
@@ -413,6 +431,18 @@ async function pageToolProvider(resolvedAgent) {
   };
 }
 
+// Emit a durable fact without ever letting the log affect the thing it describes: the
+// import is lazy (the log must stay off first paint) and every failure is swallowed
+// inside event-log.js.
+function logEvent(type, payload, causes = []) {
+  import('./js/event-log.js')
+    .then((m) => m.emitAsync(type, payload, causes))
+    .catch(() => {});
+}
+
+// Rough token estimate — the same 4-chars-per-token rule the dispatcher budget uses.
+const approxTokens = (v) => (v == null ? 0 : Math.round(JSON.stringify(v).length / 4));
+
 // Build the full toolset for a turn. The side-panel-specific part — page-action
 // tools (they need a live web tab + confirm dialogs) — is assembled here; the
 // portable part (history + web-search + MCP + narrowing) is delegated to the
@@ -427,7 +457,7 @@ async function toolsetFor(
   const page = pageTools ? await pageToolProvider(resolvedAgent) : null;
   const history = historyRag || skillRun?.history || null;
   const { buildTurnTools } = await import('./js/turn-tools.js'); // heavy toolset graph, on-demand
-  return buildTurnTools({
+  const built = await buildTurnTools({
     resolvedAgent,
     settings: state.settings,
     license: state.license,
@@ -447,6 +477,27 @@ async function toolsetFor(
       toast(`🔌 MCP “${s.name || s.url || s.command}” unavailable: ${e.message}`, 2600);
     },
   });
+
+  // F2.0 — what this turn actually cost, and where it went. The dispatcher's 721-token
+  // figure is a build-time assertion; this is the same accounting observed in production,
+  // per turn, on real toolsets. Without it, "why was that turn expensive?" stays a guess.
+  const specs = built?.specs || [];
+  logEvent('context.assembled', {
+    turnId: state.conv?.id || 'unknown',
+    budget: 0, // no ceiling enforced yet — F2.3 introduces one
+    used: approxTokens(specs) + approxTokens(built?.system),
+    parts: {
+      toolSchemas: approxTokens(specs),
+      system: approxTokens(built?.system),
+      userText: approxTokens(userText),
+      attachments: approxTokens(attachments),
+    },
+    resident: [],
+    reachableCount: specs.length,
+    tools: specs.map((t) => t.name || t.function?.name).filter(Boolean),
+    pageArmed: !!page,
+  });
+  return built;
 }
 
 function runProfileForTurn(conv, assistant) {
