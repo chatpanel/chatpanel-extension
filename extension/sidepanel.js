@@ -93,6 +93,14 @@ import {
   cancelledToolResult,
   normalizeMcpTurnMode,
 } from './js/tool-policy.js';
+// Pure, tiny, no transitive graph — safe on the first-paint path (the heavy
+// canvas-adapters / page-actions bodies stay dynamic-imported inside pageToolProvider).
+import {
+  PAGE_MODES,
+  migratePageActions,
+  resolvePageDecision,
+  shouldArm,
+} from './js/page-policy.js';
 import { paginateEntries, rankConversationEntries } from './js/conversation-search.js';
 import { rankMeetingEntries } from './js/meeting-search.js';
 // topic-extraction.js is dynamic-imported inside the post-response extract* functions
@@ -231,7 +239,12 @@ function confirmPageAction(detail) {
 // at the top of this file — one shared implementation across every ChatPanel surface.
 
 async function pageToolProvider(resolvedAgent) {
-  if (!state.settings.ui?.pageActions) return null; // feature off — stay silent
+  // Site policy, not a global switch. Legacy `true` migrates to 'always', which still
+  // means every readable tab — an existing user's behaviour is unchanged. The OFF check
+  // and the no-readable-tab toast below keep their original order so the diagnostics a
+  // user already relies on do not move.
+  const pageMode = migratePageActions(state.settings.ui?.pageActions);
+  if (pageMode === PAGE_MODES.OFF) return null; // feature off — stay silent
   // API agents run the in-extension tool loop; bridge/CLI agents (Claude Code,
   // Codex) get the SAME tools relayed through the bridge's MCP server. Both need
   // a readable web tab to act on.
@@ -241,6 +254,19 @@ async function pageToolProvider(resolvedAgent) {
     toast('▶️ Act on page can’t run: no readable web tab is active');
     return null;
   }
+  // Per-site decision. ARM only: 'ask' produces an offer in the UI rather than silent
+  // authority, and a denied site outranks every mode — auto-activation may narrow what
+  // is available, never widen it.
+  const pagePolicy = resolvePageDecision({
+    mode: pageMode,
+    sites: state.settings.ui?.pageSites,
+    url: state.activeTab.url,
+  });
+  if (!shouldArm(pagePolicy.decision)) {
+    console.info('[chatpanel] page actions not armed —', pagePolicy.decision, pagePolicy.reason);
+    return null;
+  }
+
   // High-reliability control is ON unless the user explicitly turned it off.
   //
   // Defaulting on is the right call because "Act on page" is ITSELF opt-in (above),

@@ -17,6 +17,9 @@
 // (see sidepanel.js `pageToolProvider`), so the spec never reaches a Free client.
 
 import { cdpKeyChord } from './page-actions-cdp.js';
+// Hostname rules live in the LIGHT module (page-match.js) and are consumed here, so a
+// tab-change match never pulls this file's ~1200 lines onto the panel's first paint.
+import { SITE_RULES, hostMatchesRule } from './page-match.js';
 import { applyIconShorthand } from './drawio-icons.js';
 
 // --------------------------------------------------------------------------
@@ -380,7 +383,7 @@ const excalidrawAdapter = {
   capability: 'excalidraw',
   toolNames: ['structured_insert', 'read_canvas'],
   match(host) {
-    return host === 'excalidraw.com' || host.endsWith('.excalidraw.com');
+    return hostMatchesRule(SITE_RULES.find((r) => r.adapterId === 'excalidraw'), host);
   },
   handles(name) {
     return this.toolNames.includes(name);
@@ -841,7 +844,7 @@ const drawioAdapter = {
   capability: 'drawio',
   toolNames: ['structured_insert', 'read_canvas'],
   match(host) {
-    return host === 'app.diagrams.net' || host === 'draw.io' || host === 'www.draw.io' || host.endsWith('.diagrams.net');
+    return hostMatchesRule(SITE_RULES.find((r) => r.adapterId === 'drawio'), host);
   },
   handles(name) {
     return this.toolNames.includes(name);
@@ -1140,7 +1143,7 @@ const tldrawAdapter = {
   capability: 'tldraw',
   toolNames: ['structured_insert', 'read_canvas'],
   match(host) {
-    return host === 'tldraw.com' || host === 'www.tldraw.com' || host.endsWith('.tldraw.com');
+    return hostMatchesRule(SITE_RULES.find((r) => r.adapterId === 'tldraw'), host);
   },
   handles(name) {
     return this.toolNames.includes(name);
