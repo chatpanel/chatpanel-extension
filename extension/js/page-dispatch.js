@@ -43,11 +43,12 @@ export function buildDispatchSpec(specs) {
   return {
     name: DISPATCH_TOOL_NAME,
     description:
-      'Act on the user\'s active browser tab. Pass an `action` plus that action\'s own '
-      + 'arguments, e.g. {"action":"click_at","x":120,"y":340}. Start with '
-      + '{"action":"inspect_page"} to learn the page\'s real selectors. Unsure of an '
-      + 'action\'s arguments? {"action":"describe","tool":"<action>"} returns its full '
-      + 'schema.\n\nActions:\n'
+      'Act on the user\'s active browser tab. Pass an `action` and put that action\'s own '
+      + 'arguments inside `args`, e.g. '
+      + '{"action":"click_at","args":{"x":120,"y":340}}. Start with '
+      + '{"action":"inspect_page","args":{}} to learn the page\'s real selectors. Unsure of '
+      + 'an action\'s arguments? {"action":"describe","args":{"tool":"<action>"}} returns '
+      + 'its full schema.\n\nActions:\n'
       + lines.join('\n'),
     parameters: {
       type: 'object',
@@ -57,10 +58,20 @@ export function buildDispatchSpec(specs) {
           enum: [DESCRIBE, ...specs.map((s) => s.name)],
           description: 'Which page action to run.',
         },
-        tool: { type: 'string', description: `Only with action="${DESCRIBE}": the action to describe.` },
+        // A DECLARED envelope, not `additionalProperties`. Providers and MCP validators
+        // routinely strip properties that are not in `properties`, so undeclared
+        // top-level arguments silently vanish before they reach the executor — which is
+        // exactly how `structured_insert` lost its `elements` array and reported "no
+        // elements provided". Anything declared survives.
+        args: {
+          type: 'object',
+          description: 'The chosen action\'s own arguments, verbatim. Use {} when it takes none.',
+          additionalProperties: true,
+        },
+        tool: { type: 'string', description: `With action="${DESCRIBE}": the action to describe.` },
       },
       required: ['action'],
-      additionalProperties: true, // each action's own arguments travel here
+      additionalProperties: true, // tolerated, but never relied upon — see `args`
     },
   };
 }
@@ -75,7 +86,8 @@ export function validateAction(spec, args) {
   return {
     error: `Missing required argument(s) for "${spec.name}": ${missing.join(', ')}.`,
     required: requiredOf(spec),
-    hint: `Call {"action":"${DESCRIBE}","tool":"${spec.name}"} for the full schema, then retry.`,
+    hint: `Put them inside \`args\`: {"action":"${spec.name}","args":{...}}. `
+      + `Call {"action":"${DESCRIBE}","args":{"tool":"${spec.name}"}} for the full schema.`,
   };
 }
 
@@ -90,16 +102,26 @@ export function makeDispatchExecutor(specs, runAction) {
   const byName = new Map(specs.map((s) => [s.name, s]));
   return async (name, input, meta) => {
     if (name !== DISPATCH_TOOL_NAME) return runAction(name, input, meta); // direct calls still work
-    const args = { ...(input || {}) };
-    const action = String(args.action || '');
-    delete args.action;
+    // Accept BOTH shapes. `args` is the declared envelope and the one the description
+    // teaches; top-level arguments are merged too, so a model that ignores the envelope —
+    // or a provider that happens to pass extras through — still works rather than failing
+    // in a way that looks like the tool is broken.
+    const raw = input || {};
+    const { action: rawAction, args: envelope, tool: rawTool, ...rest } = raw;
+    const args = { ...rest, ...(envelope && typeof envelope === 'object' ? envelope : {}) };
+    const action = String(rawAction || '');
 
     if (action === DESCRIBE) {
-      const spec = byName.get(String(args.tool || ''));
+      const spec = byName.get(String(args.tool || rawTool || ''));
       return JSON.stringify(
         spec
-          ? { name: spec.name, description: spec.description, parameters: spec.parameters }
-          : { error: `Unknown action "${args.tool}".`, actions: [...byName.keys()] },
+          ? {
+            name: spec.name,
+            description: spec.description,
+            parameters: spec.parameters,
+            callAs: { action: spec.name, args: '<the properties above, verbatim>' },
+          }
+          : { error: `Unknown action "${args.tool || rawTool}".`, actions: [...byName.keys()] },
       );
     }
 
