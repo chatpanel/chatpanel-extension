@@ -97,9 +97,12 @@ import {
 // canvas-adapters / page-actions bodies stay dynamic-imported inside pageToolProvider).
 import {
   PAGE_MODES,
+  PAGE_DECISIONS,
   migratePageActions,
   resolvePageDecision,
   shouldArm,
+  grantSite,
+  forgetSite,
 } from './js/page-policy.js';
 import { paginateEntries, rankConversationEntries } from './js/conversation-search.js';
 import { rankMeetingEntries } from './js/meeting-search.js';
@@ -2250,6 +2253,7 @@ async function refreshActiveTab() {
   }
   renderContextBar();
   renderMeetingBar();
+  renderPageActBtn(); // the offer is a function of the active tab, so it follows navigation
   renderScribeIndicator();
   maybeRefreshSuggestions();
 }
@@ -3219,12 +3223,38 @@ function renderWatchButton() {
 }
 
 // Reflect the "Act on page" toggle on the composer button.
+// The act-on-page button IS the offer surface. A rule matching a site cannot arm
+// anything on its own — auto-activation may narrow authority, never widen it — so a
+// match turns this button into a visible one-click offer instead. That is the honest
+// version of "it just works": no settings trip, but the grant is still the user's.
+function pageDecisionNow() {
+  return resolvePageDecision({
+    mode: state.settings.ui?.pageActions,
+    sites: state.settings.ui?.pageSites,
+    url: state.activeTab?.url,
+  });
+}
+
 function renderPageActBtn() {
   const btn = $('btn-pageact');
   if (!btn) return;
-  const on = !!state.settings.ui?.pageActions;
-  btn.classList.toggle('active', on);
-  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  const d = pageDecisionNow();
+  const armed = shouldArm(d.decision);
+  btn.classList.toggle('active', armed);
+  btn.classList.toggle('offered', d.decision === PAGE_DECISIONS.ASK);
+  btn.classList.toggle('denied', d.decision === PAGE_DECISIONS.DENIED);
+  btn.setAttribute('aria-pressed', armed ? 'true' : 'false');
+  btn.dataset.decision = d.decision;
+
+  const where = d.label || d.siteKey || 'this page';
+  const titles = {
+    [PAGE_DECISIONS.ASK]: `${d.label || 'This app'} detected — click to let the agent act on ${where}`,
+    [PAGE_DECISIONS.ARM]: `Act on page is ON for ${where} — click to turn it off here`,
+    [PAGE_DECISIONS.DENIED]: `Act on page is blocked on ${where} — click to allow it again`,
+    [PAGE_DECISIONS.OFF]: 'Act on page — let the agent fill forms & click for you',
+  };
+  btn.title = titles[d.decision] || titles[PAGE_DECISIONS.OFF];
+  btn.setAttribute('aria-label', btn.title);
 }
 
 function mcpToolsMode() {
@@ -6106,9 +6136,34 @@ function wireEvents() {
   $('btn-pageact').onclick = async (e) => {
     e.stopPropagation();
     closeMenus();
-    const on = !state.settings.ui?.pageActions;
-    state.settings = await updateSettings({ ui: { pageActions: on } });
+    // Per-site, not global. Clicking always means "here", which is what a user pressing
+    // a button while looking at a page actually intends; 'always' stays reachable from
+    // Settings for anyone who wants the old blanket behaviour.
+    const d = pageDecisionNow();
+    const mode = migratePageActions(state.settings.ui?.pageActions);
+    const sites = state.settings.ui?.pageSites;
+    let next = { pageSites: sites };
+
+    if (d.decision === PAGE_DECISIONS.ARM && mode === PAGE_MODES.ALWAYS) {
+      next = { pageActions: PAGE_MODES.OFF };              // legacy blanket ON -> off, as before
+    } else if (d.decision === PAGE_DECISIONS.ARM) {
+      next = { pageSites: forgetSite(sites, d.siteKey) };  // granted here -> withdraw here
+    } else if (d.decision === PAGE_DECISIONS.DENIED) {
+      next = { pageSites: forgetSite(sites, d.siteKey) };  // un-deny; back to ask/off
+    } else if (d.siteKey) {
+      // ASK (a rule matched) or OFF: grant this one site. From a cold 'off' this also
+      // moves the mode to 'ask' so future matches can offer — strictly narrower than
+      // the old behaviour, which switched it on for every tab at once.
+      next = { pageSites: grantSite(sites, d.siteKey) };
+      if (mode === PAGE_MODES.OFF) next.pageActions = PAGE_MODES.ASK;
+    } else {
+      toast('▶️ Act on page needs a readable web tab');
+      return;
+    }
+
+    state.settings = await updateSettings({ ui: next });
     renderPageActBtn();
+    const on = shouldArm(pageDecisionNow().decision);
     const agent = resolveTarget(agentForConv(state.conv), state.settings);
     if (on && agent?.kind === 'bridge') {
       toast('▶️ Act on page on. Bridge agents use browser tools through the local bridge.');

@@ -710,3 +710,30 @@ body.rail-collapsed { --rail-w: 0px; }
   font-weight: 600; padding: 6px 14px; border-bottom: 1px solid var(--border);
 }
 .scribe-indicator:hover { filter: brightness(1.06); }
+
+/* Act-on-page offer states. A rule matching a site cannot arm anything by itself, so
+   the button becomes a visible one-click offer instead — discovery without granting
+   authority the user did not ask for. `denied` stays visible rather than hidden so a
+   block is inspectable, not mysterious. */
+.tool-btn.offered {
+  position: relative; /* the base .tool-btn is static; the dot below is anchored here */
+  color: var(--accent, #6ea8fe);
+  border-color: currentColor;
+  animation: pageact-offer 2.4s ease-in-out 3;
+}
+.tool-btn.offered::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.tool-btn.denied { opacity: .45; text-decoration: line-through; }
+@keyframes pageact-offer {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) { .tool-btn.offered { animation: none; } }

@@ -971,6 +971,24 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                 </p>
               </div>
               <div class="pref-item">
+                <label class="lbl" for="pref-pageact-mode">Act on page</label>
+                <select id="pref-pageact-mode">
+                  <option value="off">Off — never</option>
+                  <option value="ask">Ask on known apps — offer where ChatPanel recognises the app (recommended)</option>
+                  <option value="allowlist">Only sites I allowed</option>
+                  <option value="always">Every readable tab</option>
+                </select>
+                <p class="muted tiny">
+                  Where the agent may fill forms, click, and draw. <strong>Ask</strong> shows a
+                  one-click offer in the composer when you open an app ChatPanel knows how to
+                  drive (Excalidraw, draw.io, tldraw) — nothing is armed until you accept, and
+                  the answer is remembered per site. <em>Every readable tab</em> is the older
+                  behaviour and stays available; it also arms on your bank and your email, so
+                  prefer <em>Ask</em>.
+                </p>
+                <div id="pref-pageact-sites" class="site-list"></div>
+              </div>
+              <div class="pref-item">
                 <label class="check" id="pref-pageact-confirm-row">
                   <input type="checkbox" id="pref-pageact-confirm" />
                   <span>Confirm before page actions</span>

@@ -144,3 +144,33 @@ for (const rule of SITE_RULES) {
   assert.ok(!adapter.match('example.com'), `${adapter.id} matches an unrelated host`);
 }
 console.log('✓ canvas-adapters delegates to page-match (one source of truth)');
+
+// ---------------------------------------------------------------- the offer journey
+// The exact sequence a user lives through, asserted end to end: land on Excalidraw with
+// the feature never enabled, click once, and it is on there and nowhere else.
+let s = { pageActions: undefined, pageSites: {} };
+const at = (url) => resolvePageDecision({ mode: s.pageActions, sites: s.pageSites, url });
+
+// 1. Cold start on Excalidraw: OFF mode short-circuits, so no offer yet.
+assert.equal(at('https://excalidraw.com/').decision, PAGE_DECISIONS.OFF);
+
+// 2. The user clicks the composer button once. That grants THIS site and moves the mode
+//    to ask — strictly narrower than the old behaviour, which armed every tab at once.
+s = { pageActions: PAGE_MODES.ASK, pageSites: grantSite(s.pageSites, at('https://excalidraw.com/').siteKey) };
+assert.equal(at('https://excalidraw.com/').decision, PAGE_DECISIONS.ARM);
+
+// 3. It is NOT on anywhere else — including another app ChatPanel knows.
+assert.equal(at('https://mail.example/inbox').decision, PAGE_DECISIONS.OFF);
+assert.equal(at('https://www.tldraw.com/').decision, PAGE_DECISIONS.ASK, 'another known app should offer, not arm');
+
+// 4. Returning to Excalidraw later stays armed — the answer is remembered.
+assert.equal(at('https://app.excalidraw.com/board/2').decision, PAGE_DECISIONS.ARM);
+
+// 5. Clicking again on an armed, granted site withdraws it here and only here.
+s = { ...s, pageSites: forgetSite(s.pageSites, 'excalidraw.com') };
+assert.equal(at('https://excalidraw.com/').decision, PAGE_DECISIONS.ASK);
+
+// 6. A legacy "on everywhere" user is untouched by any of this.
+assert.equal(resolvePageDecision({ mode: migratePageActions(true), sites: {}, url: 'https://anything.example/' }).decision, PAGE_DECISIONS.ARM);
+
+console.log('✓ offer journey (cold start → one click → armed here only)');

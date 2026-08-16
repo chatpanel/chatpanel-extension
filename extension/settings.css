@@ -592,3 +592,13 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .ep-webllm-cm-item .btn { padding: 2px 8px; }
 .ep-webllm-cm-form { display: flex; flex-wrap: wrap; gap: 6px; }
 .ep-webllm-cm-form .ep-webllm-cm-input { flex: 1 1 180px; min-width: 140px; }
+
+/* Act-on-page site answers. Blocked sites stay visible and reversible — a denial the
+   user cannot find is indistinguishable from a bug. */
+.site-list { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.site-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border: 1px solid var(--border, #2a2f3a); border-radius: 6px; font-size: 12.5px; }
+.site-row .site-key { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
+.site-row .site-state { font-size: 11px; opacity: .75; }
+.site-row.site-denied .site-key { text-decoration: line-through; opacity: .6; }
+.btn-tiny { font-size: 11px; padding: 2px 7px; border-radius: 5px; border: 1px solid var(--border, #2a2f3a); background: transparent; color: inherit; cursor: pointer; }
+.btn-tiny:hover { border-color: currentColor; }

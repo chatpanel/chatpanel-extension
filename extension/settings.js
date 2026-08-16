@@ -16,6 +16,7 @@ import { historyToolProvider } from './js/history-rag.js';
 import { webSearchToolProvider, webSearchOpts, webSearchUsage } from './js/web-search.js';
 import { fullRedactionUsage } from './js/pii-usage.js';
 import { sanitizeUnicode } from './js/sanitize.js';
+import { PAGE_MODES, migratePageActions, listSites, forgetSite, denySite } from './js/page-policy.js';
 import { narrowToolset, isLocalToolSpec } from './js/tool-select.js';
 import { DEFAULT_AUTO_TOOL_CAP } from './js/tool-policy.js';
 import {
@@ -3515,6 +3516,8 @@ function renderPrefs() {
   ac.checked = pro && !!settings.ui.autocomplete;
   ac.disabled = !pro;
   $('pref-autocomplete-row').classList.toggle('locked', !pro);
+  $('pref-pageact-mode').value = migratePageActions(settings.ui.pageActions);
+  renderPageSites();
   $('pref-pageact-cdp').checked = settings.ui.pageActionsCdp !== false; // default ON
   $('pref-pageact-confirm').checked = settings.ui.pageActionConfirm !== false; // default ON
   $('pref-pageact-devjs').checked = !!settings.ui.pageActionsDevJs; // default OFF
@@ -4266,6 +4269,13 @@ function wire() {
   };
   // High-reliability page control. `debugger` is a required permission, so
   // there's nothing to request — just persist the choice.
+  // Act on page — the mode, plus the per-site answers the composer offer records.
+  $('pref-pageact-mode').onchange = async (e) => {
+    const v = e.currentTarget.value;
+    settings.ui.pageActions = Object.values(PAGE_MODES).includes(v) ? v : PAGE_MODES.ASK;
+    await saveSettings(settings);
+    renderPageSites();
+  };
   $('pref-pageact-cdp').onchange = async (e) => {
     settings.ui.pageActionsCdp = e.currentTarget.checked;
     await saveSettings(settings);
@@ -4590,3 +4600,55 @@ function upsell(text) {
 }
 
 init();
+
+
+// A site the user blocked is SHOWN, not hidden: a denial should be inspectable and
+// reversible, never a mystery about why nothing happens on some page.
+function renderPageSites() {
+  const box = $('pref-pageact-sites');
+  if (!box) return;
+  const rows = listSites(settings.ui?.pageSites);
+  box.textContent = '';
+  if (!rows.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted tiny';
+    empty.textContent = 'No site answers recorded yet.';
+    box.append(empty);
+    return;
+  }
+  for (const { siteKey, state } of rows) {
+    const row = document.createElement('div');
+    row.className = `site-row site-${state}`;
+
+    const key = document.createElement('span');
+    key.className = 'site-key';
+    key.textContent = siteKey;
+
+    const tag = document.createElement('span');
+    tag.className = 'site-state';
+    tag.textContent = state === 'granted' ? 'allowed' : 'blocked';
+
+    const toggle = document.createElement('button');
+    toggle.className = 'btn-tiny';
+    toggle.textContent = state === 'granted' ? 'Block' : 'Unblock';
+    toggle.onclick = async () => {
+      settings.ui.pageSites = state === 'granted'
+        ? denySite(settings.ui?.pageSites, siteKey)
+        : forgetSite(settings.ui?.pageSites, siteKey);
+      await saveSettings(settings);
+      renderPageSites();
+    };
+
+    const forget = document.createElement('button');
+    forget.className = 'btn-tiny';
+    forget.textContent = 'Forget';
+    forget.onclick = async () => {
+      settings.ui.pageSites = forgetSite(settings.ui?.pageSites, siteKey);
+      await saveSettings(settings);
+      renderPageSites();
+    };
+
+    row.append(key, tag, toggle, forget);
+    box.append(row);
+  }
+}
