@@ -944,6 +944,13 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
             </select>
           </div>
           <div id="routing-out" class="replay-out"></div>
+          <p class="muted tiny" style="margin-top:12px">
+            ChatPanel guesses each model&rsquo;s cost, speed and abilities from its name and URL.
+            Those guesses are often right and sometimes wrong &mdash; correct them here and routing
+            follows what you say. <strong>Reach can only be moved outward</strong>: you can tell us a
+            local-looking endpoint really goes out, but not that a cloud one is on your device.
+          </p>
+          <div id="routing-models" class="routing-models"></div>
         </div>
         <div class="card">
           <div class="card-head">

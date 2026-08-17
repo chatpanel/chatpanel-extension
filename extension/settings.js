@@ -134,7 +134,7 @@ function wireTabs() {
     // Same lazy rule as usage: the log module and the analysis load only when this tab is
     // actually shown, so a user who never opens Activity never pays for it.
     if (name === 'activity') { renderUsage(); renderActivity(); }
-    if (name === 'plugins') { renderPlugins(); loadRoutingForm(); renderRouting(); }
+    if (name === 'plugins') { renderPlugins(); loadRoutingForm(); renderRouting(); renderRoutingModels(); }
   };
   const exists = (name) => !!document.querySelector(`.tab[data-tab="${name}"]`);
   // Notes/Meetings/History are merged into one "Workspace" tab as sections. Keep
@@ -4902,6 +4902,77 @@ function externalPlugins() {
  * that it can be checked. Rejections are shown with why each candidate lost, because "it
  * used the wrong model" is unanswerable without them.
  */
+/**
+ * Correct what the router guessed about each model.
+ *
+ * The defaults come from a name matched against a regex and a URL judged local — useful, and
+ * wrong often enough that someone who knows their own setup has to be able to say so. A
+ * router that cannot be corrected is one people work around.
+ */
+async function renderRoutingModels() {
+  const box = $('routing-models');
+  if (!box) return;
+  box.textContent = '';
+  let candidates = [];
+  try {
+    const [{ candidatesFrom }, store] = await Promise.all([
+      import('./js/model-router.js'), import('./js/store.js'),
+    ]);
+    candidates = candidatesFrom(settings, (t) => store.resolveTarget(t, settings));
+  } catch { return; }
+  if (!candidates.length) return;
+
+  const saved = settings?.ui?.routing?.models || {};
+  const write = (id, patch) => {
+    settings.ui = settings.ui || {};
+    settings.ui.routing = settings.ui.routing || {};
+    settings.ui.routing.models = { ...(settings.ui.routing.models || {}), [id]: { ...(saved[id] || {}), ...patch } };
+    saveSettings(settings).then(() => { renderRouting(); renderRoutingModels(); }).catch(() => {});
+  };
+
+  for (const m of candidates) {
+    const row = document.createElement('div');
+    row.className = 'routing-model';
+
+    const name = document.createElement('b');
+    name.textContent = m.label;
+    const meta = document.createElement('i');
+    // Reach is shown but not editable inward — the outward-only rule is easier to honour
+    // than to explain, so the control simply is not offered where it would be refused.
+    meta.textContent = `${m.reach} · class ${m.classUsed}`;
+
+    const quality = document.createElement('select');
+    for (const [v, t] of [['', 'Quality: unrated'], ['0.9', 'Quality: high'], ['0.5', 'Quality: medium'], ['0.2', 'Quality: low']]) {
+      const o = document.createElement('option'); o.value = v; o.textContent = t; quality.append(o);
+    }
+    quality.value = saved[m.id]?.quality == null ? '' : String(saved[m.id].quality);
+    quality.onchange = () => write(m.id, { quality: quality.value === '' ? null : Number(quality.value) });
+
+    const caps = document.createElement('span');
+    caps.className = 'routing-caps';
+    for (const cap of ['tools', 'vision']) {
+      const lbl = document.createElement('label');
+      lbl.className = 'check tiny';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = m.capabilities.includes(cap);
+      cb.onchange = () => {
+        const next = new Set(m.capabilities);
+        if (cb.checked) next.add(cap); else next.delete(cap);
+        write(m.id, { capabilities: [...next] });
+      };
+      lbl.append(cb, document.createTextNode(` ${cap}`));
+      caps.append(lbl);
+    }
+
+    const text = document.createElement('span');
+    text.className = 'routing-model-name';
+    text.append(name, meta);
+    row.append(text, caps, quality);
+    box.append(row);
+  }
+}
+
 /** The dials, read once so the preview and the saved settings cannot disagree. */
 function routingNeedFromForm() {
   const num = (v) => (v === '' || v == null ? undefined : Number(v));

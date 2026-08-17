@@ -761,3 +761,15 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .replay-out { margin: 10px 0; display: grid; gap: 6px; }
 .replay-out b.ok { color: #3ecf8e; }
 .replay-out b.err { color: #f8737f; }
+
+/* Correcting what the router guessed about each model. */
+.routing-models { display: grid; gap: 4px; margin-top: 6px; }
+.routing-model {
+  display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+  border: 1px solid var(--line, #23283a); border-radius: 6px; background: var(--panel-2, #171b26);
+}
+.routing-model-name { flex: 1; min-width: 0; }
+.routing-model-name b { display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.routing-model-name i { display: block; font-style: normal; font-size: 10px; color: var(--muted, #8b93a7); }
+.routing-caps { display: flex; gap: 8px; flex: none; }
+.routing-model select { max-width: 150px; }

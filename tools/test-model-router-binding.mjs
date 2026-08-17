@@ -94,3 +94,48 @@ assert.equal(await routeForTurn(impossible, undefined, {}), null);
 assert.equal(await routeForTurn({ endpoints: [], agents: [], ui: { routing: { mode: 'on' } } }, undefined, {}), null);
 
 console.log('✓ routing modes: observe by default, on chooses, and every uncertainty defers');
+
+// ── human overrides ─────────────────────────────────────────────────────────
+const { applyOverride } = await import('../extension/js/model-router.js');
+
+// The defaults are guesses — a name matched against a regex, a URL judged local. Right often
+// enough to be useful, wrong often enough that someone who knows their own setup must be
+// able to say so. A router that cannot be corrected is one people work around.
+const overridden = candidatesFrom({
+  ...settings,
+  ui: { routing: { models: {
+    'mqk41ucyhmz1au': { quality: 0.9, capabilities: ['tools', 'vision'], costPer1k: 0, latencyMs: 400 },
+    'mqr28rqkw7tuhq': { available: false },
+  } } },
+});
+const o = Object.fromEntries(overridden.map((m) => [m.id, m]));
+assert.equal(o['mqk41ucyhmz1au'].quality, 0.9, 'a quality the user set was ignored');
+assert.ok(o['mqk41ucyhmz1au'].capabilities.includes('vision'), 'a capability the user declared was dropped');
+assert.equal(o['mqk41ucyhmz1au'].latencyMs, 400);
+assert.equal(o['mqr28rqkw7tuhq'].available, false, 'a model the user disabled stayed available');
+
+// REACH MOVES OUTWARD ONLY, and the two directions are not symmetric.
+//
+// "This cloud endpoint is really on my device" would let a device-only request reach a third
+// party from one typo or one synced settings file. Refused.
+assert.equal(applyOverride({ id: 'x', reach: 'any', capabilities: [] }, { reach: 'device' }).reach, 'any',
+  'an override claimed a remote model was local');
+assert.equal(applyOverride({ id: 'x', reach: 'trusted', capabilities: [] }, { reach: 'device' }).reach, 'trusted');
+
+// "This local-looking endpoint actually goes out" makes FEWER requests eligible for it, so
+// it is always allowed — a user is entitled to trust their own setup less than we do.
+assert.equal(applyOverride({ id: 'x', reach: 'device', capabilities: [] }, { reach: 'any' }).reach, 'any');
+assert.equal(applyOverride({ id: 'x', reach: 'device', capabilities: [] }, { reach: 'trusted' }).reach, 'trusted');
+
+// Garbage is ignored rather than crashing routing or silently zeroing a value.
+const junk = applyOverride({ id: 'x', reach: 'any', capabilities: ['tools'], costPer1k: 2, quality: null }, { costPer1k: 'free', capabilities: 'lots' });
+assert.equal(junk.costPer1k, 2);
+assert.deepEqual(junk.capabilities, ['tools']);
+assert.deepEqual(applyOverride({ id: 'x', reach: 'any' }, null), { id: 'x', reach: 'any' });
+
+// The inferred defaults stay inspectable, so a settings page can show what it would have
+// guessed next to what the user chose.
+const raw = candidatesFrom({ ...settings, ui: { routing: { models: { 'mqk41ucyhmz1au': { quality: 0.9 } } } } }, undefined, { ignoreOverrides: true });
+assert.equal(raw.find((m) => m.id === 'mqk41ucyhmz1au').quality, null);
+
+console.log('✓ overrides: the user corrects the guesses, but can never widen reach');

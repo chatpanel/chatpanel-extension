@@ -1431,7 +1431,7 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   // other would. Returns null in every uncertain case, and null means "leave the choice
   // alone": routing must never be the reason a message fails to send.
   {
-    const routed = await pickRoutedAgent(agent, settings, tools, turn);
+    const routed = await pickRoutedAgent(agent, settings, tools, turn, messages);
     if (routed) {
       agent = routed;
       // Tell the panel, so the reply can name the model that answered. Emitted as an event
@@ -1562,14 +1562,25 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
  * and "the model I picked was ignored because routing threw" is the least explicable failure
  * this could produce.
  */
-async function pickRoutedAgent(agent, settings, tools, turn) {
+async function pickRoutedAgent(agent, settings, tools, turn, messages) {
   try {
     const [router, store] = await Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)]);
     // Selecting "Auto" IS the instruction to route — asking the user to also flip a settings
     // dial would be requesting the same consent twice.
     const chose = agent?.kind === 'router' || agent?.id === 'router:auto';
     if (!chose && router.routingSettings(settings).mode !== 'on') return null;
-    const need = { capabilities: (tools?.specs || []).length ? ['tools'] : [], force: chose };
+    // A page or canvas action is inherently hard: exact coordinates, a structured payload,
+    // and a result that is visibly wrong when the model guesses. Cost is the right
+    // tie-breaker between models that can all do the job, and the wrong one when they cannot.
+    const structured = (tools?.specs || []).some((t) => /^(page|structured_insert|sheet_write)$/.test(t.name || t.function?.name || ''));
+    const need = {
+      capabilities: (tools?.specs || []).length ? ['tools'] : [],
+      force: chose,
+      structured,
+      // The request itself, so complexity, modality and volume can be read for free rather
+      // than guessed at or asked of a model.
+      request: { messages },
+    };
     const routed = await router.routeForTurn(settings, store?.resolveTarget, need);
     if (!routed?.target) {
       // Auto with nothing routable is a dead end the caller cannot recover from, unlike a

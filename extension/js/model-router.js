@@ -11,7 +11,7 @@
 // change made the same day. Once the recorded decisions look right, switching it on is one
 // setting.
 
-import { defineModel, defineMiddleware, createModelRouter } from './events/router.js';
+import { defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, signalsFrom } from './events/router.js';
 
 /** Where a request must travel to reach this target — the only attribute privacy depends on. */
 function reachOf(target) {
@@ -49,8 +49,44 @@ function costOf(target, reach) {
   return 2;
 }
 
+/**
+ * Everything the router infers about one model, and what the user said instead.
+ *
+ * Defaults are guesses — a name matched against a regex, a URL judged local. They are right
+ * often enough to be useful and wrong often enough that someone who knows their own setup
+ * must be able to say so. A router that cannot be corrected is one people work around.
+ *
+ * OVERRIDES CAN ONLY MOVE REACH OUTWARD. Every other attribute is the user's to set, but
+ * reach is what privacy depends on, and the two directions are not symmetric:
+ *
+ *   'this cloud endpoint is really on my device'  — would let a device-only request reach a
+ *       third party, from one typo or one synced settings file. Refused.
+ *   'this local-looking endpoint actually goes out' — makes FEWER requests eligible for it.
+ *       Always allowed, because a user is entitled to trust their own setup less than we do.
+ *
+ * A model that reaches further can serve fewer kinds of request, so outward is the safe
+ * direction and inward is the one that has to be earned rather than declared.
+ */
+export function applyOverride(inferred, override = {}) {
+  if (!override || typeof override !== 'object') return inferred;
+  const out = { ...inferred };
+  if (Array.isArray(override.capabilities)) out.capabilities = [...override.capabilities];
+  for (const key of ['costPer1k', 'latencyMs', 'quality']) {
+    if (Number.isFinite(Number(override[key]))) out[key] = Number(override[key]);
+  }
+  if (typeof override.available === 'boolean') out.available = override.available;
+  if (override.reach && REACH_RANK[override.reach] > REACH_RANK[inferred.reach]) {
+    // Outward only. See the note above.
+    out.reach = override.reach;
+  }
+  return out;
+}
+
+const REACH_RANK = { device: 0, trusted: 1, any: 2 };
+
 /** Build candidates from the user's own configuration. */
-export function candidatesFrom(settings = {}, resolveTarget = (x) => x) {
+export function candidatesFrom(settings = {}, resolveTarget = (x) => x, { ignoreOverrides = false } = {}) {
+  const overrides = ignoreOverrides ? {} : (settings?.ui?.routing?.models || {});
   const out = [];
   const seen = new Set();
   const add = (raw, kind) => {
@@ -65,7 +101,7 @@ export function candidatesFrom(settings = {}, resolveTarget = (x) => x) {
     const label = [t.name, t.model && t.model !== t.name ? t.model : null]
       .filter(Boolean).join(' · ') || String(id);
     const reach = reachOf({ ...t, kind: kind || t.kind });
-    out.push(defineModel({
+    const inferred = {
       id,
       label,
       reach,
@@ -75,7 +111,8 @@ export function candidatesFrom(settings = {}, resolveTarget = (x) => x) {
       // A local model is slower to first token than a hosted one far more often than not.
       latencyMs: reach === 'device' ? 1500 : 700,
       available: t.enabled !== false,
-    }));
+    };
+    out.push(defineModel(applyOverride(inferred, overrides[id])));
   };
   for (const ep of settings.endpoints || []) add(ep, 'api');
   for (const ag of settings.agents || []) add(ag, ag.kind || 'bridge');
@@ -101,10 +138,38 @@ export const redactionStep = defineMiddleware({
   run: async (request) => request,
 });
 
+/**
+ * Escalate when the task is actually hard.
+ *
+ * The router was picking the cheapest eligible model for everything, which is right for
+ * "hello" and wrong for "draw a circle around Mickey" — a request needing spatial reasoning
+ * and a structured payload went to a 26B model because it was free. Cost is the correct
+ * tie-breaker among models that can all do the job; it is the wrong one when they cannot.
+ *
+ * Class R: length, code fences, image content and page tools are all readable for nothing.
+ * The escalation itself costs no model call — only the answer does, and that is the point.
+ */
+export const complexityStrategy = defineRouteStrategy({
+  id: 'escalate-on-complexity',
+  label: 'Escalate hard tasks',
+  classUsed: 'R',
+  decide: async (eligible, need) => {
+    const sig = need.signals;
+    const hard = sig?.complexity === 'high' || sig?.modality === 'vision' || need.structured;
+    if (!hard) return null;   // no opinion on easy work — let cost decide
+    // Rank by declared quality, then by cost as the tiebreak among equals. A model with an
+    // unknown quality sits mid-table rather than last, so a newly added model is not
+    // permanently skipped.
+    const q = (m) => (Number.isFinite(m.quality) ? m.quality : 0.5);
+    return [...eligible].sort((a, b) => q(b) - q(a) || a.costPer1k - b.costPer1k);
+  },
+});
+
 export function buildRouter(settings, resolveTarget) {
   return createModelRouter({
     models: candidatesFrom(settings, resolveTarget),
     middleware: [redactionStep],
+    strategies: [complexityStrategy],
   });
 }
 
@@ -129,7 +194,7 @@ export function routingSettings(settings = {}) {
  * message fails to send: a router that occasionally defers is fine, one that can break a
  * turn is not.
  */
-export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false } = {}) {
+export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false, request = null, structured = false } = {}) {
   const cfg = routingSettings(settings);
   // `force` is the user having selected Auto: choosing the router IS the instruction to
   // route, and making them also flip a settings dial would be asking for the same consent
@@ -142,6 +207,9 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
       // What the TURN needs is a hard requirement and outranks the saved preference: a turn
       // with tools cannot use a model without them, whatever the dials say.
       capabilities: [...new Set([...(cfg.capabilities || []), ...capabilities])],
+      // The signals a strategy needs to tell "hello" from real work — read for free.
+      signals: request ? signalsFrom(request) : undefined,
+      structured,
     });
     if (!decision.model) return null;
     const raw = [...(settings.endpoints || []), ...(settings.agents || [])]
