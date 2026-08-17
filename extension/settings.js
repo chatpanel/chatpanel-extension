@@ -4736,12 +4736,13 @@ async function renderPlugins() {
     // Importing the registries is what makes them DECLARE themselves — the list is built
     // from what actually loaded, never from a second copy of it maintained here. A second
     // copy is precisely the bug this page is meant to end.
-    const [{ pluginManifest }, adapters, groups, meetings, analyzers] = await Promise.all([
+    const [{ pluginManifest }, adapters, groups, meetings, analyzers, router] = await Promise.all([
       import('./js/plugins.js'),
       import('./js/adapters/index.js'),
       import('./js/tool-groups/index.js'),
       import('./js/meeting-platforms.js'),
       import('./js/meeting-analyzers-builtin.js'),
+      import('./js/model-router.js'),
     ]);
     // Importing a registry is what makes it declare itself, so the list is built from what
     // actually loaded rather than from a second copy maintained here.
@@ -4750,6 +4751,7 @@ async function renderPlugins() {
       groups.toolGroupRegistry(),
       meetings.declareMeetingPlatforms(),
       analyzers.analyzerRegistry(),
+      router.declareRouterPlugins(),
     ]);
     manifest = await pluginManifest();
   } catch (e) {
@@ -4838,14 +4840,15 @@ async function renderPlugins() {
 const KIND_TITLE = {
   kernel: 'Kernel', 'tool-group': 'Tool groups', adapter: 'App adapters',
   source: 'Sources', 'meeting-analysis': 'Meeting analysis', meeting: 'Meeting platforms',
+  'route-strategy': 'Routing strategies', 'route-step': 'Routing steps',
   engine: 'Search engines', server: 'MCP servers', agent: 'Agents',
 };
 // Ordered by how central each is to a turn, not alphabetically — the kernel first because
 // it is the part that cannot be switched off, then what the model is given, then where the
 // data comes from.
 const KIND_ORDER = {
-  kernel: 0, 'tool-group': 1, adapter: 2, source: 3,
-  'meeting-analysis': 4, meeting: 5, engine: 6, server: 7, agent: 8,
+  kernel: 0, 'route-strategy': 1, 'route-step': 2, 'tool-group': 3, adapter: 4, source: 5,
+  'meeting-analysis': 6, meeting: 7, engine: 8, server: 9, agent: 10,
 };
 
 /**

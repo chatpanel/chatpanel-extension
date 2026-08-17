@@ -1,4 +1,18 @@
 import assert from 'node:assert/strict';
+
+// The plugin manifest persists to chrome.storage; give it somewhere to write so the router's
+// own plugin registration can be exercised the way the extension exercises it.
+const mem = {}; const listeners = [];
+globalThis.chrome = {
+  storage: {
+    local: {
+      get: async (k) => ({ [k]: mem[k] }),
+      set: async (o) => { Object.assign(mem, o); listeners.forEach((fn) => fn({}, 'local')); },
+    },
+    onChanged: { addListener: (fn) => listeners.push(fn) },
+  },
+};
+
 import { candidatesFrom, previewRoute, redactionStep } from '../extension/js/model-router.js';
 
 // The settings shape this actually reads: endpoints and agents as a user configures them.
@@ -507,3 +521,42 @@ console.log('✓ provider order: a full 1..N ranking that still only breaks ties
 }
 
 console.log('✓ requirements: derived from the prompt, eliminating rather than merely preferring');
+
+// ── the router's parts are plugins ──────────────────────────────────────────
+{
+  const { ROUTE_STRATEGIES, ROUTE_MIDDLEWARE, declareRouterPlugins, buildRouter } =
+    await import('../extension/js/model-router.js');
+  const { pluginManifest } = await import('../extension/js/plugins.js');
+
+  await declareRouterPlugins();
+  const manifest = await pluginManifest();
+  const listed = manifest.list().map((e) => e.id);
+
+  // A strategy nobody can see or turn off is a hard-coded behaviour wearing a plugin's
+  // interface.
+  for (const st of ROUTE_STRATEGIES) assert.ok(listed.includes(`route:${st.id}`), `${st.id} is not listed`);
+  for (const mw of ROUTE_MIDDLEWARE) assert.ok(listed.includes(`route-step:${mw.id}`), `${mw.id} is not listed`);
+
+  // Order is a decision, not an accident: an explicit request outranks every heuristic, and
+  // failover is newer information than the preference that made the original choice.
+  assert.deepEqual(ROUTE_STRATEGIES.map((s) => s.id),
+    ['named-by-user', 'failover-to-similar', 'escalate-on-complexity']);
+
+  // Switching a strategy off stops it being consulted, and routing still answers — turning
+  // them all off degrades to plain deterministic scoring rather than to no routing.
+  manifest.setEnabled('route:named-by-user', false);
+  const router = buildRouter(settings, undefined, { manifest });
+  const decided = await router.routeWith({ requestText: 'use claude', capabilities: [] });
+  assert.ok(decided.model, 'disabling a strategy broke routing entirely');
+  assert.notEqual(decided.strategy, 'named-by-user', 'a disabled strategy was still consulted');
+  manifest.setEnabled('route:named-by-user', true);
+
+  // REDACTION IS NOT SWITCHABLE. Its requiredFor already makes the router refuse to reach a
+  // third party without it, so honouring a toggle would turn a refusal into a silently
+  // skipped guarantee.
+  manifest.setEnabled('route-step:redaction', false);
+  const stillThere = buildRouter(settings, undefined, { manifest }).middleware().map((m) => m.id);
+  assert.ok(stillThere.includes('redaction'), 'redaction could be switched off');
+}
+
+console.log('✓ router plugins: strategies listed and switchable, redaction listed and not');

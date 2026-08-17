@@ -393,16 +393,45 @@ export const explicitModelStrategy = defineRouteStrategy({
   },
 });
 
-export function buildRouter(settings, resolveTarget) {
+// Ordered deliberately: an explicit request outranks every heuristic, because the user has
+// answered the question the router was about to guess at. Failover next — a decline is newer
+// information than the preference that made the original choice. Escalation is the general
+// case.
+export const ROUTE_STRATEGIES = [explicitModelStrategy, failoverStrategy, complexityStrategy];
+export const ROUTE_MIDDLEWARE = [redactionStep];
+
+/**
+ * Declare the router's parts so they appear in Plugins like everything else.
+ *
+ * The routing CONTRACT already lives in @chatpanel/events and runs anywhere — the gateway or
+ * a desktop client can build the same router from the same declarations. What was missing is
+ * the other half of being a plugin: showing up in the inventory and being switchable. A
+ * strategy nobody can see or turn off is a hard-coded behaviour wearing a plugin's interface.
+ */
+export async function declareRouterPlugins() {
+  const { declarePlugins } = await import('./plugins.js');
+  return declarePlugins([
+    ...ROUTE_STRATEGIES.map((st) => ({
+      id: `route:${st.id}`, kind: 'route-strategy', label: st.label,
+      description: `Chooses among the models a request already qualifies for (class ${st.classUsed}).`,
+    })),
+    ...ROUTE_MIDDLEWARE.map((mw) => ({
+      id: `route-step:${mw.id}`, kind: 'route-step', label: mw.label,
+      description: 'Runs on every request the router sends. Required for anything leaving this device.',
+    })),
+  ]);
+}
+
+export function buildRouter(settings, resolveTarget, { manifest = null } = {}) {
   return createModelRouter({
     models: candidatesFrom(settings, resolveTarget),
-    middleware: [redactionStep],
-    // Failover first: when something just declined, replacing it well matters more than the
-    // general preference that picked it in the first place.
-    // An explicit request outranks every heuristic — the user has answered the question the
-    // router was about to guess at. Failover next, because a decline is newer information
-    // than the original preference.
-    strategies: [explicitModelStrategy, failoverStrategy, complexityStrategy],
+    middleware: ROUTE_MIDDLEWARE,
+    strategies: ROUTE_STRATEGIES,
+    // Strategies are switchable; the redaction step is not. Its `requiredFor` already makes
+    // the router refuse to reach a third party without it, so honouring a toggle here would
+    // turn a refusal into a silently skipped guarantee. Turning every strategy off degrades
+    // to plain deterministic scoring, not to no routing.
+    admit: manifest ? (x) => (x.stage ? true : manifest.isEnabled(`route:${x.id}`)) : null,
   });
 }
 
@@ -498,7 +527,8 @@ export function needForTurn(settings, { capabilities = [], request = null, struc
 /** What the router WOULD choose for a turn — recorded, not obeyed, until routing is on. */
 export async function previewRoute(settings, resolveTarget, need = {}) {
   try {
-    const router = buildRouter(settings, resolveTarget);
+    const { pluginManifest } = await import('./plugins.js');
+    const router = buildRouter(settings, resolveTarget, { manifest: await pluginManifest().catch(() => null) });
     const decision = await router.routeWith(need);
     const nameOf = (id) => router.models().find((m) => m.id === id)?.label || id;
     return {
