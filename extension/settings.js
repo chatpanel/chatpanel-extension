@@ -4701,7 +4701,9 @@ async function renderPlugins() {
     return;
   }
 
-  const rows = manifest.list();
+  // Everything ChatPanel loads, including the categories that keep their own state.
+  const rows = [...manifest.list(), ...externalPlugins()];
+  rows.sort((a, b) => (a.kind === b.kind ? a.label.localeCompare(b.label) : (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9)));
   if (!rows.length) { box.innerHTML = '<p class="muted tiny">Nothing registered yet.</p>'; return; }
 
   box.textContent = '';
@@ -4714,6 +4716,34 @@ async function renderPlugins() {
       h.textContent = KIND_TITLE[p.kind] || p.kind;
       box.append(h);
     }
+    // A row whose state is owned somewhere else is a LINK, not a checkbox.
+    //
+    // Search engines and MCP servers already store their own enabled flag alongside a URL,
+    // a key, a command. Adding a second switch here would be two places holding one truth —
+    // exactly the duplication that left a retired engine lingering in this page. And a
+    // checkbox cannot express a form: an MCP server needs a command, an engine needs a URL
+    // template. So this page owns the INVENTORY and sends configuration where it lives.
+    if (p.configTab) {
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'plugin-row plugin-link';
+      const text = document.createElement('span');
+      const name = document.createElement('b');
+      name.textContent = p.label;
+      const desc = document.createElement('i');
+      desc.textContent = p.description || '';
+      text.append(name, desc);
+      const go = document.createElement('span');
+      go.className = 'plugin-go';
+      go.textContent = p.state ? `${p.state} · Configure →` : 'Configure →';
+      link.append(text, go);
+      link.addEventListener('click', () => {
+        document.querySelector(`.tab[data-tab="${p.configTab}"]`)?.click();
+      });
+      box.append(link);
+      continue;
+    }
+
     const row = document.createElement('label');
     row.className = `plugin-row${p.required ? ' required' : ''}`;
     const cb = document.createElement('input');
@@ -4742,9 +4772,44 @@ async function renderPlugins() {
 }
 
 const KIND_TITLE = {
-  kernel: 'Kernel', adapter: 'App adapters', 'tool-group': 'Tool groups',
-  source: 'Sources', engine: 'Search engines',
+  kernel: 'Kernel', 'tool-group': 'Tool groups', adapter: 'App adapters',
+  source: 'Sources', engine: 'Search engines', server: 'MCP servers', agent: 'Agents',
 };
+// Ordered by how central each is to a turn, not alphabetically — the kernel first because
+// it is the part that cannot be switched off, then what the model is given, then where the
+// data comes from.
+const KIND_ORDER = {
+  kernel: 0, 'tool-group': 1, adapter: 2, source: 3, engine: 4, server: 5, agent: 6,
+};
+
+/**
+ * The categories that keep their own enabled state.
+ *
+ * Listed here so the page is a complete inventory, and rendered as links so there is still
+ * exactly ONE switch per thing. Duplicating the toggle would recreate the two-lists bug
+ * this page exists to end.
+ */
+function externalPlugins() {
+  const out = [];
+  for (const e of webSearchEngines || []) {
+    if (e.retired) continue;
+    out.push({
+      id: `engine:${e.id}`, kind: 'engine', label: e.name || e.id,
+      description: e.needsKey ? 'Search API — needs a key.' : 'Search engine.',
+      state: e.enabled === false ? 'Off' : 'On',
+      configTab: 'api',
+    });
+  }
+  for (const srv of (settings?.mcpServers || [])) {
+    out.push({
+      id: `mcp:${srv.id || srv.name}`, kind: 'server', label: srv.name || srv.url || srv.command || 'MCP server',
+      description: srv.command ? 'Local server, run through the bridge.' : 'Remote MCP server.',
+      state: srv.enabled === false ? 'Off' : 'On',
+      configTab: 'mcp',
+    });
+  }
+  return out;
+}
 
 $('plugins-refresh')?.addEventListener('click', renderPlugins);
 

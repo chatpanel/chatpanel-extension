@@ -14,7 +14,7 @@ import {
 } from './history-rag-core.js';
 import { rankHistorySources } from './search-engine.js';
 import { searchGateway, fuseHistoryResults, capHotSources } from './warm-query.js';
-import { registerSource, loadFromSources } from './source-registry.js';
+import { registerSource, loadFromSources, listSources } from './source-registry.js';
 
 // Cap the browser-side (HOT) index to the most-recent N sources when warm search is
 // on — warm holds the tail. Coarse memory bound (count, not bytes); only bites for
@@ -339,15 +339,36 @@ registerSource({ kind: 'chat', label: 'Chats', reads: ['chats'], load: loadChatS
 registerSource({ kind: 'meeting', label: 'Meetings', reads: ['meetings'], load: loadMeetingSources, builtIn: true, enabledByDefault: false });
 registerSource({ kind: 'note', label: 'Notes', reads: ['notes'], load: loadNoteSources, builtIn: true, enabledByDefault: true });
 
+// Declared so the Plugins page lists them beside everything else. The id is namespaced
+// because `note` as a bare id would collide with any future plugin of that name, and a
+// collision here silently disables the wrong thing.
+import('./plugins.js')
+  .then(({ declarePlugins }) => declarePlugins(listSources().map((sc) => ({
+    id: `source:${sc.kind}`,
+    kind: 'source',
+    label: sc.label,
+    description: `Search your ${sc.label.toLowerCase()} when answering.`,
+  }))))
+  .catch(() => {});
+
 export async function loadHistorySources({ includeChats = true, includeMeetings = false, includeNotes = true, include } = {}) {
   const cacheable = wireSourceCache();
   // Drop a stale burst before reusing, so an idle cache can't serve old data.
   if (cacheable && _srcCache.at && Date.now() - _srcCache.at > SRC_CACHE_TTL_MS) releaseSrcCache();
   // One loop over the registry, in registration order, so chats/meetings/notes come back
   // exactly as before and a fourth source needs no edit here.
+  // The global switch from the Plugins page. Imported here rather than passed down through
+  // every caller: a source being switched off is a fact about the installation, not about
+  // this particular search, and threading it through six signatures would say otherwise.
+  let admit = null;
+  try {
+    const { pluginManifest } = await import('./plugins.js');
+    const manifest = await pluginManifest();
+    admit = (src) => manifest.isEnabled(`source:${src.kind}`);
+  } catch { /* manifest unavailable — every source stays available, which is the safe default */ }
   const sources = await loadFromSources(
     { includeChats, includeMeetings, includeNotes, include },
-    { cache: cacheable ? _srcCache : null },
+    { cache: cacheable ? _srcCache : null, admit },
   );
   if (cacheable) touchSrcCacheTTL();
   return sources;

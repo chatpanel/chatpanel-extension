@@ -738,3 +738,10 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .plugin-row input { margin-top: 2px; }
 .plugin-row b { display: block; font-size: 13px; font-weight: 600; }
 .plugin-row i { display: block; font-style: normal; font-size: 11px; color: var(--muted, #8b93a7); }
+
+/* A row whose state is owned elsewhere: inventory here, configuration where it lives. */
+.plugin-link {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; text-align: left; cursor: pointer; font: inherit; color: inherit;
+}
+.plugin-go { flex: none; font-size: 11px; color: var(--muted, #8b93a7); white-space: nowrap; }

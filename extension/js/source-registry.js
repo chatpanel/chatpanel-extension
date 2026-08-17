@@ -72,9 +72,13 @@ export function legacyFlag(kind) {
  * `cache` is an optional per-kind store the caller owns, so the existing TTL cache in
  * history-rag keeps working untouched.
  */
-export async function loadFromSources(options = {}, { cache = null, onError = null } = {}) {
+export async function loadFromSources(options = {}, { cache = null, onError = null, admit = null } = {}) {
   const out = [];
-  for (const source of resolveKinds(options)) {
+  // `admit` is the global switch — the Plugins page saying "never search my meetings" —
+  // and it is checked BEFORE loading, so a source the user turned off does no work. The
+  // per-call include flags still narrow within whatever is admitted: "search everything I
+  // allow, and this time only notes" are different questions and both must work.
+  for (const source of resolveKinds(options).filter((sc) => !admit || admit(sc))) {
     try {
       if (cache) {
         if (!cache[source.kind]) cache[source.kind] = await source.load();
