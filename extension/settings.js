@@ -3590,6 +3590,9 @@ function renderPrefs() {
       // Seeded visibly, so every rule in force is one the user can read and delete. A rule
       // that only exists in code cannot be corrected when it is wrong for this machine.
       pats.value = (Array.isArray(priv.internalPatterns) ? priv.internalPatterns : DEFAULT_INTERNAL_PATTERNS).join('\n');
+      // Emptying the box protects nothing, so the greyed-out defaults are what to restore —
+      // a placeholder of invented example domains would have been advice nobody asked for.
+      pats.placeholder = DEFAULT_INTERNAL_PATTERNS.join('\n');
       ceil.value = priv.internalCeiling === 'trusted' ? 'trusted' : 'device';
       const refresh = async () => {
         // Say whether the rule can actually be honoured. A ceiling with no model under it

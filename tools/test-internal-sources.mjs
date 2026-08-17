@@ -150,3 +150,23 @@ console.log('✓ internal sources: the gate refuses rather than substituting or 
 }
 
 console.log('✓ internal sources: the built-in list is seeded, visible and editable');
+
+// ── every candidate form is a line the user can delete ──────────────────────
+{
+  const { DEFAULT_INTERNAL_PATTERNS } = await import('../extension/js/events/sources.js');
+  const seeded = sourcePolicySettings({}).patterns;
+  // Each family of "cannot be public" address is represented explicitly rather than folded
+  // into code, so excluding one is a line edit rather than a feature request.
+  for (const p of ['localhost', '127.0.0.0/8', '::1', '10.0.0.0/8', '172.16.0.0/12',
+    '192.168.0.0/16', '100.64.0.0/10', '169.254.0.0/16', 'fe80::/10', 'fc00::/7',
+    '*.internal', '*.corp', '*.lan', '*.local', '*.home.arpa', '<intranet>']) {
+    assert.ok(seeded.includes(p), `${p} should be a visible, removable line`);
+  }
+  assert.equal(seeded.length, DEFAULT_INTERNAL_PATTERNS.length);
+  // Removing one family leaves the others standing — the point of listing them separately.
+  const noV6 = { privacy: { internalPatterns: DEFAULT_INTERNAL_PATTERNS.filter((p) => !p.includes(':')) } };
+  assert.equal(sourceGuardFor(noV6, ['http://[fd12::1]/x']), null);
+  assert.ok(sourceGuardFor(noV6, ['http://10.0.0.1/x']));
+}
+
+console.log('✓ internal sources: every candidate is a line, and each can be excluded alone');

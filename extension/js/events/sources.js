@@ -53,23 +53,38 @@ export function meetReach(a, b) {
  * see is a rule they cannot correct.
  */
 export const DEFAULT_INTERNAL_PATTERNS = Object.freeze([
+  // Loopback — this machine.
   'localhost',
   '127.0.0.0/8',
+  '::1',
+  '0.0.0.0/8',
+  // Private IPv4 (RFC 1918) and the carrier-grade range some corporate networks use.
   '10.0.0.0/8',
   '172.16.0.0/12',
   '192.168.0.0/16',
+  '100.64.0.0/10',
+  // Link-local, v4 and v6: an address that never routes off the local segment.
   '169.254.0.0/16',
+  'fe80::/10',
+  // Unique local addresses — the IPv6 equivalent of 10.x.
+  'fc00::/7',
+  // Names that cannot exist on the public internet: reserved by RFC or conventional on
+  // private networks and home routers.
   '*.internal',
   '*.intranet',
   '*.corp',
   '*.lan',
   '*.local',
+  '*.localdomain',
+  '*.home',
   '*.home.arpa',
+  '*.private',
+  '*.test',
+  '*.invalid',
   // A bare hostname with no dot (http://wiki/, http://tickets/) only resolves inside a private
-  // search domain — it cannot be a public site.
+  // search domain — it cannot be a public site. Note this covers 'localhost' too.
   '<intranet>',
 ]);
-
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 
 function ipToInt(host) {
@@ -80,8 +95,52 @@ function ipToInt(host) {
   return parts.reduce((acc, n) => acc * 256 + n, 0);
 }
 
+/**
+ * An IPv6 address as its 128 bits, or null if it is not one. Bits rather than a normalised
+ * string because prefix matching (fc00::/7, fe80::/10) is a bit-length comparison — a
+ * textual "starts with" would get /7 wrong, since the boundary falls inside a hex digit.
+ */
+function v6Bits(host) {
+  const h = String(host || '').replace(/^\[|\]$/g, '').toLowerCase();
+  if (!h.includes(':')) return null;
+  const [headRaw, tailRaw, ...rest] = h.split('::');
+  if (rest.length) return null;   // more than one '::' is not a valid address
+  const parse = (part) => (part ? part.split(':').filter((x) => x !== '') : []);
+  let head = parse(headRaw);
+  let tail = tailRaw === undefined ? [] : parse(tailRaw);
+  // A trailing IPv4 form (::ffff:10.0.0.1) — the last group is four octets, not two.
+  const last = (tail.length ? tail : head)[Math.max(0, (tail.length ? tail : head).length - 1)];
+  if (last && last.includes('.')) {
+    const v4 = ipToInt(last);
+    if (v4 == null) return null;
+    const pair = [(v4 >>> 16).toString(16), (v4 & 0xffff).toString(16)];
+    if (tail.length) tail = [...tail.slice(0, -1), ...pair];
+    else head = [...head.slice(0, -1), ...pair];
+  }
+  const missing = 8 - head.length - tail.length;
+  if (tailRaw === undefined ? missing !== 0 : missing < 0) return null;
+  const groups = [...head, ...Array(Math.max(0, missing)).fill('0'), ...tail];
+  if (groups.length !== 8) return null;
+  let bits = '';
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    bits += parseInt(g, 16).toString(2).padStart(16, '0');
+  }
+  return bits;
+}
+
 function inCidr(host, cidr) {
   const [net, bitsRaw] = cidr.split('/');
+  const hostV6 = v6Bits(host);
+  const netV6 = v6Bits(net);
+  if (hostV6 || netV6) {
+    // A v4 host never sits inside a v6 range, and vice versa — comparing them would be a
+    // type confusion that quietly matches or quietly does not.
+    if (!hostV6 || !netV6) return false;
+    const n = Number(bitsRaw);
+    if (!Number.isFinite(n) || n < 0 || n > 128) return false;
+    return hostV6.slice(0, n) === netV6.slice(0, n);
+  }
   const ip = ipToInt(host);
   const base = ipToInt(net);
   if (ip == null || base == null) return false;
@@ -104,8 +163,13 @@ export function hostMatches(host, pattern) {
   const h = String(host || '').toLowerCase().replace(/\.$/, '');
   const p = String(pattern || '').toLowerCase().trim();
   if (!h || !p) return false;
-  if (p === '<intranet>') return !h.includes('.') && !IPV4.test(h);
+  // A NAME with no dots — not an address. A public IPv6 literal has no dots either, and
+  // sweeping it in here would have quietly pinned every v6 host on the internet as internal.
+  if (p === '<intranet>') return !h.includes('.') && !h.includes(':') && !h.startsWith('[') && !IPV4.test(h);
   if (p.includes('/')) return inCidr(h, p);
+  // '::1' and '[::1]' and '0:0:0:0:0:0:0:1' are one address written three ways.
+  const pv6 = v6Bits(p);
+  if (pv6) return v6Bits(h) === pv6;
   const bare = p.startsWith('*.') ? p.slice(2) : p;
   if (h === bare) return true;
   if (h.endsWith(`.${bare}`)) return true;
