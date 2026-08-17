@@ -263,13 +263,7 @@ async function trustedType(tabId, text, perCharMs = 30) {
     // undo. Treating \n as Enter matches what anyone writing the call expects, and a
     // tool that quietly does nothing is worse than one that errors.
     if (ch === '\n') {
-      const enter = KEY_DEFS.Enter;
-      await send(tabId, 'Input.dispatchKeyEvent', {
-        type: 'rawKeyDown', windowsVirtualKeyCode: enter.windowsVirtualKeyCode, key: enter.key, code: enter.code,
-      });
-      await send(tabId, 'Input.dispatchKeyEvent', {
-        type: 'keyUp', windowsVirtualKeyCode: enter.windowsVirtualKeyCode, key: enter.key, code: enter.code,
-      });
+      for (const ev of keyEventsFor(KEY_DEFS.Enter)) await send(tabId, 'Input.dispatchKeyEvent', ev);
       if (perCharMs) await delay(perCharMs);
       continue;
     }
@@ -285,9 +279,13 @@ async function trustedType(tabId, text, perCharMs = 30) {
 // else calls Enter and Escape; rejecting it burns a round trip and teaches nothing. The
 // vocabulary should be as wide as the intent is unambiguous.
 const KEY_DEFS = {
-  Enter: { windowsVirtualKeyCode: 13, key: 'Enter', code: 'Enter' },
-  Return: { windowsVirtualKeyCode: 13, key: 'Enter', code: 'Enter' },
-  Tab: { windowsVirtualKeyCode: 9, key: 'Tab', code: 'Tab' },
+  // `text` is what makes a key COMMIT. A rawKeyDown fires keydown and nothing else, so
+  // an editor listening for the character event — Google Sheets' cell editor, a rich
+  // text field, a code editor — sees the key and never acts on it. Enter and Tab produce
+  // characters; arrows, Escape, Backspace and Delete genuinely do not, so they stay raw.
+  Enter: { windowsVirtualKeyCode: 13, key: 'Enter', code: 'Enter', text: '\r' },
+  Return: { windowsVirtualKeyCode: 13, key: 'Enter', code: 'Enter', text: '\r' },
+  Tab: { windowsVirtualKeyCode: 9, key: 'Tab', code: 'Tab', text: '\t' },
   ArrowDown: { windowsVirtualKeyCode: 40, key: 'ArrowDown', code: 'ArrowDown' },
   ArrowUp: { windowsVirtualKeyCode: 38, key: 'ArrowUp', code: 'ArrowUp' },
   ArrowLeft: { windowsVirtualKeyCode: 37, key: 'ArrowLeft', code: 'ArrowLeft' },
@@ -345,11 +343,36 @@ function parseChord(spec) {
 
 // Press one key WITH modifiers held — a trusted chord. Used for app shortcuts
 // like Excalidraw's Shift+1 (zoom to fit) and the system paste (Cmd/Ctrl+V).
+/**
+ * The two events for one key press.
+ *
+ * A key that produces a character must go out as `keyDown` WITH its `text`; anything else
+ * is a `rawKeyDown`. Getting this wrong is invisible in a screenshot — the key registers,
+ * the field just never commits — which is exactly how thirty-five values ended up
+ * concatenated in one spreadsheet cell.
+ *
+ * With a modifier held, the text is dropped: Cmd+Enter is a shortcut, not a character.
+ */
+export function keyEventsFor(def, modifiers = 0) {
+  const producesText = typeof def.text === 'string' && def.text.length > 0 && modifiers === 0;
+  const { text, ...rest } = def;
+  return producesText
+    ? [
+      { type: 'keyDown', modifiers, ...rest, text, unmodifiedText: text },
+      { type: 'keyUp', modifiers, ...rest },
+    ]
+    : [
+      { type: 'rawKeyDown', modifiers, ...rest },
+      { type: 'keyUp', modifiers, ...rest },
+    ];
+}
+
 export async function cdpKeyChord(tabId, def, modifiers = 0) {
   await ensureAttached(tabId);
   try {
-    await sendResilient(tabId, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers, ...def });
-    await sendResilient(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', modifiers, ...def });
+    for (const ev of keyEventsFor(def, modifiers)) {
+      await sendResilient(tabId, 'Input.dispatchKeyEvent', ev);
+    }
     return { ok: true };
   } finally {
     bump(tabId);
@@ -370,7 +393,9 @@ export async function cdpKeyHold(tabId, def, modifiers = 0, holdMs = 300) {
   const ms = Math.max(0, Math.min(MAX_HOLD_MS, Math.round(holdMs) || 0));
   const keepAlive = setInterval(() => bump(tabId), Math.floor(IDLE_DETACH_MS / 2));
   try {
-    await sendResilient(tabId, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers, ...def });
+    // Through the same helper as every other press, so a held Enter commits like a
+    // tapped one and the two paths cannot drift apart again.
+    await sendResilient(tabId, 'Input.dispatchKeyEvent', keyEventsFor(def, modifiers)[0]);
     await delay(ms);
     return { ok: true, heldMs: ms };
   } finally {
@@ -764,7 +789,7 @@ export async function cdpInputSequence(tabId, steps) {
             }
             if (k.bit) modifiers |= k.bit;
             heldKeys.set(k.name, k);
-            await sendResilient(tabId, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers, ...k.def });
+            await sendResilient(tabId, 'Input.dispatchKeyEvent', keyEventsFor(k.def, modifiers)[0]);
           } else {
             heldKeys.delete(k.name);
             if (k.bit) modifiers &= ~k.bit;
