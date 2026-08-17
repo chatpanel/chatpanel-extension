@@ -4924,6 +4924,12 @@ async function renderRoutingModels() {
 
   const saved = settings?.ui?.routing?.models || {};
   const { KNOWN_CAPABILITIES: CAPS } = await import('./js/model-router.js');
+  // The effective order, so "auto" can show the position a model currently holds rather than
+  // an opaque internal number. A ranking control that cannot tell you where something ranks
+  // is not a ranking control.
+  const order = [...candidates]
+    .sort((a, b) => a.providerRank - b.providerRank || a.label.localeCompare(b.label))
+    .map((c) => c.id);
   const write = (id, patch) => {
     settings.ui = settings.ui || {};
     settings.ui.routing = settings.ui.routing || {};
@@ -4984,13 +4990,24 @@ async function renderRoutingModels() {
     // Reach moves OUTWARD only, so the options offered are exactly the ones that would be
     // accepted — a control that silently refuses half its own values is worse than no
     // control. See applyOverride for why the other direction cannot be allowed.
-    // Which provider to prefer when two of them offer the same model. Only a TIEBREAK: a
-    // preferred provider that is slower and dearer still loses, or the preference quietly
-    // becomes a hard pin.
+    // A FULL ORDERING, 1..N. Three buckets could not express "this one third, that one
+    // seventh" across ten providers — everything landed in the same bucket and the tiebreak
+    // had nothing left to break with.
+    //
+    // Still ONLY a tiebreak. Position 1 does not win a race it lost on speed, cost or
+    // capability; it wins when the candidates are otherwise equal, which is exactly the case
+    // where the same model is served from several places.
     const prefer = document.createElement('select');
-    prefer.title = 'Preference when two providers offer the same model. Never overrides a real difference in speed, cost or capability.';
-    for (const [v, t] of [['', `Prefer: default (${m.providerRank})`], ['0', 'Prefer: first'], ['25', 'Prefer: normal'], ['90', 'Prefer: last']]) {
-      const o = document.createElement('option'); o.value = v; o.textContent = t; prefer.append(o);
+    prefer.title = 'Order to prefer providers when several can serve the same request equally well. Never overrides a real difference in speed, cost or capability.';
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = `Order: auto (${order.indexOf(m.id) + 1})`;
+    prefer.append(blank);
+    for (let n = 1; n <= candidates.length; n++) {
+      const o = document.createElement('option');
+      o.value = String(n);
+      o.textContent = `Order: ${n}`;
+      prefer.append(o);
     }
     prefer.value = saved[m.id]?.providerRank == null ? '' : String(saved[m.id].providerRank);
     prefer.onchange = () => write(m.id, { providerRank: prefer.value === '' ? null : Number(prefer.value) });

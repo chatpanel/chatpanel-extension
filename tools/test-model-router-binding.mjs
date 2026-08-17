@@ -431,3 +431,35 @@ console.log('✓ quality: sizes read as numbers, tiers named, and a frontier mod
 }
 
 console.log('✓ provider preference: fewest hops by default, and the user reorders it');
+
+// A FULL ORDERING, NOT THREE BUCKETS. With ten providers, "first / normal / last" puts
+// everything in the same bucket and leaves the tiebreak nothing to break with.
+{
+  const ten = candidatesFrom({
+    endpoints: Array.from({ length: 10 }, (_, i) => ({
+      id: `p${i}`, name: `Provider ${i}`, baseUrl: `https://p${i}.example/v1`, model: 'gpt-5.5',
+    })),
+    ui: { routing: { models: { p7: { providerRank: 1 }, p2: { providerRank: 2 } } } },
+  });
+  const rank = Object.fromEntries(ten.map((m) => [m.id, m.providerRank]));
+  assert.equal(rank.p7, 1, 'an explicit position was not honoured');
+  assert.equal(rank.p2, 2);
+  // Unranked providers keep their inferred position rather than being forced to a bucket.
+  assert.ok(rank.p0 > 2, 'an unranked provider was promoted above an explicitly ranked one');
+
+  // STILL ONLY A TIEBREAK. Position 1 does not win a race it lost on capability: a model
+  // without the tools this turn needs is eliminated before ordering happens at all.
+  const mixed = candidatesFrom({
+    endpoints: [
+      { id: 'first', name: 'Preferred', baseUrl: 'https://a/v1', model: 'llama-3.1-8b-instant' },
+      { id: 'second', name: 'Other', baseUrl: 'https://b/v1', model: 'gpt-5.5' },
+    ],
+    ui: { routing: { models: { first: { providerRank: 1 } } } },
+  });
+  const ranked = await failoverStrategy.decide(mixed, {
+    like: { model: 'x', capabilities: ['tools'], classUsed: 'C', reason: 'gone' },
+  });
+  assert.equal(ranked[0].id, 'second', 'provider order outranked a real quality difference');
+}
+
+console.log('✓ provider order: a full 1..N ranking that still only breaks ties');
