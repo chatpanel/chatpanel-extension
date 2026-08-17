@@ -332,6 +332,14 @@ async function pageToolProvider(resolvedAgent) {
   let adapter = null;
   // Site-specific guidance that stays in the prompt while the generic manual is deferred.
   let residentSystem = '';
+  // What the user is actually looking at. "Your live tab" is abstract; "Untitled
+  // spreadsheet — Google Sheets" is a thing the model can reason about acting on.
+  const pageLabel = (() => {
+    const t = (state.activeTab?.title || '').trim().slice(0, 80);
+    let host = '';
+    try { host = new URL(state.activeTab?.url || '').hostname.replace(/^www\./, ''); } catch { /* not a normal url */ }
+    return [t, host].filter(Boolean).join(' · ');
+  })();
   // Pick a structured-editor adapter by CAPABILITY (probe the live page), falling
   // back to URL — so it works on embeds/self-hosted, not just known hosts. Adapters
   // insert via chrome.scripting (+ tab reload); they don't need trusted events, so
@@ -453,8 +461,20 @@ async function pageToolProvider(resolvedAgent) {
   return {
     specs: [buildDispatchSpec(specs)],
     execute: withGuidance(makeDispatchExecutor(specs, guardedExecute), system),
-    system: ['Call `page` to read or act on the user\'s current browser tab; '
-      + '{"action":"describe","args":{"tool":"<action>"}} returns an action\'s schema and how to use it. '
+    // SAY THAT IT CAN, AND SAY WHERE.
+    //
+    // The deferred manual opened by asserting the connection is real ("these are the ONLY
+    // tools connected to the user's real, logged-in browser tab"). Reduced to "call `page`
+    // to read or act", a model was left to infer the capability — and one refused outright:
+    // "Since I cannot directly type into your Google Sheet", then did it immediately when
+    // the user said "use the page tools you can do it". The tool was there the whole time.
+    //
+    // Naming the actual page is what makes it concrete rather than a capability in the
+    // abstract. Costs a handful of tokens and removes a whole class of refusal.
+    system: [`You are connected to the user's LIVE browser tab${pageLabel ? ` — ${pageLabel}` : ''}, and can `
+      + 'read and act on it with the `page` tool: type into cells, click controls, fill forms, draw. '
+      + 'Never tell the user you cannot interact with the page — you can. '
+      + '{"action":"describe","args":{"tool":"<action>"}} returns any action\'s full schema and how to use it. '
       + 'To DRAW or resize on a canvas you must DRAG (`drag_at`) — a single `click_at` never draws.',
     residentSystem].filter(Boolean).join('\n\n'),
   };
