@@ -22,6 +22,26 @@ import { cdpKeyChord } from './page-actions-cdp.js';
 import { SITE_RULES, hostMatchesRule } from './page-match.js';
 import { applyIconShorthand } from './drawio-icons.js';
 
+/**
+ * The shape list, whatever the model chose to call it.
+ *
+ * Every adapter declares `elements`, and models keep sending `shapes` — on tldraw a run
+ * sent `shapes` three times and got "no elements or native shapes provided" each time,
+ * which names the key it wanted only if you already knew the answer. The word is arbitrary
+ * (tldraw's own API calls them shapes) and the payload was correct, so rejecting it taught
+ * the model nothing except that the tool was broken.
+ *
+ * Accepting the obvious synonyms costs a line. Insisting on one spelling costs a turn every
+ * time a model guesses the other, and the model has no way to discover which we meant.
+ */
+export function shapeListFrom(input) {
+  if (Array.isArray(input)) return input;                       // the bare array
+  for (const key of ['elements', 'shapes', 'items', 'nodes']) {
+    if (Array.isArray(input?.[key])) return input[key];
+  }
+  return [];
+}
+
 // --------------------------------------------------------------------------
 // Excalidraw (excalidraw.com)
 // --------------------------------------------------------------------------
@@ -494,7 +514,7 @@ const excalidrawAdapter = {
     // PRIMARY path — explicit elements (or raw `native` elements) → localStorage
     // merge + reload (exact coords).
     const payloadJson = JSON.stringify({
-      elements: Array.isArray(input?.elements) ? input.elements : [],
+      elements: shapeListFrom(input),
       native: Array.isArray(input?.native) ? input.native : undefined,
     });
     let r;
@@ -920,7 +940,7 @@ const drawioAdapter = {
     if (name === 'read_canvas') return this._op(tabId, { op: 'read' });
     // Resolve any icon shorthand ("aws:ec2", "gcp:compute_engine") into the full mxGraph
     // style before injection, so the model doesn't need the exact resIcon names.
-    const elements = (Array.isArray(input?.elements) ? input.elements : []).map(applyIconShorthand);
+    const elements = shapeListFrom(input).map(applyIconShorthand);
     const native = typeof input?.native === 'string' ? input.native : undefined;
     const r = await this._op(tabId, { op: 'insert', elements, native });
     if (!r.ok) return r;
@@ -1001,7 +1021,16 @@ function tldrawInsertScript(payloadJson) {
     })();
     const skeletons = Array.isArray(parsed.elements) ? parsed.elements : [];
     const native = Array.isArray(parsed.native) ? parsed.native : null; // raw tldraw shape partials
-    if (!native && !skeletons.length) return { ok: false, error: 'no elements or native shapes provided' };
+    if (!native && !skeletons.length) {
+      // Name the key AND show the shape. The old message said what was missing without
+      // saying what to send, so a model that had guessed `shapes` retried the same payload.
+      return {
+        ok: false,
+        error: 'no shapes provided — pass them as `elements`, e.g. '
+          + '{"elements":[{"type":"ellipse","x":0,"y":0,"width":200,"height":180}]}. '
+          + 'Accepted keys: elements, shapes, items, nodes.',
+      };
+    }
     const GEO = {
       rectangle: 'rectangle', rounded: 'rectangle', box: 'rectangle', square: 'rectangle',
       ellipse: 'ellipse', circle: 'ellipse', oval: 'oval', diamond: 'diamond', rhombus: 'rhombus',
@@ -1215,7 +1244,7 @@ const tldrawAdapter = {
   async run(tabId, name, input) {
     if (name === 'read_canvas') return this._exec(tabId, tldrawReadScript);
     const payload = {
-      elements: Array.isArray(input?.elements) ? input.elements : [],
+      elements: shapeListFrom(input),
       native: Array.isArray(input?.native) ? input.native : undefined,
     };
     const r = await this._exec(tabId, tldrawInsertScript, JSON.stringify(payload));
