@@ -18,6 +18,7 @@ import { isPro, can, FREE_LIMITS } from './license.js';
 import { buildToolset } from './toolset.js';
 import { narrowToolset, isLocalToolSpec } from './tool-select.js';
 import { dataDispatchProvider } from './data-dispatch.js';
+import { mcpDispatchProvider } from './mcp-dispatch.js';
 import { getMcpProviders } from './mcp-manager.js';
 import { historyToolProvider } from './history-rag.js';
 import { MCP_TURN_MODES, DEFAULT_AUTO_TOOL_CAP, normalizeMcpTurnMode, shouldExposeMcpForTurn } from './tool-policy.js';
@@ -92,17 +93,25 @@ export async function buildTurnTools({
   const isSet = (s) => s?.enabled !== false && (s?.url || s?.command);
   let usable = wantMcp ? all.slice(0, limit).filter(isSet) : [];
   if (wantMcp && skillRun && turnMcpMode !== MCP_TURN_MODES.ON) usable = filterMcpServersForSkill(usable, skillRun);
+  // The per-turn cap. It used to be the only defence against schema bloat, which made it
+  // a CAPABILITY decision: a tool that ranked low was simply absent. Behind a dispatcher
+  // it becomes a menu-length decision instead — everything stays reachable either way.
+  const userCap = Number(settings?.ui?.maxToolsPerTurn) || 0;
+  const cap = userCap || (turnMcpMode === MCP_TURN_MODES.AUTO ? DEFAULT_AUTO_TOOL_CAP : 0);
+
   if (resolvedAgent && usable.length) {
     const mcps = await getMcpProviders(usable, { bridgeUrl, bridgeAvailable, onError: onMcpError });
-    providers.push(...mcps);
+    let innerMcp = buildToolset(mcps);
+    // Rank BEFORE collapsing so the menu leads with what this turn is likely to need.
+    // `keep: () => false` because every tool here is remote — the local exemption that
+    // applies in the outer narrow would exempt the entire set.
+    if (innerMcp && cap) innerMcp = narrowToolset(innerMcp, userText, { cap, keep: () => false });
+    const wrappedMcp = settings?.ui?.mcpDispatch !== false ? mcpDispatchProvider(innerMcp) : null;
+    if (wrappedMcp) providers.push(wrappedMcp);
+    else providers.push(...mcps);
   }
 
   let toolset = buildToolset(providers);
-  // Cap tools per turn so dozens of servers don't bloat the prompt; local
-  // page/history/web tools are always kept, remote MCP beyond the cap is dropped by
-  // lexical relevance. AUTO narrows to top-K; a user-set max always wins.
-  const userCap = Number(settings?.ui?.maxToolsPerTurn) || 0;
-  const cap = userCap || (turnMcpMode === MCP_TURN_MODES.AUTO ? DEFAULT_AUTO_TOOL_CAP : 0);
   if (toolset && cap) toolset = narrowToolset(toolset, userText, { cap, keep: isLocalToolSpec });
 
   const systemSkillRun =
