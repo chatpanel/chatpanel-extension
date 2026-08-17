@@ -1287,6 +1287,48 @@ export function turnSpecFor({ usage, tools, onDelta, agent } = {}) {
   };
 }
 
+/**
+ * Watch tool results for numbered sources, and rewrite the answer's bare `[1]` citations
+ * into links using them.
+ *
+ * The model is asked to write markdown links; large models mostly do and small ones write
+ * bare numbers, leaving a reader with figures that reference nothing while the URLs sit in
+ * a tool result they never see. The mapping is already known exactly — the tool numbered
+ * them — so this is a substitution, not a judgement, and a rule cannot fail to follow it
+ * the way an instruction can.
+ */
+function citationCollector(tools) {
+  const sources = new Map();
+  const collect = (text) => {
+    if (!text || !String(text).includes('](')) return;
+    import('./events/citations.js')
+      .then((m) => { for (const s of m.sourcesFromToolText(text)) if (!sources.has(s.rank)) sources.set(s.rank, s); })
+      .catch(() => {});
+  };
+  const wrapped = tools && tools.execute
+    ? {
+      ...tools,
+      execute: async (name, input, meta) => {
+        const out = await tools.execute(name, input, meta);
+        collect(typeof out === 'string' ? out : out?.text);
+        return out;
+      },
+    }
+    : tools;
+  return {
+    tools: wrapped,
+    async apply(answer) {
+      if (!sources.size || !answer) return answer;
+      try {
+        const { linkifyCitations } = await import('./events/citations.js');
+        return linkifyCitations(answer, [...sources.values()]);
+      } catch {
+        return answer;   // a citation pass must never cost the user their answer
+      }
+    },
+  };
+}
+
 async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction, usage: usageCtx, timing }, turn) {
   // Per-round-trip records for this turn. Accumulated rather than overwritten — see the
   // usage handler below.
@@ -1387,10 +1429,12 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
     // closing, and how it would now escape without a transcript. Both belong on every
     // exit, not on the one that happened to be edited last.
     recordPrompt(turn, agent, messages, tools);
-    const full = await dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools });
+    const cites = citationCollector(tools);
+    const full = await dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools: cites.tools });
     if (typeof full === 'string' ? full.trim() : full) turn.produced();
-    recordAnswer(turn, full);
-    return full;
+    const cited = typeof full === 'string' ? await cites.apply(full) : full;
+    recordAnswer(turn, cited);
+    return cited;
   }
   const { vault, cfg, isPro = false, entities = [] } = redaction;
   // Phase 2: when mode is 'model', run the configured LOCAL detector to find
@@ -1468,14 +1512,17 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   // No try/catch. The one that used to be here existed solely to close the turn on the
   // error path; the runner does that in its own `finally`, so an exception simply
   // propagates and the turn is still recorded as failed.
+  const cites = citationCollector(safeTools);
   const full = await dispatchStream({
     agent: safeAgent, messages: red.messages, settings, signal,
-    onDelta: wrappedOnDelta, onEvent: wrappedOnEvent, tools: safeTools,
+    onDelta: wrappedOnDelta, onEvent: wrappedOnEvent, tools: cites.tools,
   });
   const tail = restorer.flush();
   if (tail && rawOnDelta) rawOnDelta(tail);
   if (typeof full === 'string' ? full.trim() : full) turn.produced();
-  const answer = restore(typeof full === 'string' ? full : full ?? '', vault);
+  // Restore FIRST, then linkify: rewriting against redacted text would match placeholders
+  // instead of the words the user will actually read.
+  const answer = await cites.apply(restore(typeof full === 'string' ? full : full ?? '', vault));
   recordAnswer(turn, answer);
   return answer;
 }
