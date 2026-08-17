@@ -3374,18 +3374,23 @@ function renderWebSearchEngines() {
     en.className = 'ws-en';
     en.checked = eng.enabled !== false;
     en.title = 'Enable this engine';
-    // Free can enable at most engineCap engines (matches the runtime cap). Block the
-    // checkbox from turning on a 4th and upsell instead.
-    if (!pro) {
-      en.onchange = () => {
-        if (!en.checked) return;
+    // A TOGGLE APPLIES. It used to wait for the tab's Save, which meant a switch the user
+    // had flipped was not yet true anywhere — search still used the old set, and any other
+    // view of the same state read as stale. A checkbox that needs a second confirmation is
+    // not a toggle, it is a form field wearing one.
+    en.addEventListener('change', () => {
+      // Free can enable at most engineCap engines (matches the runtime cap). Block the
+      // checkbox from turning on one too many and upsell instead.
+      if (!pro && en.checked) {
         const enabledNow = [...root.querySelectorAll('.ws-en:checked')].length;
         if (enabledNow > engineCap) {
           en.checked = false;
           upsell(`Free includes ${engineCap} web-search engines. Upgrade to Pro to use more.`);
+          return;
         }
-      };
-    }
+      }
+      persistEngines();
+    });
 
     const name = document.createElement('input');
     name.className = 'ws-name';
@@ -3413,6 +3418,23 @@ function renderWebSearchEngines() {
     row.append(en, name, url, del);
     root.appendChild(row);
   });
+}
+
+/**
+ * Persist the engine list immediately.
+ *
+ * Writes only `ui.webSearch.engines`, never the whole prefs form: saving everything from a
+ * toggle would commit unrelated half-typed fields the user has not agreed to.
+ */
+async function persistEngines() {
+  try {
+    webSearchEngines = collectWebSearchEngines();
+    settings.ui = settings.ui || {};
+    settings.ui.webSearch = { ...(settings.ui.webSearch || {}), engines: webSearchEngines };
+    await saveSettings(settings);
+  } catch (e) {
+    console.warn('[chatpanel] could not save search engines', e);
+  }
 }
 
 // Read the engine rows back out of the DOM (so edits survive add/remove and save).
@@ -4799,22 +4821,24 @@ const KIND_ORDER = {
  */
 function externalPlugins() {
   const out = [];
-  // Reconciled from SAVED settings at render time, not read from `webSearchEngines`.
-  // That array is the Tools tab's editing buffer — it holds unsaved edits and is only
-  // populated once that tab has been through its load path, so reading it here showed
-  // state that did not match what search would actually do. The saved settings are the
-  // one thing both agree on.
+  // NO STATE SHOWN HERE, deliberately.
+  //
+  // These cannot be switched on or off from this page — their toggle sits beside the URL,
+  // key or command it belongs with — so repeating their state here creates a second copy
+  // of a truth that can disagree with the first, which it promptly did: a switch flipped in
+  // Tools still read as off here, because that edit is unsaved until Tools is saved.
+  //
+  // The capability-level switch is a Source (see Sources above): "use web search at all"
+  // belongs on this page, "which engines, in what order" belongs with the engines.
   const ws = settings?.ui?.webSearch || {};
   let engines = [];
-  try {
-    engines = migrateEngines(ws.engines, { hasKey: !!ws.reader?.key });
-  } catch { engines = []; }
+  try { engines = migrateEngines(ws.engines, { hasKey: !!ws.reader?.key }); } catch { engines = []; }
   for (const e of engines) {
     if (e.retired) continue;
     out.push({
       id: `engine:${e.id}`, kind: 'engine', label: e.name || e.id,
       description: e.needsKey ? 'Search API — needs a key.' : 'Search engine.',
-      state: e.enabled === false ? 'Off' : 'On',
+
       // The engine editor lives in the MCP/Tools panel, not the API one. Pointing at the
       // wrong tab is worse than not linking: the user lands somewhere plausible, cannot
       // find the control, and concludes it is missing.
@@ -4826,7 +4850,7 @@ function externalPlugins() {
     out.push({
       id: `mcp:${srv.id || srv.name}`, kind: 'server', label: srv.name || srv.url || srv.command || 'MCP server',
       description: srv.command ? 'Local server, run through the bridge.' : 'Remote MCP server.',
-      state: srv.enabled === false ? 'Off' : 'On',
+
       configTab: 'mcp',
       configAnchor: 'mcp-list',
     });

@@ -10,6 +10,16 @@ import { webSearchToolProvider, webSearchOpts } from '../web-search.js';
 import { buildToolset } from '../toolset.js';
 import { dataDispatchProvider } from '../data-dispatch.js';
 import { isPro, can } from '../license.js';
+import { declarePlugins, pluginManifest } from '../plugins.js';
+
+// The web is a SOURCE, like chats, notes and meetings — so "use web search at all" is one
+// switch on the Plugins page, while "which engines, in what order" stays with the engines.
+// Splitting it that way is what keeps a single truth per question: a capability switch here,
+// a configuration there, and no state repeated between them.
+declarePlugins([{
+  id: 'source:web', kind: 'source', label: 'Web',
+  description: 'Search the web when answering.',
+}]).catch(() => {});
 
 export const dataGroup = defineToolGroup({
   id: 'data',
@@ -30,7 +40,9 @@ export const dataGroup = defineToolGroup({
           ? { url: settings.ui.warmSearch.url } : null,
       }));
     }
-    if (ctx.includeWebSearch !== false && settings?.ui?.webSearch?.enabled !== false) {
+    const manifest = await pluginManifest().catch(() => null);
+    const webAllowed = !manifest || manifest.isEnabled('source:web');
+    if (ctx.includeWebSearch !== false && settings?.ui?.webSearch?.enabled !== false && webAllowed) {
       providers.push(webSearchToolProvider(webSearchOpts(settings, pro)));
     }
     if (!providers.length) return null;
