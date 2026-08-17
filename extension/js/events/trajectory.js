@@ -339,7 +339,11 @@ export function threadsOf(runs = []) {
     // grouping that only works on data recorded after the fix groups nothing anyone has.
     const surface = run.surface || run.turn?.surface || run.turn?.kind || run.kind || 'other';
     const sourceId = run.sourceId || run.turn?.sourceId || null;
-    const key = sourceId ? `${surface}:${sourceId}` : `run:${run.turnId || run.id}`;
+    // THE PARENT ID IS THE KEY, ON ITS OWN. Keying on surface+id split a conversation from
+    // the autocomplete done inside it — same thread, different surface — which is the exact
+    // grouping this exists to produce. Ids are generated and unique, so the surface adds no
+    // identity, only a way to break one thread into several.
+    const key = sourceId ? `src:${sourceId}` : `run:${run.turnId || run.id}`;
     if (!byKey.has(key)) {
       byKey.set(key, { key, surface, sourceId, runs: [], startedAt: Infinity, endedAt: -Infinity, ms: 0, tokensIn: 0, tokensOut: 0, calls: 0, errors: 0 });
     }
@@ -356,6 +360,9 @@ export function threadsOf(runs = []) {
   }
   const threads = [...byKey.values()].map((t) => ({
     ...t,
+    // A thread is named after the work it exists FOR, not after the background jobs attached
+    // to it: a conversation with six autocomplete turns is still a conversation.
+    surface: (t.runs.find((r) => !r.background)?.surface) || t.surface,
     startedAt: Number.isFinite(t.startedAt) ? t.startedAt : 0,
     endedAt: Number.isFinite(t.endedAt) ? t.endedAt : 0,
     // Chronological WITHIN the thread — a conversation read bottom-up is not a conversation.
@@ -425,3 +432,63 @@ export function promptEntries(prompt, at = 0) {
 }
 
 const approxChars = (s) => String(s || '').length;
+
+/**
+ * Events → TURNS, each holding everything that happened inside it.
+ *
+ * The middle level the log was missing. A run was a row with a duration and a token count;
+ * what it actually DID — what the person asked, what context came with it, which tools ran,
+ * what came back — was spread across events that only shared an id. So "open the turn" had
+ * nothing to open.
+ *
+ * A turn is the unit with a beginning and an end. Its parent is whatever it was done FOR —
+ * a conversation, a note, a meeting — carried as `sourceId`, which is the identity the
+ * grouping is built on. `kind` is only a label: every chat shares the kind 'chat' and they
+ * are emphatically not one thread.
+ */
+export function turnsOf(events = []) {
+  const byTurn = new Map();
+  for (const e of events) {
+    const id = e?.turnId || e?.payload?.turnId;
+    if (!id) continue;
+    if (!byTurn.has(id)) byTurn.set(id, []);
+    byTurn.get(id).push(e);
+  }
+  const turns = [];
+  for (const [turnId, evs] of byTurn) {
+    const start = evs.find((e) => e.type === 'turn.started');
+    const end = evs.find((e) => e.type === 'turn.ended');
+    const sp = start?.payload || {};
+    const ep = end?.payload || {};
+    const at = start?.at ?? evs[0]?.at ?? 0;
+    turns.push({
+      turnId,
+      at,
+      // The parent. Without it a turn cannot be filed anywhere, which is a real defect and
+      // not a cosmetic one — 264 of 1,215 turns in a real export were suggestions done for a
+      // conversation and recorded under nothing.
+      sourceId: sp.sourceId || null,
+      surface: sp.surface || sp.kind || null,
+      kind: sp.kind || 'chat',
+      agentId: sp.agentId || null,
+      background: !!sp.background,
+      // Everything that happened inside, already typed: user, context, route, tool, result,
+      // reasoning, assistant.
+      entries: buildTrajectory(evs),
+      turn: {
+        startedAt: at, endedAt: end?.at ?? null, ms: ep.ms ?? null, reason: ep.reason || (end ? 'ok' : 'open'),
+        kind: sp.kind || 'chat', surface: sp.surface || null, sourceId: sp.sourceId || null,
+        model: ep.model || null, provider: ep.provider || null,
+        tokensIn: ep.tokensIn ?? null, tokensOut: ep.tokensOut ?? null,
+      },
+      calls: evs.filter((e) => e.type === 'capability.invoked'),
+    });
+  }
+  turns.sort((a, b) => a.at - b.at);
+  return turns;
+}
+
+/** The whole shape in one call: threads → turns → entries. */
+export function threadTree(events = []) {
+  return threadsOf(turnsOf(events));
+}

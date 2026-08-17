@@ -1739,7 +1739,7 @@ async function runManualSuggest() {
   setSuggestLoading(true, icon('assist') + ' Thinking…');
   try {
     const tab = await getActiveTab();
-    const { items, source } = await getSuggestions({ tab, settings: state.settings, force: true });
+    const { items, source } = await getSuggestions({ tab, settings: state.settings, force: true, sourceId: state.conv?.id || null });
     if (source === 'nomodel') {
       toast('Pick a model under Settings → Tools → Smart suggestions');
     } else if (run === suggestRun && items?.length && !state.conv?.messages?.length) {
@@ -1774,7 +1774,7 @@ function renderSuggestions() {
   (async () => {
     try {
       const tab = await getActiveTab();
-      const { items, source } = await getSuggestions({ tab, settings: state.settings });
+      const { items, source } = await getSuggestions({ tab, settings: state.settings, sourceId: state.conv?.id || null });
       // Only paint if this is still the latest request, the chat is still empty,
       // and the user hasn't started typing.
       if (run !== suggestRun || source === 'fallback' || !items?.length) return;

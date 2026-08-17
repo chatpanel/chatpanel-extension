@@ -53,7 +53,7 @@ export async function siteMetadata(tab) {
 // for this page") — it bypasses the enabled gate AND the cache, and reports
 // 'nomodel' when no model is configured so the UI can guide the user.
 // `source` is 'fallback' | 'cache' | 'model' | 'nomodel'.
-export async function getSuggestions({ tab, settings, signal, force = false } = {}) {
+export async function getSuggestions({ tab, settings, signal, force = false, sourceId = null } = {}) {
   const enabled = !!settings?.ui?.suggestions?.enabled;
   if ((!enabled && !force) || !tab?.url || !/^https?:/i.test(tab.url)) {
     return { items: FALLBACK_SUGGESTIONS.slice(), source: 'fallback' };
@@ -100,7 +100,10 @@ export async function getMeetingSuggestions({ meeting, settings, signal } = {}) 
       agent: { ...agent, systemPrompt: sys },
       settings,
       signal,
-      usage: { surface: 'suggestion' },
+      // WHICH THREAD THIS BELONGS TO. 264 of 1,215 turns in a real export had no parent id
+      // and every one of them was a suggestion — work done for a conversation, filed under
+      // nothing. A turn with no parent cannot be grouped, so it is not merely untidy.
+      usage: { surface: 'suggestion', sourceId },
       messages: [{ role: 'user', content: user }],
       onDelta: (d) => (out += d),
     });
@@ -132,7 +135,7 @@ const PROVIDERS = {
         agent: { ...agent, systemPrompt: sys },
         settings,
         signal,
-        usage: { surface: 'suggestion' },
+        usage: { surface: 'suggestion', sourceId: meeting?.id || null },
         messages: [{ role: 'user', content: user }],
         onDelta: (d) => (out += d),
       });
