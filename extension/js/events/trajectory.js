@@ -1,0 +1,216 @@
+// GENERATED — do not edit.
+// Source of truth: chatpanel-events/trajectory.js (npm @chatpanel/events).
+// Edit there, then run: npm run sync:events
+//
+// Vendored because the extension loads raw ES modules with no bundler. The gateway
+// and bridge take the same package as an npm dependency instead; a future mobile or
+// desktop client takes it the same way, or speaks the wire contract if it is native.
+
+// One turn, as an ordered, inspectable sequence.
+//
+// THIS LIVES IN THE SHARED PACKAGE ON PURPOSE. A trajectory is not a browser-extension
+// feature: a desktop app, a mobile app and the gateway all need to answer "what happened in
+// this turn, in what order, and where did the time go", and three implementations of that
+// would drift into three different answers to the same question. What is client-specific is
+// only the rendering — the model is shared.
+//
+// TWO REFERENCES, TWO LESSONS.
+//
+// From DevTools: the WATERFALL. A request list that only shows totals cannot answer "why
+// was this slow"; laying the phases out proportionally answers it at a glance, before any
+// clicking. Our phases are setup (assembling tools, connecting to MCP servers), wait (to
+// first token), and work (tool calls and writing). A turn that spent 45s connecting and
+// 2s thinking looks nothing like one that spent 2s connecting and 45s writing, and the
+// old single duration made them identical.
+//
+// From the DeepSeek harness: the ENTRY LIST plus a DETAIL PANE. Every step is one row —
+// system, user, context, tool call, result, answer — and selecting a row shows the whole
+// of it. Rows stay short so the shape of the turn is legible; the detail pane is where
+// length is allowed.
+//
+// What neither does, and we must: content is not here. Each entry carries a `ref`, and the
+// caller resolves it from the blob store when the user actually looks. That keeps a
+// trajectory cheap to build for sixty runs and honest about deleted content — a ref whose
+// blob is gone resolves to "no longer stored" rather than silently showing nothing.
+
+import { linearize } from './order.js';
+
+/**
+ * The name a human should see for a call.
+ *
+ * A dispatcher registers ONE tool and carries the real action in its arguments, so the raw
+ * capability name is `page` for every page call. Showing that turns forty distinct actions
+ * into forty identical rows — the same blindness that once stopped the loop guard exempting
+ * screenshots. Lives here, not in a renderer, because every client will need it.
+ */
+export function displayName(call) {
+  const action = call?.args?.action;
+  if (typeof action !== 'string' || !action) return call?.name || 'tool';
+  return action === 'describe' && call.args.tool
+    ? `${call.name}.describe(${call.args.tool})`
+    : `${call.name}.${action}`;
+}
+
+/** Entry kinds, in the order they conventionally appear. Used for grouping and colour. */
+export const ENTRY_KINDS = Object.freeze(['system', 'user', 'context', 'tool', 'result', 'reasoning', 'assistant']);
+
+const short = (s, n = 120) => {
+  const t = String(s ?? '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+};
+
+/**
+ * Build the ordered entries for one turn.
+ *
+ * `events` are that turn's events; ordering comes from `linearize`, never from wall time,
+ * so a trajectory reads identically on every host and after every export.
+ */
+export function buildTrajectory(events) {
+  const ordered = linearize(events || []);
+  const entries = [];
+  const calls = new Map();
+  let startedAt = null;
+
+  for (const e of ordered) {
+    const p = e.payload || {};
+    switch (e.type) {
+      case 'turn.started':
+        startedAt = e.at;
+        break;
+
+      case 'context.assembled':
+        entries.push({
+          kind: 'context', at: e.at, title: 'Context assembled',
+          detail: `${(p.tools || []).length} tool${(p.tools || []).length === 1 ? '' : 's'} · ${p.used || 0} tokens`,
+          data: { tools: p.tools || [], tokens: p.used || 0, redaction: !!p.redaction, surface: p.surface },
+        });
+        break;
+
+      // The prompt blob holds system + messages + the toolset; split it into readable rows
+      // at render time, since only the blob knows what was actually in it.
+      case 'assistant.prompted':
+        entries.push({ kind: 'system', at: e.at, title: 'Prompt', detail: `${p.chars || 0} chars`, ref: p.ref, expandsToMessages: true });
+        break;
+
+      case 'capability.invoked': {
+        const entry = {
+          kind: 'tool', at: e.at, title: displayName({ name: p.capability, args: p.args }),
+          detail: short(JSON.stringify(p.args || {}), 90),
+          key: p.idempotencyKey || e.id, ok: null, ms: null,
+          // The facts a reader actually asks for about a call, in one place: when it
+          // started in absolute time, what it was given, who asked for it, and whether it
+          // could be replayed. Split across two events, they are a join the reader should
+          // not have to do.
+          data: {
+            capability: p.capability,
+            args: p.args || {},
+            actor: p.actor,
+            scope: p.scope,
+            effects: p.effects,
+            started: new Date(e.at).toISOString(),
+          },
+        };
+        calls.set(entry.key, entry);
+        entries.push(entry);
+        break;
+      }
+
+      case 'capability.resulted': {
+        const call = calls.get(p.idempotencyKey);
+        if (call) { call.ok = p.ok; call.ms = p.cost?.ms ?? null; }
+        entries.push({
+          kind: 'result', at: e.at, title: `${p.capability} → ${p.ok ? 'ok' : 'failed'}`,
+          detail: short(p.summary, 120), ok: !!p.ok, ms: p.cost?.ms ?? null,
+          data: {
+            status: p.ok ? 'completed' : 'failed',
+            durationMs: p.cost?.ms ?? null,
+            classUsed: p.classUsed,
+            finished: new Date(e.at).toISOString(),
+            result: p.summary,
+          },
+        });
+        break;
+      }
+
+      case 'assistant.reasoning':
+        entries.push({ kind: 'reasoning', at: e.at, title: 'Reasoning', detail: `${p.chars || 0} chars`, ref: p.ref });
+        break;
+
+      case 'assistant.message':
+        entries.push({ kind: 'assistant', at: e.at, title: 'Answer', detail: `${p.chars || 0} chars`, ref: p.ref });
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  for (const entry of entries) entry.offsetMs = startedAt == null ? null : entry.at - startedAt;
+  return entries;
+}
+
+/**
+ * The three phases of a turn, as fractions that sum to 1 — the waterfall.
+ *
+ * Deliberately three and not more: setup, waiting for the first token, and everything
+ * after. Each has a different cause and a different fix, which is the only reason to
+ * split a bar at all. `null` when the turn recorded no duration, because a bar drawn from
+ * missing numbers is a confident lie.
+ */
+export function phasesOf(run) {
+  const total = run?.ms;
+  if (!Number.isFinite(total) || total <= 0) return null;
+  const setup = Math.max(0, Math.min(run.prepMs || 0, total));
+  const wait = Math.max(0, Math.min(run.ttftMs || 0, total - setup));
+  const work = Math.max(0, total - setup - wait);
+  const pct = (v) => (v / total) * 100;
+  return {
+    total,
+    parts: [
+      { key: 'setup', ms: setup, pct: pct(setup), label: 'Setup — tools and MCP servers' },
+      { key: 'wait', ms: wait, pct: pct(wait), label: 'Waiting for the first word' },
+      { key: 'work', ms: work, pct: pct(work), label: 'Tools and writing' },
+    ].filter((p) => p.ms > 0),
+  };
+}
+
+/**
+ * The three LANES — input, model, tools — as spans across the turn.
+ *
+ * A single stacked bar says how the time divided; lanes say what was ACTIVE and when, and
+ * those are different questions. Two tool calls with model thinking between them is a
+ * different shape from one long call, and a stacked bar draws them identically.
+ *
+ * Spans are positioned as percentages of the turn, so the rendering needs no width.
+ */
+export function lanesOf(entries, run) {
+  const total = run?.ms;
+  if (!Number.isFinite(total) || total <= 0) return null;
+  const pct = (ms) => Math.max(0, Math.min(100, (ms / total) * 100));
+  const lanes = { input: [], model: [], tools: [] };
+
+  for (const e of entries) {
+    if (e.offsetMs == null) continue;
+    const at = pct(e.offsetMs);
+    if (e.kind === 'system' || e.kind === 'user' || e.kind === 'context') {
+      lanes.input.push({ left: at, width: Math.max(0.6, pct(200)), label: e.title });
+    } else if (e.kind === 'tool') {
+      // A call's span is its own duration when known — the result carries it.
+      lanes.tools.push({ left: at, width: Math.max(1, pct(e.ms || 400)), label: e.title });
+    } else if (e.kind === 'assistant' || e.kind === 'reasoning') {
+      lanes.model.push({ left: at, width: Math.max(1, pct(400)), label: e.title });
+    }
+  }
+  // Waiting for the first word is model time even though nothing was emitted during it —
+  // otherwise the lane looks idle for the part of the turn the user most felt.
+  if (run.ttftMs > 0) lanes.model.unshift({ left: pct(run.prepMs || 0), width: pct(run.ttftMs), label: 'Waiting for the first word' });
+  if (run.prepMs > 0) lanes.input.unshift({ left: 0, width: pct(run.prepMs), label: 'Setup — tools and MCP servers' });
+  return lanes;
+}
+
+/** Filter entries by a search string, matching title and detail. */
+export function filterEntries(entries, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return entries;
+  return entries.filter((e) => `${e.title} ${e.detail || ''}`.toLowerCase().includes(q));
+}

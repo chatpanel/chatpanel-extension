@@ -646,3 +646,70 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .run-call-out { opacity: .55; font-family: ui-monospace, monospace; font-size: 10.5px; margin: 1px 0 3px; overflow-wrap: anywhere; }
 .run-call.failed, .run-call.failed .run-call-out { color: #f8737f; opacity: .9; }
 .activity-empty { color: var(--muted, #8b93a7); font-size: 12.5px; padding: 10px 0; }
+
+/* ── Trajectory ─────────────────────────────────────────────────────────────
+   Two ideas, borrowed deliberately. From DevTools: lay the phases out so "why was
+   this slow" is answered before any clicking. From the DeepSeek harness: one short
+   row per step, in order, expanding to the whole of it. Rows stay short so the
+   SHAPE of a turn is legible; length belongs inside an opened row. */
+
+.tj { margin-top: 10px; }
+
+/* Which layer was ACTIVE and when — a different question from how the time divided,
+   which is what the stacked bar above already answers. */
+.tj-lanes { display: grid; gap: 3px; margin-bottom: 10px; }
+.tj-lane { display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 8px; }
+.tj-lane-name { font-size: 10px; color: var(--muted, #8b93a7); text-transform: uppercase; letter-spacing: .04em; }
+.tj-track { position: relative; height: 10px; border-radius: 3px; background: var(--line, #23283a); overflow: hidden; }
+.tj-span { position: absolute; top: 0; bottom: 0; border-radius: 2px; min-width: 2px; }
+.tj-span-input { background: #4fb0ff; }
+.tj-span-model { background: #a78bfa; }
+.tj-span-tools { background: #f5b942; }
+
+/* The per-run phase bar. Setup and waiting are the two the user actually feels. */
+.tj-waterfall { display: flex; height: 4px; border-radius: 2px; overflow: hidden; margin: 6px 0; background: var(--line, #23283a); }
+.tj-phase { display: block; height: 100%; }
+.tj-setup { background: #f5b942; }
+.tj-wait  { background: #4fb0ff; }
+.tj-work  { background: #3ecf8e; }
+
+.tj-search { width: 100%; margin-bottom: 6px; font-size: 12px; }
+.tj-list { display: grid; gap: 2px; }
+
+.tj-row { border: 1px solid transparent; border-radius: 6px; background: var(--panel-2, #171b26); }
+.tj-row > summary {
+  display: flex; align-items: center; gap: 8px; padding: 5px 8px; cursor: pointer;
+  list-style: none; font-size: 12px;
+}
+.tj-row > summary::-webkit-details-marker { display: none; }
+.tj-row:hover { border-color: var(--line, #2a2f3d); }
+.tj-row[open] { border-color: var(--line, #2a2f3d); }
+.tj-row.failed { border-color: #f8737f66; }
+
+/* One tag per kind, so the column reads as a shape rather than as text. */
+.tj-tag {
+  flex: none; min-width: 62px; text-align: center; font-size: 10px; text-transform: uppercase;
+  letter-spacing: .04em; padding: 1px 6px; border-radius: 3px;
+  background: var(--line, #23283a); color: var(--muted, #8b93a7);
+}
+.tj-system .tj-tag    { background: #3a3f52; color: #cbd2e1; }
+.tj-context .tj-tag   { background: #1f4a38; color: #7ee2b8; }
+.tj-tool .tj-tag      { background: #4a3a1f; color: #f5c97a; }
+.tj-result .tj-tag    { background: #3a3320; color: #e0c98f; }
+.tj-reasoning .tj-tag { background: #2f2a4a; color: #c3b5f5; }
+.tj-assistant .tj-tag { background: #2a3550; color: #9dc0ff; }
+
+.tj-preview {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--fg, #e6e9f0);
+}
+.tj-when { flex: none; font-size: 11px; color: var(--muted, #8b93a7); font-variant-numeric: tabular-nums; }
+
+/* Opened content. Wide content scrolls inside its own box — the page must never
+   scroll sideways because one tool returned a long line. */
+.tj-raw {
+  margin: 0; padding: 8px 10px; max-height: 340px; overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+  border-top: 1px solid var(--line, #23283a); color: var(--muted-2, #b8c0d0);
+}

@@ -266,3 +266,12 @@ assert.equal(est[0].estimated, true);
 
 // Pricing is optional — a caller without a rate table still gets runs.
 assert.equal(withCost([{ tokensIn: 5 }], null)[0].usd, undefined);
+
+// The sanitized report builds its fields explicitly, so adding `raw` (the events, for the
+// trajectory view) cannot leak them into something a user shares.
+const withRaw = summarizeRun('t70', [
+  a.append('turn.started', { turnId: 't70', kind: 'chat' }),
+  a.append('turn.ended', { turnId: 't70', reason: 'ok', ms: 10 }),
+]);
+assert.ok(Array.isArray(withRaw.raw), 'the trajectory view has no events to expand');
+assert.equal('raw' in toSanitizedReport([withRaw]).runs[0], false, 'raw events leaked into the sanitized report');

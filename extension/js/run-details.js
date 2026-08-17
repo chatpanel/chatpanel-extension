@@ -18,21 +18,11 @@ import { linearize } from './events/order.js';
 
 const TURN_OF = (e) => e.payload?.turnId || null;
 
-/**
- * The name a human should see.
- *
- * A dispatcher registers one tool and carries the real action in its arguments, so the
- * raw capability name is `page` for every page call. Showing that turns forty distinct
- * actions into forty identical rows — the same blindness that stopped the loop guard
- * exempting screenshots.
- */
-export function displayName(call) {
-  const action = call?.args?.action;
-  if (typeof action !== 'string' || !action) return call?.name || 'tool';
-  return action === 'describe' && call.args.tool
-    ? `${call.name}.describe(${call.args.tool})`
-    : `${call.name}.${action}`;
-}
+// `displayName` now lives in @chatpanel/events (trajectory.js): resolving a dispatcher's
+// real action is shared logic every client needs, not a rendering detail of this one.
+// Re-exported so existing callers here are unchanged.
+export { displayName } from './events/trajectory.js';
+import { displayName } from './events/trajectory.js';
 
 /** Group a flat event list into runs, newest first, each in replay order. */
 export function groupRuns(events) {
@@ -150,6 +140,11 @@ export function summarizeRun(turnId, events) {
     at: turn?.startedAt || events[0]?.at || 0,
     ms: turn?.ms ?? null,
     events: events.length,
+    // The raw events, for the trajectory view to expand on demand. Named `raw` rather than
+    // reusing `events` (a count) so nothing that reads a length silently gets an array —
+    // and deliberately NOT included by toSanitizedReport, which builds its fields
+    // explicitly precisely so a new field can never leak into a shared report.
+    raw: events,
     context,
     toolCalls,
     capabilities,

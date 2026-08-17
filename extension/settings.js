@@ -4683,9 +4683,11 @@ async function renderActivity() {
   statsBox.textContent = '';
   runsBox.textContent = '';
 
-  let log; let rd;
+  let log; let rd; let tj;
   try {
-    [log, rd] = await Promise.all([import('./js/event-log.js'), import('./js/run-details.js')]);
+    [log, rd, tj] = await Promise.all([
+      import('./js/event-log.js'), import('./js/run-details.js'), import('./js/events/trajectory.js'),
+    ]);
   } catch (e) {
     // Say WHY. "Unavailable" sent me looking at the markup when the real cause was an
     // IndexedDB upgrade blocked by another open view.
@@ -4803,6 +4805,24 @@ async function renderActivity() {
     head.append(when, kind, verdict, meta);
     row.append(head);
 
+    // THE WATERFALL, before anything else. DevTools' real lesson is that phases laid out
+    // proportionally answer "why was this slow" without a single click — and a turn that
+    // spent 45s connecting to MCP servers looks nothing like one that spent 45s writing,
+    // while one total made them identical.
+    const phases = tj.phasesOf(run);
+    if (phases) {
+      const wf = document.createElement('div');
+      wf.className = 'tj-waterfall';
+      for (const part of phases.parts) {
+        const seg = document.createElement('span');
+        seg.className = `tj-phase tj-${part.key}`;
+        seg.style.width = `${part.pct}%`;
+        seg.title = `${part.label} — ${(part.ms / 1000).toFixed(1)}s (${Math.round(part.pct)}%)`;
+        wf.append(seg);
+      }
+      row.append(wf);
+    }
+
     // WHERE THE TIME WENT. On a forty-call run the useful question is never "what ran"
     // but "what did it spend the time on", and a flat list of forty identical chips
     // answers neither.
@@ -4831,6 +4851,23 @@ async function renderActivity() {
       }
       row.append(legend);
     }
+
+    // THE TRAJECTORY. Every step of the turn as one short row — prompt, context, each
+    // call, each result, the answer — with a detail pane beside it. Rows stay short so the
+    // SHAPE of the turn is legible at a glance; the pane is where length is allowed.
+    //
+    // Built lazily, on first expand. Sixty runs' worth of entries and blob reads on every
+    // render would make opening the tab slower than the turns it describes.
+    const tjBox = document.createElement('div');
+    tjBox.className = 'tj';
+    row.append(tjBox);
+    let tjBuilt = false;
+    row.addEventListener('toggle', () => {
+      if (!row.open || tjBuilt) return;
+      tjBuilt = true;
+      const entries = tj.buildTrajectory(run.raw || []);
+      renderTrajectory(tjBox, entries, log, tj.lanesOf(entries, run));
+    });
 
     // The full sequence, in order, with arguments — the part that turns "it failed" into
     // "it failed THIS way, six times, with these inputs".
@@ -4862,6 +4899,105 @@ async function renderActivity() {
     }
     runsBox.append(row);
   }
+}
+
+/**
+ * The entry list plus detail pane.
+ *
+ * Content is resolved from the blob store only when a row is SELECTED — a trajectory is
+ * cheap to build and expensive to read, and most rows are never opened. A ref whose blob
+ * has been pruned or shredded says so, rather than rendering blank: "no longer stored" is
+ * a true answer and an empty pane is not.
+ */
+function renderTrajectory(box, entries, log, lanes) {
+  box.textContent = '';
+  if (!entries.length) {
+    box.innerHTML = '<p class="muted tiny">No trajectory recorded for this run.</p>';
+    return;
+  }
+
+  // LANES FIRST. Which layer was active, and when — a stacked bar says how the time
+  // divided, which is a different question. Two tool calls with thinking between them is a
+  // different shape from one long call, and a single bar draws them identically.
+  if (lanes) {
+    const rail = document.createElement('div');
+    rail.className = 'tj-lanes';
+    for (const [name, spans] of Object.entries(lanes)) {
+      const lane = document.createElement('div');
+      lane.className = 'tj-lane';
+      const label = document.createElement('span');
+      label.className = 'tj-lane-name';
+      label.textContent = name;
+      const track = document.createElement('span');
+      track.className = 'tj-track';
+      for (const sp of spans) {
+        const seg = document.createElement('i');
+        seg.className = `tj-span tj-span-${name}`;
+        seg.style.left = `${sp.left}%`;
+        seg.style.width = `${sp.width}%`;
+        seg.title = sp.label;
+        track.append(seg);
+      }
+      lane.append(label, track);
+      rail.append(lane);
+    }
+    box.append(rail);
+  }
+
+  const search = document.createElement('input');
+  search.className = 'input tj-search';
+  search.placeholder = 'Filter steps…';
+  const list = document.createElement('div');
+  list.className = 'tj-list';
+  box.append(search, list);
+
+  // Full-width rows that show their content inline, rather than a list beside a pane. The
+  // point of a trajectory is to be READ in order; a two-column layout makes every step a
+  // click, and the preview is usually all you need.
+  const paint = (query) => {
+    list.textContent = '';
+    const shown = entries.filter((e) => !query || `${e.title} ${e.detail || ''}`.toLowerCase().includes(query));
+    if (!shown.length) { list.innerHTML = '<p class="muted tiny">No matching steps.</p>'; return; }
+    for (const entry of shown) {
+      const el = document.createElement('details');
+      el.className = `tj-row tj-${entry.kind}${entry.ok === false ? ' failed' : ''}`;
+      const head = document.createElement('summary');
+      const tag = document.createElement('span');
+      tag.className = 'tj-tag';
+      tag.textContent = entry.kind;
+      const preview = document.createElement('span');
+      preview.className = 'tj-preview';
+      preview.textContent = entry.detail ? `${entry.title} — ${entry.detail}` : entry.title;
+      const when = document.createElement('span');
+      when.className = 'tj-when';
+      when.textContent = entry.offsetMs != null ? `+${(entry.offsetMs / 1000).toFixed(1)}s` : '';
+      head.append(tag, preview, when);
+      el.append(head);
+
+      const body = document.createElement('pre');
+      body.className = 'tj-raw';
+      el.append(body);
+
+      // Content is fetched when the row is OPENED, not when the list is built. Most rows
+      // are never opened, and reading every blob up front would make the tab slower than
+      // the turns it describes.
+      let loaded = false;
+      el.addEventListener('toggle', async () => {
+        if (!el.open || loaded) return;
+        loaded = true;
+        if (!entry.ref) { body.textContent = JSON.stringify(entry.data ?? { detail: entry.detail }, null, 2); return; }
+        body.textContent = 'Loading…';
+        const text = await log.getBlob(entry.ref);
+        // A ref whose blob is gone says so. Blank would read as "there was nothing here",
+        // which is a different and false claim.
+        body.textContent = text ?? 'No longer stored — pruned or cleared.';
+      });
+      list.append(el);
+    }
+  };
+
+  paint('');
+  search.addEventListener('input', () => paint(search.value.trim().toLowerCase()));
 }
 
 $('activity-refresh')?.addEventListener('click', renderActivity);
