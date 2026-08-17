@@ -1999,7 +1999,10 @@ async function runStream(agent, assistant, conv) {
     const redaction = buildRedaction({ settings: state.settings, license: state.license, vault: piiVaultFor(conv.id) });
     await streamChat({
       agent: { ...resolved, systemPrompt },
-      usage: { surface: 'chat', sourceId: conv.id, turnId: assistant.id },
+      // `startedAt` is when the user pressed send. Tool assembly and MCP connection happen
+      // before the model call, and a duration measured from the call reported 2.6s for a
+      // message the user waited 48 seconds for.
+      usage: { surface: 'chat', sourceId: conv.id, turnId: assistant.id, startedAt: assistant.ts || Date.now() },
       messages: messagesForModel(conv, assistant),
       settings: state.settings,
       signal: controller.signal,

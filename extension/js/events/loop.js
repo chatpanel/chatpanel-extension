@@ -72,7 +72,11 @@ export function createTurnRunner({ now = () => 0, newId, emit = () => {}, decide
       }
     }
 
-    const startedAt = now();
+    // The turn began when the USER acted, not when the model call did. Everything between
+    // — assembling tools, connecting to MCP servers — is time they waited, and a duration
+    // that excludes it says 2.6s about a message that took 48. Callers that know the real
+    // moment pass it; the rest fall back to now.
+    const startedAt = Number.isFinite(request.startedAt) ? request.startedAt : now();
     let closed = false;
     // Facts the loop learns while running — token usage, the model that actually served
     // it — belong on the turn record. The loop may CONTRIBUTE them; it still cannot

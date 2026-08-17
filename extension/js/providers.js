@@ -1201,7 +1201,25 @@ export async function streamChat(opts = {}) {
   // `signal` is deliberately not part of turnSpecFor — it is live state, not a
   // description of the turn — but the runner needs it to tell "you stopped it" from
   // "it broke".
-  return runAsTurn(loop, { ...request, signal: opts.signal }, (turn) => streamChatTurn(opts, turn));
+  return runAsTurn(
+    loop,
+    // `startedAt` is when the USER acted. Everything before this call — assembling tools,
+    // connecting to MCP servers — is time they waited, and a duration measured from here
+    // reported 2.6s for a message that took 48.
+    { ...request, signal: opts.signal, startedAt: opts.usage?.startedAt },
+    (turn) => {
+      // Time to first token, reported once. Total duration cannot distinguish "took ages
+      // to start" from "wrote a long answer", and only the first is a problem worth
+      // chasing — it is what "it felt slow" actually means.
+      const t0 = Date.now();
+      const inner = opts.onDelta;
+      let first = true;
+      const onDelta = inner
+        ? (d) => { if (first) { first = false; turn.report({ ttftMs: Date.now() - t0 }); } return inner(d); }
+        : inner;
+      return streamChatTurn({ ...opts, onDelta }, turn);
+    },
+  );
 }
 
 /**
@@ -1292,6 +1310,9 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
       prepMs: tools?.prepMs ?? null,
       mcpMs: tools?.mcpMs ?? null,
     });
+    // Also on the turn record, so a reader does not have to join two events to answer
+    // "where did the time go".
+    turn.report({ prepMs: tools?.prepMs ?? null, mcpMs: tools?.mcpMs ?? null });
   }
   // ONE place every model-bound call passes through — augment the agent's system
   // prompt with runtime context (date + enforced language) so all agents, present

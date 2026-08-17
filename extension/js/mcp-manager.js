@@ -34,40 +34,80 @@ async function withTimeout(fn, ms) {
   }
 }
 
-// Connect (or reuse) each enabled server and return its tool provider. Servers
-// whose config changed since last time are reconnected; failures are reported
-// via onError and skipped.
-export async function getMcpProviders(servers, { onError, timeoutMs = 8000, bridgeUrl, bridgeAvailable = false } = {}) {
+// A connect that is still running is not started again. Without this, every turn during a
+// slow first connect launches another one, and the slow server gets slower.
+const inflight = new Map();
+
+/**
+ * Connect (or reuse) one server. Never rejects — a broken server is reported and skipped,
+ * because one bad entry must not take the others down.
+ */
+function connectTask(s, { onError, timeoutMs, bridgeUrl, bridgeAvailable }) {
+  const key = keyOf(s);
+  const sig = sigOf(s);
+  let entry = clients.get(key);
+  if (entry && entry.sig !== sig) { clients.delete(key); entry = null; } // config edited → reconnect
+  if (entry) return Promise.resolve(entry.client.tools.length ? mcpProvider(entry.client, entry.name) : null);
+  if (inflight.has(key)) return inflight.get(key);
+
+  const task = (async () => {
+    try {
+      const client = clientFor(s, bridgeUrl, bridgeAvailable);
+      // stdio servers spawn a process on the bridge (often `npx`, which may download on
+      // first run) — give them much longer than HTTP servers. Bridge-proxied http adds a
+      // hop (and may front a slow upstream) → a bit more.
+      const ms = s.command ? 45000 : (remoteViaBridge(s, bridgeAvailable) ? 20000 : timeoutMs);
+      await withTimeout((signal) => client.connect(signal), ms);
+      const fresh = { client, sig, name: s.name || s.url || s.command };
+      clients.set(key, fresh);
+      return client.tools.length ? mcpProvider(client, fresh.name) : null;
+    } catch (e) {
+      clients.delete(key);
+      onError?.(s, e);
+      return null;
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+  inflight.set(key, task);
+  return task;
+}
+
+/**
+ * The tool providers available NOW, waiting at most `budgetMs` for connections.
+ *
+ * A turn used to await every connect, and an stdio server is allowed 45 seconds because
+ * `npx` may download on first run. So one cold server held the whole first message for
+ * forty-five seconds before the model saw a single byte — measured, twice, in a user's
+ * exported log (mcpMs 45002).
+ *
+ * The connect timeout was never the problem: a server that legitimately takes 45s to start
+ * should still be allowed to. What was wrong is that the USER waited for it. The connect
+ * now continues in the background and the turn proceeds without that server, which arrives
+ * for the next turn. A tool that shows up a message late is a far smaller cost than a
+ * product that appears frozen on first use.
+ */
+export async function getMcpProviders(servers, { onError, timeoutMs = 8000, bridgeUrl, bridgeAvailable = false, budgetMs = 4000 } = {}) {
   const enabled = (servers || []).filter((s) => s && s.enabled !== false && (s.url || s.command));
-  const providers = [];
-  await Promise.all(
-    enabled.map(async (s) => {
-      const key = keyOf(s);
-      const sig = sigOf(s);
-      let entry = clients.get(key);
-      if (entry && entry.sig !== sig) {
-        clients.delete(key); // config edited → drop and reconnect
-        entry = null;
-      }
-      try {
-        if (!entry) {
-          const client = clientFor(s, bridgeUrl, bridgeAvailable);
-          // stdio servers spawn a process on the bridge (often `npx`, which may
-          // download on first run) — give them much longer than HTTP servers.
-          // Bridge-proxied http adds a hop (and may front a slow upstream) → a bit more.
-          const ms = s.command ? 45000 : (remoteViaBridge(s, bridgeAvailable) ? 20000 : timeoutMs);
-          await withTimeout((signal) => client.connect(signal), ms);
-          entry = { client, sig, name: s.name || s.url || s.command };
-          clients.set(key, entry);
-        }
-        if (entry.client.tools.length) providers.push(mcpProvider(entry.client, entry.name));
-      } catch (e) {
-        clients.delete(key);
-        onError?.(s, e);
-      }
-    }),
-  );
-  return providers;
+  if (!enabled.length) return [];
+
+  // Record each result as it lands, so when the budget expires we can take whatever is
+  // ready without cancelling anything still in flight.
+  const ready = new Array(enabled.length).fill(null);
+  const tasks = enabled.map((s, i) => connectTask(s, { onError, timeoutMs, bridgeUrl, bridgeAvailable })
+    .then((p) => { ready[i] = p; return p; }));
+
+  if (budgetMs > 0) {
+    let timer;
+    await Promise.race([
+      Promise.all(tasks),
+      new Promise((res) => { timer = setTimeout(res, budgetMs); }),
+    ]);
+    clearTimeout(timer);
+  } else {
+    await Promise.all(tasks);
+  }
+  return ready.filter(Boolean);
 }
 
 // Test a single server config (used by Settings "Test" button). Returns the
