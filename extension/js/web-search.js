@@ -57,11 +57,8 @@ export const DEFAULT_ENGINES = [
   { id: 'startpage', name: 'Startpage', url: 'https://www.startpage.com/sp/search?query=%s', enabled: true },
   // Mojeek is GONE, not merely disabled — tested, it returns nothing at all. An engine
   // that never answers is not a fallback; it is latency plus a misleading "no results".
-  // TWO engines on by default, not one. All enabled engines are already searched in
-  // PARALLEL and merged — but a user whose only engine was Startpage saw a query return
-  // nothing, because parallelism across one engine is just that engine. Redundancy is the
-  // entire reason the fan-out exists, and it does nothing until there is something to fan
-  // out to. Three fit inside the Free cap, so this costs a Free user nothing.
+  // Enabled, so it is the FIRST fallback rather than a last resort. Order is what matters
+  // now that engines are tried one at a time: enabled ones in order, then the rest.
   { id: 'duckduckgo', name: 'DuckDuckGo (scraped)', url: 'https://html.duckduckgo.com/html/?q=%s', enabled: true },
   { id: 'google', name: 'Google (scraped)', url: 'https://www.google.com/search?q=%s', enabled: false },
   { id: 'bing', name: 'Bing (scraped)', url: 'https://www.bing.com/search?q=%s', enabled: false },
@@ -488,25 +485,29 @@ export async function webSearch(query, opts = {}) {
       : searchEngine(e, q, perEngine, tabFallback)),
   );
 
-  let perEngineLinks = await ask(engines);
-  let usedEngines = engines;
-
-  // ESCALATE WHEN EVERYTHING ENABLED CAME BACK EMPTY.
+  // ONE ENGINE AT A TIME, FALLING BACK — not all of them at once.
   //
-  // Enabled engines are searched in PARALLEL and merged, which is the redundancy: if one is
-  // blocked the others still answer. But when every enabled engine returns nothing, giving
-  // up is the wrong answer — the disabled ones are configured and available, and a user
-  // would rather wait than be told the web has no weather. So they are tried once, as a
-  // last resort, rather than costing a request on every ordinary search.
-  if (!perEngineLinks.flat().length) {
-    const spare = (opts.allEngines || []).filter((e) => e?.enabled === false && e?.kind !== 'api' && !engines.some((x) => x.id === e.id));
-    if (spare.length) {
-      const extra = await ask(spare);
-      if (extra.flat().length) {
-        perEngineLinks = extra;
-        usedEngines = spare;
-      }
-    }
+  // Fanning out to every engine on every search buys redundancy and a ranking signal, and
+  // pays for both in exactly the currency that is scarce here: requests to services that
+  // ban scrapers. Querying five engines per search is five times the footprint and the
+  // fastest way to be blocked by all five — at which point the redundancy is worth nothing,
+  // because every fallback is blocked too. The failure mode we have actually hit, twice, is
+  // blocking; we have never once been hurt by imperfect ranking.
+  //
+  // So: ask one, and only move on if it gave us nothing. A working first engine costs a
+  // single request, and the others stay unspent for when they are needed. Disabled engines
+  // are the last resort, because a user would rather wait than be told the web has no
+  // weather.
+  const order = [
+    ...engines,
+    ...(opts.allEngines || []).filter((e) => e?.enabled === false && e?.kind !== 'api' && !engines.some((x) => x.id === e.id)),
+  ];
+  let perEngineLinks = [];
+  const usedEngines = [];
+  for (const e of order) {
+    const got = await ask([e]);
+    usedEngines.push(e);
+    if (got.flat().length) { perEngineLinks = got; break; }
   }
 
   // 2) Merge + dedupe across engines; a link several engines agree on (and ranked
