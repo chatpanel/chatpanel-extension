@@ -62,3 +62,23 @@ assert.equal((await run({ start: 'b2', rows: [[1]] })).calls[1], 'type:"B2\\n"')
 assert.equal(await sheetsAdapter.execute('click_at', {}, { cdp: true }), null);
 
 console.log('✓ sheets adapter: addressed by cell, refuses rather than pretending');
+
+// ── the canvas adapters, now registered rather than listed ───────────────────
+// Their behaviour is unchanged and still lives in canvas-adapters.js; only discovery
+// moved. What matters here is that MATCHING stays lazy — asking "does anything handle this
+// page" must never pull a 1,200-line module onto a tab change.
+const { CANVAS_PLUGINS } = await import('../extension/js/adapters/canvas.js');
+assert.deepEqual(CANVAS_PLUGINS.map((a) => a.id), ['excalidraw', 'drawio', 'tldraw']);
+
+const ex = CANVAS_PLUGINS.find((a) => a.id === 'excalidraw');
+assert.equal(ex.matches('https://excalidraw.com/'), true, 'a known host stopped matching');
+// The capability route is what makes this work on pages nobody enumerated — the reason a
+// hostname table was rejected. Both routes must survive the migration.
+assert.equal(ex.matches('https://draw.example.internal/board', { excalidraw: true }), true);
+assert.equal(ex.matches('https://example.com'), false);
+
+// A purpose-built adapter outranks a legacy one, so priority is a real ordering and not
+// decoration.
+assert.ok(sheetsAdapter.priority > ex.priority);
+
+console.log('✓ adapters: canvas plugins registered, matching still lazy');

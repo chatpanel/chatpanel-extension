@@ -374,18 +374,22 @@ async function pageToolProvider(resolvedAgent) {
   let plugin = null;
   if (!adapter && can(state.license, 'structuredInsert')) {
     try {
-      const { adapterFor } = await import('./js/adapters/index.js');
+      const { adapterFor, adapterDetails } = await import('./js/adapters/index.js');
+      // URL first — that match is answered by a 3 KB rule table. Only if nothing claims the
+      // page do we pay for the capability probe, which is what finds a self-hosted or
+      // embedded instance nobody enumerated.
       plugin = await adapterFor(state.activeTab?.url || '', {});
+      if (plugin) {
+        const d = await adapterDetails(plugin);
+        specs = [...PAGE_TOOL_SPECS, ...d.specs];
+        // Resident for the same reason the canvas guidance is: it changes which TOOL gets
+        // chosen, and without it a model fills a spreadsheet by clicking at pixels.
+        residentSystem = d.guidance;
+        console.info('[chatpanel] adapter plugin active:', plugin.id);
+      }
     } catch (e) {
       console.warn('[chatpanel] adapter registry unavailable; using base page tools', e);
     }
-  }
-  if (plugin) {
-    specs = [...PAGE_TOOL_SPECS, ...plugin.toolSpecs()];
-    // Resident for the same reason the canvas guidance is: it changes which TOOL gets
-    // chosen, and without it a model fills a spreadsheet by clicking at pixels.
-    residentSystem = plugin.guidance();
-    console.info('[chatpanel] adapter plugin active:', plugin.id);
   }
 
   // Developer-only JavaScript execution: off unless explicitly enabled, and only

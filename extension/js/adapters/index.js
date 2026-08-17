@@ -17,10 +17,35 @@ export async function adapterRegistry() {
   registry = createAdapterRegistry();
   const { sheetsAdapter } = await import('./sheets.js');
   registry.add(sheetsAdapter);
+  // The three canvas adapters, registered rather than listed. Their behaviour is unchanged
+  // and still lives in canvas-adapters.js; only discovery moved. Matching is lazy, so
+  // asking "does anything handle this page" never loads a 1,200-line module.
+  const { CANVAS_PLUGINS } = await import('./canvas.js');
+  for (const a of CANVAS_PLUGINS) registry.add(a);
   return registry;
 }
 
 /** The adapter for a page, or null. */
 export async function adapterFor(url, caps = {}) {
   return (await adapterRegistry()).for(url, caps);
+}
+
+/**
+ * What a selected adapter offers.
+ *
+ * The legacy canvas adapters keep their specs and guidance in the heavy module, which the
+ * synchronous `toolSpecs()` on the contract cannot await. Rather than make every plugin
+ * async to accommodate one legacy shape, the host asks here — and only for the adapter it
+ * has already chosen, so nothing heavy loads for a page with no adapter at all.
+ */
+export async function adapterDetails(adapter) {
+  if (!adapter) return { specs: [], guidance: '' };
+  const own = { specs: adapter.toolSpecs() || [], guidance: adapter.guidance() || '' };
+  if (own.specs.length) return own;
+  try {
+    const { legacyDetails } = await import('./canvas.js');
+    return (await legacyDetails(adapter.id)) || own;
+  } catch {
+    return own;
+  }
 }
