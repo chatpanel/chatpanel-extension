@@ -324,3 +324,34 @@ console.log('✓ failover class: like is replaced by like, and a CLI agent is no
 }
 
 console.log('✓ structured tasks prefer a model over an agent that runs its own loop');
+
+// "USE CLAUDE" IS AN INSTRUCTION, NOT A TOPIC. A user naming a model was being ignored
+// entirely — the router read length, modality and tools, and not the one signal that is an
+// explicit answer to the question it was asking. Being given another model after asking for
+// one is the most annoying failure a router has, because it looks like the request was not
+// read.
+{
+  const { explicitModelStrategy } = await import('../extension/js/model-router.js');
+  const pool = [
+    { id: 'cc', label: 'Claude Code', model: 'claude-sonnet', capabilities: ['tools'], quality: 0.9, costPer1k: 0 },
+    { id: 'cx', label: 'Codex · gpt-5.6-sol', model: 'gpt-5.6-sol', capabilities: ['tools'], quality: 0.9, costPer1k: 0 },
+  ];
+  const ask = (t) => explicitModelStrategy.decide(pool, { requestText: t });
+
+  assert.equal((await ask('use formulas and create a 2 times table here. use claude')).id, 'cc');
+  assert.equal((await ask('draw this with codex')).id, 'cx');
+  assert.equal((await ask('ask claude code to review this')).id, 'cc');
+  assert.equal((await ask('switch to codex')).id, 'cx');
+
+  // CONSERVATIVE ON PURPOSE. A false positive silently sends work to the wrong model, which
+  // is worse than missing an unusual phrasing — so only imperative forms count.
+  assert.equal(await ask('tell me about claude'), null, 'a question about a model was read as an instruction');
+  assert.equal(await ask('what is the difference between claude and codex'), null);
+  assert.equal(await ask('draw a circle'), null);
+  assert.equal(await ask(''), null);
+
+  // Naming something not configured says nothing rather than guessing at the nearest match.
+  assert.equal(await ask('use gpt-9'), null);
+}
+
+console.log('✓ an explicit "use <model>" is honoured, and a question about one is not');

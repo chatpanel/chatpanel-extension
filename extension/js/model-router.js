@@ -290,13 +290,53 @@ function normModel(m) {
     .replace(/[^a-z0-9.]+/g, '');
 }
 
+/**
+ * "use claude" is an instruction, not a topic.
+ *
+ * A user naming a model in their message was being ignored entirely — the router read
+ * length, modality and tools, and not the one signal that is an explicit answer to the
+ * question it was asking. Asking for a specific model and being given another is the most
+ * annoying possible failure of a router, because it looks like the request was not read.
+ *
+ * DELIBERATELY CONSERVATIVE. Only imperative forms count — "use X", "with X", "ask X",
+ * "switch to X" — so "tell me about claude" stays a question about Claude rather than a
+ * routing instruction. A false positive here silently sends work to the wrong model, which
+ * is worse than missing an unusual phrasing.
+ *
+ * It still cannot widen reach: like every strategy it only ever chooses among candidates the
+ * hard constraints already allowed. A device-only request naming a cloud model still stays
+ * on-device.
+ */
+export const explicitModelStrategy = defineRouteStrategy({
+  id: 'named-by-user',
+  label: 'Use the model you asked for',
+  classUsed: 'R',
+  decide: async (eligible, need) => {
+    const text = String(need.requestText || '').toLowerCase();
+    if (!text) return null;
+    const directive = /\b(?:use|using|with|via|ask|switch to|route to|try)\s+([a-z0-9][a-z0-9.\- ]{1,28})/g;
+    const asked = [];
+    for (const m of text.matchAll(directive)) asked.push(m[1].trim());
+    if (!asked.length) return null;
+
+    const hit = eligible.find((cand) => {
+      const names = [cand.label, cand.model, cand.id].filter(Boolean).map((x) => String(x).toLowerCase());
+      return asked.some((want) => names.some((n) => n.includes(want) || want.includes(n.split(' · ')[0])));
+    });
+    return hit || null;   // named something we do not have? say nothing and let the rest decide
+  },
+});
+
 export function buildRouter(settings, resolveTarget) {
   return createModelRouter({
     models: candidatesFrom(settings, resolveTarget),
     middleware: [redactionStep],
     // Failover first: when something just declined, replacing it well matters more than the
     // general preference that picked it in the first place.
-    strategies: [failoverStrategy, complexityStrategy],
+    // An explicit request outranks every heuristic — the user has answered the question the
+    // router was about to guess at. Failover next, because a decline is newer information
+    // than the original preference.
+    strategies: [explicitModelStrategy, failoverStrategy, complexityStrategy],
   });
 }
 
@@ -336,6 +376,8 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
       capabilities: [...new Set([...(cfg.capabilities || []), ...capabilities])],
       // The signals a strategy needs to tell "hello" from real work — read for free.
       signals: request ? signalsFrom(request) : undefined,
+      // The user's own words, so an instruction in the message can be honoured.
+      requestText: request ? String(request.text || (request.messages || []).map((m) => m?.content || '').join('\n')).slice(-2000) : '',
       structured,
       exclude,
       like,
