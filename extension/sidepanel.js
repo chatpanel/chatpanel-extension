@@ -96,6 +96,7 @@ import {
 // Pure, tiny, no transitive graph — safe on the first-paint path (the heavy
 // canvas-adapters / page-actions bodies stay dynamic-imported inside pageToolProvider).
 import { KIND_VERB } from './js/page-match.js';
+import { syncPageContext } from './js/page-capability.js';
 import {
   PAGE_MODES,
   PAGE_DECISIONS,
@@ -405,7 +406,7 @@ async function pageToolProvider(resolvedAgent) {
           state.settings = await updateSettings({
             ui: { pageSites: grantSite(state.settings.ui?.pageSites, pagePolicy.siteKey) },
           });
-          renderPageActBtn();
+          syncPageActBtn();
           logEvent('capability.granted', {
             capability: 'page.actions',
             actor: { kind: 'user', id: 'local' },
@@ -2346,7 +2347,7 @@ async function resendEdited(m, text) {
 function updateComposerUI() {
   $('btn-send').classList.remove('hidden');
   $('btn-stop').classList.add('hidden');
-  renderPageActBtn();
+  syncPageActBtn();
   renderMcpToolsBtn();
   renderHistoryContextBtn();
   renderPrivacyBtn();
@@ -2429,7 +2430,7 @@ async function refreshActiveTab() {
   }
   renderContextBar();
   renderMeetingBar();
-  renderPageActBtn(); // the offer is a function of the active tab, so it follows navigation
+  syncPageActBtn(); // the offer follows navigation — via the capability, not a direct call
   renderScribeIndicator();
   maybeRefreshSuggestions();
 }
@@ -3423,10 +3424,36 @@ function pageDecisionNow() {
   });
 }
 
-function renderPageActBtn() {
+// Publish the page context and let the dependent render. One entry point instead of four
+// call sites, and the button resets on withdrawal without anyone remembering to reset it.
+function syncPageActBtn() {
+  const tab = state.activeTab;
+  void syncPageContext(tab?.id ? { tab, decision: pageDecisionNow() } : null, {
+    onArm: (v) => paintPageActBtn(v.decision),
+    onDisarm: () => paintPageActBtn(null),
+    onEvent: ({ event, name }) => {
+      if (event === 'activated' || event === 'deactivated') {
+        logEvent('capability.activated', {
+          capability: 'page.context', classUsed: 'R', component: name, armed: event === 'activated',
+        });
+      }
+    },
+  });
+}
+
+function paintPageActBtn(d) {
   const btn = $('btn-pageact');
   if (!btn) return;
-  const d = pageDecisionNow();
+  if (!d) {
+    // The withdrawal path: no readable tab, so the button says so rather than keeping
+    // whatever the last page left behind.
+    btn.classList.remove('active', 'offered', 'denied');
+    btn.setAttribute('aria-pressed', 'false');
+    btn.dataset.decision = 'none';
+    btn.title = 'Act on page — open a web page to use it there';
+    btn.setAttribute('aria-label', btn.title);
+    return;
+  }
   const armed = shouldArm(d.decision);
   btn.classList.toggle('active', armed);
   btn.classList.toggle('offered', d.decision === PAGE_DECISIONS.ASK && !!d.ruleId);
@@ -6339,7 +6366,7 @@ function wireEvents() {
     // decline in place is a nag.
     if (e.altKey && d.siteKey && d.decision !== PAGE_DECISIONS.DENIED) {
       state.settings = await updateSettings({ ui: { pageSites: denySite(sites, d.siteKey) } });
-      renderPageActBtn();
+      syncPageActBtn();
       toast(`Act on page blocked on ${d.siteKey}`);
       return;
     }
@@ -6362,7 +6389,7 @@ function wireEvents() {
     }
 
     state.settings = await updateSettings({ ui: next });
-    renderPageActBtn();
+    syncPageActBtn();
     const on = shouldArm(pageDecisionNow().decision);
     const agent = resolveTarget(agentForConv(state.conv), state.settings);
     if (on && agent?.kind === 'bridge') {
