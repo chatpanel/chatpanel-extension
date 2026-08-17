@@ -564,18 +564,46 @@ export function searchResultsToText(res) {
 
 // Pull the user's web-search config (engines + counts) out of settings, falling
 // back to defaults. Lives here so callers don't hard-code the settings shape.
-export function webSearchOpts(settings, isPro = false) {
-  const cfg = settings?.ui?.webSearch || {};
-  let engines = Array.isArray(cfg.engines) && cfg.engines.length ? cfg.engines : DEFAULT_ENGINES;
-  // Migrate stored settings rather than only new installs: drop the retired scrapers and
-  // put the API first, so an existing user's next search works without them finding a
-  // setting they were never told about.
+/**
+ * Bring a stored engine list up to date. ONE implementation, used by the search runtime and
+ * by the settings UI — the settings page had its own copy of the default list, which is how
+ * a retired engine kept appearing there after being removed here.
+ *
+ * Migrates rather than only defaulting: a user who has ever saved settings has a stored
+ * list, and a fix that only reaches new installs is not a fix.
+ */
+export function migrateEngines(stored, { hasKey = false } = {}) {
+  let engines = (Array.isArray(stored) && stored.length ? stored : DEFAULT_ENGINES).map((e) => ({ ...e }));
   engines = engines.filter((e) => !RETIRED_ENGINES.has(e?.id));
-  if (!engines.some((e) => e?.id === SEARCH_API.id)) engines = [SEARCH_API, ...engines];
+  // Was it already in the user's list? That distinguishes "they turned it off" from "it has
+  // never been offered" — collapsing the two would mean a newly-added key could never
+  // switch it on, which is the whole point of supplying one.
+  const known = engines.some((e) => e?.id === SEARCH_API.id);
+  const chosenOff = known && engines.find((e) => e.id === SEARCH_API.id)?.enabled === false;
+  if (!known) engines = [{ ...SEARCH_API }, ...engines];
   // A configured key is the user opting in; without one this engine stays off however the
   // stored settings look, so an old config can never silently start sending queries out.
-  const hasKey = !!(settings?.ui?.webSearch?.reader?.key || cfg.reader?.key);
-  engines = engines.map((e) => (e.id === SEARCH_API.id ? { ...e, enabled: hasKey && e.enabled !== false } : e));
+  engines = engines.map((e) => (e.id === SEARCH_API.id
+    ? { ...e, enabled: hasKey && !(known && chosenOff) }
+    : e));
+  // Never leave the user with nothing enabled. Retiring an engine can empty a list that had
+  // only that engine in it, and search silently having no engines is a worse failure than
+  // the one being fixed — so the defaults are restored rather than the user being left with
+  // a feature that quietly does nothing.
+  if (!engines.some((e) => e?.enabled !== false && e?.kind !== 'api')) {
+    for (const d of DEFAULT_ENGINES) {
+      if (d.kind === 'api') continue;
+      const have = engines.find((e) => e.id === d.id);
+      if (have) have.enabled = d.enabled !== false;
+      else engines.push({ ...d });
+    }
+  }
+  return engines;
+}
+
+export function webSearchOpts(settings, isPro = false) {
+  const cfg = settings?.ui?.webSearch || {};
+  let engines = migrateEngines(cfg.engines, { hasKey: !!cfg.reader?.key });
   // Free tier: at most FREE_LIMITS.webSearchEngines ENABLED engines — any enabled
   // beyond the cap are forced off in the opts (settings are left untouched so they
   // re-enable on upgrade). Pro keeps the full list.

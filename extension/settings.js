@@ -3330,13 +3330,9 @@ async function resetSkills() {
 // --------------------------------------------------------------------------
 // Web search engines (Tools tab) — editable mirror of settings.ui.webSearch.engines
 // --------------------------------------------------------------------------
-const DEFAULT_WS_ENGINES = [
-  { id: 'startpage', name: 'Startpage', url: 'https://www.startpage.com/sp/search?query=%s', enabled: true },
-  { id: 'mojeek', name: 'Mojeek', url: 'https://www.mojeek.com/search?q=%s', enabled: true },
-  { id: 'duckduckgo', name: 'DuckDuckGo', url: 'https://html.duckduckgo.com/html/?q=%s', enabled: false },
-  { id: 'bing', name: 'Bing', url: 'https://www.bing.com/search?q=%s', enabled: false },
-  { id: 'google', name: 'Google', url: 'https://www.google.com/search?q=%s', enabled: false },
-];
+// The list lives in js/web-search.js. This page had its own copy, which is why a retired
+// engine kept appearing here after being removed there — the duplication WAS the bug.
+import { DEFAULT_ENGINES as DEFAULT_WS_ENGINES, migrateEngines } from './js/web-search.js';
 let webSearchEngines = [];
 
 function renderWebSearchEngines() {
@@ -3489,7 +3485,9 @@ function renderPrefs() {
   $('pref-websearch-reader').checked = ws.reader?.enabled === true;
   $('pref-websearch-reader-url').value = ws.reader?.url || 'https://r.jina.ai/';
   $('pref-websearch-reader-key').value = ws.reader?.key || '';
-  webSearchEngines = (Array.isArray(ws.engines) && ws.engines.length ? ws.engines : DEFAULT_WS_ENGINES).map((e) => ({ ...e }));
+  // Migrated on load, so the settings page shows what search will ACTUALLY use — a list
+  // here that disagrees with the runtime is worse than no list.
+  webSearchEngines = migrateEngines(ws.engines, { hasKey: !!ws.reader?.key });
   renderWebSearchEngines();
   const sugg = settings.ui.suggestions || {};
   $('pref-suggestions-enabled').checked = sugg.enabled === true;
