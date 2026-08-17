@@ -53,7 +53,7 @@ export function summarizeRun(turnId, events) {
     const p = e.payload || {};
     switch (e.type) {
       case 'turn.started':
-        turn = { ...(turn || {}), startedAt: e.at, kind: p.kind || 'chat', agentId: p.agentId || null, background: !!p.background };
+        turn = { ...(turn || {}), startedAt: e.at, kind: p.kind || 'chat', agentId: p.agentId || null, background: !!p.background, sourceId: p.sourceId || null, surface: p.surface || null };
         break;
       case 'turn.ended':
         turn = {
@@ -151,6 +151,10 @@ export function summarizeRun(turnId, events) {
     // Which surface asked for this, so a note run is distinguishable from a chat run
     // without opening it — every surface reports here now, not just chat.
     kind: turn?.kind || 'chat',
+    // WHAT THIS WAS DONE FOR — the conversation, note or meeting. The root the view groups
+    // on: a run on its own is not the unit anyone reasons about.
+    sourceId: turn?.sourceId || null,
+    surface: turn?.surface || turn?.kind || null,
     // Infrastructure (title, topic extraction, grammar pass) — kept in the log, folded
     // out of the default view. A tool call always makes a run foreground.
     background: !!turn?.background && !toolCalls.length,

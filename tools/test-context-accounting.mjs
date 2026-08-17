@@ -41,3 +41,26 @@ assert.ok(!('quiet' in buildToolset([page, silent]).systemParts));
 }
 
 console.log('✓ context accounting: one record, attributed per tool group');
+
+// ── a run knows what it was done FOR ────────────────────────────────────────
+{
+  const rd = await import('../extension/js/run-details.js');
+  const ev = (type, at, turnId, payload = {}) => ({ id: `${type}-${at}`, causes: [], type, at, turnId, payload: { turnId, ...payload } });
+  const { runs } = rd.groupRuns([
+    ev('turn.started', 1, 'a', { kind: 'chat', sourceId: 'conv-1', surface: 'chat' }),
+    ev('turn.ended', 2, 'a', { ms: 5 }),
+    ev('turn.started', 3, 'b', { kind: 'suggestion', sourceId: 'conv-1', background: true }),
+    ev('turn.ended', 4, 'b', { ms: 5 }),
+  ]);
+  assert.equal(runs.length, 2);
+  // Without this the Activity view has nothing to group on.
+  assert.ok(runs.every((r) => r.sourceId === 'conv-1'), 'every run carries its parent');
+
+  const { threadsOf } = await import('../extension/js/events/trajectory.js');
+  const threads = threadsOf(runs);
+  assert.equal(threads.length, 1, 'a conversation and the autocomplete inside it are one thread');
+  assert.equal(threads[0].turns, 2);
+  assert.equal(threads[0].surface, 'chat', 'named after the work it exists for, not the background job');
+}
+
+console.log('✓ activity: runs carry their parent and group into threads');

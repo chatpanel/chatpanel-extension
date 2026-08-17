@@ -88,6 +88,18 @@ export function buildTrajectory(events) {
 
       // The prompt blob holds system + messages + the toolset; split it into readable rows
       // at render time, since only the blob knows what was actually in it.
+      // RETRIEVED MATERIAL IS INPUT, and it belongs beside the question rather than buried
+      // in a tool result. 'a tool ran' and 'a tool returned five notes' are different facts,
+      // and only the second explains the answer.
+      case 'context.retrieved':
+        entries.push({
+          kind: 'context', at: e.at,
+          title: p.count ? `Retrieved ${p.count} source${p.count === 1 ? '' : 's'}` : 'Retrieved material',
+          detail: [p.tool, p.chars ? `${p.chars} chars` : ''].filter(Boolean).join(' · '),
+          data: { tool: p.tool, count: p.count, sources: p.sources || [] },
+        });
+        break;
+
       case 'assistant.prompted':
         entries.push({ kind: 'system', at: e.at, title: 'Prompt', detail: `${p.chars || 0} chars`, ref: p.ref, expandsToMessages: true });
         break;
@@ -172,7 +184,14 @@ export function buildTrajectory(events) {
         break;
 
       case 'assistant.message':
-        entries.push({ kind: 'assistant', at: e.at, title: 'Answer', detail: `${p.chars || 0} chars`, ref: p.ref });
+        entries.push({
+          kind: 'assistant', at: e.at, title: 'Answer',
+          // What it was BASED ON, on the answer row. The first thing anyone checks when an
+          // answer looks wrong is what stood behind it.
+          detail: [`${p.chars || 0} chars`, p.citations?.length ? `${p.citations.length} citation${p.citations.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · '),
+          ref: p.ref,
+          data: p.citations?.length ? { citations: p.citations } : null,
+        });
         break;
 
       default:

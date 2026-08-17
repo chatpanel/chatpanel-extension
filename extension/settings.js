@@ -5353,7 +5353,40 @@ async function renderActivity() {
     runsBox.append(note);
   }
 
-  for (const run of runs.slice(0, 60)) {
+  // THREADS, THEN TURNS. A flat list of 1,205 rows has no structure: nobody asks what run
+  // 847 did, they ask what happened in a conversation — and a conversation is many turns,
+  // as a meeting is its monitors and summaries and a note is every pass over it.
+  const threads = tj.threadsOf(runs).slice(0, 40);
+  const titles = await threadTitles(threads).catch(() => new Map());
+  for (const thread of threads) {
+    const group = document.createElement('details');
+    group.className = 'thread-row';
+    // Open when there is one turn: a disclosure that hides a single row is pure friction.
+    group.open = thread.turns === 1;
+    const gh = document.createElement('summary');
+    gh.className = 'thread-head';
+    const name = document.createElement('span');
+    name.className = 'thread-name';
+    name.textContent = titles.get(thread.key) || tj.threadTitle(thread);
+    const kindTag = document.createElement('span');
+    kindTag.className = 'run-kind';
+    kindTag.textContent = KIND_LABEL[thread.surface] || thread.surface || 'Run';
+    const gmeta = document.createElement('span');
+    gmeta.className = 'thread-meta';
+    const bits = [
+      `${thread.turns} turn${thread.turns === 1 ? '' : 's'}`,
+      thread.ms ? `${(thread.ms / 1000).toFixed(1)}s` : '',
+      thread.calls ? `${thread.calls} call${thread.calls === 1 ? '' : 's'}` : '',
+      // Errors on the heading, so a thread that went wrong is visible without opening it.
+      thread.errors ? `${thread.errors} failed` : '',
+    ].filter(Boolean);
+    gmeta.textContent = bits.join(' · ');
+    if (thread.errors) gmeta.classList.add('warn');
+    gh.append(name, kindTag, gmeta);
+    group.append(gh);
+    runsBox.append(group);
+
+  for (const run of thread.runs) {
     const v = rd.verdict(run);
     const row = document.createElement('details');
     row.className = 'run-row';
@@ -5494,8 +5527,34 @@ async function renderActivity() {
       }
       row.append(list);
     }
-    runsBox.append(row);
+    group.append(row);
   }
+  }
+}
+
+/**
+ * Real names for threads, so the list reads as conversations rather than as ids.
+ *
+ * Best-effort and batched: a heading is worth a lookup, but not worth blocking the view or
+ * making one request per row. Anything that fails keeps its fallback heading, which still
+ * distinguishes one thread from another.
+ */
+async function threadTitles(threads) {
+  const out = new Map();
+  try {
+    const store = await import('./js/store.js');
+    const wanted = threads.filter((t) => t.sourceId);
+    if (!wanted.length) return out;
+    // The conversation INDEX, not the conversations: it already holds {id,title} and is one
+    // read, where loading each thread's messages to find its title would be forty.
+    const convs = (await store.getIndex?.().catch(() => [])) || [];
+    const byId = new Map(convs.map((c) => [c.id, c.title]));
+    for (const t of wanted) {
+      const title = byId.get(t.sourceId);
+      if (title) out.set(t.key, title);
+    }
+  } catch { /* fallback headings are already readable */ }
+  return out;
 }
 
 /**

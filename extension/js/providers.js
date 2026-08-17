@@ -1312,12 +1312,43 @@ export function turnSpecFor({ usage, tools, onDelta, agent } = {}) {
  * them — so this is a substitution, not a judgement, and a rule cannot fail to follow it
  * the way an instruction can.
  */
-function citationCollector(tools) {
+/**
+ * Watch tool results for sources — for the answer AND for the record.
+ *
+ * A turn's INPUT is not just what the person typed. It is also everything fetched to support
+ * it: notes, past chats, meeting transcripts, search results, an attached page read on
+ * demand. None of that was recorded, so a trajectory showed a tool ran and an answer
+ * appeared, with the material that connected them nowhere. And the citations already being
+ * extracted here were applied to the text and then thrown away, so the OUTPUT could not say
+ * what it was based on either.
+ *
+ * Both come from the same place, so both are captured here.
+ */
+function citationCollector(tools, turn = null) {
   const sources = new Map();
-  const collect = (text) => {
-    if (!text || !String(text).includes('](')) return;
+  const collect = (name, text) => {
+    const body = typeof text === 'string' ? text : (text?.text || '');
+    if (!body) return;
     import('./events/citations.js')
-      .then((m) => { for (const s of m.sourcesFromToolText(text)) if (!sources.has(s.rank)) sources.set(s.rank, s); })
+      .then((m) => {
+        const found = m.sourcesFromToolText(body);
+        for (const s of found) if (!sources.has(s.rank)) sources.set(s.rank, s);
+        // RETRIEVAL IS INPUT. Recorded per call, so the turn shows what it was given and by
+        // which tool — a tool that ran is not the same fact as a tool that returned material.
+        if (found.length && turn) {
+          turn.emit('context.retrieved', {
+            tool: name,
+            count: found.length,
+            chars: body.length,
+            sources: found.slice(0, 20).map((x) => ({ rank: x.rank, title: x.title || '', url: x.url || '' })),
+          });
+        } else if (turn && RETRIEVAL_TOOLS.has(String(name || '').replace(/^mcp[_-]/, '').split('__')[0])) {
+          // A retrieval tool that returned no LINKS still returned material — notes and past
+          // chats have no urls. Silence here would under-report exactly the private sources
+          // this is meant to make visible.
+          turn.emit('context.retrieved', { tool: name, count: 0, chars: body.length, sources: [] });
+        }
+      })
       .catch(() => {});
   };
   const wrapped = tools && tools.execute
@@ -1325,13 +1356,14 @@ function citationCollector(tools) {
       ...tools,
       execute: async (name, input, meta) => {
         const out = await tools.execute(name, input, meta);
-        collect(typeof out === 'string' ? out : out?.text);
+        collect(name, out);
         return out;
       },
     }
     : tools;
   return {
     tools: wrapped,
+    list: () => [...sources.values()],
     async apply(answer) {
       if (!sources.size || !answer) return answer;
       try {
@@ -1343,6 +1375,9 @@ function citationCollector(tools) {
     },
   };
 }
+
+/** Tools whose job is to RETURN material rather than to act on something. */
+const RETRIEVAL_TOOLS = new Set(['find', 'source', 'history_search', 'web_search', 'search', 'fetch', 'read_page']);
 
 async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction, usage: usageCtx, timing, sources }, turn) {
   // Per-round-trip records for this turn. Accumulated rather than overwritten — see the
@@ -1510,14 +1545,14 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
     // closing, and how it would now escape without a transcript. Both belong on every
     // exit, not on the one that happened to be edited last.
     recordPrompt(turn, agent, messages, tools);
-    const cites = citationCollector(tools);
+    const cites = citationCollector(tools, turn);
     const full = await withFailover(
       agent, settings, tools, turn, onEvent, signal,
       (a) => dispatchStream({ agent: a, messages, settings, signal, onDelta, onEvent, tools: cites.tools }),
     );
     if (typeof full === 'string' ? full.trim() : full) turn.produced();
     const cited = typeof full === 'string' ? await cites.apply(full) : full;
-    recordAnswer(turn, cited);
+    recordAnswer(turn, cited, cites.list());
     return cited;
   }
   const { vault, cfg, isPro = false, entities = [] } = redaction;
@@ -1596,7 +1631,7 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   // No try/catch. The one that used to be here existed solely to close the turn on the
   // error path; the runner does that in its own `finally`, so an exception simply
   // propagates and the turn is still recorded as failed.
-  const cites = citationCollector(safeTools);
+  const cites = citationCollector(safeTools, turn);
   const full = await dispatchStream({
     agent: safeAgent, messages: red.messages, settings, signal,
     onDelta: wrappedOnDelta, onEvent: wrappedOnEvent, tools: cites.tools,
@@ -1607,7 +1642,7 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   // Restore FIRST, then linkify: rewriting against redacted text would match placeholders
   // instead of the words the user will actually read.
   const answer = await cites.apply(restore(typeof full === 'string' ? full : full ?? '', vault));
-  recordAnswer(turn, answer);
+  recordAnswer(turn, answer, cites.list());
   return answer;
 }
 
@@ -2030,13 +2065,21 @@ function recordPrompt(turn, agent, messages, tools) {
 }
 
 /** Store the answer. Same rules: a ref in the log, the text in the blob store. */
-function recordAnswer(turn, answer) {
+function recordAnswer(turn, answer, citations = []) {
   const text = typeof answer === 'string' ? answer : '';
   if (!text.trim()) return;
   import('./event-log.js')
     .then(async (m) => {
       const ref = await m.putBlob(text, 'chat');
-      if (ref) turn.emit('assistant.message', { ref, chars: text.length });
+      // WHAT IT WAS BASED ON, with the answer. The citations were computed, linkified into
+      // the text and then discarded, so the log could show an answer and never what stood
+      // behind it — which is the first thing anyone checks when an answer looks wrong.
+      if (ref) {
+        turn.emit('assistant.message', {
+          ref, chars: text.length,
+          citations: (citations || []).slice(0, 20).map((c) => ({ rank: c.rank, title: c.title || '', url: c.url || '' })),
+        });
+      }
     })
     .catch(() => {});
 }
