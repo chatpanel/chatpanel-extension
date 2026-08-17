@@ -12,6 +12,7 @@
 // setting.
 
 import { defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, signalsFrom } from './events/router.js';
+import { healthOf } from './model-health.js';
 
 /** Where a request must travel to reach this target — the only attribute privacy depends on. */
 function reachOf(target) {
@@ -112,7 +113,16 @@ export function candidatesFrom(settings = {}, resolveTarget = (x) => x, { ignore
       latencyMs: reach === 'device' ? 1500 : 700,
       available: t.enabled !== false,
     };
-    out.push(defineModel(applyOverride(inferred, overrides[id])));
+    // Behaviour beats configuration. A model whose credits ran out is configured perfectly
+    // and cannot answer; routing to it because its config still looks good is what a user
+    // experiences as "it keeps picking the broken one".
+    const configured = applyOverride(inferred, overrides[id]);
+    const live = healthOf(id);
+    out.push(defineModel({
+      ...configured,
+      available: configured.available && live.available,
+      rateLimited: live.rateLimited,
+    }));
   };
   for (const ep of settings.endpoints || []) add(ep, 'api');
   for (const ag of settings.agents || []) add(ag, ag.kind || 'bridge');
@@ -194,7 +204,7 @@ export function routingSettings(settings = {}) {
  * message fails to send: a router that occasionally defers is fine, one that can break a
  * turn is not.
  */
-export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false, request = null, structured = false } = {}) {
+export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false, request = null, structured = false, exclude = [] } = {}) {
   const cfg = routingSettings(settings);
   // `force` is the user having selected Auto: choosing the router IS the instruction to
   // route, and making them also flip a settings dial would be asking for the same consent
@@ -210,6 +220,7 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
       // The signals a strategy needs to tell "hello" from real work — read for free.
       signals: request ? signalsFrom(request) : undefined,
       structured,
+      exclude,
     });
     if (!decision.model) return null;
     const raw = [...(settings.endpoints || []), ...(settings.agents || [])]

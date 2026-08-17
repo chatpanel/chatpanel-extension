@@ -1458,7 +1458,10 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
     // exit, not on the one that happened to be edited last.
     recordPrompt(turn, agent, messages, tools);
     const cites = citationCollector(tools);
-    const full = await dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools: cites.tools });
+    const full = await withFailover(
+      agent, settings, tools, turn, onEvent, signal,
+      (a) => dispatchStream({ agent: a, messages, settings, signal, onDelta, onEvent, tools: cites.tools }),
+    );
     if (typeof full === 'string' ? full.trim() : full) turn.produced();
     const cited = typeof full === 'string' ? await cites.apply(full) : full;
     recordAnswer(turn, cited);
@@ -1553,6 +1556,48 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   const answer = await cites.apply(restore(typeof full === 'string' ? full : full ?? '', vault));
   recordAnswer(turn, answer);
   return answer;
+}
+
+/**
+ * Run the call, and try the next model when this one cannot answer.
+ *
+ * A provider that returns "you have depleted your monthly credits" has not failed the
+ * request — it has declined it, and there is very likely another model that would say yes.
+ * Showing that error to the user when an alternative was available is the router not doing
+ * the one job it exists for.
+ *
+ * ONLY WHEN THE ROUTER CHOSE. If the user picked a specific model, silently answering from a
+ * different one would be worse than the error: they asked for that model for a reason.
+ */
+async function withFailover(agent, settings, tools, turn, onEvent, signal, call) {
+  const chose = agent?.routedVia || agent?.kind === 'router';
+  try {
+    const out = await call(agent);
+    if (agent?.id) (await import('./model-health.js')).markHealthy(agent.id);
+    return out;
+  } catch (err) {
+    if (!chose || signal?.aborted) throw err;
+    const health = await import('./model-health.js');
+    const marked = health.markUnhealthy(agent.id, err);
+    // A 400 or a bad key is OUR request being wrong, and every other model would refuse it
+    // too. Retrying would turn one clear error into three slow ones.
+    if (!marked) throw err;
+
+    const [router, store] = await Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)]);
+    const next = await router.routeForTurn(settings, store?.resolveTarget, {
+      capabilities: (tools?.specs || []).length ? ['tools'] : [],
+      force: true,
+      exclude: [agent.id],
+    });
+    if (!next?.target) throw err;   // nothing left to try — the original error is the honest one
+
+    const to = next.decision.model.label || next.decision.model.id;
+    turn.emit('automation.fired', { ruleId: 'router:failover', classUsed: 'R', from: agent.id, to, reason: marked.reason });
+    // Tell the panel, because an answer arriving from a different model than the byline
+    // promised is exactly the kind of silent substitution this codebase keeps removing.
+    onEvent?.({ type: 'routed', model: to, reasons: [`${agent.name || agent.id} declined (${marked.reason})`, ...next.decision.reasons] });
+    return call({ ...agent, ...next.target, routedVia: { model: to, reasons: next.decision.reasons } });
+  }
 }
 
 /**

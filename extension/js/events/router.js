@@ -210,6 +210,9 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
         // A model that is rate-limited right now is unavailable right now. Ranking it lower
         // would still let it win when it is the only one left, and then fail.
         if (m.rateLimited) { rejected.push({ id: m.id, why: 'rate limited' }); return false; }
+        // A model that already failed this request is not a candidate for it. Without this,
+        // failover re-picks the model that just returned 402 and the retry is a loop.
+        if (need.exclude?.includes?.(m.id)) { rejected.push({ id: m.id, why: 'already failed this request' }); return false; }
         return true;
       });
 

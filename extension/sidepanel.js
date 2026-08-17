@@ -1372,6 +1372,24 @@ function updateBubble(m) {
   bubble.innerHTML = assistantBody(m);
   enhanceCode(bubble);
   wireStepControls(bubble);
+  // The byline as well, not only the body. Routing is decided BEFORE the first token, so
+  // the model that is answering was knowable the whole time — showing it only after the
+  // reply finished meant watching text arrive from a model the header still misnamed.
+  updateByline(m);
+}
+
+/** Refresh just the "who answered" line of a message already on screen. */
+function updateByline(m) {
+  const who = document.querySelector(`.msg[data-id="${CSS.escape(m.id)}"] .who`);
+  if (!who || m.watch) return;
+  who.textContent = m.agentName || 'Assistant';
+  if (m.routedVia?.model) {
+    const via = document.createElement('span');
+    via.className = 'routed-via';
+    via.textContent = ` · ${m.routedVia.model}`;
+    via.title = (m.routedVia.reasons || []).join('\n') || 'Chosen by the router.';
+    who.appendChild(via);
+  }
 }
 
 // A human label for one agent action (tool call), so the user can SEE what the
@@ -2002,7 +2020,13 @@ async function send() {
 }
 
 function agentForConv(conv) {
-  return getTarget(state.settings, conv.agentId || state.settings.activeAgentId);
+  const id = conv.agentId || state.settings.activeAgentId;
+  // The router is a choice, not a configured model, so getTarget can never find it — and
+  // falling through to "the first agent" is what made a reply say "Claude Code" when the
+  // user had picked Auto. A byline naming a model that was never consulted is worse than
+  // no byline.
+  if (id === ROUTER_TARGET.id) return ROUTER_TARGET;
+  return getTarget(state.settings, id);
 }
 
 function makeAssistant(agent) {
