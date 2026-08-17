@@ -892,6 +892,61 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
       <section class="panel hidden" data-panel="plugins">
         <div class="card">
           <div class="card-head">
+            <h2>Model routing <span class="sub">— which model would answer, and why</span></h2>
+            <button id="routing-refresh" class="btn" type="button">Recheck</button>
+          </div>
+          <p class="muted tiny">
+            Routing is a <strong>rule</strong>, not a model call: your models&rsquo; declared reach,
+            capability, cost and latency go in, a decision and its reasons come out &mdash; instantly
+            and for free. Privacy and capability <strong>eliminate</strong> candidates; cost and
+            latency only order what survives, so a cheaper model can never outrank a privacy
+            requirement. It currently <strong>observes only</strong>: every turn records what it
+            would have chosen, visible in Activity, while your selected agent still answers.
+          </p>
+          <div class="row" style="gap:8px;align-items:center;margin:8px 0">
+            <label class="sub">Routing</label>
+            <select id="routing-mode" style="max-width:210px">
+              <option value="observe">Observe — record, don't change</option>
+              <option value="on">On — let the router choose</option>
+              <option value="off">Off</option>
+            </select>
+            <label class="sub">Max wait</label>
+            <select id="routing-latency" style="max-width:130px">
+              <option value="0">No limit</option>
+              <option value="800">800 ms</option>
+              <option value="2000">2 s</option>
+              <option value="5000">5 s</option>
+            </select>
+            <label class="sub">Max cost</label>
+            <select id="routing-cost" style="max-width:130px">
+              <option value="">No limit</option>
+              <option value="0">Free only</option>
+              <option value="1">Cheap</option>
+              <option value="3">Moderate</option>
+            </select>
+          </div>
+          <div class="row" style="gap:8px;align-items:center;margin:8px 0">
+            <label class="sub">Request may reach</label>
+            <select id="routing-reach" style="max-width:150px">
+              <option value="any">Anywhere</option>
+              <option value="trusted">My machine or gateway</option>
+              <option value="device">This device only</option>
+            </select>
+            <label class="check tiny" style="margin:0">
+              <input type="checkbox" id="routing-tools" checked> Needs tools
+            </label>
+            <label class="sub">Prefer</label>
+            <select id="routing-prefer" style="max-width:120px">
+              <option value="balanced">Balanced</option>
+              <option value="latency">Speed</option>
+              <option value="cost">Cost</option>
+              <option value="quality">Quality</option>
+            </select>
+          </div>
+          <div id="routing-out" class="replay-out"></div>
+        </div>
+        <div class="card">
+          <div class="card-head">
             <h2>Plugins <span class="sub">— everything ChatPanel loads, and what you can switch off</span></h2>
             <button id="plugins-refresh" class="btn" type="button">Refresh</button>
           </div>

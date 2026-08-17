@@ -1409,10 +1409,32 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
       prepMs: tools?.prepMs ?? null,
       mcpMs: tools?.mcpMs ?? null,
     });
+
+    // WHAT THE ROUTER WOULD HAVE CHOSEN — recorded, not obeyed.
+    //
+    // Observe mode: the decision is computed and logged while the existing target selection
+    // still runs. A router that took over every message on its first day would be
+    // indistinguishable, when something felt wrong, from any other change made that day.
+    // Once the recorded decisions look right, switching it on is one setting.
+    //
+    // Free to compute (class R, no model call) and fire-and-forget, so an observation can
+    // never cost or break the turn it is observing.
+    recordRouteDecision(turn, agent, settings, tools);
     // Also on the turn record, so a reader does not have to join two events to answer
     // "where did the time go".
     turn.report({ prepMs: tools?.prepMs ?? null, mcpMs: tools?.mcpMs ?? null });
   }
+  // ROUTING, when the user has switched it on.
+  //
+  // Applied here rather than at each call site so every surface inherits it — and applied
+  // BEFORE the system prompt is composed, so the routed model gets the same treatment any
+  // other would. Returns null in every uncertain case, and null means "leave the choice
+  // alone": routing must never be the reason a message fails to send.
+  {
+    const routed = await pickRoutedAgent(agent, settings, tools, turn);
+    if (routed) agent = routed;
+  }
+
   // ONE place every model-bound call passes through — augment the agent's system
   // prompt with runtime context (date + enforced language) so all agents, present
   // and future, inherit it without per-provider wiring.
@@ -1525,6 +1547,74 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   const answer = await cites.apply(restore(typeof full === 'string' ? full : full ?? '', vault));
   recordAnswer(turn, answer);
   return answer;
+}
+
+/**
+ * The routed model, or null to keep the caller's choice.
+ *
+ * Every failure path returns null. A router that can break a turn is worse than no router,
+ * and "the model I picked was ignored because routing threw" is the least explicable failure
+ * this could produce.
+ */
+async function pickRoutedAgent(agent, settings, tools, turn) {
+  try {
+    const [router, store] = await Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)]);
+    if (router.routingSettings(settings).mode !== 'on') return null;
+    const need = { capabilities: (tools?.specs || []).length ? ['tools'] : [] };
+    const routed = await router.routeForTurn(settings, store?.resolveTarget, need);
+    if (!routed?.target) return null;
+    const from = agent?.id || agent?.name || agent?.model || null;
+    const to = routed.decision.model.id;
+    if (from === to) return null;   // nothing changed; no need to say anything
+    // A model swapped under the user is exactly the kind of thing that must be visible.
+    turn.emit('policy.changed', {
+      dial: 'route.applied',
+      actor: { kind: 'rule', id: 'model-router' },
+      from, to,
+      strategy: routed.decision.strategy,
+      reasons: routed.decision.reasons,
+    });
+    // The caller's system prompt and per-turn overrides survive; only the target changes.
+    return { ...agent, ...routed.target };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Record what the router would choose for this turn, and why.
+ *
+ * Deliberately compares against the target actually used, because the interesting number is
+ * not "what did it pick" but "how often would it have picked something else" — that is the
+ * question that says whether turning it on is safe.
+ *
+ * Fire-and-forget and free to compute (class R, no model call), so an observation can never
+ * cost or break the turn it observes.
+ */
+function recordRouteDecision(turn, agent, settings, tools) {
+  Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)])
+    .then(async ([router, store]) => {
+      const need = {
+        // Tools are a hard requirement, not a preference: a model without them cannot do the
+        // turn at all, so it must be eliminated rather than ranked lower.
+        capabilities: (tools?.specs || []).length ? ['tools'] : [],
+        prefer: 'balanced',
+      };
+      const preview = await router.previewRoute(settings, store?.resolveTarget, need);
+      const used = agent?.id || agent?.name || agent?.model || null;
+      turn.emit('policy.changed', {
+        dial: 'route.observed',
+        actor: { kind: 'rule', id: 'model-router' },
+        from: used,
+        to: preview.chosen,
+        agrees: !!preview.chosen && preview.chosen === used,
+        strategy: preview.strategy,
+        reasons: preview.reasons,
+        eligible: preview.eligible,
+        rejected: preview.rejected,
+      });
+    })
+    .catch(() => {});
 }
 
 /**

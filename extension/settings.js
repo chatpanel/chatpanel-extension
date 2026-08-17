@@ -134,7 +134,7 @@ function wireTabs() {
     // Same lazy rule as usage: the log module and the analysis load only when this tab is
     // actually shown, so a user who never opens Activity never pays for it.
     if (name === 'activity') { renderUsage(); renderActivity(); }
-    if (name === 'plugins') renderPlugins();
+    if (name === 'plugins') { renderPlugins(); loadRoutingForm(); renderRouting(); }
   };
   const exists = (name) => !!document.querySelector(`.tab[data-tab="${name}"]`);
   // Notes/Meetings/History are merged into one "Workspace" tab as sections. Keep
@@ -4892,6 +4892,86 @@ function externalPlugins() {
     });
   }
   return out;
+}
+
+/**
+ * Show the routing decision for a request you describe.
+ *
+ * The point is not the answer but the REASONS: a router you cannot interrogate is one you
+ * have to trust, and the whole argument for routing being a rule rather than a model call is
+ * that it can be checked. Rejections are shown with why each candidate lost, because "it
+ * used the wrong model" is unanswerable without them.
+ */
+/** The dials, read once so the preview and the saved settings cannot disagree. */
+function routingNeedFromForm() {
+  const num = (v) => (v === '' || v == null ? undefined : Number(v));
+  return {
+    reach: $('routing-reach')?.value || 'any',
+    capabilities: $('routing-tools')?.checked ? ['tools'] : [],
+    prefer: $('routing-prefer')?.value || 'balanced',
+    maxLatencyMs: num($('routing-latency')?.value) || 0,
+    maxCostPer1k: num($('routing-cost')?.value),
+  };
+}
+
+async function renderRouting() {
+  const out = $('routing-out');
+  if (!out) return;
+  out.textContent = 'Checking…';
+  try {
+    const [{ previewRoute }, store] = await Promise.all([
+      import('./js/model-router.js'),
+      import('./js/store.js'),
+    ]);
+    const need = routingNeedFromForm();
+    // Persist as you turn the dials. These are what the router will USE on a real turn once
+    // the mode is On, so a preview that disagreed with the saved settings would be showing
+    // you a decision that never happens.
+    settings.ui = settings.ui || {};
+    settings.ui.routing = { ...need, mode: $('routing-mode')?.value || 'observe' };
+    saveSettings(settings).catch(() => {});
+    const r = await previewRoute(settings, store.resolveTarget, need);
+    out.textContent = '';
+
+    const head = document.createElement('b');
+    head.className = r.chosen ? 'ok' : 'err';
+    head.textContent = r.chosen
+      ? `Would route to: ${r.chosen}`
+      : 'No model satisfies these constraints';
+    out.append(head);
+
+    const pre = document.createElement('pre');
+    pre.className = 'tj-raw';
+    const lines = [];
+    for (const why of r.reasons || []) lines.push(`  ${why}`);
+    if (r.runnersUp?.length) lines.push(`  runners-up: ${r.runnersUp.join(', ')}`);
+    if (r.rejected?.length) {
+      lines.push('', 'Rejected:');
+      // Naming the loser AND the reason is the difference between a decision and an oracle.
+      for (const x of r.rejected) lines.push(`  ${x.id} — ${x.why}`);
+    }
+    if (!r.chosen && !r.rejected?.length) lines.push('  no models configured — add one in API or Agents');
+    pre.textContent = lines.join('\n');
+    out.append(pre);
+  } catch (e) {
+    out.textContent = `Could not check routing: ${e?.message || e}`;
+  }
+}
+
+/** Put the saved dials back on the form, so what you see is what will run. */
+function loadRoutingForm() {
+  const r = settings?.ui?.routing || {};
+  if ($('routing-mode')) $('routing-mode').value = r.mode || 'observe';
+  if ($('routing-reach')) $('routing-reach').value = r.reach || 'any';
+  if ($('routing-prefer')) $('routing-prefer').value = r.prefer || 'balanced';
+  if ($('routing-tools')) $('routing-tools').checked = (r.capabilities || ['tools']).includes('tools');
+  if ($('routing-latency')) $('routing-latency').value = String(r.maxLatencyMs || 0);
+  if ($('routing-cost')) $('routing-cost').value = r.maxCostPer1k == null ? '' : String(r.maxCostPer1k);
+}
+
+for (const id of ['routing-refresh', 'routing-reach', 'routing-tools', 'routing-prefer', 'routing-mode', 'routing-latency', 'routing-cost']) {
+  const el = $(id);
+  el?.addEventListener(id === 'routing-refresh' ? 'click' : 'change', renderRouting);
 }
 
 $('plugins-refresh')?.addEventListener('click', renderPlugins);
