@@ -21,8 +21,9 @@ import { createAppender, validateEvent } from './events/event.js';
 
 const DB = 'chatpanel-log';
 const STORE = 'events';
+const BLOBS = 'blobs';
 const HOST_KEY = 'chatpanel:logHostId';
-const VERSION = 1;
+const VERSION = 2;
 
 // RETENTION. Measured: ~945 B per tool action worst case, so a heavy day (300 actions) is
 // ~280 KB and an unbounded year is ~99 MB. Bounded per event is not the same as bounded,
@@ -41,6 +42,12 @@ let ready = null;
 function openDb() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB, VERSION);
+    // A version upgrade BLOCKS while any other context still holds the old connection —
+    // the side panel and the service worker both keep this database open, so a schema
+    // change made the settings page hang forever with an empty Activity view. Every
+    // connection now steps aside when a newer version wants in, and a blocked open fails
+    // loudly instead of waiting for a close that may never come.
+    req.onblocked = () => reject(new Error('event log upgrade blocked by another open tab or the service worker — close other ChatPanel views and retry'));
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
@@ -49,8 +56,20 @@ function openDb() {
         os.createIndex('type', 'type', { unique: false });
         os.createIndex('at', 'at', { unique: false });
       }
+      // Content lives here; events only ever name it. Keyed by content hash, so the same
+      // system prompt on a thousand turns is stored once — and a blob can be deleted
+      // without rewriting an append-only log, which is what keeps "delete my data" true.
+      if (!db.objectStoreNames.contains(BLOBS)) {
+        const bs = db.createObjectStore(BLOBS, { keyPath: 'hash' });
+        bs.createIndex('at', 'at', { unique: false });
+      }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // Release on demand, so the NEXT upgrade is never blocked by this connection.
+      db.onversionchange = () => { try { db.close(); } catch { /* already gone */ } ready = null; };
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -212,11 +231,93 @@ export async function stats() {
 }
 
 /** Drop everything. Used by the settings "clear activity" control and by tests. */
+// ── content-addressed blobs ────────────────────────────────────────────────
+//
+// What the model was shown and what it said, stored beside the log rather than in it.
+// This is the half that makes a trajectory readable and replay checkable, and it is also
+// the half that carries the user's words — so it is separable, prunable and deletable on
+// its own terms.
+
+const MAX_BLOB_CHARS = 200_000;   // one turn's text, generously; not a whole conversation
+
+async function sha256(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return `sha256:${[...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/**
+ * Store text, return a Ref. Same content → same hash → one copy.
+ *
+ * Returns null (rather than throwing) when storage fails: a turn must not fail because its
+ * transcript could not be written, and an event that references a missing blob already has
+ * an honest resolution — verified-but-unavailable.
+ */
+export async function putBlob(text, kind = 'chat') {
+  try {
+    const body = String(text ?? '');
+    if (!body.trim()) return null;
+    const clipped = body.length > MAX_BLOB_CHARS ? body.slice(0, MAX_BLOB_CHARS) : body;
+    const hash = await sha256(clipped);
+    const { db } = await open();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(BLOBS, 'readwrite');
+      // `put`, not `add`: re-storing identical content is a no-op, not an error.
+      tx.objectStore(BLOBS).put({ hash, text: clipped, at: Date.now(), chars: body.length });
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    return { kind, id: hash, hash, stored: true };
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve a Ref to its text, or null when it has been pruned or shredded. */
+export async function getBlob(ref) {
+  try {
+    const hash = typeof ref === 'string' ? ref : ref?.hash;
+    if (!hash) return null;
+    const { db } = await open();
+    return await new Promise((resolve) => {
+      const req = db.transaction(BLOBS, 'readonly').objectStore(BLOBS).get(hash);
+      req.onsuccess = () => resolve(req.result?.text ?? null);
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Drop blobs older than the oldest event we still hold — content never outlives its record. */
+export async function pruneBlobs(oldestEventAt) {
+  if (!Number.isFinite(oldestEventAt)) return 0;
+  try {
+    const { db } = await open();
+    return await new Promise((resolve) => {
+      let n = 0;
+      const tx = db.transaction(BLOBS, 'readwrite');
+      const req = tx.objectStore(BLOBS).index('at').openCursor(IDBKeyRange.upperBound(oldestEventAt));
+      req.onsuccess = () => {
+        const cur = req.result;
+        if (!cur) return;
+        cur.delete(); n++; cur.continue();
+      };
+      tx.oncomplete = () => resolve(n);
+      tx.onerror = () => resolve(n);
+    });
+  } catch {
+    return 0;
+  }
+}
+
 export async function clear() {
   const { db } = await open();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite');
+    // Blobs too. "Clear activity" that left the transcripts behind would be the worst kind
+    // of privacy bug: one that looks handled.
+    const tx = db.transaction([STORE, BLOBS], 'readwrite');
     tx.objectStore(STORE).clear();
+    tx.objectStore(BLOBS).clear();
     tx.oncomplete = resolve;
     tx.onerror = () => reject(tx.error);
   });

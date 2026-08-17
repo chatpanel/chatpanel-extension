@@ -4686,12 +4686,24 @@ async function renderActivity() {
   let log; let rd;
   try {
     [log, rd] = await Promise.all([import('./js/event-log.js'), import('./js/run-details.js')]);
-  } catch {
-    runsBox.innerHTML = '<p class="activity-empty">Activity log unavailable.</p>';
+  } catch (e) {
+    // Say WHY. "Unavailable" sent me looking at the markup when the real cause was an
+    // IndexedDB upgrade blocked by another open view.
+    runsBox.innerHTML = '<p class="activity-empty"></p>';
+    runsBox.firstChild.textContent = `Activity log unavailable: ${e?.message || e}`;
     return;
   }
 
-  const [stat, events] = await Promise.all([log.stats(), log.all()]);
+  let stat; let events;
+  try {
+    [stat, events] = await Promise.all([log.stats(), log.all()]);
+  } catch (e) {
+    // Reading can fail for the same reason opening can (a blocked upgrade), and a silent
+    // empty panel is the least useful way to say so.
+    runsBox.innerHTML = '<p class="activity-empty"></p>';
+    runsBox.firstChild.textContent = `Could not read the activity log: ${e?.message || e}`;
+    return;
+  }
   const bits = [
     ['Runs recorded', String(rd.groupRuns(events).runs.length)],
     ['Events', `${stat.events.toLocaleString()} of ${stat.cap.toLocaleString()} (${stat.pctOfCap}%)`],

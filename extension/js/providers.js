@@ -1327,9 +1327,12 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   if (redaction && redaction.cfg && redaction.cfg.applyTo === 'remote' && isLocalAgent(agent)) redaction = null;
   if (!redaction || !redaction.vault || !redactionEnabled(redaction.cfg)) {
     // This path returns early — which is exactly how the turn once escaped without
-    // closing. It no longer can: the runner owns the close, and this body simply returns.
+    // closing, and how it would now escape without a transcript. Both belong on every
+    // exit, not on the one that happened to be edited last.
+    recordPrompt(turn, agent, messages, tools);
     const full = await dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools });
     if (typeof full === 'string' ? full.trim() : full) turn.produced();
+    recordAnswer(turn, full);
     return full;
   }
   const { vault, cfg, isPro = false, entities = [] } = redaction;
@@ -1400,6 +1403,11 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
         harness.toModelResult(name, await base(name, harness.toTool(name, input), meta)),
     };
   }
+  // What the model is ABOUT to be shown — recorded before the call, so a turn that dies
+  // mid-stream still says what was asked. Deliberately the REDACTED copy: it is what the
+  // model actually saw, which makes it both the honest record and the safer one.
+  recordPrompt(turn, safeAgent, red.messages, safeTools);
+
   // No try/catch. The one that used to be here existed solely to close the turn on the
   // error path; the runner does that in its own `finally`, so an exception simply
   // propagates and the turn is still recorded as failed.
@@ -1410,7 +1418,43 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   const tail = restorer.flush();
   if (tail && rawOnDelta) rawOnDelta(tail);
   if (typeof full === 'string' ? full.trim() : full) turn.produced();
-  return restore(typeof full === 'string' ? full : full ?? '', vault);
+  const answer = restore(typeof full === 'string' ? full : full ?? '', vault);
+  recordAnswer(turn, answer);
+  return answer;
+}
+
+/**
+ * Store the model-visible input and reference it from the log.
+ *
+ * Fire-and-forget by design: a transcript that could fail a chat turn would be worse than
+ * no transcript. The event carries only a hash — see I7 in @chatpanel/events for why
+ * content never travels inside an event.
+ */
+function recordPrompt(turn, agent, messages, tools) {
+  const text = JSON.stringify({
+    system: agent?.systemPrompt || '',
+    messages: (messages || []).map((m) => ({ role: m.role, content: m.content })),
+    tools: (tools?.specs || []).map((t) => t.name || t.function?.name).filter(Boolean),
+    toolSystem: tools?.system || '',
+  }, null, 2);
+  import('./event-log.js')
+    .then(async (m) => {
+      const ref = await m.putBlob(text, 'chat');
+      if (ref) turn.emit('assistant.prompted', { ref, chars: text.length });
+    })
+    .catch(() => {});
+}
+
+/** Store the answer. Same rules: a ref in the log, the text in the blob store. */
+function recordAnswer(turn, answer) {
+  const text = typeof answer === 'string' ? answer : '';
+  if (!text.trim()) return;
+  import('./event-log.js')
+    .then(async (m) => {
+      const ref = await m.putBlob(text, 'chat');
+      if (ref) turn.emit('assistant.message', { ref, chars: text.length });
+    })
+    .catch(() => {});
 }
 
 // Rough token estimate — the same 4-chars-per-token rule the dispatcher budget uses.
