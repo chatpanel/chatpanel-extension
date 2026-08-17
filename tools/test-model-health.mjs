@@ -21,6 +21,10 @@ assert.equal(classifyFailure({ status: 404, message: 'unknown model xyz' }), 'go
 // unusable, not that our request was malformed. Every other model would have answered.
 assert.equal(classifyFailure(new Error('HTTP 404 — {"error":{"message":"The model llama-3.1-8b-instant does not exist or you do not have access to it."}}')), 'gone');
 assert.equal(classifyFailure(new Error('This model has been deprecated')), 'gone');
+// An agent configured for a model it does not have. Nothing about that changes in thirty
+// seconds, and retrying costs a process spawn to be told the same thing — so it is stood
+// down until the setting is fixed, while every other model can still answer.
+assert.equal(classifyFailure(new Error('Antigravity exited 1: Error: invalid model selection (--model "Gemini" --effort ""): model Gemini is not recognized as a known model or custom model in settings')), 'gone');
 markUnhealthy('dead', { status: 410, message: 'end of life' });
 assert.equal(healthOf('dead').available, false, 'a retired model stayed in rotation');
 // Stood down for the session, because it is not coming back and a shorter wait just repeats

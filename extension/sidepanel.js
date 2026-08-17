@@ -1389,6 +1389,12 @@ function updateBubble(m) {
  */
 function modelsUsedIn(m) {
   const seen = [];
+  // The routing chain first and in order — it records every model that was HANDED the turn,
+  // including ones that failed before making a single tool call. Deriving this from the tool
+  // steps alone loses exactly those, which are the interesting ones when a turn goes wrong.
+  for (const model of m.routeChain || []) {
+    if (model && !seen.includes(model)) seen.push(model);
+  }
   for (const step of m.steps || []) {
     if (step.model && !seen.includes(step.model)) seen.push(step.model);
   }
@@ -2293,9 +2299,12 @@ async function runStream(agent, assistant, conv) {
             dl.progress(ev);
           }
         } else if (ev.type === 'routed') {
-          // Which model actually answered, and why. Stored on the message so it survives a
-          // reload — a routing decision you can only see while the reply is streaming is one
-          // you cannot go back and check.
+          // EVERY hop, not just the last. Each failover emitted a routed event and the
+          // previous one was overwritten, so a turn that tried four models showed two — the
+          // ones that happened to make a tool call. The chain is the story: how many were
+          // tried, in what order, and where it ended up.
+          assistant.routeChain = assistant.routeChain || [];
+          if (assistant.routeChain.at(-1) !== ev.model) assistant.routeChain.push(ev.model);
           assistant.routedVia = { model: ev.model, reasons: ev.reasons, strategy: ev.strategy };
           if (!raf) raf = requestAnimationFrame(flush);
         } else if (ev.type === 'reasoning' && ev.text) {

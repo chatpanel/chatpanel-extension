@@ -49,7 +49,12 @@ export function classifyFailure(err) {
     // the provider saying THIS model is unusable, not that our request was malformed. Every
     // other model would have answered, so treating it as our mistake ends the turn for no
     // reason.
-    || /model.*(does not exist|not found|no access|do not have access)|unknown model|no such model/i.test(text)) return 'gone';
+    || /model.*(does not exist|not found|no access|do not have access)|unknown model|no such model/i.test(text)
+    // An agent configured for a model it does not have — "invalid model selection",
+    // "not recognized as a known model". Nothing about that changes in thirty seconds, and
+    // retrying it costs a process spawn to be told the same thing. It is stood down until
+    // the user fixes the setting, and every other model can still answer.
+    || /invalid model selection|not recognized as a (known|custom) model|unsupported model/i.test(text)) return 'gone';
   if (status >= 500 || /overloaded|unavailable|timeout|ECONNRESET/i.test(text)) return 'server';
   // ONLY these are OUR fault. A 400 is a malformed request, a 401/403 a key problem — every
   // model would refuse them identically, so retrying turns one clear error into four slow
