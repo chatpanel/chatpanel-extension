@@ -30,6 +30,9 @@ export const CURRENT_VERSION = 1;
 /** The seven families of v1. Adding is cheap; removing is not. */
 export const EVENT_TYPES = Object.freeze({
   turn: ['started', 'ended'],
+  // What the model was SHOWN and what it SAID. Deliberately arriving as refs, not text —
+  // see the note on the validators below.
+  assistant: ['prompted', 'message', 'reasoning'],
   context: ['assembled', 'attached', 'expanded'],
   capability: ['offered', 'granted', 'denied', 'activated', 'revoked', 'invoked', 'resulted'],
   privacy: ['redacted', 'egress'],
@@ -69,6 +72,25 @@ function scopeOk(s) { return !!s && SCOPE_KINDS.includes(s.kind) && str(s.id); }
 const PAYLOAD = {
   'turn.started': (p) => str(p.turnId),
   'turn.ended': (p) => str(p.turnId),
+
+  // ── assistant ─────────────────────────────────────────────────────────────
+  // "Model-visible means logged" was true of the toolset and false of the conversation:
+  // the log could say a turn happened and what it cost, but never what was asked or
+  // answered. That is the half a trajectory view needs, and the half replay cannot be
+  // checked without.
+  //
+  // CONTENT IS NEVER IN THE EVENT. Each of these carries a Ref — a content hash — and the
+  // bytes live in the blob store. Three reasons, in order of how much they matter:
+  //   1. The log stays metadata, so exporting or replicating it does not export the user's
+  //      conversations by accident. That property is the whole reason an event log is safe
+  //      to keep at all.
+  //   2. Deletion stays honest: an append-only log cannot unsay a message, but a blob can
+  //      be crypto-shredded and the ref then resolves to verified-but-unavailable. Inlined
+  //      text would make "delete my data" a lie the schema enforces forever.
+  //   3. Repeated content (the same system prompt on every turn) is stored once.
+  'assistant.prompted': (p) => str(p.turnId) && isRef(p.ref),
+  'assistant.message': (p) => str(p.turnId) && isRef(p.ref),
+  'assistant.reasoning': (p) => str(p.turnId) && isRef(p.ref),
 
   'context.assembled': (p) => num(p.budget) && num(p.used) && !!p.parts && typeof p.parts === 'object'
     && arr(p.resident) && p.resident.every(isRef) && num(p.reachableCount),

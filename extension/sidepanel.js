@@ -41,7 +41,8 @@ import {
   enableMeetingCaptions,
   getMeetingRecord,
 } from './js/context.js';
-import { getSuggestions, getMeetingSuggestions, FALLBACK_SUGGESTIONS } from './js/suggestions.js';
+import { getSuggestions, getMeetingSuggestions, FALLBACK_SUGGESTIONS, targetKey } from './js/suggestions.js';
+import { createFallbackChain } from './js/model-fallback.js';
 // warm-sync.js is dynamic-imported in maybeWarmSync() — it drags in the history-rag subgraph.
 import {
   meetingToText,
@@ -5868,29 +5869,48 @@ const FAST_MODEL = { claude: 'haiku' };
 //   1) the active agent if it's itself an API endpoint;
 //   2) any other configured API endpoint with a model;
 //   3) the active bridge agent → bridge /complete (slow; best-effort).
-function autocompleteSource() {
+/**
+ * Every model that could complete the draft, in the order worth trying.
+ *
+ * This returned ONE source, so a dead endpoint killed the feature: a stopped local model
+ * produced an instant connection refusal on every keystroke — 60 failed turns in one
+ * 90-minute session in the exported log — while a working remote endpoint and a
+ * configured CLI agent were never reached. An autocomplete model the user had explicitly
+ * set on their agent was ignored, because an earlier, dead endpoint always won.
+ *
+ * The latency ordering is unchanged and still right: a fast API endpoint first, a CLI
+ * agent last because it cold-spawns per call. What changed is that the list continues past
+ * a failure instead of ending at one.
+ */
+function autocompleteCandidates() {
   const active = resolveTarget(currentAgent(), state.settings);
-  // ALWAYS prefer a fast API endpoint: inline autocomplete needs a sub-500ms
-  // reply, and only a streaming API model delivers that. Bridge agents spawn a
-  // CLI per call (~seconds) so they're a slow last resort, never preferred —
-  // even if the user set an "Autocomplete model" on one.
-  // 1) Active agent if it's itself an API endpoint.
-  if (active && active.kind !== 'bridge' && active.model) return { kind: 'api', target: active };
-  // 2) Any other configured API endpoint with a model (skip disabled ones — this is
-  //    how "disable local models to test autocomplete" takes effect).
+  const out = [];
+  const seen = new Set();
+  const add = (c) => {
+    const k = c.kind === 'bridge' ? `bridge:${c.engine}:${c.model}` : targetKey(c.target);
+    if (!seen.has(k)) { seen.add(k); out.push(c); }
+  };
+  if (active && active.kind !== 'bridge' && active.model) add({ kind: 'api', target: active });
   for (const ep of state.settings.endpoints || []) {
-    if (ep.enabled === false) continue;
+    if (ep.enabled === false) continue;   // how "disable local models to test autocomplete" takes effect
     const t = resolveTarget(ep, state.settings);
-    if (t && t.kind !== 'bridge' && t.model) return { kind: 'api', target: t };
+    if (t && t.kind !== 'bridge' && t.model) add({ kind: 'api', target: t });
   }
-  // 3) Last resort — the active bridge agent via /complete (slow; only when no
-  //    API endpoint exists). Honors its configured autocomplete model.
   if (active && active.kind === 'bridge') {
     const engine = active.bridgeAgent || 'claude';
-    return { kind: 'bridge', engine, model: active.autocompleteModel || FAST_MODEL[engine] || '' };
+    add({ kind: 'bridge', engine, model: active.autocompleteModel || FAST_MODEL[engine] || '' });
   }
-  return null;
+  return out;
 }
+
+/** Back-compat for callers that only ask "is anything usable?". */
+function autocompleteSource() { return autocompleteCandidates()[0] || null; }
+
+// Shared with suggestions: both features had independently shipped the same
+// single-pick-and-give-up bug.
+const acChain = createFallbackChain({
+  key: (c) => (c.kind === 'bridge' ? `bridge:${c.engine}:${c.model}` : targetKey(c.target)),
+});
 
 function clearPromptSuggest() {
   clearTimeout(acTimer);
@@ -5964,6 +5984,49 @@ function autocompleteContext() {
   return ctx.slice(0, 1200);
 }
 
+/**
+ * Ask ONE source to complete the draft. Throws on failure so the chain moves on, returns
+ * '' when the model simply had nothing to add — a model that answered emptily is working,
+ * and marking it failed would take a healthy model out of rotation.
+ */
+async function completeOnce(source, prompt, sys) {
+  if (source.kind === 'bridge') {
+    // Fast path through the local bridge using the agent's fast model.
+    const base = (state.settings.bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
+    // Redact the draft + page context before it crosses to the bridge/local model
+    // (this raw fetch bypasses streamChat's redaction), then restore the ghost text.
+    const ac = redactOnce(prompt, state.settings);
+    const res = await fetch(`${base}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: source.engine, prompt: ac.text, model: source.model, system: sys }),
+      signal: acController.signal,
+    });
+    if (!res.ok) throw new Error(`bridge /complete ${res.status}`);
+    let out = (await res.json()).text || '';
+    if (ac.vault) out = restorePii(out, ac.vault);
+    return out;
+  }
+  // Honor an explicitly-chosen autocomplete model on the endpoint; otherwise
+  // auto-pick the smallest available (e.g. a 0.5B model over the big chat one).
+  const model = source.target.autocompleteModel || (await smallModelFor(source.target));
+  // Fast NER (endpoint) is cheap enough to run per-autocomplete; skip only the
+  // slow LLM detector here so keystroke latency stays low.
+  const acR = redactionFromSettings(state.settings);
+  if (acR) acR.detect = state.settings?.ui?.piiRedaction?.detection?.backend === 'endpoint';
+  let out = '';
+  await streamChat({
+    agent: { ...source.target, model, systemPrompt: sys, maxTokens: 16, temperature: 0.2 },
+    messages: [{ role: 'user', content: prompt }],
+    settings: state.settings,
+    signal: acController.signal,
+    redaction: acR,
+    onDelta: (d) => { out += d; },
+    onEvent: () => {},
+  });
+  return out;
+}
+
 async function requestAutocomplete(text, source) {
   if (!source) return;
   acController = new AbortController();
@@ -5987,46 +6050,17 @@ async function requestAutocomplete(text, source) {
   const prompt =
     (ctx ? `Context (the page the user is viewing):\n"""\n${ctx}\n"""\n\n` : '') +
     `Continue this text with only the next few words. Do not answer it:\n${text}`;
+  // Try each candidate until one completes. A single source meant one stopped local model
+  // ended the feature; the chain also remembers the failure so it is not re-dialled on the
+  // next keystroke.
   let out = '';
   try {
-    if (source.kind === 'bridge') {
-      // Fast path through the local bridge using the agent's fast model.
-      const base = (state.settings.bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
-      // Redact the draft + page context before it crosses to the bridge/local model
-      // (this raw fetch bypasses streamChat's redaction), then restore the ghost text.
-      const ac = redactOnce(prompt, state.settings);
-      const res = await fetch(`${base}/complete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent: source.engine, prompt: ac.text, model: source.model, system: sys }),
-        signal: acController.signal,
-      });
-      if (!res.ok) return;
-      out = (await res.json()).text || '';
-      if (ac.vault) out = restorePii(out, ac.vault);
-    } else {
-      // Honor an explicitly-chosen autocomplete model on the endpoint; otherwise
-      // auto-pick the smallest available (e.g. a 0.5B model over the big chat one).
-      const model = source.target.autocompleteModel || (await smallModelFor(source.target));
-      // Fast NER (endpoint) is cheap enough to run per-autocomplete; skip only the
-      // slow LLM detector here so keystroke latency stays low.
-      const acR = redactionFromSettings(state.settings);
-      if (acR) acR.detect = state.settings?.ui?.piiRedaction?.detection?.backend === 'endpoint';
-      await streamChat({
-        agent: { ...source.target, model, systemPrompt: sys, maxTokens: 16, temperature: 0.2 },
-        messages: [{ role: 'user', content: prompt }],
-        settings: state.settings,
-        signal: acController.signal,
-        redaction: acR,
-        onDelta: (d) => {
-          out += d;
-        },
-        onEvent: () => {},
-      });
-    }
+    const { result } = await acChain.run(autocompleteCandidates(), (source) => completeOnce(source, prompt, sys));
+    out = result || '';
   } catch {
-    return; // aborted or failed — no suggestion
+    return; // aborted — no suggestion
   }
+  if (!out) return;
   const input = $('input');
   if (input.value !== text) return; // user typed more meanwhile
   let s = out.replace(/^\s*["'“]+|["'”]+\s*$/g, '');

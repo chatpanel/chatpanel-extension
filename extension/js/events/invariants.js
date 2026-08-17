@@ -18,6 +18,7 @@
 //   I4  every capability.revoked names its activated in causes
 //   I5  no durable event exists for a per-item ephemeral stream
 //   I6  replay under the linearization rule is stable across runs and across hosts
+//   I7  no assistant event carries content — only a Ref to it
 //
 // checkInvariants() returns violations rather than throwing, so a harness can report
 // every problem in one pass instead of one per run.
@@ -28,6 +29,31 @@ import { isRef } from './ref.js';
 const v = (id, event, message) => ({ invariant: id, eventId: event ? event.id : null, message });
 
 /** I1 — a turn that ran must have assembled its context, and every resident Ref is hashed. */
+/**
+ * I7 — an assistant event names its content, it never contains it.
+ *
+ * The temptation is obvious: inlining the text makes the trajectory view trivial. It also
+ * makes the log a second copy of every conversation, so exporting the log exports the
+ * user's data, and shredding a message leaves it readable in an append-only file forever.
+ * Structural, not advisory: the checker fails on any payload field holding a long string,
+ * because the failure it prevents is silent — everything keeps working, and privacy is
+ * quietly gone.
+ */
+function checkI7(events) {
+  const out = [];
+  const MAX = 200; // a model, a stop reason, a hash — never a message
+  for (const e of events) {
+    if (!String(e.type).startsWith('assistant.')) continue;
+    if (!isRef(e.payload?.ref)) out.push(v('I7', e, 'assistant event has no content Ref'));
+    for (const [k, val] of Object.entries(e.payload || {})) {
+      if (k !== 'ref' && typeof val === 'string' && val.length > MAX) {
+        out.push(v('I7', e, `payload.${k} carries ${val.length} chars of content — assistant events must reference, never contain`));
+      }
+    }
+  }
+  return out;
+}
+
 function checkI1(events) {
   const out = [];
   const assembledByTurn = new Set();
@@ -114,6 +140,7 @@ function checkI6(events, { shuffles = 8, rng = mulberry32(0x5EED) } = {}) {
 /** Run every invariant over an event set. Returns [] when the log is sound. */
 export function checkInvariants(events, opts = {}) {
   return [
+    ...checkI7(events),
     ...checkI1(events),
     ...checkI2(events),
     ...checkI3(events),
@@ -130,6 +157,7 @@ export const INVARIANTS = Object.freeze({
   I4: 'every activation has a recorded inverse',
   I5: 'ephemeral streams never become durable facts',
   I6: 'replay is deterministic',
+  I7: 'assistant events reference content, never contain it',
 });
 
 // Seeded PRNG so a failing I6 reproduces exactly — the package holds no ambient

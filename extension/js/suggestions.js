@@ -18,6 +18,7 @@
 //     (api.chatpanel.net) or ported into the gateway by adding a `hosted` entry,
 //     without touching callers.
 import { streamChat } from './providers.js';
+import { createFallbackChain } from './model-fallback.js';
 import { getTarget, resolveTarget } from './store.js';
 
 // Universal ideas that are useful on almost any page. Shown instantly, and used
@@ -161,6 +162,9 @@ const PROVIDERS = {
  *
  * Pure and exported so the ordering is assertable without a network.
  */
+/** Identity of a model candidate — same model at the same place is the same candidate. */
+export const targetKey = (t) => `${t.kind || ''}:${t.id || ''}:${t.model || ''}:${t.baseUrl || ''}`;
+
 export function suggestionCandidates(settings = {}) {
   const cfg = settings.ui?.suggestions || {};
   const out = [];
@@ -168,7 +172,7 @@ export function suggestionCandidates(settings = {}) {
   const add = (t) => {
     if (!t) return;
     if (t.kind !== 'bridge' && !t.model) return;   // an endpoint with no model cannot answer
-    const key = `${t.kind || ''}:${t.id || ''}:${t.model || ''}:${t.baseUrl || ''}`;
+    const key = targetKey(t);
     if (seen.has(key)) return;
     seen.add(key);
     // Tight budget — suggestions are a few short strings.
@@ -192,43 +196,18 @@ function pickSuggestionAgent(settings) {
   return suggestionCandidates(settings)[0] || null;
 }
 
-// A candidate that just failed is not retried for a minute. Without this, a local model
-// that is not running is re-dialled on every keystroke — which is exactly what filled the
-// activity log with instant failures.
-const RETRY_AFTER_MS = 60_000;
-const failedAt = new Map();
-const candidateKey = (t) => `${t.kind || ''}:${t.id || ''}:${t.model || ''}:${t.baseUrl || ''}`;
-const isCold = (t) => {
-  const at = failedAt.get(candidateKey(t));
-  return !at || Date.now() - at > RETRY_AFTER_MS;
-};
+// Shared with autocomplete: both features had independently shipped the same
+// single-pick-and-give-up bug, so the behaviour lives in one place now.
+const chain = createFallbackChain({ key: targetKey });
 
-/**
- * Try each candidate until one answers. Returns `{ items, agent }`, or `{ items: [] }`
- * when every candidate failed.
- */
+/** Try each candidate until one answers. `{ items }` is empty when all of them failed. */
 async function runWithFallback(settings, run) {
-  const all = suggestionCandidates(settings);
-  if (!all.length) return { items: [] };
-  // Everything cold-failed recently? Try them all again rather than giving up — a stale
-  // memo must not be the reason the feature stays dead after the model comes back up.
-  const order = all.filter(isCold);
-  for (const agent of (order.length ? order : all)) {
-    try {
-      const items = await run(agent);
-      if (items && items.length) {
-        failedAt.delete(candidateKey(agent));
-        return { items, agent };
-      }
-    } catch {
-      failedAt.set(candidateKey(agent), Date.now());
-    }
-  }
-  return { items: [] };
+  const { result } = await chain.run(suggestionCandidates(settings), run);
+  return { items: result || [] };
 }
 
 /** Test-only: forget which candidates are cooling off. */
-export function resetSuggestionHealth() { failedAt.clear(); }
+export function resetSuggestionHealth() { chain.reset(); }
 
 // --------------------------------------------------------------------------
 // Metadata extraction
