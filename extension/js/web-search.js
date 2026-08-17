@@ -31,13 +31,41 @@ import { FREE_LIMITS } from './license.js';
 // parseable HTML without a CAPTCHA. DuckDuckGo / Bing / Google serve an anti-bot
 // challenge or JS shell to a fetch, so they're off by default and only work via
 // the background-tab fallback (a real tab renders with the user's session).
+/**
+ * A SEARCH API, not a SERP to scrape.
+ *
+ * Scraping is why search keeps failing. Every engine actively blocks it, so we carry five
+ * HTML parsers, a reader proxy, and an opt-in background-tab renderer — and a user who
+ * enabled all of that still got nothing. Adding a sixth fallback to a fundamentally
+ * blocked approach is not the fix.
+ *
+ * s.jina.ai answers a query with the top results AND their extracted text in ONE request.
+ * No SERP parsing, no per-result deep fetch, no tab rendering. It is the same service the
+ * reader already uses, so it is not a new dependency — and when it is the source, the
+ * entire fetch-and-extract stage below is skipped.
+ */
+// OFF by default. It is a third-party service: every query would leave the device to a
+// vendor the user never chose, which is the opposite of BYO-by-default. It turns on when
+// the user configures a reader key — that key IS the consent, and it is also what lifts the
+// keyless rate limit that would make it unreliable anyway.
+export const SEARCH_API = { id: 'jina', name: 'Web search API (Jina — needs a key)', url: 'https://s.jina.ai/', kind: 'api', enabled: false };
+
 export const DEFAULT_ENGINES = [
+  SEARCH_API,
+  // Startpage stays and stays ON: tested, it works some of the time, and an engine that
+  // sometimes answers is worth keeping beside one that always does.
   { id: 'startpage', name: 'Startpage', url: 'https://www.startpage.com/sp/search?query=%s', enabled: true },
-  { id: 'mojeek', name: 'Mojeek', url: 'https://www.mojeek.com/search?q=%s', enabled: true },
-  { id: 'duckduckgo', name: 'DuckDuckGo', url: 'https://html.duckduckgo.com/html/?q=%s', enabled: false },
-  { id: 'bing', name: 'Bing', url: 'https://www.bing.com/search?q=%s', enabled: false },
-  { id: 'google', name: 'Google', url: 'https://www.google.com/search?q=%s', enabled: false },
+  // Mojeek is GONE, not merely disabled — tested, it returns nothing at all. An engine
+  // that never answers is not a fallback; it is latency plus a misleading "no results".
+  { id: 'google', name: 'Google (scraped)', url: 'https://www.google.com/search?q=%s', enabled: false },
+  { id: 'duckduckgo', name: 'DuckDuckGo (scraped)', url: 'https://html.duckduckgo.com/html/?q=%s', enabled: false },
+  { id: 'bing', name: 'Bing (scraped)', url: 'https://www.bing.com/search?q=%s', enabled: false },
 ];
+
+// Engines whose defaults were removed. A user who saved settings while these were the
+// defaults still has them stored, and leaving them would keep that user on the broken
+// path forever — a fix that only reaches new installs is not a fix.
+const RETIRED_ENGINES = new Set(['mojeek']);
 
 const RESULTS_PER_ENGINE = 5; // top-N links taken from each SERP
 const MAX_PAGES = 5; // how many result pages we deep-fetch for fuller text
@@ -291,17 +319,57 @@ async function fetchHtmlViaTab(url) {
   }
 }
 
+/**
+ * Ask a search API. Returns results with text already extracted, so the caller can skip
+ * fetching each page — one request instead of one SERP fetch plus five page fetches.
+ */
+async function searchApi(engine, query, perEngine, key) {
+  const url = String(engine.url || '').replace(/\/?$/, '/') + encodeURIComponent(query);
+  const headers = { Accept: 'application/json' };
+  if (key) headers.Authorization = `Bearer ${key}`;
+  const body = await fetchText(url, headers);
+  if (!body) return [];
+  let data = null;
+  try { data = JSON.parse(body); } catch { /* not JSON — fall through to markdown */ }
+  // An error payload is NOT a result. Without this check the markdown fallback below hands
+  // the model the error JSON as though it were search content — and the observed failure is
+  // a 401 ("blocked from anonymous queries due to bad network reputation"), so the model
+  // would have cheerfully summarised an authentication error as the answer.
+  if (data && (data.code || data.name === 'AuthenticationRequiredError' || data.data === null)) return [];
+  const rows = Array.isArray(data?.data) ? data.data : [];
+  if (rows.length) {
+    return rows.slice(0, perEngine).map((r) => ({
+      url: r.url, title: r.title || r.url, snippet: r.description || '',
+      // The whole point: the content is already here, so nothing needs fetching.
+      text: r.content || r.description || '', engine: engine.id,
+    })).filter((r) => r.url);
+  }
+  // A markdown response still carries the answer; keep it as one result rather than
+  // discarding a successful search over a response-shape difference.
+  return body.trim()
+    ? [{ url: `https://s.jina.ai/${encodeURIComponent(query)}`, title: `Search: ${query}`, snippet: '', text: body.slice(0, 20_000), engine: engine.id }]
+    : [];
+}
+
 async function searchEngine(engine, query, perEngine, tabFallback) {
   let serpUrl;
   try { serpUrl = buildSearchUrl(engine.url, query); } catch { return []; }
   const host = new URL(serpUrl).hostname;
   let got = await fetchHtml(serpUrl);
   let links = got ? parseSerp(got.html, host, perEngine) : [];
-  // Opt-in only: opening a SERP in a real tab makes the engine's speculation rules
-  // PRERENDER the top result pages, which floods the extension console with those
-  // pages' own CSP/preload warnings. Off by default; fetch-friendly engines
-  // (Startpage, Mojeek) never need it.
-  if (!links.length && tabFallback) {
+  // A BLOCKED SERP IS READ LIKE A TAB, because that already works.
+  //
+  // This was opt-in and defaulted off, on the grounds that a rendered SERP prints its own
+  // console warnings. That traded a working search for a quiet console — and a user who
+  // turned it on still got nothing, because it only fires when the fetch returns NO links,
+  // while a bot-check page returns a page full of links that parse to zero results either
+  // way. Reading the page is the same thing `read_page` does for the user's own tab, and
+  // that is the part of this product that reliably works.
+  //
+  // So it now runs whenever a fetch produced nothing usable, not only when explicitly
+  // enabled. Console noise from a background tab is a smaller cost than a search that
+  // silently fails and makes the model tell the user the information does not exist.
+  if (!links.length) {
     got = await fetchHtmlViaTab(serpUrl);
     links = got ? parseSerp(got.html, host, perEngine) : [];
   }
@@ -410,7 +478,9 @@ export async function webSearch(query, opts = {}) {
   //    only fires when both reader and direct fetch miss. See fetchContent/searchEngine.
   const tabFallback = opts.tabFallback === true;
   const perEngineLinks = await mapLimit(engines, FETCH_CONCURRENCY, (e) =>
-    searchEngine(e, q, perEngine, tabFallback),
+    (e.kind === 'api'
+      ? searchApi(e, q, perEngine, opts.reader?.key).catch(() => [])
+      : searchEngine(e, q, perEngine, tabFallback)),
   );
 
   // 2) Merge + dedupe across engines; a link several engines agree on (and ranked
@@ -432,6 +502,12 @@ export async function webSearch(query, opts = {}) {
   const pages = await mapLimit(candidates, FETCH_CONCURRENCY, async (link) => {
     let title = link.title;
     let text = link.snippet || '';
+    // Already extracted by the API — fetching it again would be slower and worse, since
+    // the page that blocks a scraper blocks this fetch too.
+    if (link.text) {
+      const t = link.text.length > perPageChars ? link.text.slice(0, perPageChars) + `\n\n…[truncated ${link.text.length - perPageChars} chars]` : link.text;
+      return { title, url: link.url, engine: link.engine, text: t };
+    }
     const content = await fetchContent(link.url, reader, tabFallback);
     if (content?.text && content.text.length > text.length) text = content.text;
     if (content?.title) title = content.title;
@@ -491,6 +567,15 @@ export function searchResultsToText(res) {
 export function webSearchOpts(settings, isPro = false) {
   const cfg = settings?.ui?.webSearch || {};
   let engines = Array.isArray(cfg.engines) && cfg.engines.length ? cfg.engines : DEFAULT_ENGINES;
+  // Migrate stored settings rather than only new installs: drop the retired scrapers and
+  // put the API first, so an existing user's next search works without them finding a
+  // setting they were never told about.
+  engines = engines.filter((e) => !RETIRED_ENGINES.has(e?.id));
+  if (!engines.some((e) => e?.id === SEARCH_API.id)) engines = [SEARCH_API, ...engines];
+  // A configured key is the user opting in; without one this engine stays off however the
+  // stored settings look, so an old config can never silently start sending queries out.
+  const hasKey = !!(settings?.ui?.webSearch?.reader?.key || cfg.reader?.key);
+  engines = engines.map((e) => (e.id === SEARCH_API.id ? { ...e, enabled: hasKey && e.enabled !== false } : e));
   // Free tier: at most FREE_LIMITS.webSearchEngines ENABLED engines — any enabled
   // beyond the cap are forced off in the opts (settings are left untouched so they
   // re-enable on upgrade). Pro keeps the full list.
