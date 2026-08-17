@@ -52,7 +52,7 @@ export function displayName(call) {
 }
 
 /** Entry kinds, in the order they conventionally appear. Used for grouping and colour. */
-export const ENTRY_KINDS = Object.freeze(['system', 'user', 'context', 'tool', 'result', 'reasoning', 'assistant']);
+export const ENTRY_KINDS = Object.freeze(['system', 'user', 'context', 'route', 'tool', 'result', 'reasoning', 'assistant']);
 
 const short = (s, n = 120) => {
   const t = String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -91,6 +91,41 @@ export function buildTrajectory(events) {
       case 'assistant.prompted':
         entries.push({ kind: 'system', at: e.at, title: 'Prompt', detail: `${p.chars || 0} chars`, ref: p.ref, expandsToMessages: true });
         break;
+
+      // WHICH MODEL, AND WHY. Routing decisions were being recorded and then not shown,
+      // which is the least useful place for them: the log knew a turn changed model three
+      // times and the view that exists to explain a turn did not mention it.
+      case 'policy.changed': {
+        if (!String(p.dial || '').startsWith('route.')) break;
+        const applied = p.dial === 'route.applied';
+        entries.push({
+          kind: 'route', at: e.at,
+          title: applied ? `Routed to ${p.to}` : `Would route to ${p.to}`,
+          detail: (p.reasons || [])[0] || '',
+          data: {
+            from: p.from, to: p.to, applied,
+            agrees: p.agrees, strategy: p.strategy,
+            reasons: p.reasons, eligible: p.eligible, rejected: p.rejected,
+          },
+        });
+        break;
+      }
+
+      case 'automation.fired': {
+        if (p.ruleId !== 'router:failover') {
+          entries.push({ kind: 'route', at: e.at, title: `Rule fired: ${p.ruleId}`, detail: `class ${p.classUsed}`, data: p });
+          break;
+        }
+        // A failover is the most consequential thing that can happen mid-turn, and the
+        // reason is what makes it readable rather than alarming.
+        entries.push({
+          kind: 'route', at: e.at,
+          title: `Failed over to ${p.to}`,
+          detail: `${p.from} declined (${p.reason})`,
+          data: p,
+        });
+        break;
+      }
 
       case 'capability.invoked': {
         const entry = {

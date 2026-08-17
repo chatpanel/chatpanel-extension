@@ -698,6 +698,8 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .tj-result .tj-tag    { background: #3a3320; color: #e0c98f; }
 .tj-reasoning .tj-tag { background: #2f2a4a; color: #c3b5f5; }
 .tj-assistant .tj-tag { background: #2a3550; color: #9dc0ff; }
+/* Routing decisions read as decisions, not as errors — a failover is a recovery. */
+.tj-route .tj-tag { background: #3a2f4a; color: #c9a7f5; }
 
 .tj-preview {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

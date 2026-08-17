@@ -275,3 +275,26 @@ const withRaw = summarizeRun('t70', [
 ]);
 assert.ok(Array.isArray(withRaw.raw), 'the trajectory view has no events to expand');
 assert.equal('raw' in toSanitizedReport([withRaw]).runs[0], false, 'raw events leaked into the sanitized report');
+
+// ROUTING IN THE RUN SUMMARY. A row naming one model when three answered is describing a
+// different turn than the one that happened — and "three declined before this one" is the
+// most important thing a slow or odd-looking turn can tell you.
+const routed = summarizeRun('t80', [
+  a.append('turn.started', { turnId: 't80', kind: 'chat' }),
+  a.append('policy.changed', { dial: 'route.applied', actor: { kind: 'rule', id: 'model-router' }, from: 'auto', to: 'HuggingFace', reasons: ['best by balanced'] }),
+  a.append('automation.fired', { ruleId: 'router:failover', classUsed: 'R', from: 'HuggingFace', to: 'OpenAI', reason: 'quota' }),
+  a.append('automation.fired', { ruleId: 'router:failover', classUsed: 'R', from: 'OpenAI', to: 'Claude Code', reason: 'gone' }),
+  a.append('turn.ended', { turnId: 't80', reason: 'ok', ms: 9000 }),
+]);
+assert.deepEqual(routed.models, ['HuggingFace', 'OpenAI', 'Claude Code']);
+assert.equal(routed.failovers, 2);
+
+// An OBSERVED decision is not counted as a model that answered: it records what would have
+// happened, and counting it would report a substitution that never took place.
+const observed = summarizeRun('t81', [
+  a.append('turn.started', { turnId: 't81', kind: 'chat' }),
+  a.append('policy.changed', { dial: 'route.observed', actor: { kind: 'rule', id: 'model-router' }, from: 'gemma', to: 'gpt-5.5', agrees: false }),
+  a.append('turn.ended', { turnId: 't81', reason: 'ok', ms: 10 }),
+]);
+assert.deepEqual(observed.models, []);
+assert.equal(observed.route.length, 1, 'the observation was dropped entirely rather than recorded as an observation');

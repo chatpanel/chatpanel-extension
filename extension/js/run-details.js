@@ -47,6 +47,7 @@ export function summarizeRun(turnId, events) {
   let turn = null;         // explicit boundaries, when the run recorded them
   const capabilities = [];
   const denials = [];
+  const route = [];
 
   for (const e of events) {
     const p = e.payload || {};
@@ -83,6 +84,19 @@ export function summarizeRun(turnId, events) {
           mcpMs: p.mcpMs ?? null,
         };
         break;
+      // The models a turn actually used, in order. A run summary that names one model when
+      // three answered is describing a different turn than the one that happened.
+      case 'policy.changed':
+        if (String(p.dial || '').startsWith('route.') && p.to) {
+          route.push({ to: p.to, applied: p.dial === 'route.applied', reasons: p.reasons || [] });
+        }
+        break;
+      case 'automation.fired':
+        if (p.ruleId === 'router:failover' && p.to) {
+          route.push({ to: p.to, applied: true, failover: true, reason: p.reason, from: p.from });
+        }
+        break;
+
       case 'capability.invoked':
         calls.set(p.idempotencyKey || `${p.capability}:${e.id}`, {
           name: p.capability, args: p.args || {}, ok: null, ms: null, summary: null, at: e.at,
@@ -166,6 +180,10 @@ export function summarizeRun(turnId, events) {
     model: turn?.model || null,
     estimated: !!turn?.estimated,
     ttftMs: turn?.ttftMs ?? null,
+    // Every model handed the turn, in order, and whether each was applied or only observed.
+    route,
+    models: [...new Set(route.filter((r) => r.applied).map((r) => r.to))],
+    failovers: route.filter((r) => r.failover).length,
     requests: turn?.requests || null,
     // Setup from the turn record first, falling back to context.assembled for runs
     // recorded before it was reported in both places.

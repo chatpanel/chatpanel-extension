@@ -5213,7 +5213,12 @@ async function renderActivity() {
     // user does next.
     const cost = run.usd != null ? `${run.estimated ? '≈' : ''}$${run.usd < 0.01 ? run.usd.toFixed(4) : run.usd.toFixed(2)}` : '';
     const ctxCost = run.contextTokens ? `${run.contextTokens.toLocaleString()} ctx` : '';
-    meta.textContent = [dur, setup, ttft, spent, cost, ctxCost, run.model || '', `${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`]
+    // The models that answered, not just the one that finished — and a failover count,
+    // because "three models declined before this one" is the most important thing a slow or
+    // odd-looking turn can tell you.
+    const models = run.models?.length ? run.models.join(' → ') : (run.model || '');
+    const fails = run.failovers ? `${run.failovers} failover${run.failovers === 1 ? '' : 's'}` : '';
+    meta.textContent = [dur, setup, ttft, spent, cost, ctxCost, models, fails, `${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`]
       .filter(Boolean).join(' · ');
     const kind = document.createElement('span');
     kind.className = `run-kind kind-${run.kind}`;
