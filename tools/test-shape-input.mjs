@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { shapeListFrom } from '../extension/js/canvas-adapters.js';
+import { shapeListFrom, normalizeShape } from '../extension/js/canvas-adapters.js';
 
 // Every adapter declares `elements`; models keep sending `shapes`. On tldraw a run sent
 // `shapes` three times and got "no elements or native shapes provided" each time — a message
@@ -24,4 +24,34 @@ assert.deepEqual(shapeListFrom({}), []);
 assert.deepEqual(shapeListFrom(null), []);
 assert.deepEqual(shapeListFrom({ elements: 'not an array' }), []);
 
-console.log('✓ shape input: the documented key is authoritative, the obvious synonyms are accepted');
+// ── the same tolerance one level down, where it matters more ─────────────────
+// A model sent {type:"ellipse", x:0, y:0, w:200, h:180} — correct except that we only read
+// width/height. Thirteen shapes were inserted, every dimension dropped, and they came out
+// identically sized and piled on top of each other while the tool reported success.
+// Silently ignoring a field is the worst option available: the call succeeds, the drawing
+// is wrong, and nothing says why.
+const abbreviated = normalizeShape({ type: 'ellipse', x: 0, y: 0, w: 200, h: 180 });
+assert.equal(abbreviated.width, 200);
+assert.equal(abbreviated.height, 180);
+// The original keys survive, so an adapter that reads either still works.
+assert.equal(abbreviated.w, 200);
+
+// An explicit key always wins over its alias — the documented name stays authoritative.
+assert.equal(normalizeShape({ width: 10, w: 999 }).width, 10);
+assert.equal(normalizeShape({ strokeColor: 'red', color: 'blue' }).strokeColor, 'red');
+
+// `color` maps to the stroke because every shape has one; guessing it meant the fill would
+// be inventing intent from an ambiguous word.
+assert.equal(normalizeShape({ color: 'black' }).strokeColor, 'black');
+assert.equal(normalizeShape({ background: '#fff' }).backgroundColor, '#fff');
+assert.equal(normalizeShape({ label: 'hi' }).text, 'hi');
+
+// Normalisation runs across the whole list, whichever key the list arrived under.
+const viaShapes = shapeListFrom({ shapes: [{ type: 'ellipse', w: 5, h: 6 }] });
+assert.deepEqual([viaShapes[0].width, viaShapes[0].height], [5, 6]);
+
+// Non-objects pass through untouched rather than being coerced into something.
+assert.equal(normalizeShape(null), null);
+assert.equal(normalizeShape('x'), 'x');
+
+console.log('✓ shape input: documented keys authoritative, obvious aliases accepted at both levels');

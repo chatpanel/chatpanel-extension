@@ -35,11 +35,47 @@ import { applyIconShorthand } from './drawio-icons.js';
  * time a model guesses the other, and the model has no way to discover which we meant.
  */
 export function shapeListFrom(input) {
-  if (Array.isArray(input)) return input;                       // the bare array
-  for (const key of ['elements', 'shapes', 'items', 'nodes']) {
-    if (Array.isArray(input?.[key])) return input[key];
-  }
-  return [];
+  const list = (() => {
+    if (Array.isArray(input)) return input;                     // the bare array
+    for (const key of ['elements', 'shapes', 'items', 'nodes']) {
+      if (Array.isArray(input?.[key])) return input[key];
+    }
+    return [];
+  })();
+  return list.map(normalizeShape);
+}
+
+/**
+ * The same tolerance one level down, where it matters more.
+ *
+ * A model sent `{type:"ellipse", x:0, y:0, w:200, h:180}` — correct in every way except
+ * that we only read `width`/`height`. Thirteen shapes were inserted, every dimension was
+ * dropped, and they came out identically sized and piled on top of each other while the
+ * tool reported success. The abbreviation is the obvious one; `w` and `h` are what a person
+ * sketching a layout writes.
+ *
+ * Silently ignoring a field is the worst option available: the call succeeds, the drawing
+ * is wrong, and nothing anywhere says why. Accepting the alias costs a lookup.
+ */
+export function normalizeShape(shape) {
+  if (!shape || typeof shape !== 'object') return shape;
+  const out = { ...shape };
+  const alias = (from, to) => {
+    if (out[to] === undefined && out[from] !== undefined) out[to] = out[from];
+  };
+  alias('w', 'width');
+  alias('h', 'height');
+  alias('label', 'text');
+  alias('stroke', 'strokeColor');
+  alias('strokeColour', 'strokeColor');
+  alias('fillColor', 'backgroundColor');
+  alias('background', 'backgroundColor');
+  // `color` is ambiguous — for a filled shape a model means the fill, for a line the
+  // stroke. Map it to stroke (every shape has one) and let an explicit key win, rather
+  // than guessing at the shape's intent.
+  alias('color', 'strokeColor');
+  alias('colour', 'strokeColor');
+  return out;
 }
 
 // --------------------------------------------------------------------------
