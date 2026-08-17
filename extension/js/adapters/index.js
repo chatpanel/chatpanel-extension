@@ -9,6 +9,7 @@
 // which is a release gate.
 
 import { createAdapterRegistry } from '../events/adapters.js';
+import { declarePlugins, enabledOnly } from '../plugins.js';
 
 let registry = null;
 
@@ -22,12 +23,22 @@ export async function adapterRegistry() {
   // asking "does anything handle this page" never loads a 1,200-line module.
   const { CANVAS_PLUGINS } = await import('./canvas.js');
   for (const a of CANVAS_PLUGINS) registry.add(a);
+  // Declared so the Plugins page can list them; the toggle is honoured in adapterFor.
+  await declarePlugins(registry.list().map((a) => ({
+    id: a.id, kind: 'adapter', label: a.label, description: 'Drives this app through its own data format instead of pointer automation.',
+  })));
   return registry;
 }
 
 /** The adapter for a page, or null. */
 export async function adapterFor(url, caps = {}) {
-  return (await adapterRegistry()).for(url, caps);
+  const reg = await adapterRegistry();
+  const hit = reg.for(url, caps);
+  if (!hit) return null;
+  // Admission control: the registry decides what MATCHES, the manifest decides what may
+  // RUN. Keeping those separate is what lets a user disable one adapter without the
+  // registry needing to know a user exists.
+  return (await enabledOnly([hit]))[0] || null;
 }
 
 /**

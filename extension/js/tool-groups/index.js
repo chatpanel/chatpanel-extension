@@ -10,6 +10,7 @@
 // servers last.
 
 import { createToolGroupRegistry } from '../events/tool-groups.js';
+import { declarePlugins, pluginManifest } from '../plugins.js';
 
 let registry = null;
 
@@ -22,10 +23,16 @@ export async function toolGroupRegistry() {
   ]);
   registry.add(dataGroup);
   registry.add(mcpGroup);
+  await declarePlugins([dataGroup, mcpGroup].map((g) => ({
+    id: g.id, kind: 'tool-group', label: g.label, description: 'A set of tools offered to the model each turn.',
+  })));
   return registry;
 }
 
 /** Every provider that applies to this turn, in the order the model should see them. */
 export async function buildToolGroups(ctx, opts) {
-  return (await toolGroupRegistry()).build(ctx, opts);
+  const [reg, manifest] = await Promise.all([toolGroupRegistry(), pluginManifest()]);
+  // Admission is passed IN so the registry checks it before building. Filtering the result
+  // instead would still pay the cost — for MCP that cost is connecting to servers.
+  return reg.build(ctx, { ...opts, admit: (g) => manifest.isEnabled(g.id) });
 }

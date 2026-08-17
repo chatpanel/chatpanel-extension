@@ -24,6 +24,7 @@
           <button class="tab" data-tab="privacy"><span class="tab-ico" data-icon="privacy"></span> Privacy</button>
           <button class="tab" data-tab="gateway"><span class="tab-ico" data-icon="lock"></span> Gateway</button>
           <button class="tab" data-tab="activity"><span class="tab-ico" data-icon="history-clock"></span> Activity &amp; usage</button>
+          <button class="tab" data-tab="plugins"><span class="tab-ico" data-icon="plug"></span> Plugins</button>
           <button class="tab" data-tab="license"><span class="tab-ico" data-icon="sparkles"></span> Account</button>
         </aside>
         <main class="content">
@@ -885,6 +886,23 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
         </div>
       </section>
 
+
+      <section class="panel hidden" data-panel="plugins">
+        <div class="card">
+          <div class="card-head">
+            <h2>Plugins <span class="sub">— everything ChatPanel loads, and what you can switch off</span></h2>
+            <button id="plugins-refresh" class="btn" type="button">Refresh</button>
+          </div>
+          <p class="muted tiny">
+            Adapters drive an app through its own data format instead of clicking at pixels.
+            Tool groups are the sets of tools offered to the model each turn. Switching one off
+            takes effect on your next message &mdash; and a disabled group is never built, so it
+            costs nothing, not even the time it would spend connecting.
+            Security is required and cannot be turned off.
+          </p>
+          <div id="plugins-list" class="plugins-list">Loading…</div>
+        </div>
+      </section>
 
       <!-- LICENSE -->
       <section class="panel hidden" data-panel="license">

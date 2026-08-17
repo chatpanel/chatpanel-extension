@@ -722,3 +722,19 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
   padding: 3px 8px; border-radius: 4px; background: var(--panel-2, #171b26);
   overflow-x: auto; white-space: nowrap;
 }
+
+/* Plugins — what is installed, and what may be switched off. */
+.plugins-list { display: grid; gap: 2px; }
+.plugins-kind {
+  margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted, #8b93a7);
+}
+.plugin-row {
+  display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px;
+  border: 1px solid var(--line, #23283a); border-radius: 6px; background: var(--panel-2, #171b26);
+  cursor: pointer;
+}
+.plugin-row.required { cursor: default; opacity: .75; }
+.plugin-row input { margin-top: 2px; }
+.plugin-row b { display: block; font-size: 13px; font-weight: 600; }
+.plugin-row i { display: block; font-style: normal; font-size: 11px; color: var(--muted, #8b93a7); }

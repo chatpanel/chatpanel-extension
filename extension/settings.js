@@ -134,6 +134,7 @@ function wireTabs() {
     // Same lazy rule as usage: the log module and the analysis load only when this tab is
     // actually shown, so a user who never opens Activity never pays for it.
     if (name === 'activity') { renderUsage(); renderActivity(); }
+    if (name === 'plugins') renderPlugins();
   };
   const exists = (name) => !!document.querySelector(`.tab[data-tab="${name}"]`);
   // Notes/Meetings/History are merged into one "Workspace" tab as sections. Keep
@@ -4666,6 +4667,86 @@ const fmtBytes = (n) => (n < 1024 ? `${n} B`
     : `${(n / 1024 / 1024).toFixed(1)} MB`);
 
 const fmtWhen = (ms) => (ms ? new Date(ms).toLocaleString() : '—');
+
+/**
+ * What ChatPanel loads, and what the user may switch off.
+ *
+ * Four registries — adapters, tool groups, search engines, sources — each answer "what
+ * matches" on their own. None of them can answer "what is installed, and can I turn that
+ * off?", and answering it in four places would repeat the duplication that already produced
+ * a retired search engine lingering in this very page.
+ *
+ * Registries decide what MATCHES; the manifest decides what may RUN. Keeping those separate
+ * is what lets a user disable one adapter without any registry needing to know a user
+ * exists.
+ */
+async function renderPlugins() {
+  const box = $('plugins-list');
+  if (!box) return;
+  box.textContent = 'Loading…';
+  let manifest;
+  try {
+    // Importing the registries is what makes them DECLARE themselves — the list is built
+    // from what actually loaded, never from a second copy of it maintained here. A second
+    // copy is precisely the bug this page is meant to end.
+    const [{ pluginManifest }, adapters, groups] = await Promise.all([
+      import('./js/plugins.js'),
+      import('./js/adapters/index.js'),
+      import('./js/tool-groups/index.js'),
+    ]);
+    await Promise.all([adapters.adapterRegistry(), groups.toolGroupRegistry()]);
+    manifest = await pluginManifest();
+  } catch (e) {
+    box.textContent = `Could not load plugins: ${e?.message || e}`;
+    return;
+  }
+
+  const rows = manifest.list();
+  if (!rows.length) { box.innerHTML = '<p class="muted tiny">Nothing registered yet.</p>'; return; }
+
+  box.textContent = '';
+  let lastKind = null;
+  for (const p of rows) {
+    if (p.kind !== lastKind) {
+      lastKind = p.kind;
+      const h = document.createElement('div');
+      h.className = 'plugins-kind';
+      h.textContent = KIND_TITLE[p.kind] || p.kind;
+      box.append(h);
+    }
+    const row = document.createElement('label');
+    row.className = `plugin-row${p.required ? ' required' : ''}`;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = p.enabled;
+    // Required plugins are shown, disabled, rather than hidden: "you cannot turn this off"
+    // is information, and omitting them would make the list look incomplete.
+    cb.disabled = p.required;
+    cb.addEventListener('change', () => {
+      try {
+        manifest.setEnabled(p.id, cb.checked);
+      } catch (err) {
+        cb.checked = true;
+        toast(err?.message || 'This plugin is required.');
+      }
+    });
+    const text = document.createElement('span');
+    const name = document.createElement('b');
+    name.textContent = p.label;
+    const desc = document.createElement('i');
+    desc.textContent = p.required ? 'Required — always on.' : (p.description || '');
+    text.append(name, desc);
+    row.append(cb, text);
+    box.append(row);
+  }
+}
+
+const KIND_TITLE = {
+  kernel: 'Kernel', adapter: 'App adapters', 'tool-group': 'Tool groups',
+  source: 'Sources', engine: 'Search engines',
+};
+
+$('plugins-refresh')?.addEventListener('click', renderPlugins);
 
 // Surface labels for activity rows. Every entry point reports through the one
 // chokepoint, so this list is what the log can actually contain.

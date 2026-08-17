@@ -66,8 +66,12 @@ export function createToolGroupRegistry() {
      * must not cost the user their history tools. Same isolation rule as the source
      * registry and the adapter registry, for the same reason.
      */
-    async build(ctx, { onError = () => {} } = {}) {
+    async build(ctx, { onError = () => {}, admit = null } = {}) {
       const eligible = this.list().filter((g) => {
+        // Admission is checked BEFORE `applies`, and both before `build`. A group the user
+        // switched off must not do its work and be discarded afterwards — for MCP that work
+        // is connecting to servers, which is what once made a first turn wait 45 seconds.
+        if (admit && !admit(g)) return false;
         try { return !!g.applies(ctx); } catch (e) { onError(g.id, e); return false; }
       });
       const built = await Promise.all(eligible.map(async (g) => {
