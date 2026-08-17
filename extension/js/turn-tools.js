@@ -13,16 +13,12 @@
 // Reuse, don't reinvent: this is the extraction of the side panel's original
 // inline `toolsetFor` + redaction wiring, so the two can never drift.
 
-import { webSearchOpts, webSearchToolProvider } from './web-search.js';
-import { isPro, can, FREE_LIMITS } from './license.js';
 import { buildToolset } from './toolset.js';
 import { narrowToolset, isLocalToolSpec } from './tool-select.js';
-import { dataDispatchProvider } from './data-dispatch.js';
-import { mcpDispatchProvider } from './mcp-dispatch.js';
-import { getMcpProviders } from './mcp-manager.js';
-import { historyToolProvider } from './history-rag.js';
-import { MCP_TURN_MODES, DEFAULT_AUTO_TOOL_CAP, normalizeMcpTurnMode, shouldExposeMcpForTurn } from './tool-policy.js';
-import { filterMcpServersForSkill, skillToolSystem } from './skill-runtime.js';
+import { buildToolGroups } from './tool-groups/index.js';
+import { usableServers } from './tool-groups/mcp.js';
+import { MCP_TURN_MODES, DEFAULT_AUTO_TOOL_CAP, normalizeMcpTurnMode } from './tool-policy.js';
+import { skillToolSystem } from './skill-runtime.js';
 import { redactionEnabled } from './pii-pipeline.js';
 import { createVault } from './pii-redact.js';
 
@@ -50,74 +46,33 @@ export async function buildTurnTools({
 } = {}) {
   const startedAt = Date.now();
   const providers = [...extraProviders];
-  const pro = isPro(license);
 
-  // Data tools are collected separately so they can be collapsed behind ONE dispatcher
-  // below. Six schemas plus a 678-token system block were resident on every turn — paid
-  // even by "hi", which is how it was noticed.
-  const dataProviders = [];
+  // TOOL GROUPS ARE REGISTERED, NOT WRITTEN OUT HERE.
+  //
+  // This function used to assemble three hardcoded blocks — the user's own data, their MCP
+  // servers, the page — each the same shape, so a fourth meant editing this function and no
+  // other client could contribute one. The duplicated search-engine list showed where that
+  // ends: two implementations of one decision disagree eventually.
+  //
+  // The page arrives as `extraProviders` because only the side panel can build it (it needs
+  // confirm dialogs and per-site trust), so it is passed in rather than registered.
+  let mcpMs = 0;
+  const groups = await buildToolGroups({
+    resolvedAgent, settings, license, bridgeUrl, bridgeAvailable,
+    userText, attachments, mcpMode, skillRun, history, liveReader,
+    includeHistory, includeWebSearch, includeMcp,
+    onMcpError,
+    // Timing the connect stays here: it is a fact about this TURN, and a group should not
+    // have to know it is being measured.
+    markMcpMs: (ms) => { mcpMs = ms; },
+  }, {
+    onError: (id, err) => console.warn(`[chatpanel] tool group "${id}" failed:`, err),
+  });
+  for (const g of groups) providers.push(g.provider);
 
-  // History tools — read-only search over the user's OWN chats and (Pro) meetings.
-  // Locally executed, no web tab needed, so they work on every surface.
-  if (resolvedAgent && includeHistory && settings?.ui?.historyTools !== false) {
-    dataProviders.push(historyToolProvider({
-      includeMeetings: can(license, 'liveMeetings'),
-      explicit: !!history?.enabled,
-      liveReader,
-      warm: (settings?.ui?.warmSearch?.enabled && settings.ui.warmSearch.url) ? { url: settings.ui.warmSearch.url } : null,
-    }));
-  }
-
-  // Web search — locally executed, no tab needed; the model decides when to fire.
-  if (resolvedAgent && includeWebSearch && settings?.ui?.webSearch?.enabled !== false) {
-    dataProviders.push(webSearchToolProvider(webSearchOpts(settings, pro)));
-  }
-
-  // Collapse them into one reachable-not-resident tool. Everything stays callable; only
-  // what earns its tokens is advertised. Opt-out exists because a model that handles a
-  // flat toolset better should not be forced through indirection.
-  if (dataProviders.length) {
-    const inner = buildToolset(dataProviders);
-    const collapse = settings?.ui?.dataDispatch !== false;
-    const wrapped = collapse ? dataDispatchProvider(inner) : null;
-    if (wrapped) providers.push(wrapped);
-    else if (inner) providers.push({ specs: inner.specs, system: inner.system, execute: inner.execute });
-  }
-
-  // MCP servers — Free uses the first FREE_LIMITS.mcpServers by list position; Pro
-  // is unlimited. A server is usable if it has an http url OR a local command (the
-  // latter runs through the bridge, hence `bridgeAvailable`).
   const turnMcpMode = normalizeMcpTurnMode(mcpMode);
-  const wantMcp = includeMcp && shouldExposeMcpForTurn({ turnMcpMode, skillRun, userText, attachments });
-  const all = settings?.mcpServers || [];
-  const limit = pro ? Infinity : FREE_LIMITS.mcpServers;
-  const isSet = (s) => s?.enabled !== false && (s?.url || s?.command);
-  let usable = wantMcp ? all.slice(0, limit).filter(isSet) : [];
-  if (wantMcp && skillRun && turnMcpMode !== MCP_TURN_MODES.ON) usable = filterMcpServersForSkill(usable, skillRun);
-  // The per-turn cap. It used to be the only defence against schema bloat, which made it
-  // a CAPABILITY decision: a tool that ranked low was simply absent. Behind a dispatcher
-  // it becomes a menu-length decision instead — everything stays reachable either way.
   const userCap = Number(settings?.ui?.maxToolsPerTurn) || 0;
   const cap = userCap || (turnMcpMode === MCP_TURN_MODES.AUTO ? DEFAULT_AUTO_TOOL_CAP : 0);
-
-  // How long the turn spends BEFORE the model sees anything. Connecting to MCP servers
-  // happens here, on the critical path, and a cold first connection is the leading
-  // suspect for "the first message took ages" — but a suspect is not a measurement, and
-  // the log could not previously tell setup time from model time.
-  let mcpMs = 0;
-  if (resolvedAgent && usable.length) {
-    const t0 = Date.now();
-    const mcps = await getMcpProviders(usable, { bridgeUrl, bridgeAvailable, onError: onMcpError });
-    mcpMs = Date.now() - t0;
-    let innerMcp = buildToolset(mcps);
-    // Rank BEFORE collapsing so the menu leads with what this turn is likely to need.
-    // `keep: () => false` because every tool here is remote — the local exemption that
-    // applies in the outer narrow would exempt the entire set.
-    if (innerMcp && cap) innerMcp = narrowToolset(innerMcp, userText, { cap, keep: () => false });
-    const wrappedMcp = settings?.ui?.mcpDispatch !== false ? mcpDispatchProvider(innerMcp) : null;
-    if (wrappedMcp) providers.push(wrappedMcp);
-    else providers.push(...mcps);
-  }
 
   let toolset = buildToolset(providers);
   if (toolset && cap) toolset = narrowToolset(toolset, userText, { cap, keep: isLocalToolSpec });
@@ -127,6 +82,10 @@ export async function buildTurnTools({
     turnMcpMode === MCP_TURN_MODES.ON && skillRun
       ? { ...skillRun, mcp: { mode: 'default', serverIds: [] } }
       : skillRun;
+  // Which servers this turn may use — the same decision the MCP group makes, asked here
+  // for the skill system prompt. Cheap and connection-free by design, which is exactly why
+  // it can be asked twice without costing anything.
+  const { usable } = usableServers({ settings, license, skillRun, mcpMode, userText, attachments, includeMcp });
   const skillSystem = skillToolSystem(systemSkillRun, usable);
   if (!toolset && skillSystem) return { specs: [], execute: async () => '', system: skillSystem };
   if (toolset && skillSystem) toolset.system = [skillSystem, toolset.system].filter(Boolean).join('\n\n');

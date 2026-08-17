@@ -7,12 +7,17 @@ const providers = readFileSync(new URL('../extension/js/providers.js', import.me
 const toolset = readFileSync(new URL('../extension/js/toolset.js', import.meta.url), 'utf8');
 const store = readFileSync(new URL('../extension/js/store.js', import.meta.url), 'utf8');
 const turnTools = readFileSync(new URL('../extension/js/turn-tools.js', import.meta.url), 'utf8');
+// MCP gating moved out of turn-tools into a registered tool group — the decision is
+// unchanged, the file that owns it is not.
+const mcpGroup = readFileSync(new URL('../extension/js/tool-groups/mcp.js', import.meta.url), 'utf8');
 
 assert.match(html, /id="btn-mcp"/, 'Composer should expose an MCP tools control.');
 assert.match(store, /mcpToolsMode:\s*'auto'/, 'Settings should default MCP tools to Auto.');
 // Turn-arming (tools + MCP gating) lives in the shared turn-tools capability that
 // both the side panel and Notes call; the side panel delegates to it.
-assert.match(turnTools, /shouldExposeMcpForTurn/, 'Shared turn-tools should gate MCP providers with the context-aware policy helper.');
+assert.match(mcpGroup, /shouldExposeMcpForTurn/, 'The MCP tool group should gate providers with the context-aware policy helper.');
+// And the group must still be reachable from the shared turn assembly both surfaces call.
+assert.match(turnTools, /buildToolGroups/, 'turn-tools should assemble the registered tool groups.');
 assert.match(js, /buildTurnTools/, 'Sidepanel should arm tools via the shared buildTurnTools capability.');
 assert.match(js, /mcpMode:\s*m\.mcpMode/, 'Run profile should carry the user turn MCP mode.');
 assert.match(js, /userText:\s*m\.content/, 'Run profile should carry the user text for MCP relevance gating.');
