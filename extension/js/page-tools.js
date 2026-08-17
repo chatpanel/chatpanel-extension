@@ -506,6 +506,10 @@ export const PAGE_TOOL_SPECS = [
       '{type:"type", text}, {type:"wait", ms}. ' +
       'Example — Shift-constrained drag: [{"type":"key_down","key":"shift"},{"type":"mouse_down","button":"left"},' +
       '{"type":"move","dx":120,"dy":0},{"type":"mouse_up","button":"left"},{"type":"key_up","key":"shift"}]. ' +
+      'Page actions ALSO work as steps, in the same {action, args} form used elsewhere: ' +
+      '{"action":"click_at","args":{"x":500,"y":550}}, {"action":"drag_at","args":{"x":500,"y":550,"toX":700,"toY":550}}, ' +
+      '{"action":"press_key","args":{"key":"Enter"}}, {"action":"type_text","args":{"text":"hi"}} — ' +
+      'use these if the primitives are awkward. ' +
       'Max 40 steps. Needs High-reliability mode.',
     parameters: {
       type: 'object',

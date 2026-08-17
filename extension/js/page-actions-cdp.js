@@ -273,6 +273,64 @@ async function trustedType(tabId, text, perCharMs = 30) {
   }
 }
 
+/**
+ * Accept the step shapes a model actually writes.
+ *
+ * The dispatcher teaches one convention at the top level — {action, args} — and this tool
+ * then demanded a different one inside its steps: {type, …}. A model that had just learned
+ * the first naturally reused it, got `unknown step type "undefined"`, and retried the same
+ * call. That is our inconsistency showing up as the model's failure, and it cost a real run
+ * three identical retries before it gave up and emitted malformed tool syntax.
+ *
+ * So both shapes are accepted, and the familiar page actions are expanded into the
+ * primitives they are made of. A model that can only express itself in click_at and
+ * drag_at can now still build a combination, which is the whole point of this tool.
+ */
+export function normalizeSteps(steps) {
+  const out = [];
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
+  for (const raw of steps || []) {
+    const step = raw || {};
+    // {action, args} — the dispatcher's convention, used one level down.
+    const name = String(step.type || step.action || '').toLowerCase().replace(/[^a-z_]/g, '');
+    const a = { ...step, ...(step.args && typeof step.args === 'object' ? step.args : {}) };
+    const to = { x: num(a.toX ?? a.tox ?? a.toX), y: num(a.toY ?? a.toy) };
+    switch (name) {
+      // Already a primitive (with underscore-free spellings tolerated — small models drop
+      // them, and rejecting "keydown" teaches nothing).
+      case 'key_down': case 'keydown': out.push({ ...a, type: 'key_down' }); break;
+      case 'key_up': case 'keyup': out.push({ ...a, type: 'key_up' }); break;
+      case 'mouse_down': case 'mousedown': out.push({ ...a, type: 'mouse_down' }); break;
+      case 'mouse_up': case 'mouseup': out.push({ ...a, type: 'mouse_up' }); break;
+      case 'move': case 'move_mouse': case 'movemouse': out.push({ ...a, type: 'move' }); break;
+      case 'type': case 'type_text': case 'typetext': out.push({ type: 'type', text: a.text ?? '' }); break;
+      case 'wait': case 'sleep': out.push({ type: 'wait', ms: num(a.ms) ?? 0 }); break;
+
+      // Page actions, expanded into the primitives they are made of.
+      case 'click_at': case 'clickat': case 'click':
+        out.push({ type: 'move', x: num(a.x), y: num(a.y) });
+        out.push({ type: 'mouse_down', button: a.button });
+        out.push({ type: 'mouse_up', button: a.button });
+        break;
+      case 'drag_at': case 'dragat': case 'drag':
+        out.push({ type: 'move', x: num(a.x), y: num(a.y) });
+        out.push({ type: 'mouse_down', button: a.button });
+        out.push({ type: 'move', x: to.x, y: to.y, button: a.button });
+        out.push({ type: 'mouse_up', button: a.button });
+        break;
+      case 'press_key': case 'presskey':
+        out.push({ type: 'key_down', key: a.key });
+        out.push({ type: 'key_up', key: a.key });
+        break;
+
+      // Unknown: passed through unchanged so the executor produces its own, now
+      // correctable, error rather than this function inventing a guess.
+      default: out.push(step); break;
+    }
+  }
+  return out;
+}
+
 // Named non-printable keys (Enter, ArrowDown, Backspace…) for nav/selection.
 //
 // ALIASES ARE NOT CLUTTER. A model that asks for "Return" or "Esc" means the key everyone
@@ -779,7 +837,7 @@ export async function cdpInputSequence(tabId, steps) {
   let pos = pointerAt(tabId, st);
 
   try {
-    for (const [i, raw] of list.entries()) {
+    for (const [i, raw] of normalizeSteps(list).entries()) {
       const step = raw || {};
       const type = String(step.type || '').toLowerCase();
       switch (type) {
@@ -862,7 +920,18 @@ export async function cdpInputSequence(tabId, steps) {
           break;
         }
         default:
-          return { ok: false, error: `step ${i + 1}: unknown step type "${step.type}"`, completed: done };
+          // A correctable error, not a dead end. The old message named the bad value and
+          // nothing else, so a model that had guessed the shape wrong had no way back —
+          // and small models guessed it wrong repeatedly, retrying the identical call.
+          return {
+            ok: false,
+            completed: done,
+            error: `step ${i + 1}: unknown step type "${step.type}". `
+              + 'Steps are {type:"key_down"|"key_up"|"mouse_down"|"mouse_up"|"move"|"type"|"wait", …}. '
+              + 'Page actions also work as steps: {action:"click_at",args:{x,y}}, '
+              + '{action:"drag_at",args:{x,y,toX,toY}}, {action:"press_key",args:{key}}, '
+              + '{action:"type_text",args:{text}}.',
+          };
       }
       done.push(type);
     }
