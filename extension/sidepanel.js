@@ -1186,7 +1186,21 @@ function renderMessage(m) {
     head.innerHTML = `${icon('mic')} Live summary · updated ${escapeAttr(timeLabel(m.ts))}`;
     const body = document.createElement('div');
     body.className = 'live-summary-b bubble';
-    body.innerHTML = m.content ? renderMarkdown(m.content) : '<span class="muted">Waiting for the first summary…</span>';
+    // "Waiting for the first summary…" is a promise. When the analyzer is switched off
+    // nothing is coming, and saying otherwise is how a working switch looks broken.
+    if (m.content) body.innerHTML = renderMarkdown(m.content);
+    else {
+      body.innerHTML = '<span class="muted">Waiting for the first summary…</span>';
+      analyzerEnabled('meeting:summary').then((on) => {
+        if (!on && !m.content) {
+          body.textContent = '';
+          const off = document.createElement('span');
+          off.className = 'muted';
+          off.textContent = 'Running summary is switched off in Settings → Plugins.';
+          body.append(off);
+        }
+      }).catch(() => {});
+    }
     enhanceCode(body);
     card.append(head, body);
     return card;
@@ -2868,6 +2882,11 @@ function renderMonitors() {
     const hint = document.createElement('div');
     hint.className = 'mon-empty';
     hint.textContent = 'Ask a question above to watch this meeting as it goes.';
+    // Say it in the panel too, not only when a question is rejected: an invitation to do
+    // something that will be refused is worse than no invitation.
+    analyzerEnabled('meeting:monitors').then((on) => {
+      if (!on) hint.textContent = 'Live monitors are switched off in Settings → Plugins.';
+    }).catch(() => {});
     list.appendChild(hint);
   }
 
@@ -3012,6 +3031,12 @@ async function addMonitor({ kind, prompt = '', skillId = '', title = '', icon = 
   if (!conv) return;
   if (!state.liveMeeting) { toast('No live meeting — start or attach one first'); return; }
   if (!can(state.license, 'liveMeetings')) { upsell('liveMeetings'); return; }
+  // Accepting a monitor that will never run is the worst of both: the user watches a
+  // question they believe is being watched. Refuse, and name the switch.
+  if (!(await analyzerEnabled('meeting:monitors'))) {
+    toast('Live monitors are switched off in Settings → Plugins.', 4000);
+    return;
+  }
   if (kind === 'qa' && !prompt) { toast('Type a question to monitor'); return; }
   conv.monitors = conv.monitors || [];
   const now = Date.now();
