@@ -286,6 +286,31 @@ async function trustedType(tabId, text, perCharMs = 30) {
  * primitives they are made of. A model that can only express itself in click_at and
  * drag_at can now still build a combination, which is the whole point of this tool.
  */
+/**
+ * A drag, as a canvas app will actually recognise it.
+ *
+ * Press, one jump, release is not a drag to most canvas apps — Excalidraw, Figma, tldraw,
+ * draw.io all track pointermove to size a shape, and a single move from origin to
+ * destination reads as a click that happened to end elsewhere. So the pointer is walked
+ * across in steps. It costs nothing (these are synthesized events, not real time) and it is
+ * the difference between a drag that works and one that reports ok having drawn nothing —
+ * which is exactly what a user saw: {"ok":true,"steps":7} and an empty canvas.
+ */
+function dragSteps(x, y, toX, toY, button, hops = 6) {
+  const steps = [{ type: 'move', x, y }, { type: 'mouse_down', button }];
+  if (Number.isFinite(toX) && Number.isFinite(toY) && Number.isFinite(x) && Number.isFinite(y)) {
+    for (let i = 1; i <= hops; i++) {
+      steps.push({
+        type: 'move', button,
+        x: Math.round(x + ((toX - x) * i) / hops),
+        y: Math.round(y + ((toY - y) * i) / hops),
+      });
+    }
+  }
+  steps.push({ type: 'mouse_up', button });
+  return steps;
+}
+
 export function normalizeSteps(steps) {
   const out = [];
   const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
@@ -302,7 +327,11 @@ export function normalizeSteps(steps) {
       case 'key_up': case 'keyup': out.push({ ...a, type: 'key_up' }); break;
       case 'mouse_down': case 'mousedown': out.push({ ...a, type: 'mouse_down' }); break;
       case 'mouse_up': case 'mouseup': out.push({ ...a, type: 'mouse_up' }); break;
-      case 'move': case 'move_mouse': case 'movemouse': out.push({ ...a, type: 'move' }); break;
+      // Every spelling a model has actually produced. `mouse_move` was missing and cost a
+      // real run its whole sequence at step 6 — the vocabulary is cheap, the failure is not.
+      case 'move': case 'move_mouse': case 'movemouse': case 'mouse_move': case 'mousemove':
+      case 'moveto': case 'move_to': case 'pointer_move': case 'pointermove':
+        out.push({ ...a, type: 'move' }); break;
       case 'type': case 'type_text': case 'typetext': out.push({ type: 'type', text: a.text ?? '' }); break;
       case 'wait': case 'sleep': out.push({ type: 'wait', ms: num(a.ms) ?? 0 }); break;
 
@@ -313,10 +342,7 @@ export function normalizeSteps(steps) {
         out.push({ type: 'mouse_up', button: a.button });
         break;
       case 'drag_at': case 'dragat': case 'drag':
-        out.push({ type: 'move', x: num(a.x), y: num(a.y) });
-        out.push({ type: 'mouse_down', button: a.button });
-        out.push({ type: 'move', x: to.x, y: to.y, button: a.button });
-        out.push({ type: 'mouse_up', button: a.button });
+        out.push(...dragSteps(num(a.x), num(a.y), to.x, to.y, a.button));
         break;
       case 'press_key': case 'presskey':
         out.push({ type: 'key_down', key: a.key });
