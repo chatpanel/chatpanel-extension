@@ -74,6 +74,11 @@ export function summarizeRun(turnId, events) {
           tools: p.tools || [],
           reachableCount: p.reachableCount || 0,
           pageArmed: !!p.pageArmed,
+          // Setup time — everything before the model saw anything, and the MCP-connect
+          // share of it. Without this, "it was slow" cannot be attributed to setup rather
+          // than to the model.
+          prepMs: p.prepMs ?? null,
+          mcpMs: p.mcpMs ?? null,
         };
         break;
       case 'capability.invoked':

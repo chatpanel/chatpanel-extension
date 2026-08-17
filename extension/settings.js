@@ -4758,7 +4758,12 @@ async function renderActivity() {
     const meta = document.createElement('span');
     meta.className = 'run-meta';
     const dur = run.ms != null ? `${(run.ms / 1000).toFixed(1)}s` : '';
-    meta.textContent = [dur, run.tokens ? `${run.tokens} tok` : '', `${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`]
+    // Setup time is called out separately once it is worth noticing: a turn that spent
+    // four seconds connecting to MCP servers before the model saw anything is a very
+    // different problem from a slow model, and one number cannot say which.
+    const prep = run.context?.prepMs;
+    const setup = prep != null && prep >= 250 ? `${(prep / 1000).toFixed(1)}s setup` : '';
+    meta.textContent = [dur, setup, run.tokens ? `${run.tokens} tok` : '', `${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`]
       .filter(Boolean).join(' · ');
     const kind = document.createElement('span');
     kind.className = `run-kind kind-${run.kind}`;

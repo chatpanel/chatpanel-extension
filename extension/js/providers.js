@@ -1272,6 +1272,11 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
       tools: toolSpecs.map((t) => t.name || t.function?.name).filter(Boolean),
       surface: ctx.surface,
       redaction: !!redaction?.vault,
+      // Setup time, so "it was slow" can be attributed instead of guessed: prepMs is
+      // everything before the model saw anything, mcpMs the part spent connecting to the
+      // user's servers.
+      prepMs: tools?.prepMs ?? null,
+      mcpMs: tools?.mcpMs ?? null,
     });
   }
   // ONE place every model-bound call passes through — augment the agent's system

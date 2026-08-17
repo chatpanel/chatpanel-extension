@@ -48,6 +48,7 @@ export async function buildTurnTools({
   extraProviders = [],       // surface-specific providers prepended verbatim
   onMcpError = () => {},
 } = {}) {
+  const startedAt = Date.now();
   const providers = [...extraProviders];
   const pro = isPro(license);
 
@@ -99,8 +100,15 @@ export async function buildTurnTools({
   const userCap = Number(settings?.ui?.maxToolsPerTurn) || 0;
   const cap = userCap || (turnMcpMode === MCP_TURN_MODES.AUTO ? DEFAULT_AUTO_TOOL_CAP : 0);
 
+  // How long the turn spends BEFORE the model sees anything. Connecting to MCP servers
+  // happens here, on the critical path, and a cold first connection is the leading
+  // suspect for "the first message took ages" — but a suspect is not a measurement, and
+  // the log could not previously tell setup time from model time.
+  let mcpMs = 0;
   if (resolvedAgent && usable.length) {
+    const t0 = Date.now();
     const mcps = await getMcpProviders(usable, { bridgeUrl, bridgeAvailable, onError: onMcpError });
+    mcpMs = Date.now() - t0;
     let innerMcp = buildToolset(mcps);
     // Rank BEFORE collapsing so the menu leads with what this turn is likely to need.
     // `keep: () => false` because every tool here is remote — the local exemption that
@@ -113,6 +121,7 @@ export async function buildTurnTools({
 
   let toolset = buildToolset(providers);
   if (toolset && cap) toolset = narrowToolset(toolset, userText, { cap, keep: isLocalToolSpec });
+  if (toolset) { toolset.mcpMs = mcpMs; toolset.prepMs = Date.now() - startedAt; }
 
   const systemSkillRun =
     turnMcpMode === MCP_TURN_MODES.ON && skillRun

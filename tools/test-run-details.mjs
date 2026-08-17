@@ -195,3 +195,22 @@ const acted = summarizeRun('t32', [
   a.append('turn.ended', { turnId: 't32', reason: 'ok', ms: 900 }),
 ]);
 assert.equal(acted.background, false, 'a run that called a tool was hidden from the default view');
+
+// SETUP TIME IS ATTRIBUTABLE. "The first message took ages" was unanswerable from the log:
+// one duration covered connecting to MCP servers, assembling tools, and the model itself.
+const slow = summarizeRun('t40', [
+  a.append('turn.started', { turnId: 't40', kind: 'chat' }),
+  a.append('context.assembled', { turnId: 't40', budget: 0, used: 400, parts: {}, resident: [], reachableCount: 2, prepMs: 4200, mcpMs: 3900 }),
+  a.append('turn.ended', { turnId: 't40', reason: 'ok', ms: 6000 }),
+]);
+assert.equal(slow.context.prepMs, 4200);
+assert.equal(slow.context.mcpMs, 3900, 'the MCP share of setup was lost, so the cause stays a guess');
+
+// Absent on older runs rather than defaulted to zero — a run recorded before this existed
+// must not claim it spent no time setting up.
+const old = summarizeRun('t41', [
+  a.append('turn.started', { turnId: 't41', kind: 'chat' }),
+  a.append('context.assembled', { turnId: 't41', budget: 0, used: 1, parts: {}, resident: [], reachableCount: 0 }),
+  a.append('turn.ended', { turnId: 't41', reason: 'ok', ms: 10 }),
+]);
+assert.equal(old.context.prepMs, null);
