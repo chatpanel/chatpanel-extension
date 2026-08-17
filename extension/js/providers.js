@@ -1188,9 +1188,51 @@ function runtimeContextSystem(settings) {
   return lines.join('\n');
 }
 
-export async function streamChat({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction, usage: usageCtx }) {
-  let turnClose = null;
-  let produced = false;
+/**
+ * The one entry point every model-bound call passes through — chat, notes, meetings,
+ * watch, assist. Turn lifetime is NOT held here any more: the shared runner opens the
+ * turn before this body runs and closes it in `finally`, so the early-return path that
+ * once left every finished note reporting itself as still running cannot recur. See
+ * `js/turn-runner.js` and `events/loop.js`.
+ */
+export async function streamChat(opts = {}) {
+  const { loop, request } = turnSpecFor(opts);
+  const { runAsTurn } = await import('./turn-runner.js');
+  // `signal` is deliberately not part of turnSpecFor — it is live state, not a
+  // description of the turn — but the runner needs it to tell "you stopped it" from
+  // "it broke".
+  return runAsTurn(loop, { ...request, signal: opts.signal }, (turn) => streamChatTurn(opts, turn));
+}
+
+/**
+ * What kind of turn this call is — pure, so it is assertable.
+ *
+ * Extracted deliberately. Three separate bugs in this codebase came from behaviour that
+ * only existed inside a call nothing could reach (the dispatcher blinding the loop guard,
+ * the swallowed Enter key, every activity row reading `page`). Each was fixed by pulling
+ * the decision into a function a test could call.
+ */
+export function turnSpecFor({ usage, tools, onDelta, agent } = {}) {
+  const kind = usage?.surface || 'other';
+  // A turn that streams nothing to a human and calls no tool is infrastructure — a title,
+  // a topic pass, a grammar fix. Recorded either way (the privacy record must cover every
+  // model call) but folded out of the default view, or one note buries its own run under
+  // a dozen one-token rows. This reads a signal the call already carries rather than
+  // guessing from maxTokens.
+  const background = !(tools?.specs || []).length && !onDelta;
+  return {
+    loop: { id: `loop:${kind}`, kind, background },
+    request: {
+      turnId: usage?.turnId,
+      kind,
+      agentId: agent?.agentId || agent?.id || agent?.name || usage?.agentId || null,
+      sourceId: usage?.sourceId || null,
+      background,
+    },
+  };
+}
+
+async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction, usage: usageCtx }, turn) {
   // Token accounting at THE chokepoint: every provider adapter emits one
   // {type:'usage'} event per turn; record it here (best-effort, off the hot
   // path) tagging it with the caller's surface/sourceId, then forward the event
@@ -1213,20 +1255,11 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
     //
     // Different starting points is how a guarantee ends up true in one surface and
     // untested in the others. One chokepoint, one record.
-    const turnId = usageCtx?.turnId || `${ctx.surface}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 7)}`;
-    const startedAt = Date.now();
+    //
+    // turn.started/turn.ended belong to the runner. What is left here is the one fact
+    // only this function knows — what the model was actually shown.
     const toolSpecs = tools?.specs || [];
-    // Background vs. asked-for, from a signal that already means it rather than a
-    // maxTokens threshold: a turn that streams nothing to a human and runs no tools is
-    // infrastructure (title, topic extraction, grammar pass). Recorded either way —
-    // the privacy record must cover every model call — but folded out of the default
-    // view, or one note buries its own run under a dozen one-token rows.
-    const background = !toolSpecs.length && !onDelta;
-    logTurnEvent('turn.started', {
-      turnId, kind: ctx.surface, agentId, sourceId: ctx.sourceId || null, background,
-    });
-    logTurnEvent('context.assembled', {
-      turnId,
+    turn.emit('context.assembled', {
       budget: 0,
       used: approxTok(toolSpecs) + approxTok(tools?.system),
       parts: {
@@ -1239,9 +1272,6 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
       tools: toolSpecs.map((t) => t.name || t.function?.name).filter(Boolean),
       surface: ctx.surface,
       redaction: !!redaction?.vault,
-    });
-    turnClose = (reason, stepped) => logTurnEvent('turn.ended', {
-      turnId, reason, stepped, ms: Date.now() - startedAt, kind: ctx.surface,
     });
   }
   // ONE place every model-bound call passes through — augment the agent's system
@@ -1256,18 +1286,11 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
   // redaction entirely for it (the user chose not to pay the redaction cost locally).
   if (redaction && redaction.cfg && redaction.cfg.applyTo === 'remote' && isLocalAgent(agent)) redaction = null;
   if (!redaction || !redaction.vault || !redactionEnabled(redaction.cfg)) {
-    // Close the turn on THIS path too. It returned early, before the try/catch below,
-    // so with redaction off — the common case — every turn opened and never closed,
-    // and a finished note read as "still running". An exit that skips the close is the
-    // only way this log can lie, so both exits go through the same helper.
-    try {
-      const full = await dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools });
-      turnClose?.(signal?.aborted ? 'aborted' : 'ok', !!(typeof full === 'string' ? full.trim() : full));
-      return full;
-    } catch (err) {
-      turnClose?.(signal?.aborted ? 'aborted' : 'error', false);
-      throw err;
-    }
+    // This path returns early — which is exactly how the turn once escaped without
+    // closing. It no longer can: the runner owns the close, and this body simply returns.
+    const full = await dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools });
+    if (typeof full === 'string' ? full.trim() : full) turn.produced();
+    return full;
   }
   const { vault, cfg, isPro = false, entities = [] } = redaction;
   // Phase 2: when mode is 'model', run the configured LOCAL detector to find
@@ -1337,32 +1360,21 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
         harness.toModelResult(name, await base(name, harness.toTool(name, input), meta)),
     };
   }
-  try {
-    const full = await dispatchStream({
-      agent: safeAgent, messages: red.messages, settings, signal,
-      onDelta: wrappedOnDelta, onEvent: wrappedOnEvent, tools: safeTools,
-    });
-    const tail = restorer.flush();
-    if (tail && rawOnDelta) rawOnDelta(tail);
-    produced = !!(typeof full === 'string' ? full.trim() : full);
-    turnClose?.(signal?.aborted ? 'aborted' : 'ok', produced);
-    return restore(typeof full === 'string' ? full : full ?? '', vault);
-  } catch (err) {
-    // A turn that opened must close, or the log shows it running forever and every
-    // reader has to guess whether it failed or is still going.
-    turnClose?.(signal?.aborted ? 'aborted' : 'error', produced);
-    throw err;
-  }
+  // No try/catch. The one that used to be here existed solely to close the turn on the
+  // error path; the runner does that in its own `finally`, so an exception simply
+  // propagates and the turn is still recorded as failed.
+  const full = await dispatchStream({
+    agent: safeAgent, messages: red.messages, settings, signal,
+    onDelta: wrappedOnDelta, onEvent: wrappedOnEvent, tools: safeTools,
+  });
+  const tail = restorer.flush();
+  if (tail && rawOnDelta) rawOnDelta(tail);
+  if (typeof full === 'string' ? full.trim() : full) turn.produced();
+  return restore(typeof full === 'string' ? full : full ?? '', vault);
 }
 
 // Rough token estimate — the same 4-chars-per-token rule the dispatcher budget uses.
 const approxTok = (v) => (v == null ? 0 : Math.round(JSON.stringify(v).length / 4));
-
-// Fire-and-forget, lazily imported, never able to affect the call it describes: a log that
-// can break a chat turn is worse than no log.
-function logTurnEvent(type, payload) {
-  import('./event-log.js').then((m) => m.emitAsync(type, payload)).catch(() => {});
-}
 
 // Ask the Bridge whether a custom command resolves on this machine (PATH / a full
 // path / inside WSL). Returns { ok, via } — `via` is how it resolved (native /

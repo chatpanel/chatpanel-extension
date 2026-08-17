@@ -33,4 +33,6 @@ export {
 export { checkInvariants, INVARIANTS } from './invariants.js';
 export { createMemoryAdapter, createLogStore, createBlobStore } from './store.js';
 export { createRegistry, REGISTRY_STATES } from './registry.js';
+export { createTurnRunner, defineLoop, LOOP_KINDS, LoopError } from './loop.js';
+export { createKernel, meetDecisions, KernelError, REQUIRED_PLUGINS, ALLOW_ALL } from './kernel.js';
 export { replay, formatReport, parseJsonl, toJsonl } from './harness.js';
