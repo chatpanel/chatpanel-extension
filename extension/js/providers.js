@@ -695,10 +695,14 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
 // Relay one CLI-agent tool call back to the extension's executor and POST the
 // result to the bridge. Fire-and-forget so the SSE loop keeps reading; the
 // bridge is blocked awaiting /tool-result, so there's nothing to read until then.
-async function relayBridgeTool(base, ev, tools, onEvent, loopGuard = createToolLoopGuard()) {
-  onEvent?.({ type: 'tool', name: ev.name, phase: 'start', callId: ev.id, input: ev.input, model: modelLabelOf(agent) });
+export async function relayBridgeTool(base, ev, tools, onEvent, loopGuard = createToolLoopGuard(), label = '') {
+  // The bridge is BLOCKED on /tool-result until we answer, so every exit from
+  // this function must POST one — including a crash in our own bookkeeping.
+  // Without that guarantee a throw here strands the CLI agent forever (the tool
+  // shows `running` for minutes after the work is actually done).
   let result;
   try {
+    onEvent?.({ type: 'tool', name: ev.name, phase: 'start', callId: ev.id, input: ev.input, model: label });
     const guard = loopGuard.check(ev.name, ev.input);
     result = guard.blocked
       ? guard.result
@@ -706,17 +710,20 @@ async function relayBridgeTool(base, ev, tools, onEvent, loopGuard = createToolL
         ? await tools.execute(ev.name, ev.input, { callId: ev.id, session: ev.session })
         : JSON.stringify({ error: 'no tools armed' });
     if (!guard.blocked && toolMadeProgress(ev.name, result)) loopGuard.reset(guard.key);
-    loopGuard.remember(guard.key, ev.name, input, result);
+    loopGuard.remember(guard.key, ev.name, ev.input, result);
   } catch (e) {
     result = JSON.stringify({ error: String(e?.message || e) });
+  } finally {
+    const image = result && typeof result === 'object' ? result.image : undefined;
+    try {
+      onEvent?.({ type: 'tool', name: ev.name, phase: 'done', callId: ev.id, image, status: toolStatus(result), result: stepResultText(result) });
+    } catch { /* a reporting failure must not strand the agent */ }
+    await fetch(`${base}/tool-result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session: ev.session, id: ev.id, result: result ?? JSON.stringify({ error: 'tool relay failed' }) }),
+    }).catch(() => {});
   }
-  const image = result && typeof result === 'object' ? result.image : undefined;
-  onEvent?.({ type: 'tool', name: ev.name, phase: 'done', callId: ev.id, image, status: toolStatus(result), result: stepResultText(result) });
-  await fetch(`${base}/tool-result`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session: ev.session, id: ev.id, result }),
-  }).catch(() => {});
 }
 
 async function streamBridge(agent, messages, { settings, signal, onDelta, onEvent, tools }) {
@@ -842,7 +849,7 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
       // The CLI agent called one of our turn tools (via the bridge's MCP
       // server) — run it here and POST the result back. Don't await: the bridge
       // is blocked on /tool-result, so no further SSE arrives until we answer.
-      relayBridgeTool(base, ev, tools, onEvent, loopGuard);
+      relayBridgeTool(base, ev, tools, onEvent, loopGuard, modelLabelOf(agent));
     } else {
       // tool use / status / reasoning — surface for the activity strip.
       onEvent?.(ev);

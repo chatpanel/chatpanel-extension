@@ -51,6 +51,6 @@ assert.match(providersJs, /adaptivePolicy\.recordResult\(c\.name, result\)/, 'Op
 assert.match(providersJs, /function streamAnthropic[\s\S]*const loopGuard = createToolLoopGuard\(\);/, 'Anthropic loop should create a tool loop guard.');
 assert.match(providersJs, /adaptivePolicy\.filterAnthropicTools\(toolSpecs\)/, 'Anthropic loop should filter tools suppressed by adaptive policy.');
 assert.match(providersJs, /adaptivePolicy\.recordResult\(b\.name, result\)/, 'Anthropic loop should record invalid tool results.');
-assert.match(providersJs, /relayBridgeTool\(base, ev, tools, onEvent, loopGuard\)/, 'Bridge relays should share the turn tool loop guard.');
+assert.match(providersJs, /relayBridgeTool\(base, ev, tools, onEvent, loopGuard,/, 'Bridge relays should share the turn tool loop guard.');
 
 console.log('provider tool loop tests passed');
