@@ -505,8 +505,11 @@ async function pageToolProvider(resolvedAgent) {
     system: [`You are connected to the user's LIVE browser tab${pageLabel ? ` — ${pageLabel}` : ''}, and can `
       + 'read and act on it with the `page` tool: type into cells, click controls, fill forms, draw. '
       + 'Never tell the user you cannot interact with the page — you can. '
-      + '{"action":"describe","args":{"tool":"<action>"}} returns any action\'s full schema and how to use it. '
-      + 'To DRAW or resize on a canvas you must DRAG (`drag_at`) — a single `click_at` never draws.',
+      + '{"action":"describe","args":{"tool":"<action>"}} returns any action\'s full schema and how to use it.'
+      // Canvas drawing advice belongs to a canvas. It was in the base blurb, so every turn on
+      // a news site or a spreadsheet paid for instructions about dragging on a canvas that
+      // was not there — and untrue guidance costs more than tokens.
+      + (residentSystem ? ' To DRAW or resize on a canvas you must DRAG (`drag_at`) — a single `click_at` never draws.' : ''),
     residentSystem].filter(Boolean).join('\n\n'),
   };
 }
@@ -674,25 +677,10 @@ async function toolsetFor(
     },
   });
 
-  // F2.0 — what this turn actually cost, and where it went. The dispatcher's 721-token
-  // figure is a build-time assertion; this is the same accounting observed in production,
-  // per turn, on real toolsets. Without it, "why was that turn expensive?" stays a guess.
-  const specs = built?.specs || [];
-  logEvent('context.assembled', {
-    turnId: turnId || state.conv?.id || 'unknown',
-    budget: 0, // no ceiling enforced yet — F2.3 introduces one
-    used: approxTokens(specs) + approxTokens(built?.system),
-    parts: {
-      toolSchemas: approxTokens(specs),
-      system: approxTokens(built?.system),
-      userText: approxTokens(userText),
-      attachments: approxTokens(attachments),
-    },
-    resident: [],
-    reachableCount: specs.length,
-    tools: specs.map((t) => t.name || t.function?.name).filter(Boolean),
-    pageArmed: !!page,
-  });
+  // The context record used to be emitted HERE as well as at the streamChat chokepoint, so
+  // every chat turn logged 'Context assembled' twice — and this copy only ever saw chat,
+  // which is exactly why the accounting moved to the chokepoint that notes and meetings also
+  // pass through. One place, one record.
   return built;
 }
 

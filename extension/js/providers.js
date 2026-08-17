@@ -19,6 +19,9 @@ import {
 import { makeToolHarness, placeholderToolNote } from './tool-harness.js';
 import { canUseFullRedaction, recordFullRedaction } from './pii-usage.js';
 import { sanitizeUnicode } from './sanitize.js';
+// Pure, tiny and needed on every turn that carries an attachment — the retrieval contract
+// itself, shared so the gateway and bridge answer 'what did the model read' the same way.
+import { makeSourceStore, manifestText, readSource, approxTokens } from './events/sources-retrieval.js';
 import { detectEntities, normalizeEntities, EXTRACT_SYS, parseJsonLoose, withTimeout } from './pii-detect.js';
 import { createVault, redactText, restoreText } from './pii-redact.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
@@ -1409,6 +1412,9 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
         system: approxTok(tools?.system),
         messages: approxTok(messages),
       },
+      // The preamble broken down by which tool group asked for it, so an expensive turn can
+      // be traced to the blurb responsible instead of to 'system'.
+      systemParts: tools?.systemParts || null,
       resident: [],
       reachableCount: toolSpecs.length,
       tools: toolSpecs.map((t) => t.name || t.function?.name).filter(Boolean),
@@ -1452,6 +1458,18 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
       // rather than returned, because the answer streams — by the time a return value
       // arrives the user has been reading text from a model they cannot identify.
       if (routed.routedVia) onEvent?.({ type: 'routed', ...routed.routedVia });
+    }
+  }
+
+  // PULL, NOT PUSH. Swap attached content for a manifest plus a `source` tool before the
+  // prompt is built, so every surface — chat, notes, meetings — inherits it from the one
+  // place they all pass through.
+  {
+    const deferred = deferAttachedSources(messages, tools);
+    if (deferred) {
+      messages = deferred.messages;
+      tools = withSourceTool(tools, deferred.store);
+      onEvent?.({ type: 'sources', deferred: deferred.store.entries.length, tokens: deferred.store.tokens });
     }
   }
 
@@ -1725,6 +1743,85 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call)
  * Returns `{ blocked, why, message }` or null. Dynamic-import so the model-router graph
  * stays off the first-paint path.
  */
+/**
+ * Hand the model a MANIFEST of what is attached, and a tool to read it.
+ *
+ * Attachments used to be flattened into the first message — every attached tab, in full,
+ * before the model had said anything. "hi" on a long page paid for the whole page, and five
+ * attached tabs put five documents in the prompt to answer a question about one paragraph of
+ * one of them.
+ *
+ * Two conditions, both necessary:
+ *   - THE TURN MUST CARRY TOOLS. Deferring content a model cannot then fetch does not save
+ *     tokens, it deletes the context — the worst possible outcome, and silently.
+ *   - IT MUST BE WORTH A ROUND TRIP. Below the threshold the extra call costs more than the
+ *     text it avoids, so small attachments still travel inline.
+ *
+ * Returns the rewritten messages plus a store, or null when nothing was deferred.
+ */
+export function deferAttachedSources(messages, tools, { minTokens = 700 } = {}) {
+  if (!tools?.specs?.length) return null;
+  const carried = [];
+  for (const m of messages || []) {
+    for (const a of m?.attachments || []) {
+      if (a?.kind === 'image' || !a?.text) continue;
+      carried.push(a);
+    }
+  }
+  if (!carried.length) return null;
+  const store = makeSourceStore(carried.map((a) => ({
+    kind: a.kind || 'context', title: a.title, url: a.url, text: a.text,
+  })));
+  if (store.tokens < minTokens) return null;
+  // Same index, same id: the manifest and the store must agree or the model asks for
+  // something real and is told it does not exist.
+  const idFor = new Map(carried.map((a, i) => [a, store.entries[i]?.id]));
+  const out = (messages || []).map((m) => {
+    if (!m?.attachments?.some((a) => idFor.get(a))) return m;
+    return {
+      ...m,
+      attachments: m.attachments.map((a) => {
+        const id = idFor.get(a);
+        // The stub keeps the title and url — knowing WHAT is attached is what lets the model
+        // decide whether to read it, and that part is cheap.
+        return id ? { ...a, text: `(not included — read with \`source\`: id ${id}, ~${approxTokens(a.text)} tokens)` } : a;
+      }),
+    };
+  });
+  return { messages: out, store };
+}
+
+const SOURCE_TOOL_SPEC = {
+  name: 'source',
+  description: 'Read an attached source (a page, tab, selection or file the user attached). Their content is NOT in the conversation — read what you need from here.',
+  parameters: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'The source id from the manifest, e.g. page-1.' },
+      query: { type: 'string', description: 'What you are looking for. A large source returns the matching sections rather than its first page.' },
+    },
+    required: ['id'],
+  },
+};
+
+/** Add `source` to an existing toolset without disturbing what is already there. */
+export function withSourceTool(tools, store) {
+  const spec = { ...SOURCE_TOOL_SPEC };
+  const system = [
+    tools?.system,
+    `${manifestText(store)}\n\nTheir content is NOT in this conversation. Call \`source\` with an id — and a query when the source is large — to read what you need.`,
+  ].filter(Boolean).join('\n\n');
+  return {
+    ...tools,
+    specs: [...(tools?.specs || []), spec],
+    system,
+    systemParts: { ...(tools?.systemParts || {}), source: approxTokens(manifestText(store)) },
+    execute: async (name, input, meta) => (name === 'source'
+      ? JSON.stringify(readSource(store, typeof input === 'string' ? JSON.parse(input || '{}') : (input || {})))
+      : tools.execute(name, input, meta)),
+  };
+}
+
 function sourceUrlsOf(messages, extraSources = []) {
   const urls = [];
   for (const m of messages || []) {

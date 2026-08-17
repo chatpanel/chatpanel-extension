@@ -37,10 +37,22 @@ export function buildToolset(providers) {
   const hasMcp = specs.some((s) => /^mcp[_-]/i.test(String(s?.name || '')));
   const parts = [hasMcp ? mcpSharedSystem() : '', ...list.map((p) => p.system)];
   const system = parts.map((x) => String(x || '').trim()).filter(Boolean).join('\n\n') || undefined;
+  // WHICH blurb costs what. The turn record reported one total for the whole preamble, so
+  // "2233 tokens for 'hello'" was visible but unattributable — and a number nobody can
+  // attribute is a number nobody can reduce.
+  const systemParts = {};
+  if (hasMcp) systemParts.mcp = Math.round(String(mcpSharedSystem() || '').length / 4);
+  for (const p of list) {
+    const t = Math.round(String(p.system || '').trim().length / 4);
+    // Named by the dispatcher tool it owns — 'page', 'find', 'mcp' — which is what the
+    // reader sees in the tools list and can act on.
+    if (t) systemParts[p.id || p.specs[0]?.name || 'group'] = t;
+  }
 
   return {
     specs,
     system,
+    systemParts,
     remoteTools,
     async execute(name, input, meta = {}) {
       const fn = route.get(name);
