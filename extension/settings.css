@@ -713,3 +713,12 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
   white-space: pre-wrap; word-break: break-word;
   border-top: 1px solid var(--line, #23283a); color: var(--muted-2, #b8c0d0);
 }
+
+/* Per-request table — one row per model round-trip, because a turn is not one call. */
+.tj-reqs { margin-bottom: 10px; display: grid; gap: 2px; }
+.tj-reqs-head { font-size: 11px; color: var(--muted, #8b93a7); text-transform: uppercase; letter-spacing: .04em; }
+.tj-req {
+  font-size: 11px; color: var(--muted-2, #b8c0d0); font-variant-numeric: tabular-nums;
+  padding: 3px 8px; border-radius: 4px; background: var(--panel-2, #171b26);
+  overflow-x: auto; white-space: nowrap;
+}

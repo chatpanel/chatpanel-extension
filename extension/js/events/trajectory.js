@@ -208,6 +208,70 @@ export function lanesOf(entries, run) {
   return lanes;
 }
 
+/**
+ * Derived per-request metrics.
+ *
+ * A turn is not one model call. In a tool loop the model is asked, answers with a call, is
+ * given the result, and is asked again — DSH calls these Request #1, #2, #3, and that
+ * numbering is the thing that makes a trajectory readable: "the second request is where it
+ * went wrong" is a sentence you can act on, while "the turn went wrong" is not. Our own log
+ * already showed this without naming it — 36 turns carried two `context.assembled` events,
+ * one per round-trip.
+ *
+ * Everything here is DERIVED, never stored. Throughput computed at read time cannot
+ * disagree with the tokens it came from; a stored copy can, and eventually does.
+ */
+export function requestMetrics(req) {
+  const out = Number(req?.tokensOut) || 0;
+  const ttft = Number.isFinite(req?.ttftMs) ? req.ttftMs : null;
+  const total = Number.isFinite(req?.ms) ? req.ms : null;
+  // Generation is the part AFTER the first token: total minus the wait. Dividing tokens by
+  // the total instead would blame a slow first token on the model's writing speed.
+  const generationMs = total != null && ttft != null ? Math.max(0, total - ttft) : null;
+  return {
+    tokensIn: Number(req?.tokensIn) || 0,
+    tokensOut: out,
+    tokensReasoning: Number(req?.tokensReasoning) || 0,
+    tokensTotal: (Number(req?.tokensIn) || 0) + out,
+    ttftMs: ttft,
+    generationMs,
+    totalMs: total,
+    // Only meaningful with both numbers and real generation time; a throughput computed
+    // from a 0ms window is a very large lie.
+    throughput: generationMs > 0 && out > 0 ? +(out / (generationMs / 1000)).toFixed(1) : null,
+    model: req?.model || null,
+    status: req?.status || 'completed',
+  };
+}
+
+/**
+ * Group entries into REQUESTS — one per model round-trip — so the view can show the
+ * hierarchy DSH shows: a request, the calls it made, and the result that came back.
+ *
+ * A new request begins at each prompt (the model being asked again). Tool calls and their
+ * results belong to the request that asked for them, which is what makes "hierarchy" a real
+ * relationship rather than a label.
+ */
+export function groupRequests(entries) {
+  const requests = [];
+  let current = null;
+  const open = () => {
+    current = { index: requests.length + 1, entries: [], calls: [], answer: null, at: null };
+    requests.push(current);
+    return current;
+  };
+  for (const e of entries) {
+    if (e.kind === 'system' || (!current && e.kind !== 'context')) open();
+    if (!current) open();
+    if (current.at == null) current.at = e.at;
+    current.entries.push(e);
+    e.requestIndex = current.index;
+    if (e.kind === 'tool') current.calls.push(e);
+    if (e.kind === 'assistant') current.answer = e;
+  }
+  return requests;
+}
+
 /** Filter entries by a search string, matching title and detail. */
 export function filterEntries(entries, query) {
   const q = String(query || '').trim().toLowerCase();

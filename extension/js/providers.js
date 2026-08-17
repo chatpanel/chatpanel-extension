@@ -1213,11 +1213,17 @@ export async function streamChat(opts = {}) {
       // chasing — it is what "it felt slow" actually means.
       const t0 = Date.now();
       const inner = opts.onDelta;
-      let first = true;
+      // Shared holder rather than a closure variable the body cannot see: the body needs the
+      // measured value to stamp it on the first request record, and a local that is only
+      // ever read as null is worse than no field at all.
+      const timing = { ttftMs: null };
       const onDelta = inner
-        ? (d) => { if (first) { first = false; turn.report({ ttftMs: Date.now() - t0 }); } return inner(d); }
+        ? (d) => {
+          if (timing.ttftMs == null) { timing.ttftMs = Date.now() - t0; turn.report({ ttftMs: timing.ttftMs }); }
+          return inner(d);
+        }
         : inner;
-      return streamChatTurn({ ...opts, onDelta }, turn);
+      return streamChatTurn({ ...opts, onDelta, timing }, turn);
     },
   );
 }
@@ -1250,7 +1256,10 @@ export function turnSpecFor({ usage, tools, onDelta, agent } = {}) {
   };
 }
 
-async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction, usage: usageCtx }, turn) {
+async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction, usage: usageCtx, timing }, turn) {
+  // Per-round-trip records for this turn. Accumulated rather than overwritten — see the
+  // usage handler below.
+  const requests = [];
   // Token accounting at THE chokepoint: every provider adapter emits one
   // {type:'usage'} event per turn; record it here (best-effort, off the hot
   // path) tagging it with the caller's surface/sourceId, then forward the event
@@ -1262,6 +1271,23 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
     onEvent = (ev) => {
       if (ev && ev.type === 'usage') {
         import('./usage-meter.js').then((m) => m.recordUsageEvent(ev, ctx)).catch(() => {});
+        // ONE RECORD PER ROUND-TRIP, not one per turn. A tool loop asks the model, gets a
+        // call, feeds the result back and asks again; each of those is a separate usage
+        // event, and overwriting them left a four-request turn looking like one. "The
+        // second request is where it went wrong" is a sentence a user can act on.
+        requests.push({
+          index: requests.length + 1,
+          tokensIn: ev.inputTokens ?? null,
+          tokensOut: ev.outputTokens ?? null,
+          cacheReadTokens: ev.cacheReadTokens ?? null,
+          model: ev.model || null,
+          estimated: !!ev.estimated,
+          // Only the first round-trip has a measured time-to-first-token; the rest would be
+          // guesses, and a guess in this table is indistinguishable from a measurement.
+          ttftMs: requests.length === 0 ? (timing?.ttftMs ?? null) : null,
+          at: Date.now(),
+        });
+        turn.report({ requests });
         // Put the REAL cost on the turn record. Activity previously showed the resident
         // tool-schema cost under a "tok" label, which is a fact about the prompt we built,
         // not about what the turn spent — so a turn that answered from a 4k-token context

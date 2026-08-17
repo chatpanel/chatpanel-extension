@@ -4866,6 +4866,7 @@ async function renderActivity() {
       if (!row.open || tjBuilt) return;
       tjBuilt = true;
       const entries = tj.buildTrajectory(run.raw || []);
+      renderRequests(tjBox, run, tj);
       renderTrajectory(tjBox, entries, log, tj.lanesOf(entries, run));
     });
 
@@ -4899,6 +4900,48 @@ async function renderActivity() {
     }
     runsBox.append(row);
   }
+}
+
+/**
+ * One row per model round-trip.
+ *
+ * A turn is not one model call: in a tool loop the model is asked, answers with a call, is
+ * given the result, and is asked again. Reporting a single total for four requests hides
+ * which one went wrong — and "request #2 is where it went wrong" is a sentence a user can
+ * act on, while "the turn went wrong" is not.
+ *
+ * Throughput and generation time are DERIVED here, never stored: a computed number cannot
+ * drift from the tokens it came from, and a stored copy eventually does.
+ */
+function renderRequests(box, run, tj) {
+  const reqs = run.requests;
+  if (!reqs?.length) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'tj-reqs';
+  const head = document.createElement('div');
+  head.className = 'tj-reqs-head';
+  head.textContent = `${reqs.length} model request${reqs.length === 1 ? '' : 's'}`;
+  wrap.append(head);
+
+  for (const r of reqs) {
+    const m = tj.requestMetrics(r);
+    const el = document.createElement('div');
+    el.className = 'tj-req';
+    const bits = [
+      `#${r.index}`,
+      m.model || '',
+      m.tokensTotal ? `${m.tokensTotal.toLocaleString()} tok` : '',
+      m.tokensOut ? `${m.tokensOut.toLocaleString()} out` : '',
+      // A missing measurement is left out rather than shown as zero — "we did not measure"
+      // and "it took no time" are different claims.
+      m.ttftMs != null ? `${(m.ttftMs / 1000).toFixed(2)}s to first word` : '',
+      m.generationMs != null ? `${(m.generationMs / 1000).toFixed(2)}s writing` : '',
+      m.throughput != null ? `${m.throughput} tok/s` : '',
+    ].filter(Boolean);
+    el.textContent = bits.join('  ·  ');
+    wrap.append(el);
+  }
+  box.append(wrap);
 }
 
 /**

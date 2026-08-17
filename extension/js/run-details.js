@@ -64,6 +64,9 @@ export function summarizeRun(turnId, events) {
           // Where the time went. Total alone cannot separate "waited to start" from
           // "wrote a long answer", and only the first is a problem.
           ttftMs: p.ttftMs ?? null, prepMs: p.prepMs ?? null, mcpMs: p.mcpMs ?? null,
+          // One record per model round-trip. A four-request tool loop that reports a single
+          // total hides where it actually went wrong.
+          requests: Array.isArray(p.requests) ? p.requests : null,
         };
         break;
       case 'context.assembled':
@@ -163,6 +166,7 @@ export function summarizeRun(turnId, events) {
     model: turn?.model || null,
     estimated: !!turn?.estimated,
     ttftMs: turn?.ttftMs ?? null,
+    requests: turn?.requests || null,
     // Setup from the turn record first, falling back to context.assembled for runs
     // recorded before it was reported in both places.
     prepMs: turn?.prepMs ?? context?.prepMs ?? null,
