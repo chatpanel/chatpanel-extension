@@ -547,6 +547,33 @@ export const PAGE_TOOL_SPECS = [
   ...SENSE_TOOL_SPECS,
   CALIBRATE_TOOL_SPEC,
   {
+    // THE MISSING PRIMITIVE.
+    //
+    // Three separate runs tried to draw a shape with click_at — once, then twice, then a
+    // hand-built input_sequence — and each time reported success having drawn nothing. The
+    // model was not being stupid: to draw, it had `draw_path` (an ordered points array) and
+    // `input_sequence` (compose it yourself from mouse_down and moves). Neither is the
+    // obvious thing to reach for, and click_at was. A tool nobody reaches for is a tool
+    // that does not exist, so the simplest drag is now its own action.
+    name: 'drag_at',
+    description:
+      'Drag from one point to another with the button held — how you DRAW a shape, resize '
+      + 'one, or select a region on a canvas. A single click_at does NOT draw: shapes '
+      + '(rectangle, ellipse, line, arrow) are sized by dragging from one corner to the '
+      + 'other. Select the tool first, then drag. Returns how far it actually travelled.',
+    parameters: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: 'Start X, viewport pixels.' },
+        y: { type: 'number', description: 'Start Y, viewport pixels.' },
+        toX: { type: 'number', description: 'End X, viewport pixels.' },
+        toY: { type: 'number', description: 'End Y, viewport pixels.' },
+        button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Button to hold (default left).' },
+      },
+      required: ['x', 'y', 'toX', 'toY'],
+    },
+  },
+  {
     name: 'draw_path',
     description:
       'Draw a freehand stroke by dragging the mouse through a path of viewport points (button held) — e.g. the ' +
@@ -845,7 +872,7 @@ export function makePageToolExecutor(tabId, { cdp = false, adapter = null, devJs
       // result is purely VISUAL, and weak models won't screenshot on their own, so
       // we ATTACH a fresh screenshot of the result — this is what lets the model
       // SEE its mistake (a misplaced stroke) and self-correct.
-      if (['click_at', 'move_mouse', 'type_text', 'press_key', 'scroll', 'draw_path', 'input_sequence', 'capture_pointer'].includes(name)) {
+      if (['click_at', 'drag_at', 'move_mouse', 'type_text', 'press_key', 'scroll', 'draw_path', 'input_sequence', 'capture_pointer'].includes(name)) {
         if (!cdp) {
           return JSON.stringify({
             error: 'This needs High-reliability page control (trusted events) — turn it on in Settings → page control.',
@@ -870,7 +897,28 @@ export function makePageToolExecutor(tabId, { cdp = false, adapter = null, devJs
           return JSON.stringify(await cdpCapturePointer(tabId, { x: input?.x, y: input?.y }));
         }
         let r;
-        if (name === 'click_at') r = await cdpClickAt(tabId, input?.x, input?.y, input?.button, input?.clicks);
+        // Two points, button held the whole way — cdpDrag already walks the pointer between
+        // them, which is what a canvas needs to size a shape. This is a NAME for something
+        // the engine could always do; the absence of the name is what sent three runs to
+        // click_at instead.
+        if (name === 'drag_at') {
+          // WALKED, not jumped. cdpDrag moves point-to-point, so handing it two points
+          // presses, makes ONE jump, and releases — which a canvas reads as a click that
+          // happened to end elsewhere. Excalidraw, Figma and tldraw all size a shape from
+          // the intermediate pointermoves, so the path is filled in here.
+          const x0 = Number(input?.x); const y0 = Number(input?.y);
+          const x1 = Number(input?.toX); const y1 = Number(input?.toY);
+          if (![x0, y0, x1, y1].every(Number.isFinite)) {
+            return JSON.stringify({ error: 'drag_at needs {x, y, toX, toY} as numbers.' });
+          }
+          const HOPS = 12;
+          const pts = [{ x: x0, y: y0 }];
+          for (let i = 1; i <= HOPS; i++) pts.push({ x: x0 + ((x1 - x0) * i) / HOPS, y: y0 + ((y1 - y0) * i) / HOPS });
+          r = await cdpDrag(tabId, pts, input?.button);
+          // Report the distance, so "it ran" and "it dragged" stay distinguishable — a
+          // zero-length drag is a click, and the result should not let that pass as a draw.
+          if (r && r.ok !== false) r.draggedPx = Math.round(Math.hypot(x1 - x0, y1 - y0));
+        } else if (name === 'click_at') r = await cdpClickAt(tabId, input?.x, input?.y, input?.button, input?.clicks);
         else if (name === 'type_text') r = await cdpTypeText(tabId, input?.text);
         else if (name === 'press_key') r = await cdpPressKey(tabId, input?.key, input?.holdMs);
         else if (name === 'input_sequence') r = await cdpInputSequence(tabId, input?.steps);

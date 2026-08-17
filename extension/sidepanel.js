@@ -330,6 +330,8 @@ async function pageToolProvider(resolvedAgent) {
   let specs = PAGE_TOOL_SPECS;
   let system = PAGE_AUTOMATION_SYSTEM;
   let adapter = null;
+  // Site-specific guidance that stays in the prompt while the generic manual is deferred.
+  let residentSystem = '';
   // Pick a structured-editor adapter by CAPABILITY (probe the live page), falling
   // back to URL — so it works on embeds/self-hosted, not just known hosts. Adapters
   // insert via chrome.scripting (+ tab reload); they don't need trusted events, so
@@ -344,6 +346,14 @@ async function pageToolProvider(resolvedAgent) {
     adapter = candidate;
     specs = [...PAGE_TOOL_SPECS, ...adapter.toolSpecs()];
     system = `${PAGE_AUTOMATION_SYSTEM}\n\n${adapter.systemGuidance()}`;
+    // Kept RESIDENT while the generic manual is deferred. Deferring everything was a
+    // regression I introduced: this is the guidance that says "build shapes as DATA with
+    // structured_insert, do NOT pixel-draw", and with it gone a small model reached for
+    // click_at three runs in a row and reported drawing things it had not drawn. It is a
+    // paragraph, it applies only on a page that actually has an adapter, and it changes
+    // which TOOL gets chosen — that is worth its tokens in a way the pointer-lock
+    // instructions are not.
+    residentSystem = adapter.systemGuidance();
     console.info('[chatpanel] structured-insert adapter active:', adapter.id, cdp ? '(cdp)' : '(no cdp)');
   } else if (candidate) {
     console.info('[chatpanel] structured-insert (', candidate.id, ') is a Pro feature — not offered');
@@ -443,8 +453,10 @@ async function pageToolProvider(resolvedAgent) {
   return {
     specs: [buildDispatchSpec(specs)],
     execute: withGuidance(makeDispatchExecutor(specs, guardedExecute), system),
-    system: 'Call `page` to read or act on the user\'s current browser tab; '
-      + '{"action":"describe","args":{"tool":"<action>"}} returns an action\'s schema and how to use it.',
+    system: ['Call `page` to read or act on the user\'s current browser tab; '
+      + '{"action":"describe","args":{"tool":"<action>"}} returns an action\'s schema and how to use it. '
+      + 'To DRAW or resize on a canvas you must DRAG (`drag_at`) — a single `click_at` never draws.',
+    residentSystem].filter(Boolean).join('\n\n'),
   };
 }
 
