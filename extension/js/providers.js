@@ -55,6 +55,14 @@ const MAX_STALLED_ROUNDS = Number(globalThis.CHATPANEL_MAX_STALLED_ROUNDS) || 2;
 // don't count toward the loop guard at all.
 const OBSERVATION_TOOLS = new Set(['inspect_page', 'read_canvas', 'screenshot', 'marked_screenshot']);
 
+// Pure reads whose repeated answer is the SAME answer, so a repeat can be served from what
+// the first call returned rather than refused. Deliberately not page ACTIONS: replaying a
+// click would be a lie about something that changes the world.
+const REPLAYABLE_TOOLS = new Set([
+  'web_search', 'read_page', 'history_search', 'history_get_source', 'history_related',
+  'history_list_meetings', 'history_get_meeting',
+]);
+
 // A DISPATCHER tool carries the real action in its arguments — `page` with
 // {action:'screenshot'} rather than a tool literally named `screenshot`. Every
 // name-based policy below has to see through that, or the exemptions silently stop
@@ -155,6 +163,7 @@ export function createToolLoopGuard({
   maxStalledRounds = MAX_STALLED_ROUNDS,
 } = {}) {
   const counts = new Map();
+  const lastResult = new Map();   // key -> what that identical call returned the first time
   let stalledRounds = 0;
   let lastSignature = null;
 
@@ -189,6 +198,20 @@ export function createToolLoopGuard({
     reset(key) {
       if (key) counts.delete(key);
     },
+    /**
+     * Remember what an identical call returned, so a repeat can be ANSWERED instead of
+     * refused. A pure read asked twice has one true answer; replying "you already asked
+     * that" is both unhelpful and, for a small model, the start of a worse loop — it varies
+     * the query, gets a different and emptier result, and concludes the tool is broken.
+     * That is exactly what a user saw: a repeated `web_search` refused, the retry reworded
+     * into a query with no results, and the model announcing it had no access to weather.
+     */
+    remember(key, name, input, result) {
+      if (!key || !result) return;
+      if (!REPLAYABLE_TOOLS.has(effectiveToolName(name, input))) return;
+      lastResult.set(key, result);
+    },
+
     check(name, input) {
       // Reads are idempotent observations — re-reading after an action is correct,
       // so they never count toward the loop guard.
@@ -197,6 +220,11 @@ export function createToolLoopGuard({
       const key = stableToolCallKey(name, input);
       const count = (counts.get(key) || 0) + 1;
       counts.set(key, count);
+      if (count > maxIdenticalCalls && lastResult.has(key)) {
+        // Serve the answer it already earned. Still counted, so a genuinely stuck loop is
+        // still visible in the log — but the model gets the truth rather than a scolding.
+        return { blocked: false, replayed: true, count, key, result: lastResult.get(key) };
+      }
       if (count > maxIdenticalCalls) {
         // Block only THIS exact repeated call — every other tool stays available.
         return {
@@ -472,11 +500,12 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
       onEvent?.({ type: 'tool', name: c.name, phase: 'start', callId: c.id, input });
       const guard = loopGuard.check(c.name, input);
       if (guard.blocked) blockedThisRound += 1;
-      const result = guard.blocked
+      const result = guard.blocked || guard.replayed
         ? guard.result
         : await tools.execute(c.name, input, { callId: c.id });
       adaptivePolicy.recordResult(c.name, result);
       if (!guard.blocked && toolMadeProgress(c.name, result)) loopGuard.reset(guard.key);
+      loopGuard.remember(guard.key, c.name, input, result);
       const _image = result && typeof result === 'object' ? result.image : undefined;
       onEvent?.({ type: 'tool', name: c.name, phase: 'done', callId: c.id, image: _image, status: toolStatus(result), result: stepResultText(result) });
       const text = typeof result === 'string' ? result : (result?.text ?? '');
@@ -627,11 +656,12 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
       onEvent?.({ type: 'tool', name: b.name, phase: 'start', callId: b.id, input });
       const guard = loopGuard.check(b.name, input);
       if (guard.blocked) blockedThisRound += 1;
-      const result = guard.blocked
+      const result = guard.blocked || guard.replayed
         ? guard.result
         : await tools.execute(b.name, input, { callId: b.id });
       adaptivePolicy.recordResult(b.name, result);
       if (!guard.blocked && toolMadeProgress(b.name, result)) loopGuard.reset(guard.key);
+      loopGuard.remember(guard.key, b.name, input, result);
       const _image = result && typeof result === 'object' ? result.image : undefined;
       onEvent?.({ type: 'tool', name: b.name, phase: 'done', callId: b.id, image: _image, status: toolStatus(result), result: stepResultText(result) });
       const text = typeof result === 'string' ? result : (result?.text ?? '');
@@ -672,6 +702,7 @@ async function relayBridgeTool(base, ev, tools, onEvent, loopGuard = createToolL
         ? await tools.execute(ev.name, ev.input, { callId: ev.id, session: ev.session })
         : JSON.stringify({ error: 'no tools armed' });
     if (!guard.blocked && toolMadeProgress(ev.name, result)) loopGuard.reset(guard.key);
+    loopGuard.remember(guard.key, ev.name, input, result);
   } catch (e) {
     result = JSON.stringify({ error: String(e?.message || e) });
   }

@@ -456,7 +456,20 @@ export async function webSearch(query, opts = {}) {
 // survives truncation, and the model is told to cite with markdown links only —
 // never HTML/<sup>/bare numbers — so citations render as clickable links.
 export function searchResultsToText(res) {
-  if (!res?.results?.length) return `No web results for "${res?.query || ''}".`;
+  if (!res?.results?.length) {
+    // Name the engines HERE especially. The success path already lists them; the failure
+    // path did not, so "no web results" looked like "the web has nothing" when it usually
+    // means "the one engine we were allowed to ask returned nothing" — a search engine
+    // blocking us and a query with no answer are completely different problems, and the
+    // model cannot tell them apart without this.
+    const tried = (res?.engines || []).join(', ');
+    return `No web results for "${res?.query || ''}"`
+      + (tried ? ` (searched: ${tried}).` : '.')
+      + ' This may mean the engine blocked the request rather than that nothing exists —'
+      + ' do NOT conclude the information is unavailable. Try a shorter, more general query'
+      + ' (drop dates and qualifiers), and tell the user they can enable another search'
+      + ' engine in ChatPanel settings if it keeps failing.';
+  }
   const sources = res.results.map((r) => `[${r.rank}] [${r.title}](${r.url})`).join('\n');
   const example = res.results[0].url;
   const head =
