@@ -1707,11 +1707,16 @@ async function pickRoutedAgent(agent, settings, tools, turn, messages) {
     // A page or canvas action is inherently hard: exact coordinates, a structured payload,
     // and a result that is visibly wrong when the model guesses. Cost is the right
     // tie-breaker between models that can all do the job, and the wrong one when they cannot.
-    const structured = (tools?.specs || []).some((t) => /^(page|structured_insert|sheet_write)$/.test(t.name || t.function?.name || ''));
+    const toolNames = (tools?.specs || []).map((t) => t.name || t.function?.name || '');
+    const structured = toolNames.some((n) => /^(structured_insert|sheet_write)$/.test(n));
+    // The page dispatcher means this turn can drive the browser — and driving it means
+    // screenshots, so the model has to be able to read one.
+    const pageTools = toolNames.includes('page');
     const need = {
       capabilities: (tools?.specs || []).length ? ['tools'] : [],
       force: chose,
-      structured,
+      structured: structured || pageTools,
+      pageTools,
       // The request itself, so complexity, modality and volume can be read for free rather
       // than guessed at or asked of a model.
       request: { messages },
@@ -1775,7 +1780,8 @@ function recordRouteDecision(turn, agent, settings, tools, messages) {
       const need = router.needForTurn(settings, {
         capabilities: (tools?.specs || []).length ? ['tools'] : [],
         request: { messages },
-        structured: (tools?.specs || []).some((t) => /^(page|structured_insert|sheet_write)$/.test(t.name || t.function?.name || '')),
+        structured: (tools?.specs || []).some((t) => /^(structured_insert|sheet_write)$/.test(t.name || t.function?.name || '')),
+        pageTools: (tools?.specs || []).some((t) => (t.name || t.function?.name) === 'page'),
       });
       const preview = await router.previewRoute(settings, store?.resolveTarget, need);
       const used = agent?.id || agent?.name || agent?.model || null;

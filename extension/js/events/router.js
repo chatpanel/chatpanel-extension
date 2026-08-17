@@ -185,13 +185,24 @@ export function signalsFrom(request = {}) {
  * judgement call a model needs to make — length, code fences, images and adapter tools are
  * all readable for free, which is what makes this class R and instant.
  */
-export function requirementsFor(signals = {}, { structured = false, hasTools = false } = {}) {
+export function requirementsFor(signals = {}, { structured = false, hasTools = false, pageTools = false } = {}) {
   const required = new Set();
   let minQuality = 0;
   const why = [];
 
   if (hasTools) { required.add('tools'); why.push('the turn carries tools'); }
   if (signals.modality === 'vision') { required.add('vision'); why.push('the request includes an image'); }
+  // DRIVING A PAGE NEEDS TOOLS AND JUDGEMENT — vision only for the steps that look.
+  //
+  // Requiring vision for the whole turn would rule out a strong reasoning model that would
+  // drive the page well and only needs to see a screenshot occasionally. The step that reads
+  // an image is one call in a loop, not the character of the whole task, and per-STEP
+  // requirements (see requirementsForStep) are where that belongs.
+  if (pageTools) {
+    required.add('tools');
+    minQuality = Math.max(minQuality, 0.55);
+    why.push('driving a page needs exact actions');
+  }
   if (signals.approxTokens > 20_000) { required.add('long-context'); why.push('the request is large'); }
   if (signals.code) { required.add('coding'); why.push('the request contains code'); }
 
@@ -208,7 +219,43 @@ export function requirementsFor(signals = {}, { structured = false, hasTools = f
     why.push('the task is complex');
   }
 
-  return { required: [...required], minQuality, why };
+  // Which of these can be given up if nothing qualifies, and which cannot.
+  //
+  // `tools` is not negotiable: a turn that carries tools cannot be done by a model that
+  // cannot call them, so relaxing it would produce an answer that ignores half the request.
+  // The others are strong preferences dressed as requirements — a text-only model CAN drive
+  // a page badly, and badly beats not at all.
+  const negotiable = [...required].filter((c) => c !== 'tools');
+  return { required: [...required], negotiable, minQuality, why };
+}
+
+/**
+ * What ONE step needs — the unit routing should eventually work at.
+ *
+ * A turn is a chain of sub-tasks with different demands: read the canvas (structure), decide
+ * what to draw (reasoning), look at the result (vision), write it (structure again).
+ * Choosing one model for all of them means either paying frontier prices to run a loop or
+ * doing the hard parts with something that cannot. The honest unit is the step.
+ *
+ * This is the contract; the loop that acts on it is separate work. Exposed now so a caller
+ * can already ask "what does this call need" rather than inferring it from the turn — and so
+ * the answer lives in one place when the loop is ready to use it.
+ */
+export function requirementsForStep(toolName, args = {}) {
+  const name = String(toolName || '');
+  const action = String(args?.action || '');
+  const both = `${name}.${action}`;
+
+  // Looking at pixels — the only steps that genuinely need vision.
+  if (/screenshot|marked_screenshot|read_canvas|sense_canvas/.test(both)) {
+    return { required: ['vision'], why: 'this step reads an image' };
+  }
+  // Producing an exact payload: structure matters, sight does not.
+  if (/structured_insert|sheet_write|fill_form|input_sequence|draw_path/.test(both)) {
+    return { required: ['tools'], minQuality: 0.55, why: 'this step writes an exact payload' };
+  }
+  // Everything else is ordinary tool use.
+  return { required: name ? ['tools'] : [], why: '' };
 }
 
 export function createModelRouter({ models = [], middleware = [], strategies = [], admit = null } = {}) {
@@ -284,6 +331,10 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
         // answer, but relaxing it silently would hide why the result is poor. The floor is
         // dropped, the fact is stated, and the hard constraints — reach, capability — are
         // never relaxed, because those are not preferences about how well something goes.
+        // RELAX IN ORDER, AND SAY SO. Quality first, since a weaker model doing the right
+        // kind of work beats a capable one doing the wrong kind. Then the negotiable
+        // capabilities, one group at a time. `tools` and reach are never relaxed: one would
+        // ignore half the request, the other would send it somewhere it may not go.
         if (need.minQuality > 0) {
           const relaxed = this.route({ ...need, minQuality: 0 });
           if (relaxed.model) {
@@ -291,6 +342,17 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
               ...relaxed,
               relaxed: true,
               reasons: [...relaxed.reasons, `no model met the quality this task needs (${need.minQuality}) — used the best available instead`],
+            };
+          }
+        }
+        if (need.negotiable?.length) {
+          const kept = (need.capabilities || []).filter((c) => !need.negotiable.includes(c));
+          const relaxed = this.route({ ...need, minQuality: 0, capabilities: kept, negotiable: [] });
+          if (relaxed.model) {
+            return {
+              ...relaxed,
+              relaxed: true,
+              reasons: [...relaxed.reasons, `no model offers ${need.negotiable.join(', ')} — used one without it, which may do this task poorly`],
             };
           }
         }

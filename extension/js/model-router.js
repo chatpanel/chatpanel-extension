@@ -437,7 +437,7 @@ export function routingSettings(settings = {}) {
  * message fails to send: a router that occasionally defers is fine, one that can break a
  * turn is not.
  */
-export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false, request = null, structured = false, exclude = [], like = null } = {}) {
+export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false, request = null, structured = false, pageTools = false, exclude = [], like = null } = {}) {
   const cfg = routingSettings(settings);
   // `force` is the user having selected Auto, which is the ONLY thing that turns routing on.
   // A settings mode that could route an explicitly chosen model would override the user's own
@@ -447,7 +447,7 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
     const router = buildRouter(settings, resolveTarget);
     // One construction, shared with the observer — see needForTurn.
     const decision = await router.routeWith({
-      ...needForTurn(settings, { capabilities, request, structured }),
+      ...needForTurn(settings, { capabilities, request, structured, pageTools }),
       exclude,
       like,
     });
@@ -471,12 +471,12 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
  * class of bug as the duplicated engine list: two implementations of one decision drift, and
  * the one nobody is watching is the one that goes wrong.
  */
-export function needForTurn(settings, { capabilities = [], request = null, structured = false, force = false } = {}) {
+export function needForTurn(settings, { capabilities = [], request = null, structured = false, pageTools = false, force = false } = {}) {
   const signals = request ? signalsFrom(request) : {};
   // REQUIREMENTS FIRST. What the work needs eliminates candidates; cost and speed only order
   // what survives. A preference lets an unsuitable model win once the better ones decline,
   // which is exactly how a chain of five ended on one that could not do the job.
-  const req = requirementsFor(signals, { structured, hasTools: capabilities.includes('tools') });
+  const req = requirementsFor(signals, { structured, pageTools, hasTools: capabilities.includes('tools') });
   return {
     // With no stated deadline or budget, "reasonably fast and reasonably cheap" is what
     // anybody means — and it only ever decides between models that already qualify.
@@ -484,6 +484,9 @@ export function needForTurn(settings, { capabilities = [], request = null, struc
     reach: 'any',
     capabilities: [...new Set([...capabilities, ...req.required])],
     minQuality: req.minQuality,
+    // Which requirements may be given up if nothing qualifies — never `tools`, and never
+    // reach. See requirementsFor.
+    negotiable: req.negotiable,
     requirementReasons: req.why,
     signals,
     requestText: request ? String(request.text || (request.messages || []).map((m) => m?.content || '').join('\n')).slice(-2000) : '',
