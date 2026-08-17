@@ -33,6 +33,7 @@ export {
 export { checkInvariants, INVARIANTS } from './invariants.js';
 export { createMemoryAdapter, createLogStore, createBlobStore } from './store.js';
 export { createRegistry, REGISTRY_STATES } from './registry.js';
+export { defineSearchEngine, reconcileEngines, attemptOrder, ENGINE_KINDS, SearchEngineError } from './search-engines.js';
 export { defineToolGroup, createToolGroupRegistry, ToolGroupError } from './tool-groups.js';
 export { defineAdapter, createAdapterRegistry, AdapterError } from './adapters.js';
 export { linkifyCitations, sourcesFromToolText } from './citations.js';

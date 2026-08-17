@@ -24,6 +24,7 @@
 
 import { assertFetchable, stripResourceTags, extractReadable } from './context.js';
 import { FREE_LIMITS } from './license.js';
+import { defineSearchEngine, reconcileEngines, attemptOrder } from './events/search-engines.js';
 
 // Chrome-style engines: a `%s` (or `{q}`) placeholder for the URL-encoded query.
 // Defaults favour engines that return real results to a plain (invisible) fetch:
@@ -48,9 +49,15 @@ import { FREE_LIMITS } from './license.js';
 // vendor the user never chose, which is the opposite of BYO-by-default. It turns on when
 // the user configures a reader key — that key IS the consent, and it is also what lifts the
 // keyless rate limit that would make it unreliable anyway.
-export const SEARCH_API = { id: 'jina', name: 'Web search API (Jina — needs a key)', url: 'https://s.jina.ai/', kind: 'api', enabled: false };
+export const SEARCH_API = defineSearchEngine({
+  id: 'jina', name: 'Web search API (Jina — needs a key)', url: 'https://s.jina.ai/', kind: 'api', needsKey: true,
+});
 
-export const DEFAULT_ENGINES = [
+// Every engine ChatPanel knows about — declared once, consumed by the search runtime and
+// the settings page alike. RETIRED entries stay in the declaration on purpose: that is what
+// lets a user who stored a removed engine have it taken away, instead of it lingering
+// because nothing remembers it should go.
+export const ALL_ENGINES = [
   SEARCH_API,
   // Startpage stays and stays ON: tested, it works some of the time, and an engine that
   // sometimes answers is worth keeping beside one that always does.
@@ -62,12 +69,14 @@ export const DEFAULT_ENGINES = [
   { id: 'duckduckgo', name: 'DuckDuckGo (scraped)', url: 'https://html.duckduckgo.com/html/?q=%s', enabled: true },
   { id: 'google', name: 'Google (scraped)', url: 'https://www.google.com/search?q=%s', enabled: false },
   { id: 'bing', name: 'Bing (scraped)', url: 'https://www.bing.com/search?q=%s', enabled: false },
-];
+  { id: 'mojeek', name: 'Mojeek', url: 'https://www.mojeek.com/search?q=%s', retired: true },
+].map((e) => (e.id === SEARCH_API.id ? e : defineSearchEngine(e)));
 
-// Engines whose defaults were removed. A user who saved settings while these were the
-// defaults still has them stored, and leaving them would keep that user on the broken
-// path forever — a fix that only reaches new installs is not a fix.
-const RETIRED_ENGINES = new Set(['mojeek']);
+/** What a fresh install starts with. */
+export const DEFAULT_ENGINES = ALL_ENGINES.filter((e) => !e.retired);
+
+// Retired by DECLARATION now, so a removed engine cannot survive in a second copy of the
+// list — which is exactly how Mojeek kept appearing in settings after being removed here.
 
 const RESULTS_PER_ENGINE = 5; // top-N links taken from each SERP
 const MAX_PAGES = 5; // how many result pages we deep-fetch for fuller text
@@ -498,10 +507,11 @@ export async function webSearch(query, opts = {}) {
   // single request, and the others stay unspent for when they are needed. Disabled engines
   // are the last resort, because a user would rather wait than be told the web has no
   // weather.
-  const order = [
-    ...engines,
-    ...(opts.allEngines || []).filter((e) => e?.enabled === false && e?.kind !== 'api' && !engines.some((x) => x.id === e.id)),
-  ];
+  // Enabled first, then the rest as fallbacks — one ordering, computed by the shared
+  // declaration rather than re-derived here. An engine needing a key it does not have is
+  // never attempted, because a guaranteed 401 is not a fallback.
+  const order = attemptOrder(opts.allEngines?.length ? opts.allEngines : engines)
+    .filter((e) => !(e.needsKey && !opts.reader?.key));
   let perEngineLinks = [];
   const usedEngines = [];
   for (const e of order) {
@@ -602,32 +612,7 @@ export function searchResultsToText(res) {
  * list, and a fix that only reaches new installs is not a fix.
  */
 export function migrateEngines(stored, { hasKey = false } = {}) {
-  let engines = (Array.isArray(stored) && stored.length ? stored : DEFAULT_ENGINES).map((e) => ({ ...e }));
-  engines = engines.filter((e) => !RETIRED_ENGINES.has(e?.id));
-  // Was it already in the user's list? That distinguishes "they turned it off" from "it has
-  // never been offered" — collapsing the two would mean a newly-added key could never
-  // switch it on, which is the whole point of supplying one.
-  const known = engines.some((e) => e?.id === SEARCH_API.id);
-  const chosenOff = known && engines.find((e) => e.id === SEARCH_API.id)?.enabled === false;
-  if (!known) engines = [{ ...SEARCH_API }, ...engines];
-  // A configured key is the user opting in; without one this engine stays off however the
-  // stored settings look, so an old config can never silently start sending queries out.
-  engines = engines.map((e) => (e.id === SEARCH_API.id
-    ? { ...e, enabled: hasKey && !(known && chosenOff) }
-    : e));
-  // Never leave the user with nothing enabled. Retiring an engine can empty a list that had
-  // only that engine in it, and search silently having no engines is a worse failure than
-  // the one being fixed — so the defaults are restored rather than the user being left with
-  // a feature that quietly does nothing.
-  if (!engines.some((e) => e?.enabled !== false && e?.kind !== 'api')) {
-    for (const d of DEFAULT_ENGINES) {
-      if (d.kind === 'api') continue;
-      const have = engines.find((e) => e.id === d.id);
-      if (have) have.enabled = d.enabled !== false;
-      else engines.push({ ...d });
-    }
-  }
-  return engines;
+  return reconcileEngines(stored, ALL_ENGINES, { hasKey });
 }
 
 export function webSearchOpts(settings, isPro = false) {
