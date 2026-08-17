@@ -580,3 +580,38 @@ console.log('✓ requirements: derived from the prompt, eliminating rather than 
 }
 
 console.log('✓ router plugins: strategies listed and switchable, redaction listed and not');
+
+// A real log answered "which model did this?" with 'mqr0ifmw7sqxr7'. Falling back to the
+// generated id is the same as having no label: it names the row without identifying it.
+{
+  const c = candidatesFrom({
+    agents: [{ id: 'mqr0ifmw7sqxr7', kind: 'bridge', bridgeAgent: 'codex', model: 'gpt-5.6-sol' }],
+    endpoints: [],
+  });
+  const m = c.find((x) => x.id === 'mqr0ifmw7sqxr7');
+  assert.ok(m, 'an unnamed bridge agent is still a candidate');
+  assert.notEqual(m.label, 'mqr0ifmw7sqxr7', 'and it is not labelled with its own id');
+  assert.match(m.label, /gpt-5\.6-sol/, 'the model name carries it when there is no nickname');
+
+  // The case that actually produced a bare id: no name AND no model.
+  const bare = candidatesFrom({ agents: [{ id: 'mqr0ifmw7sqxr7', kind: 'bridge', bridgeAgent: 'codex' }], endpoints: [] })
+    .find((x) => x.id === 'mqr0ifmw7sqxr7');
+  assert.notEqual(bare.label, 'mqr0ifmw7sqxr7', 'never the id');
+  assert.match(bare.label, /codex/, 'a CLI agent the user never renamed still knows what it runs');
+}
+
+// Escalation fired on "hello" because the caller passed `structured: structured || pageTools`,
+// so every turn on a page with actions armed looked like exact structured work.
+{
+  const { complexityStrategy } = await import('../extension/js/model-router.js');
+  const { signalsFrom } = await import('../extension/js/events/router.js');
+  const models = [{ id: 'a', capabilities: ['tools'], quality: 0.9 }, { id: 'b', capabilities: [], quality: 0.3 }];
+
+  const greeting = await complexityStrategy.decide(models, { signals: signalsFrom({ text: 'hello' }), structured: true });
+  assert.equal(greeting, null, 'Small talk gets no opinion from an escalation strategy…');
+
+  const work = await complexityStrategy.decide(models, { signals: signalsFrom({ text: 'refactor this module and migrate the callers step by step, then analyse the fallout across the codebase' }), structured: true });
+  assert.ok(work, '…and real work still escalates.');
+}
+
+console.log('✓ routing: decisions name a model, and a greeting is not escalated');

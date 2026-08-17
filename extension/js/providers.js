@@ -1889,7 +1889,11 @@ async function pickRoutedAgent(agent, settings, tools, turn, messages, sources =
     const need = {
       capabilities: (tools?.specs || []).length ? ['tools'] : [],
       force: chose,
-      structured: structured || pageTools,
+      // NOT `structured || pageTools`. Page tools being armed is equipment; 'structured'
+      // means the turn must emit an exact payload. Conflating them made every turn on a page
+      // read as structured work, which is how a greeting reached an escalation strategy.
+      // requirementsFor already handles pageTools on its own terms.
+      structured,
       pageTools,
       // The request itself, so complexity, modality and volume can be read for free rather
       // than guessed at or asked of a model.

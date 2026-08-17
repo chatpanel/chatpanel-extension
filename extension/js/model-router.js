@@ -208,8 +208,14 @@ export function candidatesFrom(settings = {}, resolveTarget = (x) => x, { ignore
     // A generated id (mqk41ucyhmz1au) is meaningless to the person reading a routing
     // decision. The label is what they actually named the thing, falling back to the model
     // and only then to the id — an explanation nobody can read is not an explanation.
+    // NEVER A GENERATED ID. 'mqr0ifmw7sqxr7' appeared as the answer to "which model did this"
+    // in a real log — falling back to the id was the same as having no label at all. A bridge
+    // agent the user never renamed still knows which CLI it runs, and that is readable.
     const label = [t.name, t.model && t.model !== t.name ? t.model : null]
-      .filter(Boolean).join(' · ') || String(id);
+      .filter(Boolean).join(' · ')
+      || [t.bridgeAgent, t.model].filter(Boolean).join(' · ')
+      || t.kind
+      || String(id);
     const reach = reachOf({ ...t, kind: kind || t.kind });
     const inferred = {
       id,
@@ -279,6 +285,11 @@ export const complexityStrategy = defineRouteStrategy({
   classUsed: 'R',
   decide: async (eligible, need) => {
     const sig = need.signals;
+    // ASKED FOR NOTHING, ESCALATES TO NOTHING. This fired on 'hello' because the caller was
+    // passing `structured: structured || pageTools`, so every turn on a page with actions
+    // armed looked like exact structured work. Equipment is not demand — the same conflation
+    // that put a quality floor on a greeting, in a second place.
+    if (sig?.smalltalk) return null;
     const hard = sig?.complexity === 'high' || sig?.modality === 'vision' || need.structured;
     if (!hard) return null;   // no opinion on easy work — let cost decide
     // Prefer a model that claims what this task actually wants. Not a hard filter: declaring

@@ -334,7 +334,10 @@ export function threadsOf(runs = []) {
   const byKey = new Map();
   for (const run of runs) {
     if (!run) continue;
-    const surface = run.surface || run.turn?.surface || run.kind || 'other';
+    // `kind` is the fallback that makes this work on runs recorded before surface existed —
+    // and on an export of 1,215 turns, 1,203 had no surface while every one had a kind. A
+    // grouping that only works on data recorded after the fix groups nothing anyone has.
+    const surface = run.surface || run.turn?.surface || run.turn?.kind || run.kind || 'other';
     const sourceId = run.sourceId || run.turn?.sourceId || null;
     const key = sourceId ? `${surface}:${sourceId}` : `run:${run.turnId || run.id}`;
     if (!byKey.has(key)) {
