@@ -799,6 +799,15 @@ function refreshDoc(d) {
 async function generateInsights(d) {
   if (!d) return;
   const settings = await getSettings();
+  // The Plugins switch reaches this too. Unlike the summary and monitors this one is
+  // user-initiated, so a silent no-op would look like a broken button — it says why.
+  try {
+    const { pluginManifest } = await import('./js/plugins.js');
+    if (!(await pluginManifest()).isEnabled('meeting:insights')) {
+      toast('Decisions and action items are switched off in Settings → Plugins.');
+      return;
+    }
+  } catch { /* manifest unreadable — run rather than block work the user asked for */ }
   const agent = getTarget(settings, settings.activeAgentId);
   if (!agent) { toast('No active model/agent — configure one in Settings → API/Agents.'); return; }
   const gen = $('m-gen');

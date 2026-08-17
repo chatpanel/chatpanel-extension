@@ -3217,6 +3217,10 @@ async function runMonitor(m, { force = false } = {}) {
 // slow tick can't overlap the next). Called by the scribe loop after it saves.
 async function runMeetingMonitors(meetingId, { manual = false } = {}) {
   if (monitorsBusy) return;
+  // Switched off in Plugins means it does not run — including the manual refresh, because a
+  // button that works while the feature is disabled makes the switch ambiguous rather than
+  // convenient.
+  if (!(await analyzerEnabled('meeting:monitors'))) return;
   const conv = state.conv;
   // Paused questions are always skipped. Auto (scribe-driven) runs honor each
   // question's cadence (everyMin) so slow ones don't re-run every update; a manual
@@ -3273,6 +3277,14 @@ async function runLiveNotesTick() {
         if (!isFirst && latestTs <= st.lastTs) continue; // nothing new said
         const delta = meetingToText(rec, { sinceTs: isFirst ? 0 : st.lastTs });
         if (!delta.trim()) { st.lastTs = latestTs; scribeState.set(e.id, st); continue; }
+        // THE TOGGLE HAS TO REACH THE LOOP.
+        //
+        // The analyzers were declared and listed in Plugins before this line existed, so
+        // switching "Running summary" off changed nothing — a control that reports a state
+        // it does not enforce is worse than no control, and it is the same failure as a tool
+        // reporting ok having done nothing. Checked BEFORE the call, so a summary the user
+        // turned off costs no tokens rather than being generated and discarded.
+        if (!(await analyzerEnabled('meeting:summary'))) { st.lastTs = latestTs; scribeState.set(e.id, st); continue; }
         const text = await summarizeMeeting(prev, delta, isFirst, {
           style: state.settings?.ui?.meetingSummaryStyle === 'detailed' ? 'detailed' : 'concise',
         });
@@ -4571,6 +4583,22 @@ const CONCISE_MERGE = [
   'You are a live meeting scribe maintaining ONE short running summary. Merge the NEW transcript into the CURRENT summary — do NOT start over, do NOT duplicate, keep stable items stable, and refine an earlier line only if the new transcript clarifies it.',
   'Keep the SAME compact shape (TL;DR 2–4 bullets; Decisions & risks only if explicit; Action items only if stated) and stay tight — short phrases. Output ONLY the complete updated summary.',
 ].join('\n');
+
+/**
+ * Is a meeting analyzer switched on?
+ *
+ * Fails OPEN: if the manifest cannot be read, the analyzer runs. A summary that stops
+ * because storage hiccuped is a silent loss of the thing the user is in the middle of, and
+ * that is worse than one they thought they had disabled running once.
+ */
+async function analyzerEnabled(id) {
+  try {
+    const { pluginManifest } = await import('./js/plugins.js');
+    return (await pluginManifest()).isEnabled(id);
+  } catch {
+    return true;
+  }
+}
 
 async function summarizeMeeting(prevNotes, deltaText, isFirst, { style = 'concise' } = {}) {
   const agent = getTarget(state.settings, state.settings.activeAgentId);
