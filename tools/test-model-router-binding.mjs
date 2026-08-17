@@ -401,3 +401,33 @@ console.log('✓ an explicit "use <model>" is honoured, and a question about one
 }
 
 console.log('✓ quality: sizes read as numbers, tiers named, and a frontier model is not replaced by an 8B');
+
+// PROVIDER PREFERENCE. The same model is often available from several places, and ties were
+// breaking alphabetically — not a preference, but the absence of one, which is how every
+// equal choice ended up at whichever provider sorted first.
+{
+  const many = candidatesFrom({
+    endpoints: [
+      { id: 'or', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-5.5' },
+      { id: 'oai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.5' },
+      { id: 'local', name: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'gemma-4-26b' },
+    ],
+    agents: [{ id: 'cc', name: 'Claude Code', kind: 'bridge', model: 'opus' }],
+  });
+  const rank = Object.fromEntries(many.map((m) => [m.id, m.providerRank]));
+
+  // Fewer hops first: the user's own machine, then a first-party API, then a local agent that
+  // spawns a process, then an aggregator carrying someone else's quota and outages.
+  assert.ok(rank.local < rank.oai, 'a local model did not outrank a hosted API');
+  assert.ok(rank.oai < rank.cc, 'a direct API did not outrank a CLI agent');
+  assert.ok(rank.cc < rank.or, 'a CLI agent did not outrank an aggregator');
+
+  // A user's own ordering overrides the guess entirely.
+  const pinned = candidatesFrom({
+    endpoints: [{ id: 'or', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'gpt-5.5' }],
+    ui: { routing: { models: { or: { providerRank: 0 } } } },
+  });
+  assert.equal(pinned[0].providerRank, 0);
+}
+
+console.log('✓ provider preference: fewest hops by default, and the user reorders it');

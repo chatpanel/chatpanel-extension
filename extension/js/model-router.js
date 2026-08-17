@@ -70,6 +70,36 @@ function capabilitiesOf(target) {
 }
 
 /**
+ * Which provider to prefer when two of them offer the same model. Lower wins.
+ *
+ * Ties were breaking alphabetically, which is not a preference — it is the absence of one,
+ * and it sent every equal choice to whichever provider happened to sort first. The order
+ * below is a starting point with a reason behind each rung; the user overrides it per model.
+ *
+ * FEWER HOPS FIRST. A direct API is one network call to the people who run the model; an
+ * aggregator adds a hop, its own quotas, and its own outages on top of the provider's. When
+ * everything else is equal, the shorter path is the more reliable one.
+ */
+const PROVIDER_ORDER = [
+  // The user's own machine: no quota, no outage, no third party.
+  /localhost|127\.0\.0\.1|ollama|lm.?studio/i,
+  // First-party APIs.
+  /anthropic|openai\.com|api\.deepseek|googleapis|x\.ai/i,
+  // Local CLI agents — capable, but they spawn a process and run their own loop.
+  /(^|\W)bridge(\W|$)/i,
+  // Aggregators and gateways: an extra hop and someone else's quota.
+  /openrouter|huggingface|together|groq|fireworks|nvidia|replicate/i,
+];
+
+function providerRankOf(target, kind) {
+  const hay = `${target.baseUrl || target.url || ''} ${target.name || ''} ${kind || target.kind || ''}`;
+  for (let i = 0; i < PROVIDER_ORDER.length; i++) {
+    if (PROVIDER_ORDER[i].test(hay)) return i * 10;
+  }
+  return 50;   // unrecognised: mid-table, so a provider we have no opinion on is not buried
+}
+
+/**
  * Roughly how capable a model is, guessed from its name.
  *
  * Shipping the quality lever with no default meant every model scored the same, so a
@@ -130,6 +160,7 @@ function costOf(target, reach) {
 export function applyOverride(inferred, override = {}) {
   if (!override || typeof override !== 'object') return inferred;
   const out = { ...inferred };
+  if (Number.isFinite(Number(override.providerRank))) out.providerRank = Number(override.providerRank);
   if (Array.isArray(override.capabilities)) out.capabilities = [...override.capabilities];
   for (const key of ['costPer1k', 'latencyMs', 'quality']) {
     if (Number.isFinite(Number(override[key]))) out[key] = Number(override[key]);
@@ -174,6 +205,7 @@ export function candidatesFrom(settings = {}, resolveTarget = (x) => x, { ignore
       // A local model is slower to first token than a hosted one far more often than not.
       latencyMs: reach === 'device' ? 1500 : 700,
       quality: qualityOf(t),
+      providerRank: providerRankOf(t, kind),
       available: t.enabled !== false,
     };
     // Behaviour beats configuration. A model whose credits ran out is configured perfectly
@@ -401,16 +433,9 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
   if (!force) return null;
   try {
     const router = buildRouter(settings, resolveTarget);
+    // One construction, shared with the observer — see needForTurn.
     const decision = await router.routeWith({
-      ...cfg,
-      // What the TURN needs is a hard requirement and outranks the saved preference: a turn
-      // with tools cannot use a model without them, whatever the dials say.
-      capabilities: [...new Set([...(cfg.capabilities || []), ...capabilities])],
-      // The signals a strategy needs to tell "hello" from real work — read for free.
-      signals: request ? signalsFrom(request) : undefined,
-      // The user's own words, so an instruction in the message can be honoured.
-      requestText: request ? String(request.text || (request.messages || []).map((m) => m?.content || '').join('\n')).slice(-2000) : '',
-      structured,
+      ...needForTurn(settings, { capabilities, request, structured }),
       exclude,
       like,
     });
@@ -423,6 +448,27 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
   } catch {
     return null;
   }
+}
+
+/**
+ * The `need` for one turn, built ONCE.
+ *
+ * Two call sites were constructing this separately — the observer with bare defaults, the
+ * applier with the saved dials, the request signals and the structured flag — so the two
+ * disagreed and the log said "would route to Gemma4" about a turn OpenCode answered. Same
+ * class of bug as the duplicated engine list: two implementations of one decision drift, and
+ * the one nobody is watching is the one that goes wrong.
+ */
+export function needForTurn(settings, { capabilities = [], request = null, structured = false, force = false } = {}) {
+  const cfg = routingSettings(settings);
+  return {
+    ...cfg,
+    capabilities: [...new Set([...(cfg.capabilities || []), ...capabilities])],
+    signals: request ? signalsFrom(request) : undefined,
+    requestText: request ? String(request.text || (request.messages || []).map((m) => m?.content || '').join('\n')).slice(-2000) : '',
+    structured,
+    force,
+  };
 }
 
 /** What the router WOULD choose for a turn — recorded, not obeyed, until routing is on. */

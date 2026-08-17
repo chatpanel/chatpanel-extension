@@ -4984,6 +4984,17 @@ async function renderRoutingModels() {
     // Reach moves OUTWARD only, so the options offered are exactly the ones that would be
     // accepted — a control that silently refuses half its own values is worse than no
     // control. See applyOverride for why the other direction cannot be allowed.
+    // Which provider to prefer when two of them offer the same model. Only a TIEBREAK: a
+    // preferred provider that is slower and dearer still loses, or the preference quietly
+    // becomes a hard pin.
+    const prefer = document.createElement('select');
+    prefer.title = 'Preference when two providers offer the same model. Never overrides a real difference in speed, cost or capability.';
+    for (const [v, t] of [['', `Prefer: default (${m.providerRank})`], ['0', 'Prefer: first'], ['25', 'Prefer: normal'], ['90', 'Prefer: last']]) {
+      const o = document.createElement('option'); o.value = v; o.textContent = t; prefer.append(o);
+    }
+    prefer.value = saved[m.id]?.providerRank == null ? '' : String(saved[m.id].providerRank);
+    prefer.onchange = () => write(m.id, { providerRank: prefer.value === '' ? null : Number(prefer.value) });
+
     const reach = document.createElement('select');
     reach.title = 'How far a request travels to reach it. You can declare it further out, never closer in.';
     const order = ['device', 'trusted', 'any'];
@@ -4998,7 +5009,7 @@ async function renderRoutingModels() {
     const text = document.createElement('span');
     text.className = 'routing-model-name';
     text.append(name, meta);
-    row.append(text, caps, quality, speed, price, reach);
+    row.append(text, caps, quality, speed, price, prefer, reach);
     box.append(row);
   }
 }

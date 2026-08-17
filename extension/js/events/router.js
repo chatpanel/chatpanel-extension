@@ -53,7 +53,7 @@ const reachRank = (r) => Math.max(0, REACH.indexOf(r));
 export function defineModel({
   id, label, reach = 'any', classUsed = 'C', capabilities = [],
   costPer1k = 1, latencyMs = 1000, load = 0, available = true,
-  rateLimited = false, observedLatencyMs = null, quality = null, model = '',
+  rateLimited = false, observedLatencyMs = null, quality = null, model = '', providerRank = 50,
 }) {
   if (!id) throw new RouterError('BAD_MODEL', 'model.id required');
   if (!REACH.includes(reach)) throw new RouterError('BAD_MODEL', `model '${id}': unknown reach '${reach}'`);
@@ -70,6 +70,10 @@ export function defineModel({
     declaredLatencyMs: latencyMs,
     observedLatencyMs,
     load, available, rateLimited,
+    // Which provider to prefer when two of them offer the same thing. Lower wins. Ties were
+    // breaking alphabetically, which is not a preference — it is the absence of one, and it
+    // sent every equal choice to whichever provider happened to sort first.
+    providerRank,
     // 0..1 benchmark or observed success, when the host has one. Null means unknown, which
     // is different from bad — and scoring an unknown as zero would bury every new model.
     quality,
@@ -237,7 +241,9 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
         if (prefer === 'quality') return busy / q;
         return ((m.latencyMs / 1000) * m.costPer1k * busy) / q;
       };
-      const ranked = [...eligible].sort((a, b) => score(a) - score(b) || a.id.localeCompare(b.id));
+      const ranked = [...eligible].sort((a, b) => score(a) - score(b)
+        || a.providerRank - b.providerRank
+        || a.id.localeCompare(b.id));
       const chosen = ranked[0];
       return {
         model: chosen,

@@ -1423,7 +1423,10 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
     //
     // Free to compute (class R, no model call) and fire-and-forget, so an observation can
     // never cost or break the turn it is observing.
-    recordRouteDecision(turn, agent, settings, tools);
+    // Only when routing did NOT apply. When Auto answered, the applied decision is already
+    // recorded, and adding an observation computed separately is how the log came to say
+    // "would route to Gemma4" about a turn OpenCode answered.
+    if (agent?.kind !== 'router' && agent?.id !== 'router:auto') recordRouteDecision(turn, agent, settings, tools, messages);
     // Also on the turn record, so a reader does not have to join two events to answer
     // "where did the time go".
     turn.report({ prepMs: tools?.prepMs ?? null, mcpMs: tools?.mcpMs ?? null });
@@ -1656,7 +1659,11 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call)
       }
 
       const to = next.decision.model.label || next.decision.model.id;
-      turn.emit('automation.fired', { ruleId: 'router:failover', classUsed: 'R', from: current.id, to, reason: marked.reason });
+      turn.emit('automation.fired', {
+        ruleId: 'router:failover', classUsed: 'R',
+        from: current.routedVia?.model || current.name || current.id,
+        to, reason: marked.reason,
+      });
       // Tell the panel, because an answer arriving from a different model than the byline
       // promised is exactly the kind of silent substitution this codebase keeps removing.
       onEvent?.({ type: 'routed', model: to, reasons: [`${current.name || current.id} declined (${marked.reason})`, ...next.decision.reasons] });
@@ -1716,8 +1723,11 @@ async function pickRoutedAgent(agent, settings, tools, turn, messages) {
       if (chose) throw new Error('No model fits the current routing constraints — pick a model, or relax the limits in Settings → Plugins → Model routing.');
       return null;
     }
-    const from = agent?.id || agent?.name || agent?.model || null;
-    const to = routed.decision.model.id;
+    // READABLE NAMES IN THE LOG. mqnnje2c9z70th is a generated id and means nothing to
+    // anyone reading a routing decision six turns later — the same fix the settings preview
+    // needed, in the place people actually look.
+    const from = chose ? 'Auto' : (agent?.name || agent?.model || agent?.id || null);
+    const to = routed.decision.model.label || routed.decision.model.id;
     if (!chose && from === to) return null;   // nothing changed; no need to say anything
     // A model swapped under the user is exactly the kind of thing that must be visible.
     turn.emit('policy.changed', {
@@ -1757,15 +1767,16 @@ async function pickRoutedAgent(agent, settings, tools, turn, messages) {
  * Fire-and-forget and free to compute (class R, no model call), so an observation can never
  * cost or break the turn it observes.
  */
-function recordRouteDecision(turn, agent, settings, tools) {
+function recordRouteDecision(turn, agent, settings, tools, messages) {
   Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)])
     .then(async ([router, store]) => {
-      const need = {
-        // Tools are a hard requirement, not a preference: a model without them cannot do the
-        // turn at all, so it must be eliminated rather than ranked lower.
+      // THE SAME inputs the applier uses. Constructing this separately is what made the
+      // observation disagree with the decision it was supposed to be observing.
+      const need = router.needForTurn(settings, {
         capabilities: (tools?.specs || []).length ? ['tools'] : [],
-        prefer: 'balanced',
-      };
+        request: { messages },
+        structured: (tools?.specs || []).some((t) => /^(page|structured_insert|sheet_write)$/.test(t.name || t.function?.name || '')),
+      });
       const preview = await router.previewRoute(settings, store?.resolveTarget, need);
       const used = agent?.id || agent?.name || agent?.model || null;
       turn.emit('policy.changed', {
