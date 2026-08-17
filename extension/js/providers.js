@@ -1189,6 +1189,8 @@ function runtimeContextSystem(settings) {
 }
 
 export async function streamChat({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction, usage: usageCtx }) {
+  let turnClose = null;
+  let produced = false;
   // Token accounting at THE chokepoint: every provider adapter emits one
   // {type:'usage'} event per turn; record it here (best-effort, off the hot
   // path) tagging it with the caller's surface/sourceId, then forward the event
@@ -1201,6 +1203,40 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
       if (ev && ev.type === 'usage') import('./usage-meter.js').then((m) => m.recordUsageEvent(ev, ctx)).catch(() => {});
       return rawOnEvent?.(ev);
     };
+
+    // ACTIVITY IS RECORDED HERE, NOT PER SURFACE.
+    //
+    // Notes, meetings and assist all reach a model through this function — which is also
+    // where redaction and the tool harness already live, so privacy has always applied
+    // everywhere. The activity log did not: it was emitted from the side panel's own send
+    // path, so notes and meetings were simply missing from it.
+    //
+    // Different starting points is how a guarantee ends up true in one surface and
+    // untested in the others. One chokepoint, one record.
+    const turnId = usageCtx?.turnId || `${ctx.surface}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 7)}`;
+    const startedAt = Date.now();
+    const toolSpecs = tools?.specs || [];
+    logTurnEvent('turn.started', {
+      turnId, kind: ctx.surface, agentId, sourceId: ctx.sourceId || null,
+    });
+    logTurnEvent('context.assembled', {
+      turnId,
+      budget: 0,
+      used: approxTok(toolSpecs) + approxTok(tools?.system),
+      parts: {
+        toolSchemas: approxTok(toolSpecs),
+        system: approxTok(tools?.system),
+        messages: approxTok(messages),
+      },
+      resident: [],
+      reachableCount: toolSpecs.length,
+      tools: toolSpecs.map((t) => t.name || t.function?.name).filter(Boolean),
+      surface: ctx.surface,
+      redaction: !!redaction?.vault,
+    });
+    turnClose = (reason, stepped) => logTurnEvent('turn.ended', {
+      turnId, reason, stepped, ms: Date.now() - startedAt, kind: ctx.surface,
+    });
   }
   // ONE place every model-bound call passes through — augment the agent's system
   // prompt with runtime context (date + enforced language) so all agents, present
@@ -1284,13 +1320,31 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
         harness.toModelResult(name, await base(name, harness.toTool(name, input), meta)),
     };
   }
-  const full = await dispatchStream({
-    agent: safeAgent, messages: red.messages, settings, signal,
-    onDelta: wrappedOnDelta, onEvent: wrappedOnEvent, tools: safeTools,
-  });
-  const tail = restorer.flush();
-  if (tail && rawOnDelta) rawOnDelta(tail);
-  return restore(typeof full === 'string' ? full : full ?? '', vault);
+  try {
+    const full = await dispatchStream({
+      agent: safeAgent, messages: red.messages, settings, signal,
+      onDelta: wrappedOnDelta, onEvent: wrappedOnEvent, tools: safeTools,
+    });
+    const tail = restorer.flush();
+    if (tail && rawOnDelta) rawOnDelta(tail);
+    produced = !!(typeof full === 'string' ? full.trim() : full);
+    turnClose?.(signal?.aborted ? 'aborted' : 'ok', produced);
+    return restore(typeof full === 'string' ? full : full ?? '', vault);
+  } catch (err) {
+    // A turn that opened must close, or the log shows it running forever and every
+    // reader has to guess whether it failed or is still going.
+    turnClose?.(signal?.aborted ? 'aborted' : 'error', produced);
+    throw err;
+  }
+}
+
+// Rough token estimate — the same 4-chars-per-token rule the dispatcher budget uses.
+const approxTok = (v) => (v == null ? 0 : Math.round(JSON.stringify(v).length / 4));
+
+// Fire-and-forget, lazily imported, never able to affect the call it describes: a log that
+// can break a chat turn is worse than no log.
+function logTurnEvent(type, payload) {
+  import('./event-log.js').then((m) => m.emitAsync(type, payload)).catch(() => {});
 }
 
 // Ask the Bridge whether a custom command resolves on this machine (PATH / a full

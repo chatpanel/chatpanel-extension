@@ -1950,10 +1950,6 @@ function makeDownloadUx(paint) {
 async function runStream(agent, assistant, conv) {
   const controller = new AbortController();
   state.streams.set(conv.id, { controller, started: Date.now(), lastEvent: '' });
-  // A turn opens here and closes in the finally below. Without this pair the log is a
-  // flat list of calls and the trajectory cannot nest — you can see what happened but not
-  // what it belonged to.
-  logEvent('turn.started', { turnId: assistant.id, kind: 'chat', agentId: assistant.agentId || agent?.id || null });
   if (conv.id === state.conv.id) updateComposerUI();
   ensureActivityTimer();
   renderActivity();
@@ -1994,6 +1990,7 @@ async function runStream(agent, assistant, conv) {
     const redaction = buildRedaction({ settings: state.settings, license: state.license, vault: piiVaultFor(conv.id) });
     await streamChat({
       agent: { ...resolved, systemPrompt },
+      usage: { surface: 'chat', sourceId: conv.id, turnId: assistant.id },
       messages: messagesForModel(conv, assistant),
       settings: state.settings,
       signal: controller.signal,
@@ -2071,14 +2068,6 @@ async function runStream(agent, assistant, conv) {
     if (dl) { dl.stop(); dl = null; } // never leave the download-tip timer running
     if (raf) cancelAnimationFrame(raf);
     assistant.pending = false;
-    // `stepped` distinguishes a turn that actually ran from one that died before
-    // assembling anything — otherwise invariant I1 flags an abort as missing context.
-    logEvent('turn.ended', {
-      turnId: assistant.id,
-      reason: assistant.error ? 'error' : controller.signal.aborted ? 'aborted' : 'ok',
-      stepped: !!(assistant.content || assistant.thinking || assistant.steps?.length),
-      ms: Date.now() - (state.streams.get(conv.id)?.started || Date.now()),
-    });
     state.streams.delete(conv.id);
     ensureActivityTimer();
     if (conv.id === state.conv.id) {
@@ -3311,10 +3300,6 @@ async function runWatchRun(conv, cap, first) {
 async function runWatchStream(agent, assistant, conv, userMsg) {
   const controller = new AbortController();
   state.streams.set(conv.id, { controller, started: Date.now(), lastEvent: '' });
-  // A turn opens here and closes in the finally below. Without this pair the log is a
-  // flat list of calls and the trajectory cannot nest — you can see what happened but not
-  // what it belonged to.
-  logEvent('turn.started', { turnId: assistant.id, kind: 'watch', agentId: assistant.agentId || agent?.id || null });
   if (conv.id === state.conv.id) updateComposerUI();
   ensureActivityTimer();
   renderActivity();
@@ -3333,6 +3318,7 @@ async function runWatchStream(agent, assistant, conv, userMsg) {
         ...resolved,
         systemPrompt: combineSystemPrompt(resolved?.systemPrompt, sourceCitationSystem()),
       },
+      usage: { surface: 'watch', sourceId: conv.id, turnId: assistant.id },
       messages: [userMsg], // single-shot: just this tick's instruction + page capture
       settings: state.settings,
       signal: controller.signal,
@@ -3361,14 +3347,6 @@ async function runWatchStream(agent, assistant, conv, userMsg) {
   } finally {
     if (raf) cancelAnimationFrame(raf);
     assistant.pending = false;
-    // `stepped` distinguishes a turn that actually ran from one that died before
-    // assembling anything — otherwise invariant I1 flags an abort as missing context.
-    logEvent('turn.ended', {
-      turnId: assistant.id,
-      reason: assistant.error ? 'error' : controller.signal.aborted ? 'aborted' : 'ok',
-      stepped: !!(assistant.content || assistant.thinking || assistant.steps?.length),
-      ms: Date.now() - (state.streams.get(conv.id)?.started || Date.now()),
-    });
     state.streams.delete(conv.id);
     ensureActivityTimer();
     if (conv.id === state.conv.id) {
