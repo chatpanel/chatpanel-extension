@@ -30,15 +30,33 @@ async function load() {
   }
 }
 
-/** The manifest, built once. */
+/** The manifest, built once per context and kept in step with the others. */
 export function pluginManifest() {
   if (!ready) {
     ready = (async () => {
       const disabled = await load();
-      return createManifest({
+      const m = createManifest({
         disabled,
         onChange: (ids) => { chrome.storage.local.set({ [KEY]: ids }).catch(() => {}); },
       });
+
+      // THE PANEL AND THE SETTINGS PAGE ARE DIFFERENT CONTEXTS.
+      //
+      // Each builds its own manifest from storage and would otherwise hold that snapshot
+      // forever — so toggling a plugin in settings did nothing to the running side panel
+      // until it was reloaded. The switch looked broken while working perfectly, which is
+      // the same shape of failure as a tool that reports ok having done nothing.
+      //
+      // This is the reactive half of the capability model applied to a setting: state
+      // changed elsewhere arrives here, and the next turn reflects it.
+      try {
+        chrome.storage.onChanged.addListener((changes, area) => {
+          if (area !== 'local' || !changes[KEY]) return;
+          m.sync(Array.isArray(changes[KEY].newValue) ? changes[KEY].newValue : []);
+        });
+      } catch { /* no storage events available — the snapshot is still correct on load */ }
+
+      return m;
     })().catch(() => createManifest());
   }
   return ready;

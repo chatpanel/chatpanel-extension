@@ -88,6 +88,25 @@ export function createManifest({ required = ['security'], disabled = [], onChang
     /** Only the ids that are OFF — the shape that persists (see the note above). */
     disabledIds: () => [...off].sort(),
 
+    /**
+     * Adopt state changed elsewhere.
+     *
+     * A manifest is not a fact read once at startup: the user toggles a plugin in one place
+     * (a settings page, another window, another device) and every OTHER place holding a
+     * manifest is now wrong. Without this, a toggle appears to do nothing until reload —
+     * which reads as the switch being broken.
+     *
+     * Deliberately does NOT notify: this is the arrival of someone else's change, and
+     * echoing it back is how two contexts write over each other forever.
+     */
+    sync(ids) {
+      const next = new Set(Array.isArray(ids) ? ids : []);
+      if (next.size === off.size && [...next].every((id) => off.has(id))) return false;
+      off.clear();
+      for (const id of next) off.add(id);
+      return true;
+    },
+
     /** Filter a registry's candidates. The one call a registry needs to make. */
     filter(items, idOf = (x) => x?.id) {
       return (items || []).filter((x) => this.isEnabled(idOf(x)));
