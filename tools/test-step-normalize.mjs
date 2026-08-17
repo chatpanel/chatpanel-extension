@@ -69,3 +69,16 @@ assert.deepEqual(normalizeSteps([]), []);
 assert.deepEqual(normalizeSteps(null), []);
 
 console.log('✓ input_sequence: page actions compose as steps, both shapes accepted');
+
+// A canvas app needs the button HELD across movement. The normalizer must therefore
+// produce a drag whose moves happen BETWEEN the press and the release — a walk that
+// finishes before mouse_down, or starts after mouse_up, draws nothing while still looking
+// like a drag in the step list.
+{
+  const d = normalizeSteps([{ action: 'drag_at', args: { x: 10, y: 10, toX: 200, toY: 200 } }]);
+  const down = d.findIndex((s) => s.type === 'mouse_down');
+  const up = d.findIndex((s) => s.type === 'mouse_up');
+  const movesInside = d.slice(down + 1, up).filter((s) => s.type === 'move').length;
+  assert.ok(down < up, 'the release came before the press');
+  assert.ok(movesInside >= 3, `only ${movesInside} moves while the button was held`);
+}

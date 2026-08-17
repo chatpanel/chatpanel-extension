@@ -907,6 +907,11 @@ export async function cdpInputSequence(tabId, steps) {
   let heldButtons = 0;
   let waited = 0;
   const done = [];
+  // What the sequence actually DID, so the result can say more than "ok".
+  let clickCount = 0;
+  let dragCount = 0;
+  let draggedPx = 0;
+  let downAt = null;
   // Keep the debugger alive across the whole sequence — a long one can outlast the
   // idle window, and detaching mid-sequence is what strands a held input.
   const keepAlive = setInterval(() => bump(tabId), Math.floor(IDLE_DETACH_MS / 2));
@@ -941,6 +946,16 @@ export async function cdpInputSequence(tabId, steps) {
           break;
         }
         case 'type': {
+          // A model wrote {action:"type_text",args:{key:"Enter"}} — no text at all — and the
+          // step typed nothing while the sequence still reported ok. An argument that is
+          // missing is an error the model can fix; silence is not.
+          if (typeof step.text !== 'string' || !step.text.length) {
+            return {
+              ok: false, completed: done,
+              error: `step ${i + 1}: type needs {text:"…"}. To press a named key use `
+                + '{action:"press_key",args:{key:"Enter"}} instead.',
+            };
+          }
           // Text typed WITH whatever is currently held (e.g. Shift for capitals is
           // implicit in the text itself; a held Ctrl makes these shortcuts).
           for (const ch of String(step.text ?? '')) {
@@ -955,8 +970,18 @@ export async function cdpInputSequence(tabId, steps) {
         case 'mouse_up': {
           const b = normButton(step.button);
           const mask = BUTTON_MASK[b];
-          if (type === 'mouse_down') heldButtons |= mask;
-          else heldButtons &= ~mask;
+          if (type === 'mouse_down') {
+            heldButtons |= mask;
+            downAt = { x: pos.x, y: pos.y, moved: 0 };
+          } else {
+            heldButtons &= ~mask;
+            // A press-and-release that travelled is a drag; one that did not is a click.
+            // That distinction is the whole difference between drawing and doing nothing.
+            if (downAt) {
+              if (downAt.moved > 3) { dragCount += 1; draggedPx += downAt.moved; } else clickCount += 1;
+              downAt = null;
+            }
+          }
           await sendResilient(tabId, 'Input.dispatchMouseEvent', {
             type: type === 'mouse_down' ? 'mousePressed' : 'mouseReleased',
             x: pos.x, y: pos.y, button: b, buttons: heldButtons, clickCount: 1, modifiers,
@@ -983,6 +1008,7 @@ export async function cdpInputSequence(tabId, steps) {
           } else {
             return { ok: false, error: `step ${i + 1}: move needs {x, y} or {dx, dy}`, completed: done };
           }
+          if (downAt && heldButtons) downAt.moved += Math.hypot(nx - pos.x, ny - pos.y);
           pos = { x: nx, y: ny };
           pointerPos.set(tabId, pos);
           await sendResilient(tabId, 'Input.dispatchMouseEvent', {
@@ -1013,11 +1039,34 @@ export async function cdpInputSequence(tabId, steps) {
       }
       done.push(type);
     }
-    return {
+    // SAY WHAT HAPPENED, NOT JUST THAT IT HAPPENED.
+    //
+    // "ok" meant "the events dispatched", and a model reasonably read it as "the thing I
+    // wanted worked". A real run selected the ellipse tool, sent a single click, got "ok",
+    // and told the user it had drawn a circle. Nothing was drawn: a canvas app needs the
+    // button HELD across movement, and one click is not that.
+    //
+    // We cannot know intent, so we report shape instead — how many clicks, how many drags,
+    // how far the pointer travelled while held. A model that meant to draw sees drags:0 and
+    // has something to correct. Naming what is missing beats a cheerful "ok" that is
+    // technically true and practically a lie.
+    const summary = {
       ok: true,
       steps: done.length,
+      clicks: clickCount,
+      drags: dragCount,
+      draggedPx: Math.round(draggedPx),
+      keys: done.filter((t) => t === 'key_down').length,
+      typed: done.filter((t) => t === 'type').length,
       ...(st?.locked ? { pointerLock: true } : {}),
     };
+    if (!dragCount && (clickCount || done.length)) {
+      summary.note = 'No drag occurred — the mouse button was never held across a movement. '
+        + 'Drawing, resizing and selecting a region on a canvas all require a drag: use '
+        + '{action:"drag_at",args:{x,y,toX,toY}} or mouse_down, several moves, mouse_up. '
+        + 'A single click only places the cursor or selects.';
+    }
+    return summary;
   } finally {
     clearInterval(keepAlive);
     // Release EVERYTHING, in the reverse order it went down. Best-effort: a page
