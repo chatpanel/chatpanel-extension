@@ -750,3 +750,8 @@ body.rail-collapsed { --rail-w: 0px; }
 
 /* Which model answered, when the router chose it rather than the user. */
 .routed-via { color: var(--accent, #4fb0ff); cursor: help; }
+
+/* The routed chip has two meanings and they must not look identical: normally it PREDICTS
+   which model will answer, but during a turn it names the one actually answering. Same text
+   shape, so without a mark the header appears not to have moved when it has. */
+.agent-routed.live { color: var(--accent, #4fb0ff); border-color: var(--accent, #4fb0ff); }

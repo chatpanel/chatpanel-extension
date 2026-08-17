@@ -1143,9 +1143,34 @@ function renderAgentName() {
  *
  * Free to compute — routing is a rule, no model call — so it can run on every header render.
  */
+// Bumped by every render AND by every live route, so a preview that resolves late cannot
+// overwrite the model that is actually answering. Both write the same element and the async
+// one started first — without this the header flickers back to the guess mid-turn.
+let routeRenderSeq = 0;
+
+/**
+ * The model doing the work right now — just the one, not the route it took to get there.
+ *
+ * The header previewed a choice and then never moved, so a turn that failed over three times
+ * still named the first model, the one that did not answer. The full chain belongs under the
+ * reply where there is room for it; up here the useful fact is short and current: which model
+ * is working on this step. So no arrow and no history — the name, and a mark that it is live.
+ */
+function showLiveRoute(model, reasons = []) {
+  const el = $('agent-routed');
+  if (!el || !model) return;
+  routeRenderSeq++;   // invalidate any preview still in flight
+  el.classList.remove('hidden');
+  el.textContent = model;
+  el.classList.add('live');
+  el.title = ['Working on this step.', ...reasons].join('\n');
+}
+
 function renderRoutedTarget() {
   const el = $('agent-routed');
   if (!el) return;
+  const seq = ++routeRenderSeq;
+  el.classList.remove('live');
   const current = currentAgent();
   // Only Auto needs this. When you have picked a specific model, that model answers and a
   // badge saying so is noise; when you have picked Auto, "which one" is the entire question.
@@ -1155,6 +1180,7 @@ function renderRoutedTarget() {
       const cfg = router.routingSettings(state.settings);
       const need = { capabilities: state.settings?.ui?.pageActions ? ['tools'] : [] };
       const preview = await router.previewRoute(state.settings, (t) => resolveTarget(t, state.settings), { ...cfg, ...need });
+      if (seq !== routeRenderSeq) return;   // a live route landed while this was resolving
       if (!preview.chosen) {
         el.classList.remove('hidden');
         el.textContent = 'no model fits';
@@ -2340,6 +2366,10 @@ async function runStream(agent, assistant, conv) {
           assistant.routeChain = assistant.routeChain || [];
           if (assistant.routeChain.at(-1) !== ev.model) assistant.routeChain.push(ev.model);
           assistant.routedVia = { model: ev.model, reasons: ev.reasons, strategy: ev.strategy };
+          // …and in the header, which until now kept naming the model it PREDICTED before
+          // the turn started. Only for the conversation on screen: a background turn must
+          // not retitle the one being read.
+          if (conv.id === state.conv?.id) showLiveRoute(ev.model, ev.reasons);
           if (!raf) raf = requestAnimationFrame(flush);
         } else if (ev.type === 'reasoning' && ev.text) {
           assistant.thinking = (assistant.thinking || '') + ev.text;
@@ -2404,6 +2434,9 @@ async function runStream(agent, assistant, conv) {
     state.streams.delete(conv.id);
     ensureActivityTimer();
     if (conv.id === state.conv.id) {
+      // Back to a prediction for the NEXT message: the live label described a turn that is
+      // now over, and leaving it would claim the same model will answer again.
+      renderRoutedTarget();
       updateComposerUI();
       renderActivity();
       const node = $('messages').querySelector(`.msg[data-id="${assistant.id}"]`);
