@@ -53,7 +53,7 @@ const reachRank = (r) => Math.max(0, REACH.indexOf(r));
 export function defineModel({
   id, label, reach = 'any', classUsed = 'C', capabilities = [],
   costPer1k = 1, latencyMs = 1000, load = 0, available = true,
-  rateLimited = false, observedLatencyMs = null, quality = null, model = '', providerRank = 50,
+  rateLimited = false, observedLatencyMs = null, quality = null, model = '', providerRank = 50, orderPinned = false,
 }) {
   if (!id) throw new RouterError('BAD_MODEL', 'model.id required');
   if (!REACH.includes(reach)) throw new RouterError('BAD_MODEL', `model '${id}': unknown reach '${reach}'`);
@@ -74,6 +74,11 @@ export function defineModel({
     // breaking alphabetically, which is not a preference — it is the absence of one, and it
     // sent every equal choice to whichever provider happened to sort first.
     providerRank,
+    // Did a PERSON set that order, or did we guess it? Our guess must not overrule a real
+    // difference in cost or speed — a stated preference must. Without this distinction the
+    // provider ranking we inferred from a URL would quietly outrank a route that is genuinely
+    // cheaper, and the user would never see why.
+    orderPinned: Boolean(orderPinned),
     // 0..1 benchmark or observed success, when the host has one. Null means unknown, which
     // is different from bad — and scoring an unknown as zero would bury every new model.
     quality,
@@ -421,6 +426,10 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
         || scoreOf(a) - scoreOf(b)
         || a.id.localeCompare(b.id);
 
+      const byScoreThenOrder = (a, b) => scoreOf(a) - scoreOf(b)
+        || a.providerRank - b.providerRank
+        || a.id.localeCompare(b.id);
+
       // Rule 1: collapse each same-model group behind whichever route the user ranked first.
       const groups = new Map();
       for (const m of eligible) {
@@ -432,7 +441,13 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
       }
       // Same-model siblings stay together directly behind their representative: when the
       // leader declines, the identical model elsewhere is the closest replacement there is.
-      const groupList = [...groups.values()].map((g) => [...g].sort(byOrderThenScore));
+      // WHOSE ORDER IS IT. A person who ranked these routes by hand gets that ranking
+      // honoured outright — they can see the prices and chose anyway. An order we INFERRED
+      // from a URL is only a guess, and a guess must not overrule a route that is really
+      // cheaper or faster; there it drops back to a tie-break.
+      const groupList = [...groups.values()].map((g) => [...g].sort(
+        g.some((m) => m.orderPinned) ? byOrderThenScore : byScoreThenOrder,
+      ));
       groupList.sort((a, b) => scoreOf(a[0]) - scoreOf(b[0]) || byOrderThenScore(a[0], b[0]));
 
       // Rule 2: walk the score-ordered groups, gathering each run that is within the band of

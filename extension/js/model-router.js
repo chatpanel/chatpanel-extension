@@ -170,7 +170,12 @@ function costOf(target, reach) {
 export function applyOverride(inferred, override = {}) {
   if (!override || typeof override !== 'object') return inferred;
   const out = { ...inferred };
-  if (Number.isFinite(Number(override.providerRank))) out.providerRank = Number(override.providerRank);
+  if (Number.isFinite(Number(override.providerRank))) {
+    out.providerRank = Number(override.providerRank);
+    // Flagged as chosen, not guessed: the router honours a hand-set order outright between
+    // two routes to one model, and treats the order we inferred as a tie-break only.
+    out.orderPinned = true;
+  }
   if (Array.isArray(override.capabilities)) out.capabilities = [...override.capabilities];
   for (const key of ['costPer1k', 'latencyMs', 'quality']) {
     if (Number.isFinite(Number(override[key]))) out[key] = Number(override[key]);

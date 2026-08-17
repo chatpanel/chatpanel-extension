@@ -575,6 +575,8 @@ console.log('✓ requirements: derived from the prompt, eliminating rather than 
   const guessed = c.find((m) => m.id === 'ollama');
   assert.ok(picked.providerRank < guessed.providerRank,
     'An order the user picked outranks every rank we inferred.');
+  assert.equal(picked.orderPinned, true, 'and is marked as chosen rather than guessed');
+  assert.equal(guessed.orderPinned, false, 'while an untouched row stays a guess');
 }
 
 console.log('✓ router plugins: strategies listed and switchable, redaction listed and not');
