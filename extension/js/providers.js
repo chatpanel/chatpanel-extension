@@ -22,6 +22,7 @@ import { sanitizeUnicode } from './sanitize.js';
 // Pure, tiny and needed on every turn that carries an attachment — the retrieval contract
 // itself, shared so the gateway and bridge answer 'what did the model read' the same way.
 import { makeSourceStore, manifestText, readSource, approxTokens } from './events/sources-retrieval.js';
+import { extractUrls } from './events/sources.js';
 import { detectEntities, normalizeEntities, EXTRACT_SYS, parseJsonLoose, withTimeout } from './pii-detect.js';
 import { createVault, redactText, restoreText } from './pii-redact.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
@@ -1862,6 +1863,10 @@ function sourceUrlsOf(messages, extraSources = []) {
   const urls = [];
   for (const m of messages || []) {
     for (const a of m?.attachments || []) if (a?.url) urls.push(a.url);
+    // THE BODY IS EVIDENCE TOO. An internal link pasted into a message — or arriving in a
+    // tool result that got written back into the conversation — is internal material just as
+    // much as an attachment is. The address is what proves it, wherever it appears.
+    for (const u of extractUrls(m?.content)) urls.push(u);
   }
   for (const s of extraSources || []) if (s) urls.push(typeof s === 'string' ? s : (s.url || s.href || ''));
   return urls.filter(Boolean);

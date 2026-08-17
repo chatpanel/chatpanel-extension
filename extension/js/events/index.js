@@ -41,7 +41,7 @@ export { buildTrajectory, phasesOf, lanesOf, filterEntries, displayName, ENTRY_K
 export { createTurnRunner, defineLoop, LOOP_KINDS, LoopError } from './loop.js';
 export { defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, signalsFrom, requirementsFor, requirementsForStep, sameModelKey, REACH, RouterError } from './router.js';
 export { makeSourceStore, manifestText, readSource, sourceId } from './sources-retrieval.js';
-export { classifySource, hostMatches, meetReach, sourcePolicyFor, DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './sources.js';
+export { classifySource, extractUrls, hostMatches, meetReach, sourcePolicyFor, DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './sources.js';
 export { defineRule, createRuleEngine, SUPPRESSED, RuleError } from './rules.js';
 export { defineMeetingAnalyzer, createAnalyzerRegistry, CADENCES, AnalyzerError } from './meeting-analyzers.js';
 export { explainMcpError, packageFromArgs } from './mcp-errors.js';

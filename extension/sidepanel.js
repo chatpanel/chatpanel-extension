@@ -2325,6 +2325,14 @@ async function runStream(agent, assistant, conv) {
       // before the model call, and a duration measured from the call reported 2.6s for a
       // message the user waited 48 seconds for.
       usage: { surface: 'chat', sourceId: conv.id, turnId: assistant.id, startedAt: assistant.ts || Date.now() },
+      // THE TAB IS A SOURCE, whether or not anything was attached from it.
+      //
+      // The internal-site guard only ever saw attachment urls, so sitting on an internal
+      // page with page tools armed and simply typing 'hi' routed to a third-party model —
+      // and the moment that model calls `page`, the internal page goes with it. The tab the
+      // panel is pointed at IS the material this turn is about; it does not become one only
+      // when the user clips something from it.
+      sources: state.activeTab?.url ? [state.activeTab.url] : [],
       messages: messagesForModel(conv, assistant),
       settings: state.settings,
       signal: controller.signal,
@@ -3696,6 +3704,8 @@ async function runWatchStream(agent, assistant, conv, userMsg) {
         systemPrompt: combineSystemPrompt(resolved?.systemPrompt, sourceCitationSystem()),
       },
       usage: { surface: 'watch', sourceId: conv.id, turnId: assistant.id },
+      // Watch exists BECAUSE of a page — it is a source by definition, not by attachment.
+      sources: state.activeTab?.url ? [state.activeTab.url] : [],
       messages: [userMsg], // single-shot: just this tick's instruction + page capture
       settings: state.settings,
       signal: controller.signal,

@@ -211,6 +211,28 @@ export function classifySource(url, { patterns = DEFAULT_INTERNAL_PATTERNS } = {
 }
 
 /**
+ * Every url written in a piece of text.
+ *
+ * Declared sources are not the only way internal material enters a turn: someone pastes a
+ * link to an internal runbook, or a tool result comes back carrying one. The address is the
+ * evidence, and it is evidence wherever it appears — so the same classifier that reads the
+ * tab reads the body too.
+ *
+ * Explicit schemes only. A bare host like `wiki/page` is indistinguishable from an ordinary
+ * path, and matching it would pin turns on text that mentions no site at all — a guard that
+ * fires on prose gets switched off, which protects nobody.
+ */
+export function extractUrls(text) {
+  const out = [];
+  const re = /\b(?:https?|file):\/\/[^\s<>"'`)\]}]+/gi;
+  for (const m of String(text || '').matchAll(re)) {
+    // Trailing punctuation belongs to the sentence, not to the address.
+    out.push(m[0].replace(/[.,;:!?]+$/, ''));
+  }
+  return out;
+}
+
+/**
  * Build the reach policy for a turn from everything it draws on.
  *
  * ANY internal source pins the WHOLE turn. A turn that mixes an internal page with a public

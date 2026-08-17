@@ -225,3 +225,38 @@ console.log('✓ internal sources: any single pattern can be excluded on its own
 }
 
 console.log('✓ internal sources: the master switch suspends the rules without discarding them');
+
+// ── the tab is a source, attached or not ────────────────────────────────────
+{
+  const { sourceGate } = await import('../extension/js/providers.js');
+  const cloud = { id: 'hf', name: 'HuggingFace', model: 'deepseek-v4', baseUrl: 'https://router.huggingface.co' };
+  // Sitting on an internal page with nothing clipped from it and typing "hi" routed to a
+  // third-party model — and the moment that model calls `page`, the internal page goes with
+  // it. The tab the panel points at IS the material the turn is about.
+  const plain = [{ role: 'user', content: 'hi' }];
+  assert.equal(await sourceGate(cloud, settings, plain), null, 'A public tab changes nothing.');
+  const blocked = await sourceGate(cloud, settings, plain, ['https://apps.internal/contracts/terms']);
+  assert.equal(blocked?.blocked, true, 'An internal tab pins the turn even with no attachment.');
+  assert.match(blocked.message, /apps\.internal/);
+
+  // The title and url alone are content: they go into the system prompt that names the live
+  // tab, so "nothing was attached" was never the same as "nothing was sent".
+  assert.equal((await sourceGate(cloud, settings, [], ['http://10.2.3.4/apex/f?p=100']))?.blocked, true);
+}
+
+console.log('✓ internal sources: the tab counts, not only what was clipped from it');
+
+// ── an internal link in the body counts ─────────────────────────────────────
+{
+  const { sourceGate } = await import('../extension/js/providers.js');
+  const cloud = { id: 'hf', name: 'HuggingFace', model: 'deepseek-v4', baseUrl: 'https://router.huggingface.co' };
+  const pasted = [{ role: 'user', content: 'what does http://wiki/deployment-runbook say about rollbacks?' }];
+  const g = await sourceGate(cloud, settings, pasted);
+  assert.equal(g?.blocked, true, 'A pasted internal link is internal material.');
+
+  // And ordinary prose is not.
+  assert.equal(await sourceGate(cloud, settings, [{ role: 'user', content: 'check the internal runbook wiki/page' }]), null);
+  assert.equal(await sourceGate(cloud, settings, [{ role: 'user', content: 'read https://example.com/docs' }]), null);
+}
+
+console.log('✓ internal sources: a link in the message body is evidence too');
