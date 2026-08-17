@@ -183,6 +183,39 @@ const INTERESTING_ROLES = new Set([
   'tab', 'treeitem', 'heading', 'img', 'dialog', 'alert', 'status', 'progressbar',
 ]);
 
+/**
+ * What is at a point, and what has focus after clicking it.
+ *
+ * Deliberately shallow — a tag, a role, a short label — because the question a caller has
+ * is "did I hit the thing I meant", not "describe the DOM". `focused` is the half that
+ * matters for typing: text goes to whatever holds focus, so a click that focused nothing
+ * means the next type_text will land nowhere, which is exactly the failure this is for.
+ */
+async function probeClick(tabId, x, y) {
+  return script(tabId, (px, py) => {
+    const label = (el) => {
+      if (!el) return null;
+      const name = el.getAttribute?.('aria-label') || el.getAttribute?.('title') || '';
+      const text = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+      const bits = [el.tagName?.toLowerCase(), el.getAttribute?.('role'), name || text].filter(Boolean);
+      return bits.join(' · ') || null;
+    };
+    const el = document.elementFromPoint(px, py);
+    const active = document.activeElement;
+    const editable = !!active && (
+      active.isContentEditable
+      || ['input', 'textarea', 'select'].includes(active.tagName?.toLowerCase())
+      || active.getAttribute?.('role') === 'textbox'
+    );
+    return {
+      hit: label(el),
+      focused: label(active),
+      // The one fact that decides whether typing will go anywhere.
+      typingGoesTo: editable ? label(active) : null,
+    };
+  }, [x, y]);
+}
+
 async function script(tabId, func, args = []) {
   const [inj] = await api.scripting.executeScript({ target: { tabId }, func, args });
   return inj?.result;
@@ -316,6 +349,14 @@ async function trustedType(tabId, text, perCharMs = 30) {
     // tool that quietly does nothing is worse than one that errors.
     if (ch === '\n') {
       for (const ev of keyEventsFor(KEY_DEFS.Enter)) await send(tabId, 'Input.dispatchKeyEvent', ev);
+      if (perCharMs) await delay(perCharMs);
+      continue;
+    }
+    // A tab is Tab, for the same reason: in a grid it means "next column", and sent as a
+    // character it does nothing at all. Together with \n this makes a whole block of cells
+    // one type_text call — which is how a person would paste it.
+    if (ch === '\t') {
+      for (const ev of keyEventsFor(KEY_DEFS.Tab)) await send(tabId, 'Input.dispatchKeyEvent', ev);
       if (perCharMs) await delay(perCharMs);
       continue;
     }
@@ -583,7 +624,17 @@ export async function cdpClickAt(tabId, x, y, button = 'left', clicks = 1) {
     await showCursor(tabId, x, y); // glide the agent cursor to the click point
     await trustedClick(tabId, Math.round(x), Math.round(y), b, n);
     pointerPos.set(tabId, { x: Math.round(x), y: Math.round(y) });
-    return { ok: true, clickedAt: { x: Math.round(x), y: Math.round(y) }, button: b, clicks: n };
+    // SAY WHAT IT HIT.
+    //
+    // "ok" only ever meant the event dispatched. A model clicked (10,10) on Google Sheets
+    // — the menu bar, not a cell — typed a whole times table into nothing, got ok for every
+    // step, and told the user the sheet was filled. It had no way to know it had missed.
+    //
+    // The page can answer this exactly: what element is at that point, and what has focus
+    // afterwards. A click that lands on a menu bar when the model wanted a cell is then
+    // visible in the result instead of being indistinguishable from success.
+    const hit = await probeClick(tabId, Math.round(x), Math.round(y)).catch(() => null);
+    return { ok: true, clickedAt: { x: Math.round(x), y: Math.round(y) }, button: b, clicks: n, ...(hit || {}) };
   } finally {
     // A click on a canvas is the usual way a page GRABS the pointer, so never
     // trust the cached lock state across one.
@@ -771,8 +822,31 @@ export async function cdpMoveMouse(tabId, { x, y, dx, dy } = {}) {
 export async function cdpTypeText(tabId, text) {
   await ensureAttached(tabId);
   try {
+    // Where will this text GO? Text is delivered to whatever holds focus, so typing with
+    // nothing focused types into nothing — which is what happened when a model clicked a
+    // menu bar and then sent a whole times table. Checked BEFORE typing, so the answer is
+    // actionable rather than a post-mortem.
+    const target = await script(tabId, () => {
+      const a = document.activeElement;
+      if (!a || a === document.body) return null;
+      const editable = a.isContentEditable
+        || ['input', 'textarea', 'select'].includes(a.tagName?.toLowerCase())
+        || a.getAttribute?.('role') === 'textbox';
+      const name = a.getAttribute?.('aria-label') || a.getAttribute?.('title') || '';
+      return { editable, label: [a.tagName?.toLowerCase(), name].filter(Boolean).join(' · ') };
+    }).catch(() => null);
+
+    if (target && target.editable === false) {
+      // A refusal beats a silent no-op: the model can click the right thing and retry,
+      // where "ok" left it believing the text had landed.
+      return {
+        ok: false,
+        error: `nothing editable has focus — the focused element is "${target.label}", which does not accept text. `
+          + 'Click the field or cell first (click_at returns what it hit and where typing will go), then type.',
+      };
+    }
     await trustedType(tabId, String(text));
-    return { ok: true, typed: String(text).slice(0, 80) };
+    return { ok: true, typed: String(text).slice(0, 80), into: target?.label || null };
   } finally {
     bump(tabId);
   }
