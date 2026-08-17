@@ -144,7 +144,9 @@ const trustedActionOrigins = new Set(); // origins the user OK'd this panel sess
 // information a screenshot already exposes, so they sit with the other no-confirm
 // reads. calibrate_turn is not here: it moves the view.
 const READONLY_PAGE_TOOLS = new Set([
-  'inspect_page', 'screenshot', 'marked_screenshot', 'scroll', 'read_canvas', 'move_mouse',
+  // read_page returns text and changes nothing — gating it behind a confirmation would
+  // make reading feel as consequential as clicking, which is the opposite of true.
+  'read_page', 'inspect_page', 'screenshot', 'marked_screenshot', 'scroll', 'read_canvas', 'move_mouse',
   'save_app_controls', 'sense_canvas', 'probe_app_state', 'read_app_state',
 ]);
 const pageActionNeedsConfirm = (name) => !READONLY_PAGE_TOOLS.has(name);

@@ -86,12 +86,13 @@ export function buildDispatchSpec(specs) {
     name: DISPATCH_TOOL_NAME,
     specs,
     description:
-      'Act on the user\'s active browser tab. Pass an `action` and put that action\'s own '
-      + 'arguments inside `args`, e.g. '
-      + '{"action":"click_at","args":{"x":120,"y":340}}. Start with '
-      + '{"action":"inspect_page","args":{}} to learn the page\'s real selectors. Unsure of '
-      + 'an action\'s arguments? {"action":"describe","args":{"tool":"<action>"}} returns '
-      + 'its full schema.',
+      'Read or act on the user\'s active browser tab. Pass an `action` with that action\'s '
+      + 'own arguments inside `args`, e.g. {"action":"click_at","args":{"x":120,"y":340}}.\n'
+      + 'TO READ (summarise, quote, answer about the page): {"action":"read_page","args":{}} '
+      + 'ONCE — it returns the whole text. Never screenshot-and-scroll to read.\n'
+      + 'TO ACT: {"action":"inspect_page","args":{}} first, for real selectors. Screenshots '
+      + 'are for layout only.\n'
+      + 'Arguments? {"action":"describe","args":{"tool":"<action>"}}.',
   });
 }
 

@@ -297,6 +297,13 @@ const KEY_DEFS = {
   Del: { windowsVirtualKeyCode: 46, key: 'Delete', code: 'Delete' },
   Home: { windowsVirtualKeyCode: 36, key: 'Home', code: 'Home' },
   End: { windowsVirtualKeyCode: 35, key: 'End', code: 'End' },
+  // Paging keys. Their absence produced `error: unknown key "PageDown"` in a real run —
+  // the model reached for the obvious way to page through a long thread and was told the
+  // key does not exist, then fell back to screenshots.
+  PageDown: { windowsVirtualKeyCode: 34, key: 'PageDown', code: 'PageDown' },
+  PageUp: { windowsVirtualKeyCode: 33, key: 'PageUp', code: 'PageUp' },
+  PgDn: { windowsVirtualKeyCode: 34, key: 'PageDown', code: 'PageDown' },
+  PgUp: { windowsVirtualKeyCode: 33, key: 'PageUp', code: 'PageUp' },
   Space: { windowsVirtualKeyCode: 32, key: ' ', code: 'Space', text: ' ' },
 };
 async function trustedKey(tabId, name) {

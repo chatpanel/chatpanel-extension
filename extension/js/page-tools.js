@@ -259,6 +259,23 @@ async function annotateMarks(dataUrl, marks, vp) {
 // `{type:'function', function:{…}}` and Anthropic's `{name, input_schema}` shapes.
 export const PAGE_TOOL_SPECS = [
   {
+    name: 'read_page',
+    description:
+      'READ the page as text — the article, thread, comments, or document body, with '
+      + 'scripts, nav and ads stripped. Returns far more than a screenful, so ONE call '
+      + 'usually replaces a whole scroll-and-screenshot loop. Use this whenever the task '
+      + 'is to read, summarise, quote or answer questions about what the page SAYS. '
+      + 'Screenshots are for when the LAYOUT matters (charts, canvases, where a control '
+      + 'sits); they are a poor and expensive way to read text.',
+    parameters: {
+      type: 'object',
+      properties: {
+        maxChars: { type: 'number', description: 'Cap on returned characters (default 40000).' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'inspect_page',
     description:
       "Read the active browser tab's interactive elements: fillable form fields, " +
@@ -575,6 +592,44 @@ export const EVAL_JS_TOOL_SPEC = {
 
 // Keep tool results small — the model re-reads them every step, and a big form
 // page can have dozens of fields. Trim option lists and string lengths.
+/**
+ * The page as readable text.
+ *
+ * Reading and acting are different capabilities, and only acting is risky. Without this
+ * the only way to READ a page was to screenshot it and scroll — which cost a vision call
+ * per screenful, missed anything off-screen, and dragged a read-only question through the
+ * action path. A real run spent seven actions (three screenshots, three scrolls, a failed
+ * PageDown) to read one Hacker News thread that this returns in a single call.
+ *
+ * Runs in the page, returns only text: no DOM, no scripts, nothing executable.
+ */
+async function readPageText(tabId, maxChars) {
+  const [res] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (cap) => {
+      const drop = 'script,style,noscript,svg,canvas,iframe,nav,header,footer,aside,[aria-hidden="true"]';
+      // Prefer the semantic content root when the page offers one; a thread or article
+      // page then loses its chrome without guessing.
+      const root = document.querySelector('main, article, [role="main"]') || document.body;
+      const clone = root.cloneNode(true);
+      for (const el of clone.querySelectorAll(drop)) el.remove();
+      const text = (clone.innerText || clone.textContent || '')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+      return {
+        title: document.title || '',
+        url: location.href,
+        chars: text.length,
+        truncated: text.length > cap,
+        text: text.slice(0, cap),
+      };
+    },
+    args: [maxChars],
+  });
+  return res?.result || { error: 'Could not read this page (restricted or empty).' };
+}
+
 function compactInspect(r) {
   const fields = (r.fields || []).map((f) => {
     const out = {
@@ -693,6 +748,9 @@ export function makePageToolExecutor(tabId, { cdp = false, adapter = null, devJs
         }
         const vp = await viewportInfo(tabId);
         return JSON.stringify(await calibrateTurn(tabId, { delta: input?.delta, viewportWidth: vp?.w }));
+      }
+      if (name === 'read_page') {
+        return JSON.stringify(await readPageText(tabId, Number(input?.maxChars) || 40000));
       }
       if (name === 'inspect_page') {
         return JSON.stringify(compactInspect(await inspectForms(tabId)));
