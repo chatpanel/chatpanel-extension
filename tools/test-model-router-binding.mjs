@@ -137,9 +137,11 @@ assert.deepEqual(junk.capabilities, ['tools']);
 assert.deepEqual(applyOverride({ id: 'x', reach: 'any' }, null), { id: 'x', reach: 'any' });
 
 // The inferred defaults stay inspectable, so a settings page can show what it would have
-// guessed next to what the user chose.
+// guessed next to what the user chose — and the guess is a real value, not a blank. A blank
+// made every model interchangeable, which is how a frontier model got replaced by an 8B one.
 const raw = candidatesFrom({ ...settings, ui: { routing: { models: { 'mqk41ucyhmz1au': { quality: 0.9 } } } } }, undefined, { ignoreOverrides: true });
-assert.equal(raw.find((m) => m.id === 'mqk41ucyhmz1au').quality, null);
+const inferredQuality = raw.find((m) => m.id === 'mqk41ucyhmz1au').quality;
+assert.ok(Number.isFinite(inferredQuality) && inferredQuality !== 0.9, 'the inferred default was the override, or missing');
 
 console.log('✓ overrides: the user corrects the guesses, but can never widen reach');
 
@@ -358,3 +360,44 @@ console.log('✓ structured tasks prefer a model over an agent that runs its own
 }
 
 console.log('✓ an explicit "use <model>" is honoured, and a question about one is not');
+
+// QUALITY HAS A DEFAULT. Shipping the lever with none meant every model scored the same, so a
+// frontier model that declined was replaced by an 8B instant model with equal standing —
+// "same capabilities, cheaper" is what the ranking saw, and it is nonsense. A wrong guess a
+// user can correct beats a blank that makes every model interchangeable.
+{
+  const q = (model, name = '') => candidatesFrom({ endpoints: [{ id: 'x', name, baseUrl: 'https://a/v1', model }] })[0].quality;
+
+  // Size is read as a NUMBER. A regex for "digits followed by b" cannot tell 8B from 26B from
+  // 405B, and the first version scored a 26B model as tiny for exactly that reason.
+  assert.equal(q('llama-3.1-8b-instant'), 0.3);
+  assert.equal(q('gemma-4-26b'), 0.6, 'a 26B model was scored as tiny');
+  assert.equal(q('llama-3.1-405b'), 0.85);
+  assert.equal(q('qwen-72b'), 0.85);
+
+  // Named tiers for hosted models that do not advertise a size.
+  assert.equal(q('gpt-5.5'), 0.9);
+  assert.equal(q('claude-opus-4.6'), 0.9);
+  assert.equal(q('claude-haiku'), 0.3);
+  assert.equal(q('deepseek-ai/DeepSeek-V4-Flash'), 0.6);
+
+  // Unknown stays mid-table: neither buried nor promoted, so a new model is tried rather than
+  // permanently skipped.
+  assert.equal(q('some-new-thing'), 0.5);
+
+  // The point of all of it: a declining frontier model is not replaced by a tiny one.
+  const pool = candidatesFrom({
+    endpoints: [
+      { id: 'tiny', name: 'Groq', baseUrl: 'https://a/v1', model: 'llama-3.1-8b-instant' },
+      { id: 'mid', name: 'Local', baseUrl: 'https://a/v1', model: 'gemma-4-26b' },
+      { id: 'big', name: 'OpenAI', baseUrl: 'https://a/v1', model: 'gpt-5.5' },
+    ],
+  });
+  const ranked = await failoverStrategy.decide(pool, {
+    like: { model: 'deepseek-v4-flash', capabilities: ['tools'], classUsed: 'C', reason: 'gone' },
+  });
+  assert.equal(ranked[0].id, 'big', 'a frontier model was replaced by something weaker than the alternatives');
+  assert.equal(ranked.at(-1).id, 'tiny', 'the smallest model was not ranked last');
+}
+
+console.log('✓ quality: sizes read as numbers, tiers named, and a frontier model is not replaced by an 8B');

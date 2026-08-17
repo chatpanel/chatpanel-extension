@@ -69,6 +69,37 @@ function capabilitiesOf(target) {
   return [...caps];
 }
 
+/**
+ * Roughly how capable a model is, guessed from its name.
+ *
+ * Shipping the quality lever with no default meant every model scored the same, so a
+ * frontier model that declined was replaced by an 8B instant model with equal standing —
+ * "same capabilities, cheaper" is what the ranking saw, and it is nonsense. A wrong guess a
+ * user can correct beats a blank that makes every model interchangeable.
+ *
+ * Names are a crude signal and deliberately so: this only has to ORDER models, not score
+ * them, and the ordering it needs is the obvious one everybody already knows.
+ */
+function qualityOf(target) {
+  const m = `${target.model || ''} ${target.name || ''}`.toLowerCase();
+
+  // Parameter count, READ AS A NUMBER rather than pattern-matched. A regex for "any digits
+  // followed by b" cannot tell 8B from 26B from 405B, and the first version of this scored
+  // a 26B model as tiny for exactly that reason. Size is a number; treat it as one.
+  const size = Number(/(\d+(?:\.\d+)?)\s*b\b/.exec(m)?.[1]);
+  if (Number.isFinite(size)) {
+    if (size >= 60) return 0.85;   // frontier-scale open weights
+    if (size >= 20) return 0.6;    // the solid mid-range most people run locally
+    return 0.3;                    // small and fast, never a stand-in for a frontier model
+  }
+
+  // Named tiers, for hosted models that do not advertise a size.
+  if (/instant|mini|nano|tiny|lite|-small\b|haiku/.test(m)) return 0.3;
+  if (/opus|gpt-5|o1|o3|\bpro\b|ultra|deepseek-r|thinking/.test(m)) return 0.9;
+  if (/sonnet|gpt-4|flash|gemini|deepseek|qwen|mistral|codestral/.test(m)) return 0.6;
+  return 0.5;   // genuinely unknown: mid-table, so it is neither buried nor promoted
+}
+
 /** Rough relative cost — unitless, and only ever compared against its siblings. */
 function costOf(target, reach) {
   if (reach === 'device') return 0;
@@ -142,6 +173,7 @@ export function candidatesFrom(settings = {}, resolveTarget = (x) => x, { ignore
       costPer1k: costOf(t, reach),
       // A local model is slower to first token than a hosted one far more often than not.
       latencyMs: reach === 'device' ? 1500 : 700,
+      quality: qualityOf(t),
       available: t.enabled !== false,
     };
     // Behaviour beats configuration. A model whose credits ran out is configured perfectly
