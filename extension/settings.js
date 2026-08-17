@@ -4919,8 +4919,16 @@ async function renderRoutingModels() {
       import('./js/model-router.js'), import('./js/store.js'),
     ]);
     candidates = candidatesFrom(settings, (t) => store.resolveTarget(t, settings));
-  } catch { return; }
-  if (!candidates.length) return;
+  } catch (e) {
+    // Say what went wrong. A silent return turned a thrown error into "the section
+    // disappeared", which is the hardest kind of bug to report and the easiest to prevent.
+    box.textContent = `Could not read your models: ${e?.message || e}`;
+    return;
+  }
+  if (!candidates.length) {
+    box.innerHTML = '<p class="muted tiny">No models configured yet — add one in API or Agents.</p>';
+    return;
+  }
 
   const saved = settings?.ui?.routing?.models || {};
   const { KNOWN_CAPABILITIES: CAPS } = await import('./js/model-router.js');
@@ -5014,8 +5022,12 @@ async function renderRoutingModels() {
 
     const reach = document.createElement('select');
     reach.title = 'How far a request travels to reach it. You can declare it further out, never closer in.';
-    const order = ['device', 'trusted', 'any'];
-    for (const r of order.slice(order.indexOf(m.reach))) {
+    // Named REACH_STEPS, not `order`: a local `const order` here shadowed the provider
+    // ordering computed above and put it in the temporal dead zone, so the first row threw
+    // and the whole list rendered empty. A silent catch turned that into "the section
+    // disappeared" rather than an error anyone could see.
+    const REACH_STEPS = ['device', 'trusted', 'any'];
+    for (const r of REACH_STEPS.slice(REACH_STEPS.indexOf(m.reach))) {
       const o = document.createElement('option'); o.value = r;
       o.textContent = { device: 'On this device', trusted: 'My machine/network', any: 'Third party' }[r];
       reach.append(o);
