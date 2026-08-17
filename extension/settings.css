@@ -797,3 +797,8 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .internal-models { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
 .internal-models .chip { font-size:11px; color:var(--muted); background:var(--field);
   border:1px solid var(--border); border-radius:6px; padding:1px 6px; }
+
+/* The master switch dims the rules rather than clearing them — turning the guard off and on
+   again must not silently discard the exclusions someone set. */
+.internal-catalog.inert { opacity:.45; }
+.internal-catalog.inert .internal-rule { cursor:default; }

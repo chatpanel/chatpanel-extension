@@ -206,3 +206,22 @@ console.log('✓ internal sources: every candidate is a line, and each can be ex
 }
 
 console.log('✓ internal sources: any single pattern can be excluded on its own');
+
+// ── the master switch is not a select-all ───────────────────────────────────
+{
+  const { DEFAULT_INTERNAL_PATTERNS } = await import('../extension/js/events/sources.js');
+  // Turning the guard off does mean none of these rules apply — but it must not CLEAR them.
+  // Someone who unticked localhost, switched the guard off for a day and switched it back on
+  // should find their exclusion still there; a select-all would have silently restored a rule
+  // they deliberately removed.
+  const mine = DEFAULT_INTERNAL_PATTERNS.filter((p) => p !== 'localhost' && p !== '<intranet>');
+  const off = { privacy: { internalGuard: false, internalPatterns: mine } };
+  assert.equal(sourceGuardFor(off, ['http://10.4.2.9/x']), null, 'Off means nothing is pinned…');
+  assert.deepEqual(sourcePolicySettings(off).patterns, mine, '…while the exclusions are kept intact.');
+
+  const backOn = { privacy: { internalGuard: true, internalPatterns: mine } };
+  assert.ok(sourceGuardFor(backOn, ['http://10.4.2.9/x']), 'Back on restores the rules that were kept…');
+  assert.equal(sourceGuardFor(backOn, ['http://localhost:3000/x']), null, '…and not the one that was removed.');
+}
+
+console.log('✓ internal sources: the master switch suspends the rules without discarding them');

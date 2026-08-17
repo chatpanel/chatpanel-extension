@@ -3635,6 +3635,7 @@ function renderPrefs() {
         // same rule appear twice, where unticking one box would look like it did nothing.
         settings.privacy.internalPatterns = [...new Set([...chosen, ...mine])];
         await saveSettings(settings);
+        syncEnabled();
         refresh();
       }
 
@@ -3675,10 +3676,26 @@ function renderPrefs() {
         } catch { note.textContent = ''; }
       };
 
+      // THE MASTER SWITCH DIMS, IT DOES NOT UNTICK.
+      //
+      // Turning the guard off does mean none of these rules apply — but expressing that by
+      // clearing the boxes would throw away the exclusions the user set, and turning it back
+      // on could not know what to restore. So the rows go inert and visibly inactive while
+      // keeping their state, which says the same thing without destroying anything.
+      const syncEnabled = () => {
+        const off = !guard.checked;
+        cat.classList.toggle('inert', off);
+        for (const cb of boxes.values()) cb.disabled = off;
+        pats.disabled = off;
+        ceil.disabled = off;
+        if (restore) restore.disabled = off;
+      };
+
       guard.checked = priv.internalGuard !== false;
       ceil.value = priv.internalCeiling === 'trusted' ? 'trusted' : 'device';
       renderCatalog();
       renderCustom();
+      syncEnabled();
       guard.addEventListener('change', write);
       ceil.addEventListener('change', write);
       pats.addEventListener('change', write);
