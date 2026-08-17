@@ -152,6 +152,15 @@ export function signalsFrom(request = {}) {
     // please" is a sentence, not a project — so keywords only raise complexity once there is
     // enough text for them to be describing something. A code fence is the exception: it
     // carries the work itself, whatever its length.
+    // Code is its own signal, not merely a complexity hint: it decides whether the coding
+    // capability is required at all.
+    //
+    // A FENCE IS UNAMBIGUOUS at any length — "```js\nfunction f(){}\n```" is code however
+    // short. The keyword heuristics are not, so those need enough surrounding text to be
+    // describing code rather than mentioning it: prose can say "import" or end a line with a
+    // semicolon without being a programming task.
+    code: /```/.test(text)
+      || (chars > 80 && /\bfunction\b|\bclass\b|=>|;\s*$|\bdef\b|\bimport\b|\bconst\b/m.test(text)),
     complexity: (chars > 4000 || /```/.test(text)
       || (chars >= 200 && /\bstep by step\b|\bplan\b|\brefactor\b|\bmigrate\b|\banalyse|\banalyze/i.test(text)))
       ? 'high'
@@ -161,6 +170,45 @@ export function signalsFrom(request = {}) {
     nonLatin: /[^\u0000-\u024F\u2000-\u206F]/.test(text),
     chars,
   };
+}
+
+/**
+ * What a request REQUIRES, derived from what it is.
+ *
+ * The escalation strategy only ever expressed a preference, so a drawing task that needed
+ * exact coordinates and a structured payload was allowed to consider an 8B instant model —
+ * it merely ranked lower, and ranked lower still wins when the better ones decline. A
+ * requirement eliminates; a preference does not, and the difference is the whole reason the
+ * chain kept reaching models that could not do the job.
+ *
+ * Requirements first, then cost and speed among whatever survives. Nothing here is a
+ * judgement call a model needs to make — length, code fences, images and adapter tools are
+ * all readable for free, which is what makes this class R and instant.
+ */
+export function requirementsFor(signals = {}, { structured = false, hasTools = false } = {}) {
+  const required = new Set();
+  let minQuality = 0;
+  const why = [];
+
+  if (hasTools) { required.add('tools'); why.push('the turn carries tools'); }
+  if (signals.modality === 'vision') { required.add('vision'); why.push('the request includes an image'); }
+  if (signals.approxTokens > 20_000) { required.add('long-context'); why.push('the request is large'); }
+  if (signals.code) { required.add('coding'); why.push('the request contains code'); }
+
+  // Structured work — a canvas, a spreadsheet — is exact. A model that fumbles coordinates
+  // produces something visibly wrong rather than merely worse, so this sets a FLOOR rather
+  // than a preference.
+  if (structured) {
+    required.add('tools');
+    minQuality = Math.max(minQuality, 0.55);
+    why.push('it must produce an exact structured payload');
+  }
+  if (signals.complexity === 'high') {
+    minQuality = Math.max(minQuality, 0.55);
+    why.push('the task is complex');
+  }
+
+  return { required: [...required], minQuality, why };
 }
 
 export function createModelRouter({ models = [], middleware = [], strategies = [], admit = null } = {}) {
@@ -220,10 +268,32 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
         // A model that already failed this request is not a candidate for it. Without this,
         // failover re-picks the model that just returned 402 and the retry is a loop.
         if (need.exclude?.includes?.(m.id)) { rejected.push({ id: m.id, why: 'already failed this request' }); return false; }
+        // A QUALITY FLOOR IS A REQUIREMENT, not a ranking. A model that fumbles exact
+        // coordinates produces something visibly wrong rather than merely worse — and a
+        // model that merely ranks lower still wins once the better ones decline, which is
+        // how a chain of five ended on one that could not do the job.
+        if (need.minQuality > 0) {
+          const q = Number.isFinite(m.quality) ? m.quality : 0.5;
+          if (q < need.minQuality) { rejected.push({ id: m.id, why: `below the quality this task needs (${q} < ${need.minQuality})` }); return false; }
+        }
         return true;
       });
 
       if (!eligible.length) {
+        // RELAX, VISIBLY. A quality floor that leaves nothing is worse than a mediocre
+        // answer, but relaxing it silently would hide why the result is poor. The floor is
+        // dropped, the fact is stated, and the hard constraints — reach, capability — are
+        // never relaxed, because those are not preferences about how well something goes.
+        if (need.minQuality > 0) {
+          const relaxed = this.route({ ...need, minQuality: 0 });
+          if (relaxed.model) {
+            return {
+              ...relaxed,
+              relaxed: true,
+              reasons: [...relaxed.reasons, `no model met the quality this task needs (${need.minQuality}) — used the best available instead`],
+            };
+          }
+        }
         return { model: null, reasons: ['no candidate satisfies the constraints'], rejected };
       }
 

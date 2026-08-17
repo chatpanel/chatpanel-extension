@@ -11,7 +11,9 @@
 // change made the same day. Once the recorded decisions look right, switching it on is one
 // setting.
 
-import { defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, signalsFrom } from './events/router.js';
+import {
+  defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, signalsFrom, requirementsFor,
+} from './events/router.js';
 import { healthOf } from './model-health.js';
 
 /** Where a request must travel to reach this target — the only attribute privacy depends on. */
@@ -470,14 +472,20 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
  * the one nobody is watching is the one that goes wrong.
  */
 export function needForTurn(settings, { capabilities = [], request = null, structured = false, force = false } = {}) {
+  const signals = request ? signalsFrom(request) : {};
+  // REQUIREMENTS FIRST. What the work needs eliminates candidates; cost and speed only order
+  // what survives. A preference lets an unsuitable model win once the better ones decline,
+  // which is exactly how a chain of five ended on one that could not do the job.
+  const req = requirementsFor(signals, { structured, hasTools: capabilities.includes('tools') });
   return {
-    // Everything here is derived from the WORK, not from a saved preference. `balanced` is
-    // the only default worth having: with no stated deadline or budget, "reasonably fast and
-    // reasonably cheap" is what anybody means.
+    // With no stated deadline or budget, "reasonably fast and reasonably cheap" is what
+    // anybody means — and it only ever decides between models that already qualify.
     prefer: 'balanced',
     reach: 'any',
-    capabilities: [...new Set(capabilities)],
-    signals: request ? signalsFrom(request) : undefined,
+    capabilities: [...new Set([...capabilities, ...req.required])],
+    minQuality: req.minQuality,
+    requirementReasons: req.why,
+    signals,
     requestText: request ? String(request.text || (request.messages || []).map((m) => m?.content || '').join('\n')).slice(-2000) : '',
     structured,
     force,

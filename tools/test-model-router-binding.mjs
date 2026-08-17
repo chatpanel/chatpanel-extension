@@ -473,3 +473,37 @@ console.log('✓ provider preference: fewest hops by default, and the user reord
 }
 
 console.log('✓ provider order: a full 1..N ranking that still only breaks ties');
+
+// REQUIREMENTS ELIMINATE; COST AND SPEED ONLY ORDER WHAT SURVIVES. A drawing task was
+// allowed to consider an 8B model because escalation only expressed a preference — and a
+// model that merely ranks lower still wins once the better ones decline, which is how a
+// chain of five ended on one that could not do the job.
+{
+  const { needForTurn } = await import('../extension/js/model-router.js');
+
+  const easy = needForTurn({}, { request: { messages: [{ content: 'hi' }] } });
+  assert.deepEqual(easy.capabilities, [], 'a greeting was given requirements');
+  assert.equal(easy.minQuality, 0, 'a greeting was given a quality floor');
+
+  const drawing = needForTurn({}, {
+    capabilities: ['tools'], structured: true,
+    request: { messages: [{ content: 'draw a circle around mickey' }] },
+  });
+  assert.ok(drawing.capabilities.includes('tools'));
+  assert.ok(drawing.minQuality >= 0.55, 'structured work set no quality floor');
+  assert.ok(drawing.requirementReasons.length, 'the requirement could not explain itself');
+
+  // The floor does the work: with it, a tiny model is not a candidate at all.
+  const pool = candidatesFrom({
+    endpoints: [
+      { id: 'tiny', name: 'Groq', baseUrl: 'https://a/v1', model: 'llama-3.1-8b-instant' },
+      { id: 'mid', name: 'Local', baseUrl: 'http://127.0.0.1:11434/v1', model: 'gemma-4-26b' },
+    ],
+  });
+  const { createModelRouter } = await import('../extension/js/events/router.js');
+  const decided = createModelRouter({ models: pool }).route(drawing);
+  assert.equal(decided.model.id, 'mid', 'a structured task chose the model below its quality floor');
+  assert.ok(decided.rejected.some((x) => x.id === 'tiny' && /below the quality/.test(x.why)));
+}
+
+console.log('✓ requirements: derived from the prompt, eliminating rather than merely preferring');
