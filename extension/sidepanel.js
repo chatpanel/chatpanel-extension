@@ -367,6 +367,27 @@ async function pageToolProvider(resolvedAgent) {
     console.info('[chatpanel] structured-insert (', candidate.id, ') is a Pro feature — not offered');
   }
 
+  // PLUGIN ADAPTERS. The registry is asked; nothing here imports an adapter by name, so
+  // adding an app is a registration rather than an edit to this file (P15). The older
+  // canvas adapters keep their existing path until they are migrated — a strangler, not a
+  // rewrite, because the one above is working and this one is new.
+  let plugin = null;
+  if (!adapter && can(state.license, 'structuredInsert')) {
+    try {
+      const { adapterFor } = await import('./js/adapters/index.js');
+      plugin = await adapterFor(state.activeTab?.url || '', {});
+    } catch (e) {
+      console.warn('[chatpanel] adapter registry unavailable; using base page tools', e);
+    }
+  }
+  if (plugin) {
+    specs = [...PAGE_TOOL_SPECS, ...plugin.toolSpecs()];
+    // Resident for the same reason the canvas guidance is: it changes which TOOL gets
+    // chosen, and without it a model fills a spreadsheet by clicking at pixels.
+    residentSystem = plugin.guidance();
+    console.info('[chatpanel] adapter plugin active:', plugin.id);
+  }
+
   // Developer-only JavaScript execution: off unless explicitly enabled, and only
   // meaningful with trusted events on. Two gates, deliberately: the spec is
   // withheld here so the model never learns the tool exists, and the executor
@@ -395,6 +416,12 @@ async function pageToolProvider(resolvedAgent) {
   }
   const baseExecute = async (name, input, meta) => {
     if (name === 'save_app_controls') return JSON.stringify(await saveControls(input));
+    // An adapter answers only for the tools it declared; anything else falls through
+    // untouched, so a plugin can never shadow a page action by accident.
+    if (plugin) {
+      const handled = await plugin.execute(name, input, adapterCtx(state.activeTab?.id, cdp));
+      if (handled !== null && handled !== undefined) return JSON.stringify(handled);
+    }
     return basePageExecute(name, input, meta);
   };
   const guardedExecute = async (name, input, meta) => {
@@ -477,6 +504,37 @@ async function pageToolProvider(resolvedAgent) {
       + '{"action":"describe","args":{"tool":"<action>"}} returns any action\'s full schema and how to use it. '
       + 'To DRAW or resize on a canvas you must DRAG (`drag_at`) — a single `click_at` never draws.',
     residentSystem].filter(Boolean).join('\n\n'),
+  };
+}
+
+/**
+ * The platform half of the adapter contract.
+ *
+ * Injected rather than imported: the contract in @chatpanel/events stays runnable outside a
+ * browser extension, and an adapter written against it needs no knowledge of chrome.* or
+ * CDP. Every call here is one an adapter is allowed to make — a deliberately small surface,
+ * since an adapter is a plugin and a plugin should not be handed the whole page API.
+ */
+function adapterCtx(tabId, cdp) {
+  return {
+    cdp,
+    tabId,
+    async script(fn, args = []) {
+      const [inj] = await chrome.scripting.executeScript({ target: { tabId }, func: fn, args });
+      return inj?.result ?? null;
+    },
+    async click(x, y) {
+      const { cdpClickAt } = await import('./js/page-actions-cdp.js');
+      return cdpClickAt(tabId, x, y);
+    },
+    async type(text) {
+      const { cdpTypeText } = await import('./js/page-actions-cdp.js');
+      return cdpTypeText(tabId, text);
+    },
+    async press(key) {
+      const { cdpPressKey } = await import('./js/page-actions-cdp.js');
+      return cdpPressKey(tabId, key);
+    },
   };
 }
 

@@ -33,6 +33,7 @@ export {
 export { checkInvariants, INVARIANTS } from './invariants.js';
 export { createMemoryAdapter, createLogStore, createBlobStore } from './store.js';
 export { createRegistry, REGISTRY_STATES } from './registry.js';
+export { defineAdapter, createAdapterRegistry, AdapterError } from './adapters.js';
 export { linkifyCitations, sourcesFromToolText } from './citations.js';
 export { buildTrajectory, phasesOf, lanesOf, filterEntries, displayName, ENTRY_KINDS } from './trajectory.js';
 export { createTurnRunner, defineLoop, LOOP_KINDS, LoopError } from './loop.js';
