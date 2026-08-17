@@ -109,3 +109,56 @@ const { runs: ordered } = groupRuns([...t('t14'), a.append('turn.ended', { turnI
 assert.ok(ordered.length >= 2 && ordered[0].at >= ordered[1].at);
 
 console.log('✓ run details: turn boundaries, open runs, abort vs error');
+
+// ---------------------------------------------------------------- dispatcher names
+// One registered tool carrying the real action in its arguments meant every row read
+// `page`. Forty distinct actions rendered as forty identical chips, which is worse than
+// no view at all — the same blindness that stopped the loop guard exempting screenshots.
+const dispatched = (turnId, action, key, ms, ok = true, extra = {}) => ([
+  a.append('capability.invoked', {
+    capability: 'page', actor: { kind: 'model', id: 'm' }, scope: { kind: 'session', id: 'c' },
+    effects: 'non-replayable', idempotencyKey: key, turnId, args: { action, ...extra },
+  }),
+  a.append('capability.resulted', {
+    capability: 'page', ok, classUsed: 'X', cost: { ms }, turnId, idempotencyKey: key,
+    summary: ok ? 'page ok' : '{"error":"no elements provided"}',
+  }),
+]);
+
+const disp = summarizeRun('t20', [
+  a.append('context.assembled', { turnId: 't20', budget: 0, used: 900, parts: {}, resident: [], reachableCount: 1 }),
+  ...dispatched('t20', 'screenshot', 'd1', 1945),
+  ...dispatched('t20', 'click_at', 'd2', 25),
+  ...dispatched('t20', 'click_at', 'd3', 30),
+  ...dispatched('t20', 'type_text', 'd4', 5211),
+  ...dispatched('t20', 'describe', 'd5', 10, true, { tool: 'input_sequence' }),
+]);
+
+assert.deepEqual(
+  disp.toolCalls.map((c) => c.label),
+  ['page.screenshot', 'page.click_at', 'page.click_at', 'page.type_text', 'page.describe(input_sequence)'],
+  'dispatched calls still render as an undifferentiated "page"',
+);
+
+// "What did it spend the time on" is the only useful question on a long run.
+assert.equal(disp.actions[0].name, 'page.type_text');
+assert.equal(disp.actions[0].ms, 5211);
+assert.equal(disp.actions[1].name, 'page.screenshot');
+const clicks = disp.actions.find((x) => x.name === 'page.click_at');
+assert.equal(clicks.count, 2);
+assert.equal(clicks.ms, 55);
+assert.equal(disp.toolMs, 1945 + 25 + 30 + 5211 + 10);
+
+// Repeated-failure diagnosis must key on the REAL action, or six failing
+// structured_inserts and six failing screenshots look like one twelve-deep loop.
+const mixed = summarizeRun('t21', [
+  a.append('context.assembled', { turnId: 't21', budget: 0, used: 1, parts: {}, resident: [], reachableCount: 1 }),
+  ...dispatched('t21', 'structured_insert', 'x1', 5, false),
+  ...dispatched('t21', 'structured_insert', 'x2', 5, false),
+  ...dispatched('t21', 'screenshot', 'x3', 5, false),
+]);
+assert.equal(mixed.repeats.length, 1, 'failures from different actions were merged');
+assert.equal(mixed.repeats[0].name, 'page.structured_insert');
+assert.equal(mixed.repeats[0].count, 2);
+
+console.log('✓ run details: dispatcher actions resolved, time attributed per action');

@@ -447,10 +447,16 @@ const CAP = 200;
 function summarizeArgs(input) {
   try {
     const o = input && typeof input === 'object' ? input : {};
-    const keys = Object.keys(o).slice(0, 8);
+    // A dispatcher hides the real call behind one name, so the routing keys are kept
+    // VERBATIM — they are an enum we defined, not user data, and without them every row
+    // in the activity view reads `page` and the log is unreadable.
     const shape = {};
-    for (const k of keys) {
-      const v = o[k];
+    if (typeof o.action === 'string') shape.action = o.action;
+    if (typeof o.tool === 'string') shape.tool = o.tool;
+    const inner = o.args && typeof o.args === 'object' ? o.args : o;
+    for (const k of Object.keys(inner).slice(0, 8)) {
+      if (k === 'action' || k === 'tool' || k === 'args') continue;
+      const v = inner[k];
       shape[k] = Array.isArray(v) ? `array(${v.length})`
         : v && typeof v === 'object' ? `object(${Object.keys(v).length})`
           : typeof v === 'string' ? `string(${v.length})` : typeof v;

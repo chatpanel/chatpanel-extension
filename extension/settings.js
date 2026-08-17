@@ -4706,10 +4706,11 @@ async function renderActivity() {
 
   for (const run of runs.slice(0, 60)) {
     const v = rd.verdict(run);
-    const row = document.createElement('div');
+    const row = document.createElement('details');
     row.className = 'run-row';
 
-    const head = document.createElement('div');
+    // Summary answers "should I look at this?" — expanding answers "what happened".
+    const head = document.createElement('summary');
     head.className = 'run-head';
     const when = document.createElement('span');
     when.className = 'run-when';
@@ -4719,22 +4720,68 @@ async function renderActivity() {
     verdict.textContent = v.text;
     const meta = document.createElement('span');
     meta.className = 'run-meta';
-    const dur = run.ms != null ? `${(run.ms / 1000).toFixed(1)}s · ` : '';
-    meta.textContent = `${dur}${run.tokens ? `${run.tokens} tok · ` : ''}${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`;
+    const dur = run.ms != null ? `${(run.ms / 1000).toFixed(1)}s` : '';
+    meta.textContent = [dur, run.tokens ? `${run.tokens} tok` : '', `${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`]
+      .filter(Boolean).join(' · ');
     head.append(when, verdict, meta);
     row.append(head);
 
-    if (run.toolCalls.length) {
-      const calls = document.createElement('div');
-      calls.className = 'run-calls';
-      for (const c of run.toolCalls.slice(0, 40)) {
-        const chip = document.createElement('span');
-        chip.className = `run-call${c.ok === false ? ' failed' : ''}`;
-        chip.textContent = c.name + (c.ms != null ? ` ${c.ms}ms` : '');
-        if (c.summary) chip.title = c.summary;
-        calls.append(chip);
+    // WHERE THE TIME WENT. On a forty-call run the useful question is never "what ran"
+    // but "what did it spend the time on", and a flat list of forty identical chips
+    // answers neither.
+    if (run.actions?.length) {
+      const bar = document.createElement('div');
+      bar.className = 'run-bar';
+      const total = Math.max(1, run.toolMs);
+      for (const act of run.actions.slice(0, 8)) {
+        const seg = document.createElement('span');
+        seg.className = `run-seg${act.failed ? ' failed' : ''}`;
+        seg.style.flexGrow = String(Math.max(1, act.ms));
+        seg.title = `${act.name} — ${act.count}× · ${act.ms}ms · ${Math.round((act.ms / total) * 100)}% of tool time`;
+        bar.append(seg);
       }
-      row.append(calls);
+      row.append(bar);
+
+      const legend = document.createElement('div');
+      legend.className = 'run-actions';
+      for (const act of run.actions.slice(0, 12)) {
+        const chip = document.createElement('span');
+        chip.className = `run-action${act.failed ? ' failed' : ''}`;
+        chip.innerHTML = '<b></b><i></i>';
+        chip.querySelector('b').textContent = act.name;
+        chip.querySelector('i').textContent = `${act.count}× · ${act.ms}ms${act.failed ? ` · ${act.failed} failed` : ''}`;
+        legend.append(chip);
+      }
+      row.append(legend);
+    }
+
+    // The full sequence, in order, with arguments — the part that turns "it failed" into
+    // "it failed THIS way, six times, with these inputs".
+    if (run.toolCalls.length) {
+      const list = document.createElement('ol');
+      list.className = 'run-calls';
+      for (const c of run.toolCalls) {
+        const li = document.createElement('li');
+        li.className = `run-call${c.ok === false ? ' failed' : ''}`;
+        const nm = document.createElement('b');
+        nm.textContent = c.label || c.name;
+        const args = document.createElement('code');
+        const shown = { ...(c.args || {}) };
+        delete shown.action; delete shown.tool;
+        args.textContent = Object.keys(shown).length ? JSON.stringify(shown) : '';
+        const ms = document.createElement('span');
+        ms.className = 'run-call-ms';
+        ms.textContent = c.ms != null ? `${c.ms}ms` : '';
+        li.append(nm, args, ms);
+        if (c.summary) {
+          const out = document.createElement('div');
+          out.className = 'run-call-out';
+          out.textContent = c.summary;
+          li.append(out);
+        }
+        list.append(li);
+      }
+      row.append(list);
     }
     runsBox.append(row);
   }

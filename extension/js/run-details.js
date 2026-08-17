@@ -18,6 +18,22 @@ import { linearize } from './events/order.js';
 
 const TURN_OF = (e) => e.payload?.turnId || null;
 
+/**
+ * The name a human should see.
+ *
+ * A dispatcher registers one tool and carries the real action in its arguments, so the
+ * raw capability name is `page` for every page call. Showing that turns forty distinct
+ * actions into forty identical rows — the same blindness that stopped the loop guard
+ * exempting screenshots.
+ */
+export function displayName(call) {
+  const action = call?.args?.action;
+  if (typeof action !== 'string' || !action) return call?.name || 'tool';
+  return action === 'describe' && call.args.tool
+    ? `${call.name}.describe(${call.args.tool})`
+    : `${call.name}.${action}`;
+}
+
 /** Group a flat event list into runs, newest first, each in replay order. */
 export function groupRuns(events) {
   const ordered = linearize(events);
@@ -88,10 +104,26 @@ export function summarizeRun(turnId, events) {
     }
   }
 
-  const toolCalls = [...calls.values()].sort((a, b) => a.at - b.at);
+  const toolCalls = [...calls.values()].sort((a, b) => a.at - b.at)
+    .map((c) => ({ ...c, label: displayName(c) }));
+  const toolMs = toolCalls.reduce((n, c) => n + (c.ms || 0), 0);
+  const byAction = new Map();
+  for (const c of toolCalls) {
+    const k = c.label || c.name;
+    const agg = byAction.get(k) || { name: k, count: 0, ms: 0, failed: 0 };
+    agg.count += 1;
+    agg.ms += c.ms || 0;
+    if (c.ok === false) agg.failed += 1;
+    byAction.set(k, agg);
+  }
+
   return {
     turnId,
     turn,
+    toolMs,
+    // Slowest first: on a forty-call run the useful question is never "what ran" but
+    // "what did it spend the time on".
+    actions: [...byAction.values()].sort((a, b) => b.ms - a.ms),
     // A turn that opened but never closed is still running — or was interrupted by a
     // reload, which is itself worth seeing rather than silently rendering as finished.
     open: !!(turn?.startedAt && !turn?.endedAt),
@@ -117,7 +149,7 @@ export function findRepeats(toolCalls, min = 2) {
   const seen = new Map();
   for (const c of toolCalls) {
     if (c.ok !== false) continue;
-    const key = `${c.name}::${(c.summary || '').slice(0, 80)}`;
+    const key = `${c.label || c.name}::${(c.summary || '').slice(0, 80)}`;
     seen.set(key, (seen.get(key) || 0) + 1);
   }
   return [...seen.entries()]
