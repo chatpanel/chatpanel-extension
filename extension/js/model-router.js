@@ -249,7 +249,19 @@ export const failoverStrategy = defineRouteStrategy({
     }
     const covers = (m) => (failed.capabilities || []).every((c) => m.capabilities.includes(c));
     const q = (m) => (Number.isFinite(m.quality) ? m.quality : 0.5);
-    const rank = (m) => (sameModel(m) ? 0 : covers(m) ? 1 : 2);
+    // SAME KIND OF THING. Class is not a quality score, it is how the model is REACHED: an
+    // API model answers a request, a CLI agent spawns a process with its own tools, its own
+    // loop and its own idea of what to do next. Substituting one for the other mid-task is
+    // not a fallback, it is a different program — a drawing request handed to a coding agent
+    // went off reading files for a minute instead.
+    const sameClass = (m) => !failed.classUsed || m.classUsed === failed.classUsed;
+    const rank = (m) => {
+      if (sameModel(m)) return 0;
+      if (sameClass(m) && covers(m)) return 1;
+      if (sameClass(m)) return 2;
+      if (covers(m)) return 3;   // capable but a different kind of thing
+      return 4;
+    };
     return [...eligible].sort((a, b) => rank(a) - rank(b) || q(b) - q(a) || a.costPer1k - b.costPer1k);
   },
 });

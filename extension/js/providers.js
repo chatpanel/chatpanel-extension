@@ -1622,6 +1622,9 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call)
           capabilities: current.routedVia?.capabilities || [],
           quality: current.routedVia?.quality,
           reason: marked.reason,
+          // How this model is REACHED, so a request is not handed from an API model to a CLI
+          // agent that will go and do something else entirely.
+          classUsed: current.routedVia?.classUsed || (current.kind === 'bridge' ? 'A' : 'C'),
         },
       });
       if (!next?.target) throw err;   // nothing left to try — the original error is honest
@@ -1631,7 +1634,19 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call)
       // Tell the panel, because an answer arriving from a different model than the byline
       // promised is exactly the kind of silent substitution this codebase keeps removing.
       onEvent?.({ type: 'routed', model: to, reasons: [`${current.name || current.id} declined (${marked.reason})`, ...next.decision.reasons] });
-      current = { ...agent, ...next.target, routedVia: { model: to, reasons: next.decision.reasons } };
+      current = {
+        ...agent,
+        ...next.target,
+        routedVia: {
+          model: to,
+          reasons: next.decision.reasons,
+          // Carried so a SECOND failover still knows what it is replacing. Without these the
+          // chain forgets after one hop and starts substituting across classes again.
+          classUsed: next.decision.model.classUsed,
+          capabilities: next.decision.model.capabilities,
+          quality: next.decision.model.quality,
+        },
+      };
     }
   }
   throw lastErr;
@@ -1691,6 +1706,9 @@ async function pickRoutedAgent(agent, settings, tools, turn, messages) {
         model: routed.decision.model.label || to,
         reasons: routed.decision.reasons,
         strategy: routed.decision.strategy,
+        classUsed: routed.decision.model.classUsed,
+        capabilities: routed.decision.model.capabilities,
+        quality: routed.decision.model.quality,
       },
     };
   } catch {

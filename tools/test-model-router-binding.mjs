@@ -275,3 +275,28 @@ console.log('✓ failover: same model first, comparable next, inferior only as a
 }
 
 console.log('✓ failover reasons: same model for a provider saying no, a different one for a model that is gone');
+
+// SAME KIND OF THING. Class is not a quality score, it is how the model is REACHED: an API
+// model answers a request; a CLI agent spawns a process with its own tools, its own loop and
+// its own idea of what to do next. Substituting one for the other mid-task is not a
+// fallback, it is a different program — a drawing request handed to a coding agent went off
+// reading files for a minute instead of drawing.
+{
+  const mixed = [
+    { id: 'cli', model: 'gpt-5.6-sol', classUsed: 'A', capabilities: ['tools', 'reasoning', 'coding'], quality: 0.9, costPer1k: 0 },
+    { id: 'api', model: 'claude-sonnet', classUsed: 'C', capabilities: ['tools', 'reasoning'], quality: 0.7, costPer1k: 3 },
+  ];
+  const failedApi = { model: 'deepseek-v4-flash', classUsed: 'C', capabilities: ['tools', 'reasoning'], reason: 'gone' };
+  const ranked = await failoverStrategy.decide(mixed, { like: failedApi });
+  assert.equal(ranked[0].id, 'api', 'an API model was replaced by a CLI agent despite a comparable API model existing');
+
+  // A CLI agent that fails is replaced by a CLI agent, for the same reason in reverse.
+  const failedCli = { model: 'claude-code', classUsed: 'A', capabilities: ['tools'], reason: 'server' };
+  assert.equal((await failoverStrategy.decide(mixed, { like: failedCli }))[0].id, 'cli');
+
+  // A different class is still better than nothing — the turn completing matters more than
+  // it completing the same way.
+  assert.equal((await failoverStrategy.decide([mixed[0]], { like: failedApi }))[0].id, 'cli');
+}
+
+console.log('✓ failover class: like is replaced by like, and a CLI agent is not an API model');
