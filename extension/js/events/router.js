@@ -191,6 +191,16 @@ export function signalsFrom(request = {}) {
     // Non-Latin script is the one language signal a rule can read reliably. Anything finer
     // is a guess, so it is not offered.
     nonLatin: /[^\u0000-\u024F\u2000-\u206F]/.test(text),
+    // ASKS FOR NOTHING. "hello" and "what can you help with" are conversation, not work —
+    // and the equipment a turn happens to carry must not make them expensive.
+    //
+    // Detected by what is ABSENT rather than by matching greetings: a greeting list fails on
+    // the first typo ("what can yo uhelp with" is still small talk), while the absence of any
+    // action verb and of any reference to the user's own data is robust to spelling. 'my',
+    // 'this page' and 'here' count as references, so "whats my longest streak" is work — it
+    // needs the page — even though it is shorter than most greetings.
+    smalltalk: chars < 100 && !/```/.test(text)
+      && !/\b(draw|click|open|fill|read|find|search|edit|write|create|update|delete|run|fix|change|add|remove|select|scroll|extract|summar|analy|check|review|list|show|go to|navigate|my|mine|this page|here|it|that)\b/i.test(text),
     chars,
   };
 }
@@ -221,7 +231,15 @@ export function requirementsFor(signals = {}, { structured = false, hasTools = f
   // drive the page well and only needs to see a screenshot occasionally. The step that reads
   // an image is one call in a loop, not the character of the whole task, and per-STEP
   // requirements (see requirementsForStep) are where that belongs.
-  if (pageTools) {
+  // EQUIPMENT IS NOT DEMAND. `pageTools` and `structured` say what the turn CARRIES, not what
+  // it was asked for — so with page actions switched on, every message got a quality floor
+  // and "hello" was routed to a CLI coding agent. What a floor should come from is the
+  // request; a turn that asks for nothing needs nothing.
+  //
+  // The tools stay armed and stay required for anything that is not small talk, so a follow-up
+  // that does need the page is unaffected — and once per-step routing lands, the step that
+  // actually acts on the page carries its own requirements anyway.
+  if (pageTools && !signals.smalltalk) {
     required.add('tools');
     minQuality = Math.max(minQuality, 0.55);
     why.push('driving a page needs exact actions');
@@ -232,7 +250,7 @@ export function requirementsFor(signals = {}, { structured = false, hasTools = f
   // Structured work — a canvas, a spreadsheet — is exact. A model that fumbles coordinates
   // produces something visibly wrong rather than merely worse, so this sets a FLOOR rather
   // than a preference.
-  if (structured) {
+  if (structured && !signals.smalltalk) {
     required.add('tools');
     minQuality = Math.max(minQuality, 0.55);
     why.push('it must produce an exact structured payload');
@@ -248,7 +266,10 @@ export function requirementsFor(signals = {}, { structured = false, hasTools = f
   // cannot call them, so relaxing it would produce an answer that ignores half the request.
   // The others are strong preferences dressed as requirements — a text-only model CAN drive
   // a page badly, and badly beats not at all.
-  const negotiable = [...required].filter((c) => c !== 'tools');
+  // `tools` is normally non-negotiable — but nothing is going to be called for small talk,
+  // so insisting on it there would eliminate a perfectly good model over a capability the
+  // turn will not use.
+  const negotiable = signals.smalltalk ? [...required] : [...required].filter((c) => c !== 'tools');
   return { required: [...required], negotiable, minQuality, why };
 }
 
