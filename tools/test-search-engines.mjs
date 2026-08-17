@@ -43,4 +43,14 @@ assert.deepEqual(ids(migrateEngines(migrateEngines(stored))), ids(migrated));
 assert.deepEqual(ids(migrateEngines([])), ids(DEFAULT_ENGINES));
 assert.deepEqual(ids(migrateEngines(undefined)), ids(DEFAULT_ENGINES));
 
+// MORE THAN ONE ENGINE ON BY DEFAULT. Enabled engines are already searched in parallel and
+// merged, but a user whose only engine was Startpage saw a query return nothing —
+// parallelism across one engine is just that engine, and redundancy is the entire reason
+// the fan-out exists.
+const defaultsOn = on(migrateEngines(undefined));
+assert.ok(defaultsOn.length >= 2, `only ${defaultsOn.length} engine on by default`);
+assert.ok(!defaultsOn.includes(SEARCH_API.id), 'a keyless third-party API is on by default');
+// ...and still within the Free cap of 3, so this costs a Free user nothing.
+assert.ok(defaultsOn.length <= 3, `${defaultsOn.length} enabled exceeds the Free cap`);
+
 console.log('✓ search engines: one list, migrated on load, API off without a key');

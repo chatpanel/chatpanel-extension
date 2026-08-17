@@ -57,8 +57,13 @@ export const DEFAULT_ENGINES = [
   { id: 'startpage', name: 'Startpage', url: 'https://www.startpage.com/sp/search?query=%s', enabled: true },
   // Mojeek is GONE, not merely disabled — tested, it returns nothing at all. An engine
   // that never answers is not a fallback; it is latency plus a misleading "no results".
+  // TWO engines on by default, not one. All enabled engines are already searched in
+  // PARALLEL and merged — but a user whose only engine was Startpage saw a query return
+  // nothing, because parallelism across one engine is just that engine. Redundancy is the
+  // entire reason the fan-out exists, and it does nothing until there is something to fan
+  // out to. Three fit inside the Free cap, so this costs a Free user nothing.
+  { id: 'duckduckgo', name: 'DuckDuckGo (scraped)', url: 'https://html.duckduckgo.com/html/?q=%s', enabled: true },
   { id: 'google', name: 'Google (scraped)', url: 'https://www.google.com/search?q=%s', enabled: false },
-  { id: 'duckduckgo', name: 'DuckDuckGo (scraped)', url: 'https://html.duckduckgo.com/html/?q=%s', enabled: false },
   { id: 'bing', name: 'Bing (scraped)', url: 'https://www.bing.com/search?q=%s', enabled: false },
 ];
 
@@ -477,11 +482,32 @@ export async function webSearch(query, opts = {}) {
   //    last-resort tab render is gated by opts.tabFallback (OPT-IN, default off) —
   //    only fires when both reader and direct fetch miss. See fetchContent/searchEngine.
   const tabFallback = opts.tabFallback === true;
-  const perEngineLinks = await mapLimit(engines, FETCH_CONCURRENCY, (e) =>
+  const ask = (list) => mapLimit(list, FETCH_CONCURRENCY, (e) =>
     (e.kind === 'api'
       ? searchApi(e, q, perEngine, opts.reader?.key).catch(() => [])
       : searchEngine(e, q, perEngine, tabFallback)),
   );
+
+  let perEngineLinks = await ask(engines);
+  let usedEngines = engines;
+
+  // ESCALATE WHEN EVERYTHING ENABLED CAME BACK EMPTY.
+  //
+  // Enabled engines are searched in PARALLEL and merged, which is the redundancy: if one is
+  // blocked the others still answer. But when every enabled engine returns nothing, giving
+  // up is the wrong answer — the disabled ones are configured and available, and a user
+  // would rather wait than be told the web has no weather. So they are tried once, as a
+  // last resort, rather than costing a request on every ordinary search.
+  if (!perEngineLinks.flat().length) {
+    const spare = (opts.allEngines || []).filter((e) => e?.enabled === false && e?.kind !== 'api' && !engines.some((x) => x.id === e.id));
+    if (spare.length) {
+      const extra = await ask(spare);
+      if (extra.flat().length) {
+        perEngineLinks = extra;
+        usedEngines = spare;
+      }
+    }
+  }
 
   // 2) Merge + dedupe across engines; a link several engines agree on (and ranked
   //    high) is more trustworthy, so seed an initial score from appearance + position.
@@ -524,7 +550,9 @@ export async function webSearch(query, opts = {}) {
     .map((p, i) => ({ rank: i + 1, ...p }));
 
   await recordSearch(isPro); // a real search ran → count it against the Free daily cap
-  return { query: q, engines: engines.map((e) => e.id), results: ranked };
+  // Report what was ACTUALLY searched, including an escalation — a result that names
+  // engines the user has switched off would otherwise be baffling.
+  return { query: q, engines: usedEngines.map((e) => e.id), results: ranked };
 }
 
 // Flatten a webSearch() result into a single readable context blob (for an
@@ -603,7 +631,8 @@ export function migrateEngines(stored, { hasKey = false } = {}) {
 
 export function webSearchOpts(settings, isPro = false) {
   const cfg = settings?.ui?.webSearch || {};
-  let engines = migrateEngines(cfg.engines, { hasKey: !!cfg.reader?.key });
+  const all = migrateEngines(cfg.engines, { hasKey: !!cfg.reader?.key });
+  let engines = all;
   // Free tier: at most FREE_LIMITS.webSearchEngines ENABLED engines — any enabled
   // beyond the cap are forced off in the opts (settings are left untouched so they
   // re-enable on upgrade). Pro keeps the full list.
@@ -617,6 +646,9 @@ export function webSearchOpts(settings, isPro = false) {
   }
   return {
     engines,
+    // The full list, so a search that finds nothing can escalate to the engines the user
+    // has configured but left off rather than reporting failure.
+    allEngines: all,
     isPro,
     perEngine: cfg.perEngine || RESULTS_PER_ENGINE,
     maxPages: cfg.maxPages || MAX_PAGES,
