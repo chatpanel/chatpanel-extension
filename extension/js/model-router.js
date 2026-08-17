@@ -518,12 +518,17 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
  */
 export function sourcePolicySettings(settings = {}) {
   const cfg = settings?.privacy || {};
-  const extra = (Array.isArray(cfg.internalPatterns) ? cfg.internalPatterns : String(cfg.internalPatterns || '').split(/[\s,]+/))
-    .map((x) => String(x || '').trim().toLowerCase())
-    .filter(Boolean);
+  // NEVER CONFIGURED and CONFIGURED TO NOTHING are different answers. Undefined means the
+  // user has not been here yet, so the built-ins apply; an array — even an empty one — is a
+  // list they edited, and prepending our own to it would make a default impossible to
+  // remove. Someone testing against localhost has a real reason to delete that line.
+  const saved = cfg.internalPatterns;
+  const list = Array.isArray(saved)
+    ? saved
+    : (saved == null ? DEFAULT_INTERNAL_PATTERNS : String(saved).split(/[\s,]+/));
   return {
     enabled: cfg.internalGuard !== false,
-    patterns: [...DEFAULT_INTERNAL_PATTERNS, ...extra],
+    patterns: list.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean),
     ceiling: cfg.internalCeiling === 'trusted' ? 'trusted' : 'device',
   };
 }

@@ -125,3 +125,28 @@ console.log('✓ internal sources: pinned to the device, by reach, with a reason
 }
 
 console.log('✓ internal sources: the gate refuses rather than substituting or sending');
+
+// ── the built-ins are editable, not a floor ─────────────────────────────────
+{
+  const { DEFAULT_INTERNAL_PATTERNS } = await import('../extension/js/events/sources.js');
+
+  // Never configured → the built-ins apply, so protection exists before anyone visits the tab.
+  assert.deepEqual(sourcePolicySettings({}).patterns, [...DEFAULT_INTERNAL_PATTERNS]);
+
+  // Configured → that IS the list. Someone testing a local dev server against a cloud model
+  // must be able to delete `localhost`, and prepending our defaults would make that
+  // impossible while looking like it had worked.
+  // Both lines have to go: '<intranet>' means any bare hostname, and 'localhost' has no dot,
+  // so the two overlap. The settings hint says so, because deleting one line and still being
+  // blocked reads as the setting being ignored.
+  const noLocalhost = { privacy: { internalPatterns: DEFAULT_INTERNAL_PATTERNS.filter((p) => p !== 'localhost' && p !== '<intranet>') } };
+  assert.equal(sourceGuardFor(noLocalhost, ['http://localhost:3000/app']), null, 'localhost can be removed…');
+  assert.ok(sourceGuardFor(noLocalhost, ['http://10.4.2.9/x']), '…without giving up the rest.');
+  assert.ok(sourceGuardFor({ privacy: { internalPatterns: ['<intranet>'] } }, ['http://localhost:3000']), 'and <intranet> alone still covers it.');
+  assert.ok(sourceGuardFor({}, ['http://localhost:3000/app']), 'and it is protected by default.');
+
+  // Configured to nothing is a choice, and must be expressible.
+  assert.equal(sourceGuardFor({ privacy: { internalPatterns: [] } }, ['http://10.4.2.9/x']), null);
+}
+
+console.log('✓ internal sources: the built-in list is seeded, visible and editable');

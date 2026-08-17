@@ -780,3 +780,9 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .routing-model-name i { display: block; font-style: normal; font-size: 10px; color: var(--muted, #8b93a7); }
 .routing-caps { display: flex; gap: 8px; flex: none; }
 .routing-model select { max-width: 150px; }
+
+/* Internal-sites: the models allowed to answer an internal page. Every one is listed —
+   a truncated list cannot answer the only question being asked of it ("is mine on it?"). */
+.internal-models { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+.internal-models .chip { font-size:11px; color:var(--muted); background:var(--field);
+  border:1px solid var(--border); border-radius:6px; padding:1px 6px; }

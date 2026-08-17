@@ -6,6 +6,9 @@
 //             plus the bridge connection itself.
 import { getSettings, saveSettings, uid, exportAllData, exportDataArchive, importAllData, resetSkillsToDefaults } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
+// Small, pure and dependency-free — the seed list is needed synchronously when the panel
+// renders, and deferring one frozen array would cost a frame to save nothing.
+import { DEFAULT_INTERNAL_PATTERNS } from './js/events/sources.js';
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
 import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, setAutoBackupHour, runAutoBackup } from './js/auto-backup.js';
 import { encryptBackup, decryptBackup, isEncryptedBackup } from './js/crypto-backup.js';
@@ -3584,7 +3587,9 @@ function renderPrefs() {
     const note = $('internal-note');
     if (guard && pats && ceil) {
       guard.checked = priv.internalGuard !== false;
-      pats.value = (Array.isArray(priv.internalPatterns) ? priv.internalPatterns : []).join('\n');
+      // Seeded visibly, so every rule in force is one the user can read and delete. A rule
+      // that only exists in code cannot be corrected when it is wrong for this machine.
+      pats.value = (Array.isArray(priv.internalPatterns) ? priv.internalPatterns : DEFAULT_INTERNAL_PATTERNS).join('\n');
       ceil.value = priv.internalCeiling === 'trusted' ? 'trusted' : 'device';
       const refresh = async () => {
         // Say whether the rule can actually be honoured. A ceiling with no model under it
@@ -3596,12 +3601,30 @@ function renderPrefs() {
           const usable = candidatesFrom(settings).filter((m) => allowed.includes(reachOf(
             [...(settings.endpoints || []), ...(settings.agents || [])].find((t) => (t.id || t.name || t.model) === m.id) || {},
           )));
-          note.textContent = !guard.checked
-            ? 'Off — content from internal sites is sent to whichever model is selected.'
-            : usable.length
-              ? `${usable.length} model${usable.length === 1 ? '' : 's'} can answer these: ${usable.slice(0, 3).map((m) => m.label).join(', ')}${usable.length > 3 ? '…' : ''}`
-              : 'No local model is configured, so turns that draw on an internal site will be refused rather than sent. Add a local endpoint (Ollama, LM Studio) to answer them.';
+          note.replaceChildren();
           note.classList.toggle('warn', guard.checked && !usable.length);
+          if (!guard.checked) {
+            note.textContent = 'Off — content from internal sites is sent to whichever model is selected.';
+            return;
+          }
+          if (!usable.length) {
+            note.textContent = 'No local model is configured, so turns that draw on an internal site will be refused rather than sent. Add a local endpoint (Ollama, LM Studio) to answer them.';
+            return;
+          }
+          // EVERY model, not a sample. This is the list of what may answer an internal page —
+          // a truncated one leaves the person unable to tell whether the model they care
+          // about is on it, which is the only question they are asking.
+          const head = document.createElement('span');
+          head.textContent = `${usable.length} model${usable.length === 1 ? '' : 's'} can answer these:`;
+          const list = document.createElement('span');
+          list.className = 'internal-models';
+          for (const m of usable) {
+            const chip = document.createElement('span');
+            chip.className = 'chip';
+            chip.textContent = m.label;
+            list.appendChild(chip);
+          }
+          note.append(head, list);
         } catch { note.textContent = ''; }
       };
       const write = async () => {

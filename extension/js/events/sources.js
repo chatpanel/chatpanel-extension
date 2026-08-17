@@ -41,11 +41,16 @@ export function meetReach(a, b) {
 }
 
 /**
- * Hosts that are internal by NETWORK TOPOLOGY, true for everyone, no configuration needed.
+ * Hosts that are internal by NETWORK TOPOLOGY — the STARTING list, not a floor.
  *
  * Deliberately limited to what the address itself proves. A corporate wiki on a public SaaS
  * domain looks exactly like any other public host from here — that case needs the user's own
  * patterns, and pretending to detect it would give a false sense of coverage.
+ *
+ * These are seeded into the user's editable list rather than silently prepended to it,
+ * because "internal" is a fact about someone's network, not about ours: a developer testing
+ * against localhost may well want that traffic to reach a cloud model, and a rule they cannot
+ * see is a rule they cannot correct.
  */
 export const DEFAULT_INTERNAL_PATTERNS = Object.freeze([
   'localhost',
@@ -60,9 +65,9 @@ export const DEFAULT_INTERNAL_PATTERNS = Object.freeze([
   '*.lan',
   '*.local',
   '*.home.arpa',
-  // A bare hostname with no dot (http://wiki/, http://jira/) only resolves inside a private
+  // A bare hostname with no dot (http://wiki/, http://tickets/) only resolves inside a private
   // search domain — it cannot be a public site.
-  '<no-dot>',
+  '<intranet>',
 ]);
 
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
@@ -93,13 +98,13 @@ function inCidr(host, cidr) {
  *   `example.com`    the same — a bare domain covers its subdomains, because someone adding
  *                    their company domain means the whole company, not one host
  *   `10.0.0.0/8`     a CIDR range
- *   `<no-dot>`       any single-label host, which can only resolve on a private network
+ *   `<intranet>`     any single-label host, which can only resolve on a private network
  */
 export function hostMatches(host, pattern) {
   const h = String(host || '').toLowerCase().replace(/\.$/, '');
   const p = String(pattern || '').toLowerCase().trim();
   if (!h || !p) return false;
-  if (p === '<no-dot>') return !h.includes('.') && !IPV4.test(h);
+  if (p === '<intranet>') return !h.includes('.') && !IPV4.test(h);
   if (p.includes('/')) return inCidr(h, p);
   const bare = p.startsWith('*.') ? p.slice(2) : p;
   if (h === bare) return true;
