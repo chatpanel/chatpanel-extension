@@ -4999,7 +4999,15 @@ async function renderRouting() {
     // the mode is On, so a preview that disagreed with the saved settings would be showing
     // you a decision that never happens.
     settings.ui = settings.ui || {};
-    settings.ui.routing = { ...need, mode: $('routing-mode')?.value || 'observe' };
+    // MERGE, never replace. Assigning a fresh object here wiped the per-model ratings on
+    // every dial change — the preview re-renders after a rating is saved, so the act of
+    // saving one was what deleted it. A whole-object assignment to a shared branch of
+    // settings is a silent delete of everything else on that branch.
+    settings.ui.routing = {
+      ...(settings.ui.routing || {}),
+      ...need,
+      mode: $('routing-mode')?.value || 'observe',
+    };
     saveSettings(settings).catch(() => {});
     const r = await previewRoute(settings, store.resolveTarget, need);
     out.textContent = '';

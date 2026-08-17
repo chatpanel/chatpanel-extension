@@ -139,3 +139,30 @@ const raw = candidatesFrom({ ...settings, ui: { routing: { models: { 'mqk41ucyhm
 assert.equal(raw.find((m) => m.id === 'mqk41ucyhmz1au').quality, null);
 
 console.log('✓ overrides: the user corrects the guesses, but can never widen reach');
+
+// PERSISTENCE. A rating survived being written and was then deleted by the next dial
+// change, because the preview re-renders after saving and re-assigned the whole routing
+// branch. Saving a rating was itself what removed it.
+//
+// The shape both writers must respect: dials and per-model overrides live on one branch,
+// so either writing the other wholesale is a silent delete.
+{
+  const state = { ui: { routing: { models: { ep1: { quality: 0.9 } } } } };
+  // What the dial handler does — merge, never replace.
+  state.ui.routing = { ...(state.ui.routing || {}), reach: 'device', prefer: 'cost', mode: 'on' };
+  assert.equal(state.ui.routing.models?.ep1?.quality, 0.9, 'a dial change deleted the model ratings');
+  assert.equal(state.ui.routing.reach, 'device');
+
+  // And what the rating handler does — patch one model, leave the dials and the others.
+  const saved = state.ui.routing.models;
+  state.ui.routing.models = { ...saved, ep2: { ...(saved.ep2 || {}), capabilities: ['tools'] } };
+  assert.equal(state.ui.routing.mode, 'on', 'a rating change deleted the dials');
+  assert.equal(state.ui.routing.models.ep1.quality, 0.9, 'a rating change deleted another model');
+  assert.deepEqual(state.ui.routing.models.ep2.capabilities, ['tools']);
+}
+
+// And a saved rating actually reaches the router.
+const rated = candidatesFrom({ ...settings, ui: { routing: { mode: 'on', reach: 'any', models: { 'mqk41ucyhmz1au': { quality: 0.9 } } } } });
+assert.equal(rated.find((m) => m.id === 'mqk41ucyhmz1au').quality, 0.9);
+
+console.log('✓ routing settings: dials and per-model ratings share a branch without deleting each other');
