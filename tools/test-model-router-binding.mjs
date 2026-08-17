@@ -77,21 +77,31 @@ assert.equal(await routeForTurn(settings, undefined, {}), null);
 assert.equal(await routeForTurn({ ...settings, ui: { routing: { mode: 'on' } } }, undefined, {}), null,
   'a settings dial routed a request the user had not asked to route');
 
-const on = { ...settings, ui: { routing: { reach: 'device' } } };
-const picked = await routeForTurn(on, undefined, { force: true });
+// A REAL TURN'S NEEDS COME FROM THE TURN. The settings panel's reach/cost/speed controls are
+// a test harness — persisting them made a value someone set while exploring silently
+// constrain everything afterwards, and a panel titled "which model would answer" must not be
+// the thing deciding it.
+const picked = await routeForTurn(settings, undefined, { force: true });
 assert.ok(picked?.target, 'routing was on and chose nothing');
-assert.equal(picked.decision.model.label, 'Ollama · gemma-4-26b');
 
 // WHAT THE TURN NEEDS OUTRANKS THE SAVED PREFERENCE. A turn carrying tools cannot use a
 // model without them, whatever the dials say.
-const toolsOnly = { ...settings, ui: { routing: { reach: 'any', prefer: 'cost' } } };
-const withTools = await routeForTurn(toolsOnly, undefined, { capabilities: ['tools'], force: true });
+const withTools = await routeForTurn(settings, undefined, { capabilities: ['tools'], force: true });
 assert.ok(withTools.decision.model.capabilities.includes('tools'));
 
-// Constraints nothing satisfies mean the caller's own choice stands, rather than an error
-// or a silent downgrade to something forbidden.
-const impossible = { ...settings, ui: { routing: { reach: 'device', maxCostPer1k: 0, maxLatencyMs: 1 } } };
-assert.equal(await routeForTurn(impossible, undefined, { force: true }), null);
+// Constraints nothing satisfies mean the caller's own choice stands, rather than an error or
+// a silent downgrade to something forbidden. The constraint comes from the TURN — here, a
+// capability none of the configured models has.
+assert.equal(await routeForTurn(settings, undefined, { capabilities: ['telepathy'], force: true }), null);
+
+// And a saved preference no longer decides anything: the same call with leftover settings
+// from someone exploring the panel returns the same answer.
+const leftovers = { ...settings, ui: { routing: { reach: 'device', maxCostPer1k: 0, prefer: 'cost' } } };
+assert.equal(
+  (await routeForTurn(leftovers, undefined, { force: true }))?.decision.model.id,
+  (await routeForTurn(settings, undefined, { force: true }))?.decision.model.id,
+  'a leftover preview value changed a real routing decision',
+);
 
 // A decision naming something unresolvable also defers rather than guessing.
 assert.equal(await routeForTurn({ endpoints: [], agents: [] }, undefined, { force: true }), null);

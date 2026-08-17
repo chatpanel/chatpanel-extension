@@ -5064,18 +5064,16 @@ async function renderRouting() {
       import('./js/model-router.js'),
       import('./js/store.js'),
     ]);
+    // NOT SAVED. These controls describe a hypothetical request so you can see what would be
+    // chosen for it — they are a test harness, not configuration. Persisting them made a
+    // value someone set while exploring silently constrain every turn afterwards.
+    //
+    // The one thing here that IS a setting is observation, which only decides whether the
+    // router records its opinion when it is not the one answering.
     const need = routingNeedFromForm();
-    // Persist as you turn the dials. These are what the router will USE on a real turn once
-    // the mode is On, so a preview that disagreed with the saved settings would be showing
-    // you a decision that never happens.
     settings.ui = settings.ui || {};
-    // MERGE, never replace. Assigning a fresh object here wiped the per-model ratings on
-    // every dial change — the preview re-renders after a rating is saved, so the act of
-    // saving one was what deleted it. A whole-object assignment to a shared branch of
-    // settings is a silent delete of everything else on that branch.
     settings.ui.routing = {
-      ...(settings.ui.routing || {}),
-      ...need,
+      ...(settings.ui.routing || {}),   // merge: the per-model facts live on this branch
       mode: $('routing-mode')?.value || 'observe',
     };
     saveSettings(settings).catch(() => {});
@@ -5108,14 +5106,14 @@ async function renderRouting() {
 }
 
 /** Put the saved dials back on the form, so what you see is what will run. */
+/**
+ * Only observation is restored. The rest describe a hypothetical request and reset each time
+ * the panel opens — a test harness that remembered its last input would look like
+ * configuration, which is exactly the confusion this separation exists to remove.
+ */
 function loadRoutingForm() {
   const r = settings?.ui?.routing || {};
   if ($('routing-mode')) $('routing-mode').value = r.mode || 'observe';
-  if ($('routing-reach')) $('routing-reach').value = r.reach || 'any';
-  if ($('routing-prefer')) $('routing-prefer').value = r.prefer || 'balanced';
-  if ($('routing-tools')) $('routing-tools').checked = (r.capabilities || ['tools']).includes('tools');
-  if ($('routing-latency')) $('routing-latency').value = String(r.maxLatencyMs || 0);
-  if ($('routing-cost')) $('routing-cost').value = r.maxCostPer1k == null ? '' : String(r.maxCostPer1k);
 }
 
 for (const id of ['routing-refresh', 'routing-reach', 'routing-tools', 'routing-prefer', 'routing-mode', 'routing-latency', 'routing-cost']) {

@@ -404,16 +404,26 @@ export function buildRouter(settings, resolveTarget) {
   });
 }
 
-/** The user's saved dials, with defaults that change nothing. */
+/**
+ * What is actually SAVED about routing — and it is almost nothing.
+ *
+ * The settings panel's reach / cost / speed controls are a TEST HARNESS: they answer "what
+ * would this pick for a request like that". They were also being persisted and applied to
+ * every real turn, so a value someone set while exploring silently constrained everything
+ * afterwards. A panel that says "which model would answer, and why" must not be the thing
+ * deciding it.
+ *
+ * What a real turn needs comes from the TURN — the tools it carries, the length and modality
+ * of the request, whether an adapter is involved. Those are facts about the work, not
+ * preferences someone left behind in a form.
+ */
 export function routingSettings(settings = {}) {
   const r = settings?.ui?.routing || {};
   return {
+    // Recording only. It never changes which model answers.
     mode: r.mode || 'observe',
-    reach: r.reach || 'any',
-    prefer: r.prefer || 'balanced',
-    maxLatencyMs: Number(r.maxLatencyMs) || 0,
-    maxCostPer1k: r.maxCostPer1k == null ? undefined : Number(r.maxCostPer1k),
-    capabilities: Array.isArray(r.capabilities) ? r.capabilities : [],
+    // Per-model facts still apply — they describe the models, they do not pin a choice.
+    models: r.models || {},
   };
 }
 
@@ -460,10 +470,13 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
  * the one nobody is watching is the one that goes wrong.
  */
 export function needForTurn(settings, { capabilities = [], request = null, structured = false, force = false } = {}) {
-  const cfg = routingSettings(settings);
   return {
-    ...cfg,
-    capabilities: [...new Set([...(cfg.capabilities || []), ...capabilities])],
+    // Everything here is derived from the WORK, not from a saved preference. `balanced` is
+    // the only default worth having: with no stated deadline or budget, "reasonably fast and
+    // reasonably cheap" is what anybody means.
+    prefer: 'balanced',
+    reach: 'any',
+    capabilities: [...new Set(capabilities)],
     signals: request ? signalsFrom(request) : undefined,
     requestText: request ? String(request.text || (request.messages || []).map((m) => m?.content || '').join('\n')).slice(-2000) : '',
     structured,

@@ -924,7 +924,12 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
               <option value="3">Moderate</option>
             </select>
           </div>
-          <p class="muted tiny" style="margin:10px 0 2px"><strong>Rules for Auto</strong> — these apply to every turn Auto answers, and to nothing else.</p>
+          <p class="muted tiny" style="margin:10px 0 2px">
+            <strong>Try a request</strong> &mdash; describe one and see what Auto would choose for
+            it, and why. These controls are a test: <strong>they change nothing</strong>. A real
+            turn's needs come from the turn itself &mdash; the tools it carries, how long it is,
+            whether it involves a page or a spreadsheet.
+          </p>
           <div class="row" style="gap:8px;align-items:center;margin:8px 0">
             <label class="sub">Request may reach</label>
             <select id="routing-reach" style="max-width:150px">
