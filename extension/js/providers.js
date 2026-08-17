@@ -1432,7 +1432,13 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   // alone": routing must never be the reason a message fails to send.
   {
     const routed = await pickRoutedAgent(agent, settings, tools, turn);
-    if (routed) agent = routed;
+    if (routed) {
+      agent = routed;
+      // Tell the panel, so the reply can name the model that answered. Emitted as an event
+      // rather than returned, because the answer streams — by the time a return value
+      // arrives the user has been reading text from a model they cannot identify.
+      if (routed.routedVia) onEvent?.({ type: 'routed', ...routed.routedVia });
+    }
   }
 
   // ONE place every model-bound call passes through — augment the agent's system
@@ -1559,13 +1565,21 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
 async function pickRoutedAgent(agent, settings, tools, turn) {
   try {
     const [router, store] = await Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)]);
-    if (router.routingSettings(settings).mode !== 'on') return null;
-    const need = { capabilities: (tools?.specs || []).length ? ['tools'] : [] };
+    // Selecting "Auto" IS the instruction to route — asking the user to also flip a settings
+    // dial would be requesting the same consent twice.
+    const chose = agent?.kind === 'router' || agent?.id === 'router:auto';
+    if (!chose && router.routingSettings(settings).mode !== 'on') return null;
+    const need = { capabilities: (tools?.specs || []).length ? ['tools'] : [], force: chose };
     const routed = await router.routeForTurn(settings, store?.resolveTarget, need);
-    if (!routed?.target) return null;
+    if (!routed?.target) {
+      // Auto with nothing routable is a dead end the caller cannot recover from, unlike a
+      // specific model that simply answers. Say so rather than failing obscurely.
+      if (chose) throw new Error('No model fits the current routing constraints — pick a model, or relax the limits in Settings → Plugins → Model routing.');
+      return null;
+    }
     const from = agent?.id || agent?.name || agent?.model || null;
     const to = routed.decision.model.id;
-    if (from === to) return null;   // nothing changed; no need to say anything
+    if (!chose && from === to) return null;   // nothing changed; no need to say anything
     // A model swapped under the user is exactly the kind of thing that must be visible.
     turn.emit('policy.changed', {
       dial: 'route.applied',
@@ -1575,7 +1589,17 @@ async function pickRoutedAgent(agent, settings, tools, turn) {
       reasons: routed.decision.reasons,
     });
     // The caller's system prompt and per-turn overrides survive; only the target changes.
-    return { ...agent, ...routed.target };
+    // `routedVia` travels with the agent so the reply can say which model answered and why —
+    // with Auto selected, that is the one thing the user cannot otherwise know.
+    return {
+      ...agent,
+      ...routed.target,
+      routedVia: {
+        model: routed.decision.model.label || to,
+        reasons: routed.decision.reasons,
+        strategy: routed.decision.strategy,
+      },
+    };
   } catch {
     return null;
   }

@@ -129,9 +129,12 @@ export function routingSettings(settings = {}) {
  * message fails to send: a router that occasionally defers is fine, one that can break a
  * turn is not.
  */
-export async function routeForTurn(settings, resolveTarget, { capabilities = [] } = {}) {
+export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false } = {}) {
   const cfg = routingSettings(settings);
-  if (cfg.mode !== 'on') return null;
+  // `force` is the user having selected Auto: choosing the router IS the instruction to
+  // route, and making them also flip a settings dial would be asking for the same consent
+  // twice.
+  if (!force && cfg.mode !== 'on') return null;
   try {
     const router = buildRouter(settings, resolveTarget);
     const decision = await router.routeWith({

@@ -747,3 +747,6 @@ body.rail-collapsed { --rail-w: 0px; }
   text-overflow: ellipsis; white-space: nowrap;
 }
 .agent-routed:hover { color: var(--fg, #e6e9f0); border-color: var(--accent, #4fb0ff); }
+
+/* Which model answered, when the router chose it rather than the user. */
+.routed-via { color: var(--accent, #4fb0ff); cursor: help; }

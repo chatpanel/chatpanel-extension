@@ -997,7 +997,10 @@ function currentAgent() {
   // state.conv is null during the cold-start window (wireEvents() attaches handlers
   // before startConversation() sets it), so fall back to the active agent — the
   // correct default when no conversation exists yet.
-  return getTarget(state.settings, state.conv?.agentId || state.settings.activeAgentId);
+  const id = state.conv?.agentId || state.settings.activeAgentId;
+  // The router is a choice, not a configured model, so `getTarget` will never find it.
+  if (id === ROUTER_TARGET.id) return ROUTER_TARGET;
+  return getTarget(state.settings, id);
 }
 
 // On Free, the active agent must be one of the unlocked slots. If it isn't
@@ -1031,6 +1034,12 @@ function ensureUsableActiveAgent() {
 
 // `target` may be an endpoint, a model agent, or a bridge agent.
 function agentAvailability(target) {
+  // The router is available exactly when something is available for it to choose.
+  if (isRouterTarget(target)) {
+    const n = (state.settings.endpoints || []).filter((e) => e.enabled !== false).length
+      + (state.settings.agents || []).filter((a) => a.enabled !== false).length;
+    return n ? { ok: true } : { ok: false, why: 'no models configured' };
+  }
   if (!target) return { ok: false, reason: 'None' };
   if (target.kind === 'bridge') {
     if (!state.bridge.ok) return { ok: false, reason: 'Bridge not running' };
@@ -1064,6 +1073,22 @@ $('agent-routed')?.addEventListener('click', () => {
   chrome.runtime.openOptionsPage?.();
 });
 
+/**
+ * The router, as a target you can select.
+ *
+ * Not stored in settings: it is not a model the user configured, it is the decision itself.
+ * Giving it an id lets `conv.agentId` name it exactly as it names any other choice, so
+ * nothing downstream needs to know routing exists to remember that you chose it.
+ */
+export const ROUTER_TARGET = Object.freeze({
+  id: 'router:auto',
+  name: 'Auto',
+  kind: 'router',
+  description: 'Picks the best available model for each message.',
+});
+
+export const isRouterTarget = (t) => t?.id === ROUTER_TARGET.id;
+
 function renderAgentName() {
   const a = currentAgent();
   $('agent-name').textContent = a?.name || 'Select agent';
@@ -1087,30 +1112,32 @@ function renderAgentName() {
 function renderRoutedTarget() {
   const el = $('agent-routed');
   if (!el) return;
+  const current = currentAgent();
+  // Only Auto needs this. When you have picked a specific model, that model answers and a
+  // badge saying so is noise; when you have picked Auto, "which one" is the entire question.
+  if (!isRouterTarget(current)) { el.classList.add('hidden'); return; }
   import('./js/model-router.js')
     .then(async (router) => {
       const cfg = router.routingSettings(state.settings);
-      if (cfg.mode === 'off') { el.classList.add('hidden'); return; }
       const need = { capabilities: state.settings?.ui?.pageActions ? ['tools'] : [] };
       const preview = await router.previewRoute(state.settings, (t) => resolveTarget(t, state.settings), { ...cfg, ...need });
-      const chosen = preview.chosen;
-      const current = currentAgent();
-      const same = !chosen || chosen.startsWith(current?.name || '\u0000');
-      // Silent when it agrees. A badge that is always there stops being read, and the only
-      // interesting case is the one where a different model would answer.
-      if (same) { el.classList.add('hidden'); return; }
+      if (!preview.chosen) {
+        el.classList.remove('hidden');
+        el.textContent = 'no model fits';
+        el.title = (preview.rejected || []).map((r) => `${r.id} — ${r.why}`).join('\n') || 'No models configured.';
+        return;
+      }
       el.classList.remove('hidden');
-      el.textContent = cfg.mode === 'on' ? `→ ${chosen}` : `would route → ${chosen}`;
-      el.title = [
-        cfg.mode === 'on' ? 'This model will answer.' : 'Routing is observing — your selected agent still answers.',
-        ...(preview.reasons || []),
-      ].join('\n');
+      el.textContent = `→ ${preview.chosen}`;
+      el.title = ['This model will answer.', ...(preview.reasons || [])].join('\n');
     })
     .catch(() => el.classList.add('hidden'));
 }
 
 function agentModelLabel(target) {
   if (!target) return '';
+  // Auto has no model of its own — the badge beside it says which one it picked.
+  if (isRouterTarget(target)) return '';
   if (target.kind === 'bridge') return target.model || '';
   return resolveTarget(target, state.settings)?.model || '';
 }
@@ -1169,6 +1196,17 @@ function renderAgentMenu() {
     };
     menu.appendChild(item);
   };
+
+  // THE ROUTER AS A SELECTABLE TARGET.
+  //
+  // Routing was a settings dial and a badge, which made it a mode you were in rather than a
+  // thing you chose. Here it is one more option beside the models it chooses between —
+  // which is what it actually is, and removes the question "am I in observe or on?" by
+  // making the answer the same as "what did I pick".
+  if ((s.endpoints || []).length + (s.agents || []).length > 1) {
+    menu.appendChild(sectionLabel('Router'));
+    addItem(ROUTER_TARGET, 'auto');
+  }
 
   // Hide endpoints/agents the user has disabled in Settings (kept, not deleted).
   const endpoints = (s.endpoints || []).filter((e) => e.enabled !== false);
@@ -1257,6 +1295,16 @@ function renderMessage(m) {
     who.className = 'who';
     if (m.watch) who.innerHTML = `${icon('watch')} watch run · ${escapeAttr(timeLabel(m.watchAt))}`;
     else who.textContent = m.agentName || 'Assistant';
+    // WHICH MODEL ANSWERED, when the user did not pick it themselves. With Auto selected
+    // this is the one thing they cannot otherwise know, and "an AI replied" is not an
+    // answer to "which one, and why that one".
+    if (m.routedVia?.model) {
+      const via = document.createElement('span');
+      via.className = 'routed-via';
+      via.textContent = ` · ${m.routedVia.model}`;
+      via.title = (m.routedVia.reasons || []).join('\n') || 'Chosen by the router.';
+      who.appendChild(via);
+    }
     wrap.appendChild(who);
   }
 
@@ -2199,6 +2247,12 @@ async function runStream(agent, assistant, conv) {
             if (!dl) dl = makeDownloadUx((md) => { assistant.content = md; if (!raf) raf = requestAnimationFrame(flush); });
             dl.progress(ev);
           }
+        } else if (ev.type === 'routed') {
+          // Which model actually answered, and why. Stored on the message so it survives a
+          // reload — a routing decision you can only see while the reply is streaming is one
+          // you cannot go back and check.
+          assistant.routedVia = { model: ev.model, reasons: ev.reasons, strategy: ev.strategy };
+          if (!raf) raf = requestAnimationFrame(flush);
         } else if (ev.type === 'reasoning' && ev.text) {
           assistant.thinking = (assistant.thinking || '') + ev.text;
           if (!raf) raf = requestAnimationFrame(flush);
