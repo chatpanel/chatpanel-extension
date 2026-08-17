@@ -1298,11 +1298,12 @@ function renderMessage(m) {
     // WHICH MODEL ANSWERED, when the user did not pick it themselves. With Auto selected
     // this is the one thing they cannot otherwise know, and "an AI replied" is not an
     // answer to "which one, and why that one".
-    if (m.routedVia?.model) {
+    const used = modelsUsedIn(m);
+    if (used.length) {
       const via = document.createElement('span');
       via.className = 'routed-via';
-      via.textContent = ` · ${m.routedVia.model}`;
-      via.title = (m.routedVia.reasons || []).join('\n') || 'Chosen by the router.';
+      via.textContent = ` · ${used.join(' → ')}`;
+      via.title = (m.routedVia?.reasons || []).join('\n') || 'Chosen by the router.';
       who.appendChild(via);
     }
     wrap.appendChild(who);
@@ -1378,16 +1379,36 @@ function updateBubble(m) {
   updateByline(m);
 }
 
+/**
+ * Every model that did work in this turn, in the order they did it.
+ *
+ * A turn is not one model any more: a failover mid-turn means the actions and the answer can
+ * come from different places. Showing only the last one names whoever happened to finish,
+ * which is exactly wrong when the interesting model is the one that did the drawing before
+ * its credits ran out.
+ */
+function modelsUsedIn(m) {
+  const seen = [];
+  for (const step of m.steps || []) {
+    if (step.model && !seen.includes(step.model)) seen.push(step.model);
+  }
+  if (m.routedVia?.model && !seen.includes(m.routedVia.model)) seen.push(m.routedVia.model);
+  return seen;
+}
+
 /** Refresh just the "who answered" line of a message already on screen. */
 function updateByline(m) {
   const who = document.querySelector(`.msg[data-id="${CSS.escape(m.id)}"] .who`);
   if (!who || m.watch) return;
   who.textContent = m.agentName || 'Assistant';
-  if (m.routedVia?.model) {
+  const used = modelsUsedIn(m);
+  if (used.length) {
     const via = document.createElement('span');
     via.className = 'routed-via';
-    via.textContent = ` · ${m.routedVia.model}`;
-    via.title = (m.routedVia.reasons || []).join('\n') || 'Chosen by the router.';
+    // An arrow between them, because the order is the story: this one started, that one
+    // finished, and the reason is on hover.
+    via.textContent = ` · ${used.join(' → ')}`;
+    via.title = (m.routedVia?.reasons || []).join('\n') || 'Chosen by the router.';
     who.appendChild(via);
   }
 }
@@ -2283,7 +2304,11 @@ async function runStream(agent, assistant, conv) {
         } else if (ev.type === 'tool' && ev.phase === 'start') {
           // Surface each tool call as a visible "Actions" step — crucial for
           // no-reasoning models, where the bubble is otherwise blank while it works.
-          (assistant.steps ||= []).push({ tool: ev.name, callId: ev.callId, input: ev.input });
+          // The model that made THIS call. A turn can change model mid-flight after a
+          // failover, and attributing every action to whichever model finished the turn
+          // misreports the work — the one that drew the circle is not always the one that
+          // wrote the summary.
+          (assistant.steps ||= []).push({ tool: ev.name, callId: ev.callId, input: ev.input, model: ev.model });
           if (!raf) raf = requestAnimationFrame(flush);
         } else if (ev.type === 'tool' && ev.phase === 'done' && assistant.steps?.length) {
           const step = ev.callId

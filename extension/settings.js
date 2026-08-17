@@ -4923,6 +4923,7 @@ async function renderRoutingModels() {
   if (!candidates.length) return;
 
   const saved = settings?.ui?.routing?.models || {};
+  const { KNOWN_CAPABILITIES: CAPS } = await import('./js/model-router.js');
   const write = (id, patch) => {
     settings.ui = settings.ui || {};
     settings.ui.routing = settings.ui.routing || {};
@@ -4937,9 +4938,7 @@ async function renderRoutingModels() {
     const name = document.createElement('b');
     name.textContent = m.label;
     const meta = document.createElement('i');
-    // Reach is shown but not editable inward — the outward-only rule is easier to honour
-    // than to explain, so the control simply is not offered where it would be refused.
-    meta.textContent = `${m.reach} · class ${m.classUsed}`;
+    meta.textContent = `class ${m.classUsed}${m.available === false ? ' · unavailable' : ''}${m.rateLimited ? ' · rate limited' : ''}`;
 
     const quality = document.createElement('select');
     for (const [v, t] of [['', 'Quality: unrated'], ['0.9', 'Quality: high'], ['0.5', 'Quality: medium'], ['0.2', 'Quality: low']]) {
@@ -4950,25 +4949,56 @@ async function renderRoutingModels() {
 
     const caps = document.createElement('span');
     caps.className = 'routing-caps';
-    for (const cap of ['tools', 'vision']) {
+    for (const cap of CAPS) {
       const lbl = document.createElement('label');
       lbl.className = 'check tiny';
+      lbl.title = cap.hint;
       const cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = m.capabilities.includes(cap);
+      cb.checked = m.capabilities.includes(cap.id);
       cb.onchange = () => {
         const next = new Set(m.capabilities);
-        if (cb.checked) next.add(cap); else next.delete(cap);
+        if (cb.checked) next.add(cap.id); else next.delete(cap.id);
         write(m.id, { capabilities: [...next] });
       };
-      lbl.append(cb, document.createTextNode(` ${cap}`));
+      lbl.append(cb, document.createTextNode(` ${cap.label}`));
       caps.append(lbl);
     }
+
+    const speed = document.createElement('select');
+    speed.title = 'Roughly how fast it starts answering. Routing prefers faster models when you ask for speed.';
+    for (const [v, t] of [['', 'Speed: default'], ['400', 'Speed: fast'], ['1200', 'Speed: medium'], ['3000', 'Speed: slow']]) {
+      const o = document.createElement('option'); o.value = v; o.textContent = t; speed.append(o);
+    }
+    speed.value = saved[m.id]?.latencyMs == null ? '' : String(saved[m.id].latencyMs);
+    speed.onchange = () => write(m.id, { latencyMs: speed.value === '' ? null : Number(speed.value) });
+
+    const price = document.createElement('select');
+    price.title = 'Relative cost. Only ever compared against your other models — never a bill.';
+    for (const [v, t] of [['', 'Cost: default'], ['0', 'Cost: free'], ['1', 'Cost: cheap'], ['3', 'Cost: moderate'], ['8', 'Cost: expensive']]) {
+      const o = document.createElement('option'); o.value = v; o.textContent = t; price.append(o);
+    }
+    price.value = saved[m.id]?.costPer1k == null ? '' : String(saved[m.id].costPer1k);
+    price.onchange = () => write(m.id, { costPer1k: price.value === '' ? null : Number(price.value) });
+
+    // Reach moves OUTWARD only, so the options offered are exactly the ones that would be
+    // accepted — a control that silently refuses half its own values is worse than no
+    // control. See applyOverride for why the other direction cannot be allowed.
+    const reach = document.createElement('select');
+    reach.title = 'How far a request travels to reach it. You can declare it further out, never closer in.';
+    const order = ['device', 'trusted', 'any'];
+    for (const r of order.slice(order.indexOf(m.reach))) {
+      const o = document.createElement('option'); o.value = r;
+      o.textContent = { device: 'On this device', trusted: 'My machine/network', any: 'Third party' }[r];
+      reach.append(o);
+    }
+    reach.value = m.reach;
+    reach.onchange = () => write(m.id, { reach: reach.value });
 
     const text = document.createElement('span');
     text.className = 'routing-model-name';
     text.append(name, meta);
-    row.append(text, caps, quality);
+    row.append(text, caps, quality, speed, price, reach);
     box.append(row);
   }
 }

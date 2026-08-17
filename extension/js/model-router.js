@@ -31,14 +31,42 @@ function reachOf(target) {
   return 'any';
 }
 
-/** What it can do. Conservative: an unproven capability claimed here becomes a failed turn. */
+/**
+ * The levers a user can pull, and what each one means for routing.
+ *
+ * Named rather than free-form: a capability only matters if something asks for it, and a
+ * typo in a free-text field would silently make a model ineligible forever with no way to
+ * see why.
+ */
+export const KNOWN_CAPABILITIES = Object.freeze([
+  { id: 'tools', label: 'Tools', hint: 'Can call functions — needed for page actions, search and MCP.' },
+  { id: 'vision', label: 'Vision', hint: 'Can read images and screenshots.' },
+  { id: 'reasoning', label: 'Reasoning', hint: 'Thinks before answering — worth the wait on hard tasks.' },
+  { id: 'long-context', label: 'Long context', hint: 'Handles large documents and long meetings.' },
+  { id: 'coding', label: 'Coding', hint: 'Strong at writing and refactoring code.' },
+  { id: 'json', label: 'Structured output', hint: 'Reliably returns valid JSON.' },
+]);
+
+/**
+ * What a model can probably do, guessed from its name.
+ *
+ * Conservative on purpose: an unproven capability claimed here becomes a failed turn, and a
+ * missing one only means the router does not volunteer it. The user corrects both — these
+ * are a starting point, not a verdict.
+ */
 function capabilitiesOf(target) {
-  const caps = ['json'];
+  const m = String(target.model || '').toLowerCase();
+  const caps = new Set(['json']);
   // Bridge agents relay tools through the bridge's MCP server; API endpoints vary, so tool
   // support is assumed only where the user has actually configured a model for it.
-  if (target.kind === 'bridge' || target.model) caps.push('tools');
-  if (/gpt-4|claude|gemini|vision|vl\b/i.test(String(target.model || ''))) caps.push('vision');
-  return caps;
+  if (target.kind === 'bridge' || target.model) caps.add('tools');
+  if (/gpt-4|gpt-5|claude|gemini|vision|vl\b|llava|pixtral/.test(m)) caps.add('vision');
+  if (/o1|o3|r1|reason|think|opus|sonnet|deepseek-r/.test(m)) caps.add('reasoning');
+  if (/200k|1m\b|long|gemini|claude|gpt-4\.1|gpt-5/.test(m)) caps.add('long-context');
+  if (/code|coder|codex|deepseek|qwen|opus|sonnet/.test(m)) caps.add('coding');
+  // A CLI coding agent is a coding agent, whatever its model is called.
+  if (target.kind === 'bridge') { caps.add('coding'); caps.add('reasoning'); }
+  return [...caps];
 }
 
 /** Rough relative cost — unitless, and only ever compared against its siblings. */
@@ -105,6 +133,9 @@ export function candidatesFrom(settings = {}, resolveTarget = (x) => x, { ignore
     const inferred = {
       id,
       label,
+      // Kept so failover can recognise the SAME model at another provider — the closest
+      // possible replacement, and invisible if only the display label survived.
+      model: t.model || '',
       reach,
       classUsed: reach === 'device' ? 'L' : (kind === 'bridge' ? 'A' : 'C'),
       capabilities: capabilitiesOf(t),
@@ -167,19 +198,69 @@ export const complexityStrategy = defineRouteStrategy({
     const sig = need.signals;
     const hard = sig?.complexity === 'high' || sig?.modality === 'vision' || need.structured;
     if (!hard) return null;   // no opinion on easy work — let cost decide
+    // Prefer a model that claims what this task actually wants. Not a hard filter: declaring
+    // "reasoning" required would eliminate every model on a setup where nobody has ticked
+    // the box, and an empty candidate list is a worse answer than a merely adequate model.
+    const wants = new Set();
+    if (sig?.complexity === 'high') wants.add('reasoning');
+    if (need.structured) wants.add('tools');
+    if (sig?.modality === 'vision') wants.add('vision');
+    if (sig?.approxTokens > 20_000) wants.add('long-context');
+    const fit = (m) => [...wants].filter((c) => m.capabilities.includes(c)).length;
+    const best = Math.max(...eligible.map(fit));
+    const shortlist = best > 0 ? eligible.filter((m) => fit(m) === best) : eligible;
     // Rank by declared quality, then by cost as the tiebreak among equals. A model with an
     // unknown quality sits mid-table rather than last, so a newly added model is not
     // permanently skipped.
     const q = (m) => (Number.isFinite(m.quality) ? m.quality : 0.5);
-    return [...eligible].sort((a, b) => q(b) - q(a) || a.costPer1k - b.costPer1k);
+    return [...shortlist].sort((a, b) => q(b) - q(a) || a.costPer1k - b.costPer1k);
   },
 });
+
+/**
+ * When a model declines, replace it with the closest thing available — not the cheapest.
+ *
+ * A frontier model that ran out of credits mid-task should be replaced by the same model at
+ * another provider, or by something comparably capable. Falling back to a small local model
+ * is how a drawing that was going well turns into a circle in the wrong place: the task did
+ * not get easier when the provider said no.
+ *
+ * Ranked by closeness to what failed, in the order that actually matters:
+ *   1. the SAME model somewhere else — identical capability, merely a different bill;
+ *   2. a model with every capability the failed one had, best quality first;
+ *   3. anything else, so the turn still completes rather than dying.
+ */
+export const failoverStrategy = defineRouteStrategy({
+  id: 'failover-to-similar',
+  label: 'Replace like with like',
+  classUsed: 'R',
+  decide: async (eligible, need) => {
+    const failed = need.like;
+    if (!failed) return null;
+    const sameModel = (m) => !!failed.model && normModel(m) === normModel(failed);
+    const covers = (m) => (failed.capabilities || []).every((c) => m.capabilities.includes(c));
+    const q = (m) => (Number.isFinite(m.quality) ? m.quality : 0.5);
+    const rank = (m) => (sameModel(m) ? 0 : covers(m) ? 1 : 2);
+    return [...eligible].sort((a, b) => rank(a) - rank(b) || q(b) - q(a) || a.costPer1k - b.costPer1k);
+  },
+});
+
+/** The model name without its provider prefix or tag, so the same model matches across hosts. */
+function normModel(m) {
+  return String(m?.model || m?.label || '')
+    .toLowerCase()
+    .replace(/^[^/]+\//, '')      // deepseek-ai/DeepSeek-V4-Flash → deepseek-v4-flash
+    .replace(/[:@].*$/, '')       // gemma4:latest → gemma4
+    .replace(/[^a-z0-9.]+/g, '');
+}
 
 export function buildRouter(settings, resolveTarget) {
   return createModelRouter({
     models: candidatesFrom(settings, resolveTarget),
     middleware: [redactionStep],
-    strategies: [complexityStrategy],
+    // Failover first: when something just declined, replacing it well matters more than the
+    // general preference that picked it in the first place.
+    strategies: [failoverStrategy, complexityStrategy],
   });
 }
 
@@ -204,7 +285,7 @@ export function routingSettings(settings = {}) {
  * message fails to send: a router that occasionally defers is fine, one that can break a
  * turn is not.
  */
-export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false, request = null, structured = false, exclude = [] } = {}) {
+export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false, request = null, structured = false, exclude = [], like = null } = {}) {
   const cfg = routingSettings(settings);
   // `force` is the user having selected Auto: choosing the router IS the instruction to
   // route, and making them also flip a settings dial would be asking for the same consent
@@ -221,6 +302,7 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
       signals: request ? signalsFrom(request) : undefined,
       structured,
       exclude,
+      like,
     });
     if (!decision.model) return null;
     const raw = [...(settings.endpoints || []), ...(settings.agents || [])]

@@ -19,6 +19,10 @@ const COOLDOWN_MS = {
   rate: 60_000,
   // A server error may be a blip; try again soon, but not immediately.
   server: 2 * 60_000,
+  // The model is gone — retired, removed, renamed. It is not coming back, so standing it
+  // down for the rest of the session is the honest answer; anything shorter just repeats the
+  // same failure on a timer.
+  gone: 24 * 60 * 60_000,
   // Anything else — treat as transient and barely stand it down at all.
   unknown: 30_000,
 };
@@ -35,8 +39,13 @@ export function classifyFailure(err) {
   const status = Number(err?.status) || Number(/\b(4\d\d|5\d\d)\b/.exec(text)?.[1]) || 0;
   if (status === 402 || /credit|quota|billing|payment required|depleted/i.test(text)) return 'quota';
   if (status === 429 || /rate.?limit|too many requests/i.test(text)) return 'rate';
+  // THE MODEL IS GONE, not our request. A 410 saying "reached its end of life", a 404 on the
+  // model name, a deprecation notice — every other model would handle this request fine, so
+  // failing the turn is the one response that helps nobody. Checked BEFORE the generic 4xx
+  // rule, which would otherwise read this as our mistake and refuse to fail over.
+  if (status === 410 || /end of life|no longer available|has been (retired|deprecated|removed)|model.*not found|unknown model|decommissioned/i.test(text)) return 'gone';
   if (status >= 500 || /overloaded|unavailable|timeout|ECONNRESET/i.test(text)) return 'server';
-  // A 400 or 401 is OUR request or OUR key being wrong. Standing the model down would hide a
+  // A 400 or 401 IS our request or our key being wrong. Standing the model down would hide a
   // configuration error behind a health problem, and the user would fix the wrong thing.
   if (status >= 400 && status < 500) return null;
   return 'unknown';
@@ -50,8 +59,13 @@ export function markUnhealthy(id, err) {
   const failures = (prev?.failures || 0) + 1;
   // Repeated failures extend the wait, capped — a model failing every time should be tried
   // rarely, not never, because the thing that broke it may be fixed at any moment.
+  //
+  // The cap never shortens the base. An hour is the right ceiling for escalating a transient
+  // failure and the wrong one for a model that has been retired: capping a 24-hour
+  // stand-down at an hour would retry a model that no longer exists, 23 times a day.
   const base = COOLDOWN_MS[reason] || COOLDOWN_MS.unknown;
-  const until = Date.now() + Math.min(base * failures, 60 * 60_000);
+  const ceiling = Math.max(base, 60 * 60_000);
+  const until = Date.now() + Math.min(base * failures, ceiling);
   health.set(id, { until, reason, failures });
   return { reason, until };
 }
@@ -69,9 +83,9 @@ export function healthOf(id) {
     return { available: true, rateLimited: false, reason: null };
   }
   return {
-    // A rate limit is "not right now"; a quota or outage is "not available". The router
-    // rejects both, but the reason it shows the user is different.
-    available: h.reason !== 'quota' && h.reason !== 'server',
+    // A rate limit is "not right now"; a quota, outage or retirement is "not available". The
+    // router rejects both, but the reason it shows the user is different.
+    available: !['quota', 'server', 'gone'].includes(h.reason),
     rateLimited: h.reason === 'rate',
     reason: h.reason,
     until: h.until,

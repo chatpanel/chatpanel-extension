@@ -53,12 +53,15 @@ const reachRank = (r) => Math.max(0, REACH.indexOf(r));
 export function defineModel({
   id, label, reach = 'any', classUsed = 'C', capabilities = [],
   costPer1k = 1, latencyMs = 1000, load = 0, available = true,
-  rateLimited = false, observedLatencyMs = null, quality = null,
+  rateLimited = false, observedLatencyMs = null, quality = null, model = '',
 }) {
   if (!id) throw new RouterError('BAD_MODEL', 'model.id required');
   if (!REACH.includes(reach)) throw new RouterError('BAD_MODEL', `model '${id}': unknown reach '${reach}'`);
   return Object.freeze({
     id, label: label || id, reach, classUsed,
+    // The underlying model name, so the same model at a different provider is recognisable
+    // as the closest possible replacement when one of them declines.
+    model,
     capabilities: [...capabilities], costPer1k,
     // MEASURED BEATS DECLARED. A latency someone typed into a config is a guess about a
     // service that changes hourly; a latency we recorded is what it actually did. The

@@ -497,7 +497,11 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
     let blockedThisRound = 0;
     for (const c of wanted) {
       const input = safeJson(c.args);
-      onEvent?.({ type: 'tool', name: c.name, phase: 'start', callId: c.id, input });
+      // WHICH MODEL MADE THIS CALL. A turn can change model mid-flight — a failover after a
+      // provider declines — and attributing every action to whichever model finished the
+      // turn misreports the work. The one that drew the circle is not always the one that
+      // answered.
+      onEvent?.({ type: 'tool', name: c.name, phase: 'start', callId: c.id, input, model: modelLabelOf(agent) });
       const guard = loopGuard.check(c.name, input);
       if (guard.blocked) blockedThisRound += 1;
       const result = guard.blocked || guard.replayed
@@ -653,7 +657,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
     let blockedThisRound = 0;
     for (const b of toolUses) {
       const input = safeJson(b.json);
-      onEvent?.({ type: 'tool', name: b.name, phase: 'start', callId: b.id, input });
+      onEvent?.({ type: 'tool', name: b.name, phase: 'start', callId: b.id, input, model: modelLabelOf(agent) });
       const guard = loopGuard.check(b.name, input);
       if (guard.blocked) blockedThisRound += 1;
       const result = guard.blocked || guard.replayed
@@ -692,7 +696,7 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
 // result to the bridge. Fire-and-forget so the SSE loop keeps reading; the
 // bridge is blocked awaiting /tool-result, so there's nothing to read until then.
 async function relayBridgeTool(base, ev, tools, onEvent, loopGuard = createToolLoopGuard()) {
-  onEvent?.({ type: 'tool', name: ev.name, phase: 'start', callId: ev.id, input: ev.input });
+  onEvent?.({ type: 'tool', name: ev.name, phase: 'start', callId: ev.id, input: ev.input, model: modelLabelOf(agent) });
   let result;
   try {
     const guard = loopGuard.check(ev.name, ev.input);
@@ -1559,6 +1563,17 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
 }
 
 /**
+ * How a model should be named in an event.
+ *
+ * What the router chose, else the raw model. A turn can change model mid-flight, so this is
+ * read at each call rather than captured once — capturing it would attribute every action to
+ * whichever model happened to start the turn.
+ */
+function modelLabelOf(agent) {
+  return agent?.routedVia?.model || agent?.model || null;
+}
+
+/**
  * Run the call, and try the next model when this one cannot answer.
  *
  * A provider that returns "you have depleted your monthly credits" has not failed the
@@ -1588,6 +1603,10 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call)
       capabilities: (tools?.specs || []).length ? ['tools'] : [],
       force: true,
       exclude: [agent.id],
+      // Replace like with like. The task did not get easier because the provider said no,
+      // so the closest available model — ideally the SAME one elsewhere — is the right
+      // answer, and the cheapest is not.
+      like: { model: agent.model, capabilities: agent.routedVia?.capabilities || [], quality: agent.routedVia?.quality },
     });
     if (!next?.target) throw err;   // nothing left to try — the original error is the honest one
 

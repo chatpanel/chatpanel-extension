@@ -765,9 +765,14 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 /* Correcting what the router guessed about each model. */
 .routing-models { display: grid; gap: 4px; margin-top: 6px; }
 .routing-model {
-  display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+  display: grid; grid-template-columns: minmax(140px, 1fr) auto; gap: 6px 10px;
+  align-items: center; padding: 8px 10px;
   border: 1px solid var(--line, #23283a); border-radius: 6px; background: var(--panel-2, #171b26);
 }
+/* The levers wrap onto their own row rather than squeezing the name — six controls in a
+   line is unreadable at panel width. */
+.routing-model > select { grid-column: 2; }
+.routing-caps { grid-column: 1 / -1; flex-wrap: wrap; }
 .routing-model-name { flex: 1; min-width: 0; }
 .routing-model-name b { display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .routing-model-name i { display: block; font-style: normal; font-size: 10px; color: var(--muted, #8b93a7); }

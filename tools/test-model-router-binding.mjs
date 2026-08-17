@@ -166,3 +166,87 @@ const rated = candidatesFrom({ ...settings, ui: { routing: { mode: 'on', reach: 
 assert.equal(rated.find((m) => m.id === 'mqk41ucyhmz1au').quality, 0.9);
 
 console.log('✓ routing settings: dials and per-model ratings share a branch without deleting each other');
+
+// ── every lever, and what each one does ─────────────────────────────────────
+const { KNOWN_CAPABILITIES, complexityStrategy } = await import('../extension/js/model-router.js');
+
+// Named rather than free-form: a capability only matters if something asks for it, and a
+// typo in a free-text field would make a model ineligible forever with no way to see why.
+assert.deepEqual(KNOWN_CAPABILITIES.map((c) => c.id).sort(),
+  ['coding', 'json', 'long-context', 'reasoning', 'tools', 'vision']);
+assert.ok(KNOWN_CAPABILITIES.every((c) => c.label && c.hint), 'a lever has no explanation');
+
+// Inference is a starting point, not a verdict — the user corrects it.
+const inferred = candidatesFrom({
+  endpoints: [
+    { id: 'o3', name: 'Reasoner', baseUrl: 'https://api.x/v1', model: 'o3-mini' },
+    { id: 'tiny', name: 'Tiny', baseUrl: 'https://api.x/v1', model: 'llama-3.1-8b-instant' },
+  ],
+  agents: [{ id: 'cc', name: 'Claude Code', kind: 'bridge' }],
+});
+const cap = Object.fromEntries(inferred.map((m) => [m.id, m.capabilities]));
+assert.ok(cap.o3.includes('reasoning'), 'a reasoning model was not recognised');
+assert.ok(!cap.tiny.includes('reasoning'), 'a small fast model was credited with reasoning');
+// A CLI coding agent is a coding agent whatever its model is called.
+assert.ok(cap.cc.includes('coding') && cap.cc.includes('reasoning'));
+
+// ── escalation prefers what the task wants, without eliminating everything ───
+const pair = [
+  { id: 'cheap', capabilities: ['tools', 'json'], quality: 0.4, costPer1k: 0 },
+  { id: 'thinker', capabilities: ['tools', 'reasoning'], quality: 0.8, costPer1k: 3 },
+];
+const hard = await complexityStrategy.decide(pair, { signals: { complexity: 'high' } });
+assert.equal(hard[0].id, 'thinker', 'a hard task did not prefer a reasoning model');
+
+// Easy work gets no opinion at all, so cost decides.
+assert.equal(await complexityStrategy.decide(pair, { signals: { complexity: 'low' } }), null);
+
+// NOT a hard filter. On a setup where nobody has ticked "reasoning", requiring it would
+// eliminate every model — and an empty candidate list is a worse answer than an adequate
+// model.
+const noneClaim = [{ id: 'a', capabilities: ['tools'], quality: 0.3, costPer1k: 1 }];
+const still = await complexityStrategy.decide(noneClaim, { signals: { complexity: 'high' } });
+assert.equal(still.length, 1, 'escalation eliminated the only model available');
+
+// A long request asks for long context; a picture asks for vision.
+const longReq = await complexityStrategy.decide(
+  [{ id: 'short', capabilities: [], quality: 0.9, costPer1k: 0 }, { id: 'long', capabilities: ['long-context'], quality: 0.5, costPer1k: 1 }],
+  { signals: { complexity: 'high', approxTokens: 50_000 } },
+);
+assert.equal(longReq[0].id, 'long', 'a 50k-token request ignored long-context');
+
+console.log('✓ levers: six named capabilities, inferred then correctable, escalation prefers without eliminating');
+
+// ── failover replaces like with like ────────────────────────────────────────
+const { failoverStrategy } = await import('../extension/js/model-router.js');
+
+// A frontier model that ran out of credits mid-task should be replaced by the same model
+// elsewhere, or something comparable — not by a small local one. The task did not get easier
+// because the provider said no, and that is how a drawing going well becomes a circle in the
+// wrong place.
+const pool = [
+  { id: 'tiny', model: 'llama-3.1-8b', capabilities: ['tools'], quality: 0.2, costPer1k: 0 },
+  { id: 'sameElsewhere', model: 'deepseek-ai/DeepSeek-V4-Flash', capabilities: ['tools', 'reasoning'], quality: 0.7, costPer1k: 1 },
+  { id: 'comparable', model: 'claude-sonnet', capabilities: ['tools', 'reasoning', 'vision'], quality: 0.8, costPer1k: 3 },
+];
+const failed = { model: 'DeepSeek-V4-Flash', capabilities: ['tools', 'reasoning'] };
+
+const ranked = await failoverStrategy.decide(pool, { like: failed });
+assert.equal(ranked[0].id, 'sameElsewhere', 'the same model at another provider was not preferred');
+assert.equal(ranked[1].id, 'comparable', 'a capability-covering model lost to a weaker one');
+assert.equal(ranked[2].id, 'tiny', 'an inferior model was not ranked last');
+
+// Provider prefixes and tags must not stop the same model matching itself.
+assert.equal((await failoverStrategy.decide(
+  [{ id: 'a', model: 'gemma4:latest', capabilities: [], quality: 0.1 }, { id: 'b', model: 'x', capabilities: [], quality: 0.9 }],
+  { like: { model: 'gemma4', capabilities: [] } },
+))[0].id, 'a', 'a tagged model name failed to match itself');
+
+// With nothing to replace, the strategy has no opinion and the usual preference applies.
+assert.equal(await failoverStrategy.decide(pool, {}), null);
+
+// Nothing comparable still returns something: a completed turn on a weaker model beats a
+// failed one.
+assert.equal((await failoverStrategy.decide([pool[0]], { like: failed }))[0].id, 'tiny');
+
+console.log('✓ failover: same model first, comparable next, inferior only as a last resort');
