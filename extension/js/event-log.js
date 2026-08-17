@@ -24,6 +24,18 @@ const STORE = 'events';
 const HOST_KEY = 'chatpanel:logHostId';
 const VERSION = 1;
 
+// RETENTION. Measured: ~945 B per tool action worst case, so a heavy day (300 actions) is
+// ~280 KB and an unbounded year is ~99 MB. Bounded per event is not the same as bounded,
+// so the log is capped and prunes oldest-first.
+//
+// The cap is on COUNT rather than bytes because counting is O(1) against an index while
+// summing sizes is a full scan, and per-event size is already capped at the write.
+const MAX_EVENTS = 25_000;          // ~24 MB worst case, months of heavy use
+const PRUNE_TO = 20_000;            // prune in batches so it is not a per-write cost
+const PRUNE_EVERY = 250;            // appends between checks
+
+let sinceCheck = 0;
+
 let ready = null;
 
 function openDb() {
@@ -90,6 +102,8 @@ export async function emit(type, payload, causes = []) {
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error);
     });
+    sinceCheck += 1;
+    if (sinceCheck >= PRUNE_EVERY) { sinceCheck = 0; void prune(db); }
     return event;
   } catch (err) {
     console.warn('[chatpanel] event log unavailable:', err?.message || err);
@@ -100,6 +114,52 @@ export async function emit(type, payload, causes = []) {
 /** Fire-and-forget: for hot paths that must not await a write. */
 export function emitAsync(type, payload, causes = []) {
   void emit(type, payload, causes);
+}
+
+/**
+ * Drop the oldest events once the cap is exceeded.
+ *
+ * Oldest-first is the right order because the value of a run decays fast — you inspect
+ * today's failure, not March's — while the audit claim that matters is about what LEFT
+ * the device, and that is replicated to the warm tier rather than kept only here.
+ */
+async function prune(db) {
+  try {
+    const count = await new Promise((resolve, reject) => {
+      const req = db.transaction(STORE, 'readonly').objectStore(STORE).count();
+      req.onsuccess = () => resolve(req.result || 0);
+      req.onerror = () => reject(req.error);
+    });
+    if (count <= MAX_EVENTS) return 0;
+
+    const drop = count - PRUNE_TO;
+    return await new Promise((resolve, reject) => {
+      let removed = 0;
+      const tx = db.transaction(STORE, 'readwrite');
+      const req = tx.objectStore(STORE).index('at').openCursor(null, 'next'); // oldest first
+      req.onsuccess = () => {
+        const cur = req.result;
+        if (!cur || removed >= drop) return;
+        cur.delete();
+        removed += 1;
+        cur.continue();
+      };
+      tx.oncomplete = () => {
+        if (removed) console.info(`[chatpanel] event log pruned ${removed} oldest events`);
+        resolve(removed);
+      };
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn('[chatpanel] event log prune failed:', err?.message || err);
+    return 0;
+  }
+}
+
+/** Force a prune now — used by the settings panel after the cap is lowered. */
+export async function pruneNow() {
+  const { db } = await open();
+  return prune(db);
 }
 
 /** Most recent events, newest first. For the run-details drawer and export. */
@@ -127,10 +187,28 @@ export async function all() {
   });
 }
 
+/** Size, span and headroom — what the settings panel shows and what prune acts on. */
 export async function stats() {
   const events = await all();
-  const bytes = events.reduce((n, e) => n + JSON.stringify(e).length, 0);
-  return { events: events.length, bytes };
+  let bytes = 0;
+  let oldest = Infinity;
+  let newest = 0;
+  const byType = {};
+  for (const e of events) {
+    bytes += JSON.stringify(e).length;
+    if (e.at < oldest) oldest = e.at;
+    if (e.at > newest) newest = e.at;
+    byType[e.type] = (byType[e.type] || 0) + 1;
+  }
+  return {
+    events: events.length,
+    bytes,
+    oldest: Number.isFinite(oldest) ? oldest : null,
+    newest: newest || null,
+    byType,
+    cap: MAX_EVENTS,
+    pctOfCap: Math.round((events.length / MAX_EVENTS) * 100),
+  };
 }
 
 /** Drop everything. Used by the settings "clear activity" control and by tests. */

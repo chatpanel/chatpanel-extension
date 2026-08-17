@@ -24,6 +24,7 @@
           <button class="tab" data-tab="privacy"><span class="tab-ico" data-icon="privacy"></span> Privacy</button>
           <button class="tab" data-tab="gateway"><span class="tab-ico" data-icon="lock"></span> Gateway</button>
           <button class="tab" data-tab="usage"><span class="tab-ico" data-icon="chart"></span> Usage</button>
+          <button class="tab" data-tab="activity"><span class="tab-ico" data-icon="history-clock"></span> Activity</button>
           <button class="tab" data-tab="license"><span class="tab-ico" data-icon="sparkles"></span> Account</button>
         </aside>
         <main class="content">
@@ -832,6 +833,29 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
       </section>
 
       <!-- USAGE -->
+      <section class="panel hidden" data-panel="activity">
+        <div class="card">
+          <div class="card-head">
+            <h2>Activity <span class="sub">— what each run actually did, and what it cost</span></h2>
+            <button id="activity-refresh" class="btn" type="button">Refresh</button>
+          </div>
+          <p class="muted tiny">
+            Every run records which tools it called, what they returned, how many tokens the
+            toolset cost, and which capabilities you granted. It is stored
+            <strong>only on this device</strong> and never leaves it. Use it to answer
+            &ldquo;why did it do that?&rdquo; &mdash; and to spot a run where the same call
+            failed over and over, which is nearly always a ChatPanel problem rather than the
+            model&rsquo;s.
+          </p>
+          <div id="activity-stats" class="activity-stats"></div>
+          <div class="row" style="gap:8px;align-items:center;margin:10px 0">
+            <button id="activity-export" class="btn" type="button">Export (JSONL)</button>
+            <button id="activity-clear" class="btn danger" type="button">Clear activity</button>
+          </div>
+          <div id="activity-runs" class="activity-runs"></div>
+        </div>
+      </section>
+
       <section class="panel hidden" data-panel="usage">
         <div class="card">
           <div class="card-head">

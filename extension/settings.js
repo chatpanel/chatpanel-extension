@@ -131,6 +131,9 @@ function wireTabs() {
     // is shown (a Cmd+R deep-link to #usage or last-tab restore reveals it without
     // a click), else it sits at the static "Loading…" placeholder forever.
     if (name === 'usage') renderUsage();
+    // Same lazy rule as usage: the log module and the analysis load only when this tab is
+    // actually shown, so a user who never opens Activity never pays for it.
+    if (name === 'activity') renderActivity();
   };
   const exists = (name) => !!document.querySelector(`.tab[data-tab="${name}"]`);
   // Notes/Meetings/History are merged into one "Workspace" tab as sections. Keep
@@ -4652,3 +4655,111 @@ function renderPageSites() {
     box.append(row);
   }
 }
+
+
+// --------------------------------------------------------------------------
+// Activity — the local event log, read back as runs.
+//
+// Loaded on demand: the log module and the analysis both stay off settings' own boot
+// path, and a user who never opens this tab never pays for it.
+// --------------------------------------------------------------------------
+const fmtBytes = (n) => (n < 1024 ? `${n} B`
+  : n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB`
+    : `${(n / 1024 / 1024).toFixed(1)} MB`);
+
+const fmtWhen = (ms) => (ms ? new Date(ms).toLocaleString() : '—');
+
+async function renderActivity() {
+  const statsBox = $('activity-stats');
+  const runsBox = $('activity-runs');
+  if (!statsBox || !runsBox) return;
+  statsBox.textContent = '';
+  runsBox.textContent = '';
+
+  let log; let rd;
+  try {
+    [log, rd] = await Promise.all([import('./js/event-log.js'), import('./js/run-details.js')]);
+  } catch {
+    runsBox.innerHTML = '<p class="activity-empty">Activity log unavailable.</p>';
+    return;
+  }
+
+  const [stat, events] = await Promise.all([log.stats(), log.all()]);
+  const bits = [
+    ['Runs recorded', String(rd.groupRuns(events).runs.length)],
+    ['Events', `${stat.events.toLocaleString()} of ${stat.cap.toLocaleString()} (${stat.pctOfCap}%)`],
+    ['On disk', fmtBytes(stat.bytes)],
+    ['Oldest', fmtWhen(stat.oldest)],
+  ];
+  for (const [k, v] of bits) {
+    const span = document.createElement('span');
+    span.innerHTML = `${k}: <b></b>`;
+    span.querySelector('b').textContent = v;
+    statsBox.append(span);
+  }
+
+  const { runs } = rd.groupRuns(events);
+  if (!runs.length) {
+    runsBox.innerHTML = '<p class="activity-empty">Nothing recorded yet. Send a message that uses tools and come back.</p>';
+    return;
+  }
+
+  for (const run of runs.slice(0, 60)) {
+    const v = rd.verdict(run);
+    const row = document.createElement('div');
+    row.className = 'run-row';
+
+    const head = document.createElement('div');
+    head.className = 'run-head';
+    const when = document.createElement('span');
+    when.className = 'run-when';
+    when.textContent = fmtWhen(run.at);
+    const verdict = document.createElement('span');
+    verdict.className = `run-verdict ${v.level}`;
+    verdict.textContent = v.text;
+    const meta = document.createElement('span');
+    meta.className = 'run-meta';
+    meta.textContent = `${run.tokens ? `${run.tokens} tok · ` : ''}${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`;
+    head.append(when, verdict, meta);
+    row.append(head);
+
+    if (run.toolCalls.length) {
+      const calls = document.createElement('div');
+      calls.className = 'run-calls';
+      for (const c of run.toolCalls.slice(0, 40)) {
+        const chip = document.createElement('span');
+        chip.className = `run-call${c.ok === false ? ' failed' : ''}`;
+        chip.textContent = c.name + (c.ms != null ? ` ${c.ms}ms` : '');
+        if (c.summary) chip.title = c.summary;
+        calls.append(chip);
+      }
+      row.append(calls);
+    }
+    runsBox.append(row);
+  }
+}
+
+$('activity-refresh')?.addEventListener('click', renderActivity);
+
+$('activity-export')?.addEventListener('click', async () => {
+  const [log, ev] = await Promise.all([import('./js/event-log.js'), import('./js/events/harness.js')]);
+  const blob = new Blob([ev.toJsonl(await log.all())], { type: 'application/x-ndjson' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `chatpanel-activity-${new Date().toISOString().slice(0, 10)}.jsonl`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+
+$('activity-clear')?.addEventListener('click', async () => {
+  const { confirmDelete } = await import('./js/confirm-modal.js');
+  const ok = await confirmDelete({
+    title: 'Clear activity?',
+    body: 'Deletes the local record of what your runs did. Your chats, notes and meetings are not affected.',
+    confirmLabel: 'Clear',
+  });
+  if (!ok) return;
+  const log = await import('./js/event-log.js');
+  await log.clear();
+  renderActivity();
+});

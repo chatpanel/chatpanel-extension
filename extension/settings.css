@@ -602,3 +602,21 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .site-row.site-denied .site-key { text-decoration: line-through; opacity: .6; }
 .btn-tiny { font-size: 11px; padding: 2px 7px; border-radius: 5px; border: 1px solid var(--border, #2a2f3a); background: transparent; color: inherit; cursor: pointer; }
 .btn-tiny:hover { border-color: currentColor; }
+
+/* Activity — runs read back out of the local event log. */
+.activity-stats { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0; font-size: 12.5px; }
+.activity-stats b { font-variant-numeric: tabular-nums; }
+.activity-runs { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.run-row { border: 1px solid var(--border, #2a2f3a); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; }
+.run-head { display: flex; align-items: center; gap: 10px; }
+.run-when { color: var(--muted, #8b93a7); white-space: nowrap; }
+.run-verdict { flex: 1; min-width: 0; }
+.run-verdict.bad { color: #f8737f; }
+.run-verdict.warn { color: #f5b942; }
+.run-verdict.ok { color: #3ecf8e; }
+.run-verdict.info { color: #4fb0ff; }
+.run-meta { color: var(--muted, #8b93a7); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.run-calls { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+.run-call { border: 1px solid var(--border, #2a2f3a); border-radius: 5px; padding: 1px 6px; font-size: 11px; font-family: ui-monospace, monospace; }
+.run-call.failed { border-color: #f8737f; color: #f8737f; }
+.activity-empty { color: var(--muted, #8b93a7); font-size: 12.5px; padding: 10px 0; }
