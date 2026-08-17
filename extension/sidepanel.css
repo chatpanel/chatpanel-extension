@@ -737,3 +737,13 @@ body.rail-collapsed { --rail-w: 0px; }
   50% { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
 }
 @media (prefers-reduced-motion: reduce) { .tool-btn.offered { animation: none; } }
+
+/* Which model will actually answer, when it differs from the one you picked. Hidden when
+   they agree — a badge that is always there stops being read. */
+.agent-routed {
+  flex: none; font-size: 11px; padding: 2px 7px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line, #2a2f3d); background: transparent;
+  color: var(--muted, #8b93a7); max-width: 200px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.agent-routed:hover { color: var(--fg, #e6e9f0); border-color: var(--accent, #4fb0ff); }

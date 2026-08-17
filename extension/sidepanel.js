@@ -1058,6 +1058,12 @@ async function refreshBridge() {
   renderAgentName();
 }
 
+$('agent-routed')?.addEventListener('click', () => {
+  // Straight to the dials. Telling someone their model was changed without showing them
+  // where to change it back is the worse half of the feature.
+  chrome.runtime.openOptionsPage?.();
+});
+
 function renderAgentName() {
   const a = currentAgent();
   $('agent-name').textContent = a?.name || 'Select agent';
@@ -1065,6 +1071,42 @@ function renderAgentName() {
   $('agent-model').textContent = modelLabel;
   $('agent-model').title = modelLabel ? `Model: ${modelLabel}` : '';
   $('agent-model').classList.toggle('hidden', !modelLabel);
+  renderRoutedTarget();
+}
+
+/**
+ * Which model will ACTUALLY answer — shown before you send, not discovered afterwards.
+ *
+ * Routing happened inside the call, so the header named the agent you picked while a
+ * different model answered. Being told after the fact which model was used is not the same
+ * as knowing before you press send, and for a decision about where your text goes it is the
+ * wrong way round.
+ *
+ * Free to compute — routing is a rule, no model call — so it can run on every header render.
+ */
+function renderRoutedTarget() {
+  const el = $('agent-routed');
+  if (!el) return;
+  import('./js/model-router.js')
+    .then(async (router) => {
+      const cfg = router.routingSettings(state.settings);
+      if (cfg.mode === 'off') { el.classList.add('hidden'); return; }
+      const need = { capabilities: state.settings?.ui?.pageActions ? ['tools'] : [] };
+      const preview = await router.previewRoute(state.settings, (t) => resolveTarget(t, state.settings), { ...cfg, ...need });
+      const chosen = preview.chosen;
+      const current = currentAgent();
+      const same = !chosen || chosen.startsWith(current?.name || '\u0000');
+      // Silent when it agrees. A badge that is always there stops being read, and the only
+      // interesting case is the one where a different model would answer.
+      if (same) { el.classList.add('hidden'); return; }
+      el.classList.remove('hidden');
+      el.textContent = cfg.mode === 'on' ? `→ ${chosen}` : `would route → ${chosen}`;
+      el.title = [
+        cfg.mode === 'on' ? 'This model will answer.' : 'Routing is observing — your selected agent still answers.',
+        ...(preview.reasons || []),
+      ].join('\n');
+    })
+    .catch(() => el.classList.add('hidden'));
 }
 
 function agentModelLabel(target) {
