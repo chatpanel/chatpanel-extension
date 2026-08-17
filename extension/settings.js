@@ -4669,6 +4669,13 @@ const fmtBytes = (n) => (n < 1024 ? `${n} B`
 
 const fmtWhen = (ms) => (ms ? new Date(ms).toLocaleString() : '—');
 
+// Surface labels for activity rows. Every entry point reports through the one
+// chokepoint, so this list is what the log can actually contain.
+const KIND_LABEL = {
+  chat: 'Chat', note: 'Note', meeting: 'Meeting', assist: 'Assist',
+  watch: 'Watch', suggestion: 'Suggestion', other: 'Other',
+};
+
 async function renderActivity() {
   const statsBox = $('activity-stats');
   const runsBox = $('activity-runs');
@@ -4698,10 +4705,40 @@ async function renderActivity() {
     statsBox.append(span);
   }
 
-  const { runs } = rd.groupRuns(events);
+  const { runs: allRuns } = rd.groupRuns(events);
+
+  // Every surface reports here now (chat, note, meeting, assist, watch), so the list
+  // needs to be narrowable — and background helper calls (title, topic extraction,
+  // grammar pass) have to fold away by default, or one note buries its own run under a
+  // dozen one-token rows. Nothing is dropped from the log; only from this view.
+  const kindSel = $('activity-kind');
+  const showBg = $('activity-background')?.checked;
+  if (kindSel) {
+    const kinds = [...new Set(allRuns.map((r) => r.kind))].sort();
+    const keep = kindSel.value;
+    kindSel.textContent = '';
+    for (const [v, label] of [['', 'All surfaces'], ...kinds.map((k) => [k, KIND_LABEL[k] || k])]) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = label;
+      kindSel.append(o);
+    }
+    if (kinds.includes(keep)) kindSel.value = keep;
+  }
+  const wantKind = kindSel?.value || '';
+  const hiddenBg = allRuns.filter((r) => r.background).length;
+  const runs = allRuns.filter((r) => (showBg || !r.background) && (!wantKind || r.kind === wantKind));
+
   if (!runs.length) {
-    runsBox.innerHTML = '<p class="activity-empty">Nothing recorded yet. Send a message that uses tools and come back.</p>';
+    runsBox.innerHTML = hiddenBg && !showBg
+      ? '<p class="activity-empty">Only background work recorded so far — tick &ldquo;Show background work&rdquo; to see it.</p>'
+      : '<p class="activity-empty">Nothing recorded yet. Send a message that uses tools and come back.</p>';
     return;
+  }
+  if (hiddenBg && !showBg) {
+    const note = document.createElement('p');
+    note.className = 'muted tiny';
+    note.textContent = `${hiddenBg} background call${hiddenBg === 1 ? '' : 's'} hidden (titles, topic extraction, grammar passes).`;
+    runsBox.append(note);
   }
 
   for (const run of runs.slice(0, 60)) {
@@ -4723,7 +4760,10 @@ async function renderActivity() {
     const dur = run.ms != null ? `${(run.ms / 1000).toFixed(1)}s` : '';
     meta.textContent = [dur, run.tokens ? `${run.tokens} tok` : '', `${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`]
       .filter(Boolean).join(' · ');
-    head.append(when, verdict, meta);
+    const kind = document.createElement('span');
+    kind.className = `run-kind kind-${run.kind}`;
+    kind.textContent = KIND_LABEL[run.kind] || run.kind;
+    head.append(when, kind, verdict, meta);
     row.append(head);
 
     // WHERE THE TIME WENT. On a forty-call run the useful question is never "what ran"
@@ -4788,6 +4828,8 @@ async function renderActivity() {
 }
 
 $('activity-refresh')?.addEventListener('click', renderActivity);
+$('activity-kind')?.addEventListener('change', renderActivity);
+$('activity-background')?.addEventListener('change', renderActivity);
 
 $('activity-export')?.addEventListener('click', async () => {
   const [log, ev] = await Promise.all([import('./js/event-log.js'), import('./js/events/harness.js')]);

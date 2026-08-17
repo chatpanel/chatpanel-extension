@@ -1216,8 +1216,14 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
     const turnId = usageCtx?.turnId || `${ctx.surface}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 7)}`;
     const startedAt = Date.now();
     const toolSpecs = tools?.specs || [];
+    // Background vs. asked-for, from a signal that already means it rather than a
+    // maxTokens threshold: a turn that streams nothing to a human and runs no tools is
+    // infrastructure (title, topic extraction, grammar pass). Recorded either way —
+    // the privacy record must cover every model call — but folded out of the default
+    // view, or one note buries its own run under a dozen one-token rows.
+    const background = !toolSpecs.length && !onDelta;
     logTurnEvent('turn.started', {
-      turnId, kind: ctx.surface, agentId, sourceId: ctx.sourceId || null,
+      turnId, kind: ctx.surface, agentId, sourceId: ctx.sourceId || null, background,
     });
     logTurnEvent('context.assembled', {
       turnId,
@@ -1250,7 +1256,18 @@ export async function streamChat({ agent, messages, settings, signal, onDelta, o
   // redaction entirely for it (the user chose not to pay the redaction cost locally).
   if (redaction && redaction.cfg && redaction.cfg.applyTo === 'remote' && isLocalAgent(agent)) redaction = null;
   if (!redaction || !redaction.vault || !redactionEnabled(redaction.cfg)) {
-    return dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools });
+    // Close the turn on THIS path too. It returned early, before the try/catch below,
+    // so with redaction off — the common case — every turn opened and never closed,
+    // and a finished note read as "still running". An exit that skips the close is the
+    // only way this log can lie, so both exits go through the same helper.
+    try {
+      const full = await dispatchStream({ agent, messages, settings, signal, onDelta, onEvent, tools });
+      turnClose?.(signal?.aborted ? 'aborted' : 'ok', !!(typeof full === 'string' ? full.trim() : full));
+      return full;
+    } catch (err) {
+      turnClose?.(signal?.aborted ? 'aborted' : 'error', false);
+      throw err;
+    }
   }
   const { vault, cfg, isPro = false, entities = [] } = redaction;
   // Phase 2: when mode is 'model', run the configured LOCAL detector to find

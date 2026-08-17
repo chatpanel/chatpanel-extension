@@ -62,7 +62,7 @@ export function summarizeRun(turnId, events) {
     const p = e.payload || {};
     switch (e.type) {
       case 'turn.started':
-        turn = { ...(turn || {}), startedAt: e.at, kind: p.kind || 'chat', agentId: p.agentId || null };
+        turn = { ...(turn || {}), startedAt: e.at, kind: p.kind || 'chat', agentId: p.agentId || null, background: !!p.background };
         break;
       case 'turn.ended':
         turn = { ...(turn || {}), endedAt: e.at, reason: p.reason || 'ok', ms: p.ms ?? null, stepped: p.stepped !== false };
@@ -127,6 +127,12 @@ export function summarizeRun(turnId, events) {
     // A turn that opened but never closed is still running — or was interrupted by a
     // reload, which is itself worth seeing rather than silently rendering as finished.
     open: !!(turn?.startedAt && !turn?.endedAt),
+    // Which surface asked for this, so a note run is distinguishable from a chat run
+    // without opening it — every surface reports here now, not just chat.
+    kind: turn?.kind || 'chat',
+    // Infrastructure (title, topic extraction, grammar pass) — kept in the log, folded
+    // out of the default view. A tool call always makes a run foreground.
+    background: !!turn?.background && !toolCalls.length,
     at: turn?.startedAt || events[0]?.at || 0,
     ms: turn?.ms ?? null,
     events: events.length,

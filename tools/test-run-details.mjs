@@ -67,6 +67,7 @@ assert.match(text, /structured_insert/);
 assert.ok(!text.includes('"elements":['), 'raw arguments leaked into the sanitized report');
 assert.equal(report.runs[0].calls[0].args.elements, 'array(2)');
 
+
 console.log('✓ run details: grouping, repeated-failure diagnosis, sanitized export');
 
 // ---------------------------------------------------------------- turn boundaries
@@ -162,3 +163,35 @@ assert.equal(mixed.repeats[0].name, 'page.structured_insert');
 assert.equal(mixed.repeats[0].count, 2);
 
 console.log('✓ run details: dispatcher actions resolved, time attributed per action');
+
+// EVERY SURFACE REPORTS, AND A FINISHED RUN MUST READ AS FINISHED.
+// The activity log covered chats only until emission moved to the shared chokepoint;
+// the move then exposed a second bug — the redaction-off fast path returned before the
+// close, so a finished note rendered as "Still running". A run that recorded an end is
+// never open, whichever surface it came from.
+const noteRun = summarizeRun('t30', [
+  a.append('turn.started', { turnId: 't30', kind: 'note', background: false }),
+  a.append('context.assembled', { turnId: 't30', budget: 0, used: 2083, parts: {}, resident: [], reachableCount: 0 }),
+  a.append('turn.ended', { turnId: 't30', reason: 'ok', ms: 4200 }),
+]);
+assert.equal(noteRun.open, false, 'a note that recorded turn.ended still reads as running');
+assert.equal(noteRun.kind, 'note', 'the surface was lost, so every run looks like a chat');
+assert.equal(verdict(noteRun).level, 'ok');
+
+// Infrastructure folds out of the default view but stays in the log: a turn that streams
+// nothing to a human and calls no tool is a title or a grammar pass, and a dozen of them
+// per note would bury the note's own run.
+const helper = summarizeRun('t31', [
+  a.append('turn.started', { turnId: 't31', kind: 'note', background: true }),
+  a.append('turn.ended', { turnId: 't31', reason: 'ok', ms: 300 }),
+]);
+assert.equal(helper.background, true);
+
+// ...but a tool call always makes a run foreground, whatever the caller claimed: something
+// that acted on the user's behalf is never hidden.
+const acted = summarizeRun('t32', [
+  a.append('turn.started', { turnId: 't32', kind: 'note', background: true }),
+  ...dispatched('t32', 'screenshot', 'y1', 5, true),
+  a.append('turn.ended', { turnId: 't32', reason: 'ok', ms: 900 }),
+]);
+assert.equal(acted.background, false, 'a run that called a tool was hidden from the default view');

@@ -615,6 +615,12 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .run-verdict.warn { color: #f5b942; }
 .run-verdict.ok { color: #3ecf8e; }
 .run-verdict.info { color: #4fb0ff; }
+/* Which surface a run came from — every entry point reports now, so the row has to say
+   whether it was a note, a meeting or a chat without being opened. */
+.run-kind {
+  flex: none; font-size: 11px; padding: 1px 6px; border-radius: 999px;
+  border: 1px solid var(--line, #2a2f3d); color: var(--muted, #8b93a7); white-space: nowrap;
+}
 .run-meta { color: var(--muted, #8b93a7); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .run-head { cursor: pointer; list-style: none; }
 .run-head::-webkit-details-marker { display: none; }
