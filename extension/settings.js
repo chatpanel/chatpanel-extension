@@ -2876,6 +2876,31 @@ function mcpServerCard(server, index = 0) {
     } catch (e) {
       status.classList.remove('ok');
       status.classList.add('err');
+      // This is where a user is most likely to see a launch failure, and where raw shell
+      // output does the most damage: they are configuring, so they will assume they
+      // configured it wrong and keep changing fields that were never the problem.
+      try {
+        const { explainMcpError, packageFromArgs } = await import('./js/events/mcp-errors.js');
+        const why = explainMcpError(e.message, { packageName: packageFromArgs(server.args || []) || server.name || '' });
+        if (why) {
+          status.textContent = '';
+          const head = document.createElement('b');
+          head.textContent = `✗ ${why.summary}`;
+          const detail = document.createElement('div');
+          detail.className = 'tiny';
+          detail.textContent = `${why.detail} ${why.fix}`;
+          const raw = document.createElement('details');
+          const sum = document.createElement('summary');
+          sum.className = 'tiny';
+          sum.textContent = 'Show what the server printed';
+          const pre = document.createElement('pre');
+          pre.className = 'tj-raw';
+          pre.textContent = why.raw;
+          raw.append(sum, pre);
+          status.append(head, detail, raw);
+          return;
+        }
+      } catch { /* fall through to the plain message */ }
       status.textContent = `✗ ${e.message}`;
     }
   };

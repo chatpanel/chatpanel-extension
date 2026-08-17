@@ -624,9 +624,19 @@ async function toolsetFor(
     liveReader: (state.liveMeeting && can(state.license, 'liveMeetings')) ? getLiveMeetingRecord : null,
     // Page-action tools are side-panel-only — prepended verbatim.
     extraProviders: page ? [page] : [],
-    onMcpError: (s, e) => {
-      console.warn('[chatpanel] MCP server failed:', s.name || s.url || s.command, e.message);
-      toast(`🔌 MCP “${s.name || s.url || s.command}” unavailable: ${e.message}`, 2600);
+    onMcpError: (srv, e) => {
+      const label = srv.name || srv.url || srv.command;
+      console.warn('[chatpanel] MCP server failed:', label, e.message);
+      // A launch failure prints whatever the process printed, and that is usually shell
+      // noise whose natural reading is "ChatPanel is broken" — the one interpretation that
+      // is definitely false. When the signature is recognisable, say what it means and
+      // whose bug it is; when it is not, show what came back rather than guess.
+      import('./js/events/mcp-errors.js')
+        .then(({ explainMcpError, packageFromArgs }) => {
+          const why = explainMcpError(e.message, { packageName: packageFromArgs(srv.args || []) || label });
+          toast(why ? `🔌 ${why.summary} ${why.fix}` : `🔌 MCP “${label}” unavailable: ${e.message}`, why ? 6000 : 2600);
+        })
+        .catch(() => toast(`🔌 MCP “${label}” unavailable: ${e.message}`, 2600));
     },
   });
 
