@@ -34,29 +34,33 @@ function requiredOf(spec) {
   return Array.isArray(req) ? req : [];
 }
 
-/** The single registered spec. Resident cost is this and nothing else. */
-export function buildDispatchSpec(specs) {
-  const lines = specs.map((s) => {
+/** The action menu — one line per action, enough to choose but not to call blind. */
+export function actionMenu(specs) {
+  return specs.map((s) => {
     const req = requiredOf(s);
     return `- ${s.name}${req.length ? `(${req.join(', ')})` : '()'}: ${gistOf(s)}`;
-  });
+  }).join('\n');
+}
+
+/**
+ * Build a dispatcher spec for ANY group of tools.
+ *
+ * Generalised from the page dispatcher rather than copied: the page version proved the
+ * shape (declared `args` envelope, describe action, enum of names) and the same three
+ * bugs would be re-earned by a second hand-written copy. Callers supply only the wording
+ * that is genuinely theirs.
+ */
+export function buildGroupDispatchSpec({ name, description, specs }) {
   return {
-    name: DISPATCH_TOOL_NAME,
-    description:
-      'Act on the user\'s active browser tab. Pass an `action` and put that action\'s own '
-      + 'arguments inside `args`, e.g. '
-      + '{"action":"click_at","args":{"x":120,"y":340}}. Start with '
-      + '{"action":"inspect_page","args":{}} to learn the page\'s real selectors. Unsure of '
-      + 'an action\'s arguments? {"action":"describe","args":{"tool":"<action>"}} returns '
-      + 'its full schema.\n\nActions:\n'
-      + lines.join('\n'),
+    name,
+    description: `${description}\n\nActions:\n${actionMenu(specs)}`,
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
           enum: [DESCRIBE, ...specs.map((s) => s.name)],
-          description: 'Which page action to run.',
+          description: 'Which action to run.',
         },
         // A DECLARED envelope, not `additionalProperties`. Providers and MCP validators
         // routinely strip properties that are not in `properties`, so undeclared
@@ -74,6 +78,21 @@ export function buildDispatchSpec(specs) {
       additionalProperties: true, // tolerated, but never relied upon — see `args`
     },
   };
+}
+
+/** The single registered spec for page actions. Resident cost is this and nothing else. */
+export function buildDispatchSpec(specs) {
+  return buildGroupDispatchSpec({
+    name: DISPATCH_TOOL_NAME,
+    specs,
+    description:
+      'Act on the user\'s active browser tab. Pass an `action` and put that action\'s own '
+      + 'arguments inside `args`, e.g. '
+      + '{"action":"click_at","args":{"x":120,"y":340}}. Start with '
+      + '{"action":"inspect_page","args":{}} to learn the page\'s real selectors. Unsure of '
+      + 'an action\'s arguments? {"action":"describe","args":{"tool":"<action>"}} returns '
+      + 'its full schema.',
+  });
 }
 
 /**
@@ -98,10 +117,10 @@ export function validateAction(spec, args) {
  * confirmation gate and the site grant keep firing on the real action name — the
  * dispatcher must never become a way around them.
  */
-export function makeDispatchExecutor(specs, runAction) {
+export function makeGroupDispatchExecutor({ name: dispatchName, specs, runAction }) {
   const byName = new Map(specs.map((s) => [s.name, s]));
   return async (name, input, meta) => {
-    if (name !== DISPATCH_TOOL_NAME) return runAction(name, input, meta); // direct calls still work
+    if (name !== dispatchName) return runAction(name, input, meta); // direct calls still work
     // Accept BOTH shapes. `args` is the declared envelope and the one the description
     // teaches; top-level arguments are merged too, so a model that ignores the envelope —
     // or a provider that happens to pass extras through — still works rather than failing
@@ -133,6 +152,11 @@ export function makeDispatchExecutor(specs, runAction) {
     if (bad) return JSON.stringify(bad);
     return runAction(action, args, meta);
   };
+}
+
+/** Page-action executor — the guarded per-action path, unchanged. */
+export function makeDispatchExecutor(specs, runAction) {
+  return makeGroupDispatchExecutor({ name: DISPATCH_TOOL_NAME, specs, runAction });
 }
 
 /** Rough token estimate — used by the budget test, not at runtime. */

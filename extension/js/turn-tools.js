@@ -17,6 +17,7 @@ import { webSearchOpts, webSearchToolProvider } from './web-search.js';
 import { isPro, can, FREE_LIMITS } from './license.js';
 import { buildToolset } from './toolset.js';
 import { narrowToolset, isLocalToolSpec } from './tool-select.js';
+import { dataDispatchProvider } from './data-dispatch.js';
 import { getMcpProviders } from './mcp-manager.js';
 import { historyToolProvider } from './history-rag.js';
 import { MCP_TURN_MODES, DEFAULT_AUTO_TOOL_CAP, normalizeMcpTurnMode, shouldExposeMcpForTurn } from './tool-policy.js';
@@ -49,10 +50,15 @@ export async function buildTurnTools({
   const providers = [...extraProviders];
   const pro = isPro(license);
 
+  // Data tools are collected separately so they can be collapsed behind ONE dispatcher
+  // below. Six schemas plus a 678-token system block were resident on every turn — paid
+  // even by "hi", which is how it was noticed.
+  const dataProviders = [];
+
   // History tools — read-only search over the user's OWN chats and (Pro) meetings.
   // Locally executed, no web tab needed, so they work on every surface.
   if (resolvedAgent && includeHistory && settings?.ui?.historyTools !== false) {
-    providers.push(historyToolProvider({
+    dataProviders.push(historyToolProvider({
       includeMeetings: can(license, 'liveMeetings'),
       explicit: !!history?.enabled,
       liveReader,
@@ -62,7 +68,18 @@ export async function buildTurnTools({
 
   // Web search — locally executed, no tab needed; the model decides when to fire.
   if (resolvedAgent && includeWebSearch && settings?.ui?.webSearch?.enabled !== false) {
-    providers.push(webSearchToolProvider(webSearchOpts(settings, pro)));
+    dataProviders.push(webSearchToolProvider(webSearchOpts(settings, pro)));
+  }
+
+  // Collapse them into one reachable-not-resident tool. Everything stays callable; only
+  // what earns its tokens is advertised. Opt-out exists because a model that handles a
+  // flat toolset better should not be forced through indirection.
+  if (dataProviders.length) {
+    const inner = buildToolset(dataProviders);
+    const collapse = settings?.ui?.dataDispatch !== false;
+    const wrapped = collapse ? dataDispatchProvider(inner) : null;
+    if (wrapped) providers.push(wrapped);
+    else if (inner) providers.push({ specs: inner.specs, system: inner.system, execute: inner.execute });
   }
 
   // MCP servers — Free uses the first FREE_LIMITS.mcpServers by list position; Pro
