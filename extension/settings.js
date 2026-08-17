@@ -4736,12 +4736,21 @@ async function renderPlugins() {
     // Importing the registries is what makes them DECLARE themselves — the list is built
     // from what actually loaded, never from a second copy of it maintained here. A second
     // copy is precisely the bug this page is meant to end.
-    const [{ pluginManifest }, adapters, groups] = await Promise.all([
+    const [{ pluginManifest }, adapters, groups, meetings, analyzers] = await Promise.all([
       import('./js/plugins.js'),
       import('./js/adapters/index.js'),
       import('./js/tool-groups/index.js'),
+      import('./js/meeting-platforms.js'),
+      import('./js/meeting-analyzers-builtin.js'),
     ]);
-    await Promise.all([adapters.adapterRegistry(), groups.toolGroupRegistry()]);
+    // Importing a registry is what makes it declare itself, so the list is built from what
+    // actually loaded rather than from a second copy maintained here.
+    await Promise.all([
+      adapters.adapterRegistry(),
+      groups.toolGroupRegistry(),
+      meetings.declareMeetingPlatforms(),
+      analyzers.analyzerRegistry(),
+    ]);
     manifest = await pluginManifest();
   } catch (e) {
     box.textContent = `Could not load plugins: ${e?.message || e}`;
@@ -4828,13 +4837,15 @@ async function renderPlugins() {
 
 const KIND_TITLE = {
   kernel: 'Kernel', 'tool-group': 'Tool groups', adapter: 'App adapters',
-  source: 'Sources', engine: 'Search engines', server: 'MCP servers', agent: 'Agents',
+  source: 'Sources', 'meeting-analysis': 'Meeting analysis', meeting: 'Meeting platforms',
+  engine: 'Search engines', server: 'MCP servers', agent: 'Agents',
 };
 // Ordered by how central each is to a turn, not alphabetically — the kernel first because
 // it is the part that cannot be switched off, then what the model is given, then where the
 // data comes from.
 const KIND_ORDER = {
-  kernel: 0, 'tool-group': 1, adapter: 2, source: 3, engine: 4, server: 5, agent: 6,
+  kernel: 0, 'tool-group': 1, adapter: 2, source: 3,
+  'meeting-analysis': 4, meeting: 5, engine: 6, server: 7, agent: 8,
 };
 
 /**

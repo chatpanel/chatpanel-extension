@@ -8,6 +8,7 @@
 // re-validating a paid license daily so a lapsed subscription downgrades itself.
 
 import { revalidate } from './js/license.js';
+import { meetingMatches } from './js/meeting-platforms.js';
 import { persistMeeting, getLatestSessionRecord, markMeetingEnded, getMeetingIndex, meetingPlatform } from './js/store-meetings.js';
 import { captureToInbox } from './js/store-notes.js';
 import { runAutoBackup, syncBackupAlarm, BACKUP_ALARM } from './js/auto-backup.js';
@@ -120,13 +121,14 @@ async function meetingHeartbeat() {
   if (dirty) { await setLiveTabs(map); syncMeetingAlarm(map); }
 }
 
-// URL patterns that carry the meeting content scripts (keep in sync with manifest
-// content_scripts[0].matches).
-const MEETING_MATCHES = [
-  'https://*.zoom.us/wc/*', 'https://meet.google.com/*',
-  'https://teams.microsoft.com/*', 'https://*.teams.microsoft.com/*',
-  'https://teams.live.com/*', 'https://*.teams.live.com/*', 'https://*.webex.com/*',
-];
+// URL patterns that carry the meeting content scripts.
+//
+// Derived from the platform declaration rather than copied. The comment here used to say
+// "keep in sync with manifest content_scripts[0].matches", which is an instruction to a
+// human to do a computer's job — and when it is not followed, capture silently stops
+// working on one platform while everything else looks fine. A test now asserts the manifest
+// and the declaration agree.
+const MEETING_MATCHES = meetingMatches();
 
 // Reloading/updating the extension ORPHANS the content scripts in already-open tabs:
 // chrome.runtime.id goes undefined there, so meeting-core's flush() returns early and the
