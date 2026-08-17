@@ -11,6 +11,20 @@
 
 const health = new Map();   // id -> { until, reason, failures }
 
+// THE SAME MODEL FAILING AT SEVERAL PROVIDERS IS A FACT ABOUT THE MODEL.
+//
+// "Same model elsewhere" is the right replacement when a PROVIDER declines — out of credits,
+// rate limited, identical capability and just a different bill. It is pointless when the
+// model itself is the problem, and a user watched a chain go
+// "HuggingFace · DeepSeek-V4-Flash → Deepseek · deepseek-v4-flash" and reasonably asked why.
+//
+// One provider failing says nothing about the model. Two different providers failing on the
+// same model name is evidence, so that is the threshold: enough to learn from, not so eager
+// that one bad endpoint condemns a working model.
+const byModel = new Map();  // normalised model name -> { providers:Set, until, reason }
+const MODEL_STANDDOWN_MS = 30 * 60_000;
+const normModelName = (m) => String(m || '').toLowerCase().replace(/^[^/]+\//, '').replace(/[:@].*$/, '').replace(/[^a-z0-9.]+/g, '');
+
 /** How long to stand a model down, by what went wrong. */
 const COOLDOWN_MS = {
   // Credits or quota: nothing changes for a while, so a short retry is pure noise.
@@ -67,9 +81,23 @@ export function classifyFailure(err) {
 }
 
 /** Record that a model failed, and stand it down for as long as that failure warrants. */
-export function markUnhealthy(id, err) {
+export function markUnhealthy(id, err, modelName = '') {
   const reason = classifyFailure(err);
   if (!id || !reason) return null;
+
+  // Learn about the MODEL, not only the endpoint. A model that is gone is gone everywhere,
+  // so one report is enough; anything else needs two providers to agree before we believe it
+  // is the model rather than the provider.
+  const key = normModelName(modelName);
+  if (key) {
+    const seen = byModel.get(key) || { providers: new Set(), until: 0, reason: null };
+    seen.providers.add(id);
+    if (reason === 'gone' || seen.providers.size >= 2) {
+      seen.until = Date.now() + MODEL_STANDDOWN_MS;
+      seen.reason = reason;
+    }
+    byModel.set(key, seen);
+  }
   const prev = health.get(id);
   const failures = (prev?.failures || 0) + 1;
   // Repeated failures extend the wait, capped — a model failing every time should be tried
@@ -91,7 +119,16 @@ export function markHealthy(id) {
 }
 
 /** `{ available, rateLimited, reason }` for the router. Unknown models are healthy. */
-export function healthOf(id) {
+export function healthOf(id, modelName = '') {
+  // A model standing down applies wherever it is served, which is the whole point of
+  // learning it — otherwise the chain walks the same dead model across every provider.
+  const key = normModelName(modelName);
+  if (key) {
+    const m = byModel.get(key);
+    if (m && m.until && Date.now() < m.until) {
+      return { available: false, rateLimited: false, reason: m.reason, until: m.until, model: true };
+    }
+  }
   const h = health.get(id);
   if (!h || Date.now() >= h.until) {
     if (h) health.delete(id);   // expired; forget it rather than carrying dead state
@@ -117,4 +154,4 @@ export function unhealthyModels() {
 }
 
 /** Test-only: forget everything. */
-export function resetHealth() { health.clear(); }
+export function resetHealth() { health.clear(); byModel.clear(); }

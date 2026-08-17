@@ -74,4 +74,33 @@ assert.equal(healthOf('never-seen').available, true);
 resetHealth();
 assert.deepEqual(healthOf('gone'), { available: true, rateLimited: false, reason: null });
 
-console.log('✓ model health: behaviour beats configuration, and a bad key is not an outage');
+// ── the same model failing at several providers is a fact about the MODEL ────
+// "Same model elsewhere" is the right replacement when a PROVIDER declines, and pointless
+// when the model itself is the problem. A user watched a chain go "HuggingFace ·
+// DeepSeek-V4-Flash → Deepseek · deepseek-v4-flash" and reasonably asked why.
+resetHealth();
+
+// One provider failing says nothing about the model — the model stays available elsewhere.
+markUnhealthy('hf', { status: 402, message: 'credits depleted' }, 'deepseek-ai/DeepSeek-V4-Flash');
+assert.equal(healthOf('other', 'deepseek-v4-flash').available, true,
+  'one provider running out of credits condemned the model everywhere');
+
+// Two different providers failing on the same model IS evidence.
+markUnhealthy('nvidia', { status: 402, message: 'credits depleted' }, 'deepseek-ai/deepseek-v4-flash');
+assert.equal(healthOf('third', 'deepseek-v4-flash').available, false,
+  'the model kept being tried after failing at two providers');
+
+// Provider prefixes and tags must not stop a model matching itself, or the count never
+// reaches two.
+assert.equal(healthOf('fourth', 'DeepSeek-V4-Flash:latest').available, false);
+
+// A RETIRED model needs only one report: gone is gone everywhere, and waiting for a second
+// provider to confirm it just spends another turn finding out.
+resetHealth();
+markUnhealthy('groq', { status: 410, message: 'end of life' }, 'llama-3.1-8b-instant');
+assert.equal(healthOf('elsewhere', 'llama-3.1-8b-instant').available, false);
+
+// A different model at the same provider is untouched — the evidence is about the model.
+assert.equal(healthOf('groq2', 'llama-3.3-70b').available, true);
+
+console.log('✓ model health: behaviour beats configuration, and a model failing everywhere is learned once');

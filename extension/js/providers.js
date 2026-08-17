@@ -1610,7 +1610,9 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call)
       lastErr = err;
       if (!chose || signal?.aborted) throw err;
       const health = await import('./model-health.js');
-      const marked = health.markUnhealthy(current.id, err);
+      // The model name goes with the report, so "this model fails everywhere" is learnable
+      // rather than rediscovered at each provider in turn.
+      const marked = health.markUnhealthy(current.id, err, current.model);
       // A 400 or a bad key is OUR request being wrong, and every other model would refuse it
       // too. Retrying would turn one clear error into four slow ones.
       if (!marked) throw err;

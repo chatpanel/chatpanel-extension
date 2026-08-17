@@ -214,7 +214,7 @@ export function candidatesFrom(settings = {}, resolveTarget = (x) => x, { ignore
     // and cannot answer; routing to it because its config still looks good is what a user
     // experiences as "it keeps picking the broken one".
     const configured = applyOverride(inferred, overrides[id]);
-    const live = healthOf(id);
+    const live = healthOf(id, configured.model);
     out.push(defineModel({
       ...configured,
       available: configured.available && live.available,
