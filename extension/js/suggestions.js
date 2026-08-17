@@ -84,8 +84,7 @@ export async function getSuggestions({ tab, settings, signal, force = false } = 
 // transcript. On-demand only (the caller decides when) so it never auto-spends tokens.
 // Returns { items: string[], source }. Never throws.
 export async function getMeetingSuggestions({ meeting, settings, signal } = {}) {
-  const agent = pickSuggestionAgent(settings);
-  if (!agent) return { items: [], source: 'nomodel' };
+  if (!suggestionCandidates(settings).length) return { items: [], source: 'nomodel' };
   if (!meeting || (!meeting.summary && !meeting.transcript)) return { items: [], source: 'fallback' };
   const sys =
     'You are assisting during a LIVE meeting. Suggest 4 short, specific CLARIFYING QUESTIONS the ' +
@@ -94,39 +93,7 @@ export async function getMeetingSuggestions({ meeting, settings, signal } = {}) 
     'summary/transcript provided (never invent). Respond with ONLY a JSON array of 4 strings.';
   const user = `Meeting: ${meeting.title || 'Meeting'}\n\nRUNNING SUMMARY:\n${meeting.summary || '(none yet)'}`
     + `\n\nRECENT TRANSCRIPT:\n${String(meeting.transcript || '').slice(-4000)}\n\nReturn a JSON array of 4 question strings.`;
-  let out = '';
-  try {
-    await streamChat({
-      agent: { ...agent, systemPrompt: sys },
-      settings,
-      signal,
-      usage: { surface: 'suggestion' },
-      messages: [{ role: 'user', content: user }],
-      onDelta: (d) => (out += d),
-    });
-  } catch {
-    return { items: [], source: 'fallback' };
-  }
-  const items = parsePrompts(out);
-  return { items, source: items.length ? 'model' : 'fallback' };
-}
-
-// --------------------------------------------------------------------------
-// Providers — backend implementations behind the same contract.
-// --------------------------------------------------------------------------
-
-const PROVIDERS = {
-  // Bring-your-own: generate via the user's configured model.
-  byo: async ({ meta, settings, signal }) => {
-    const agent = pickSuggestionAgent(settings);
-    if (!agent) return [];
-    const sys =
-      'You suggest things a user might ask an AI assistant about the web page they are ' +
-      'currently viewing. You are given ONLY lightweight page metadata — never the page ' +
-      'body. Propose 4 short, specific, genuinely useful prompts (each 3–7 words, an ' +
-      'imperative or a question) tailored to what this kind of page is for. ' +
-      'Respond with ONLY a JSON array of 4 strings, nothing else.';
-    const user = `Page metadata:\n${JSON.stringify(meta)}\n\nReturn a JSON array of 4 prompt strings.`;
+  const { items } = await runWithFallback(settings, async (agent) => {
     let out = '';
     await streamChat({
       agent: { ...agent, systemPrompt: sys },
@@ -137,6 +104,40 @@ const PROVIDERS = {
       onDelta: (d) => (out += d),
     });
     return parsePrompts(out);
+  });
+  return { items, source: items.length ? 'model' : 'fallback' };
+}
+
+// --------------------------------------------------------------------------
+// Providers — backend implementations behind the same contract.
+// --------------------------------------------------------------------------
+
+const PROVIDERS = {
+  // Bring-your-own: generate via the user's configured model.
+  byo: async ({ meta, settings, signal }) => {
+    if (!suggestionCandidates(settings).length) return [];
+    const sys =
+      'You suggest things a user might ask an AI assistant about the web page they are ' +
+      'currently viewing. You are given ONLY lightweight page metadata — never the page ' +
+      'body. Propose 4 short, specific, genuinely useful prompts (each 3–7 words, an ' +
+      'imperative or a question) tailored to what this kind of page is for. ' +
+      'Respond with ONLY a JSON array of 4 strings, nothing else.';
+    const user = `Page metadata:\n${JSON.stringify(meta)}\n\nReturn a JSON array of 4 prompt strings.`;
+    // Same chain as everywhere else: a dead local model falls through to the next
+    // candidate instead of ending the feature.
+    const { items } = await runWithFallback(settings, async (agent) => {
+      let out = '';
+      await streamChat({
+        agent: { ...agent, systemPrompt: sys },
+        settings,
+        signal,
+        usage: { surface: 'suggestion' },
+        messages: [{ role: 'user', content: user }],
+        onDelta: (d) => (out += d),
+      });
+      return parsePrompts(out);
+    });
+    return items;
   },
   // 'hosted' (api.chatpanel.net / gateway) can slot in here later — same contract.
 };
@@ -146,23 +147,88 @@ const PROVIDERS = {
 // active target, but avoid spawning a CLI just for autocomplete by falling back to a
 // configured HTTP endpoint. Returns a streamChat-ready agent, or null when nothing
 // usable is configured (→ fallbacks, no broken call).
-function pickSuggestionAgent(settings) {
+/**
+ * Every model that could answer, in the order worth trying — not one pick.
+ *
+ * A single pick meant one dead endpoint killed the feature. A user running a local model
+ * that was not started got an instant connection refusal and fallback text, while a
+ * perfectly good CLI agent and remote endpoint sat unused: the old picker skipped bridge
+ * agents entirely and then took the FIRST endpoint with a model, reachable or not.
+ *
+ * Bridge agents are last rather than excluded. Spawning a CLI to write four short strings
+ * is real cost and latency, so it is the answer only when nothing cheaper works — but
+ * "expensive" is a reason to defer it, never a reason to have no suggestions at all.
+ *
+ * Pure and exported so the ordering is assertable without a network.
+ */
+export function suggestionCandidates(settings = {}) {
   const cfg = settings.ui?.suggestions || {};
-  if (cfg.targetId) {
-    const chosen = resolveTarget(getTarget(settings, cfg.targetId), settings);
-    if (!chosen) return null;
-    if (chosen.kind === 'bridge') return { ...chosen, maxTokens: 160 };
-    return chosen.model ? { ...chosen, maxTokens: 160, temperature: 0.4 } : null;
-  }
-  let agent = resolveTarget(getTarget(settings, settings.activeAgentId), settings);
-  if (!agent || agent.kind === 'bridge') {
-    const ep = (settings.endpoints || []).find((e) => e.model) || null;
-    agent = ep ? resolveTarget(ep, settings) : null;
-  }
-  if (!agent || !agent.model) return null;
-  // Tight budget — suggestions are a few short strings.
-  return { ...agent, maxTokens: 160, temperature: 0.4 };
+  const out = [];
+  const seen = new Set();
+  const add = (t) => {
+    if (!t) return;
+    if (t.kind !== 'bridge' && !t.model) return;   // an endpoint with no model cannot answer
+    const key = `${t.kind || ''}:${t.id || ''}:${t.model || ''}:${t.baseUrl || ''}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    // Tight budget — suggestions are a few short strings.
+    out.push(t.kind === 'bridge' ? { ...t, maxTokens: 160 } : { ...t, maxTokens: 160, temperature: 0.4 });
+  };
+
+  // An explicit choice leads. It can still be fallen through — an unreachable choice
+  // should degrade, not silently disable the feature — but it is always tried first.
+  if (cfg.targetId) add(resolveTarget(getTarget(settings, cfg.targetId), settings));
+
+  const active = resolveTarget(getTarget(settings, settings.activeAgentId), settings);
+  if (active && active.kind !== 'bridge') add(active);
+  for (const ep of settings.endpoints || []) add(resolveTarget(ep, settings));
+  if (active && active.kind === 'bridge') add(active);   // capable, but the costly answer
+
+  return out;
 }
+
+/** Back-compat: callers that only ask "is anything configured at all?". */
+function pickSuggestionAgent(settings) {
+  return suggestionCandidates(settings)[0] || null;
+}
+
+// A candidate that just failed is not retried for a minute. Without this, a local model
+// that is not running is re-dialled on every keystroke — which is exactly what filled the
+// activity log with instant failures.
+const RETRY_AFTER_MS = 60_000;
+const failedAt = new Map();
+const candidateKey = (t) => `${t.kind || ''}:${t.id || ''}:${t.model || ''}:${t.baseUrl || ''}`;
+const isCold = (t) => {
+  const at = failedAt.get(candidateKey(t));
+  return !at || Date.now() - at > RETRY_AFTER_MS;
+};
+
+/**
+ * Try each candidate until one answers. Returns `{ items, agent }`, or `{ items: [] }`
+ * when every candidate failed.
+ */
+async function runWithFallback(settings, run) {
+  const all = suggestionCandidates(settings);
+  if (!all.length) return { items: [] };
+  // Everything cold-failed recently? Try them all again rather than giving up — a stale
+  // memo must not be the reason the feature stays dead after the model comes back up.
+  const order = all.filter(isCold);
+  for (const agent of (order.length ? order : all)) {
+    try {
+      const items = await run(agent);
+      if (items && items.length) {
+        failedAt.delete(candidateKey(agent));
+        return { items, agent };
+      }
+    } catch {
+      failedAt.set(candidateKey(agent), Date.now());
+    }
+  }
+  return { items: [] };
+}
+
+/** Test-only: forget which candidates are cooling off. */
+export function resetSuggestionHealth() { failedAt.clear(); }
 
 // --------------------------------------------------------------------------
 // Metadata extraction
