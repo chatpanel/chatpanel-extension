@@ -13,6 +13,7 @@
 
 import {
   defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, signalsFrom, requirementsFor,
+  sameModelKey,
 } from './events/router.js';
 import { healthOf } from './model-health.js';
 
@@ -93,12 +94,19 @@ const PROVIDER_ORDER = [
   /openrouter|huggingface|together|groq|fireworks|nvidia|replicate/i,
 ];
 
+// Inferred ranks sit ABOVE every number the settings UI can produce (it offers 1..N), so
+// an order someone chose by hand always outranks one we guessed. Sharing the range meant
+// picking "Order: 1" still lost to a local model we had silently rated 0 — the setting looked
+// like the top priority and was not.
+const INFERRED_RANK_FLOOR = 1000;
+
 function providerRankOf(target, kind) {
   const hay = `${target.baseUrl || target.url || ''} ${target.name || ''} ${kind || target.kind || ''}`;
   for (let i = 0; i < PROVIDER_ORDER.length; i++) {
-    if (PROVIDER_ORDER[i].test(hay)) return i * 10;
+    if (PROVIDER_ORDER[i].test(hay)) return INFERRED_RANK_FLOOR + i * 10;
   }
-  return 50;   // unrecognised: mid-table, so a provider we have no opinion on is not buried
+  // Unrecognised: mid-table, so a provider we have no opinion on is not buried.
+  return INFERRED_RANK_FLOOR + 50;
 }
 
 /**
@@ -318,7 +326,7 @@ export const failoverStrategy = defineRouteStrategy({
   decide: async (eligible, need) => {
     const failed = need.like;
     if (!failed) return null;
-    const sameModel = (m) => !!failed.model && normModel(m) === normModel(failed);
+    const sameModel = (m) => !!failed.model && sameModelKey(m) === sameModelKey(failed);
     // A RETIRED MODEL IS RETIRED EVERYWHERE. "Same model at another provider" is the ideal
     // replacement when the provider declined — out of credits, rate limited — and the worst
     // possible one when the MODEL is gone: deepseek-v4-flash reaching end of life on
@@ -346,15 +354,6 @@ export const failoverStrategy = defineRouteStrategy({
     return [...eligible].sort((a, b) => rank(a) - rank(b) || q(b) - q(a) || a.costPer1k - b.costPer1k);
   },
 });
-
-/** The model name without its provider prefix or tag, so the same model matches across hosts. */
-function normModel(m) {
-  return String(m?.model || m?.label || '')
-    .toLowerCase()
-    .replace(/^[^/]+\//, '')      // deepseek-ai/DeepSeek-V4-Flash → deepseek-v4-flash
-    .replace(/[:@].*$/, '')       // gemma4:latest → gemma4
-    .replace(/[^a-z0-9.]+/g, '');
-}
 
 /**
  * "use claude" is an instruction, not a topic.

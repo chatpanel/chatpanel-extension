@@ -135,6 +135,24 @@ export function defineRouteStrategy({ id, label, classUsed = 'R', timeoutMs = 0,
  * Every value is a HINT, and named as one. A heuristic presented as a fact is how a
  * mis-detected language quietly routes someone to the wrong model forever.
  */
+// How close two scores must be before they count as the same. Latency and cost are
+// ESTIMATES; a gap smaller than this says nothing real, so the user's Order decides instead.
+const TIE_BAND = 0.10;
+
+/**
+ * The model name stripped of provider prefix and tag, so the SAME model matches across hosts:
+ * `deepseek-ai/DeepSeek-V4-Flash` and `deepseek/deepseek-v4-flash` are one model reached two
+ * ways. Both the scorer and failover need this identity, so it belongs to the contract rather
+ * than to whichever client asked first.
+ */
+export function sameModelKey(m) {
+  return String(m?.model || m?.label || '')
+    .toLowerCase()
+    .replace(/^[^/]+\//, '')
+    .replace(/[:@].*$/, '')
+    .replace(/[^a-z0-9.]+/g, '');
+}
+
 export function signalsFrom(request = {}) {
   const text = String(request.text || (request.messages || []).map((m) => m?.content || '').join('\n') || '');
   const chars = text.length;
@@ -373,9 +391,64 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
         if (prefer === 'quality') return busy / q;
         return ((m.latencyMs / 1000) * m.costPer1k * busy) / q;
       };
-      const ranked = [...eligible].sort((a, b) => score(a) - score(b)
-        || a.providerRank - b.providerRank
-        || a.id.localeCompare(b.id));
+      // ORDER IS A SETTING, NOT A TIE-BREAK THAT NEVER FIRES.
+      //
+      // `score` multiplies latency, cost and load into a float, so two candidates are almost
+      // never bit-for-bit equal — which made the providerRank tie-break that used to sit
+      // below it dead code. The Order a user set by hand did nothing at all. Two rules give
+      // it effect:
+      //
+      //   1. SAME MODEL -> ORDER DECIDES, outright. When one model is offered by three
+      //      providers only the PATH differs, and Order is exactly the "which path"
+      //      preference. A guess at cost has no business overruling a stated preference
+      //      between two things that are the same model.
+      //   2. CLOSE SCORES ARE A TIE. Latency and cost here are estimates, not measurements;
+      //      treating a 3% gap as decisive is false precision. Near-equal scores cluster,
+      //      and Order orders the cluster.
+      //
+      // Clustering by a linear scan, rather than rounding scores into fixed buckets: with
+      // buckets, two scores 3% apart still split whenever they straddle an edge, so the tie
+      // band would hold or not hold depending on where the numbers happened to land. A scan
+      // that grows each cluster from its own leader has no edges to straddle and stays a
+      // valid total order, which a bare "within 10%" predicate — not being transitive —
+      // would not.
+      const scored = new Map();
+      const scoreOf = (m) => {
+        if (!scored.has(m)) scored.set(m, score(m));
+        return scored.get(m);
+      };
+      const byOrderThenScore = (a, b) => a.providerRank - b.providerRank
+        || scoreOf(a) - scoreOf(b)
+        || a.id.localeCompare(b.id);
+
+      // Rule 1: collapse each same-model group behind whichever route the user ranked first.
+      const groups = new Map();
+      for (const m of eligible) {
+        // An unnamed model is its own group: with no name we cannot claim it is the same
+        // thing as anything else, and guessing would silently hide one of two real choices.
+        const key = sameModelKey(m) || `#${m.id}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(m);
+      }
+      // Same-model siblings stay together directly behind their representative: when the
+      // leader declines, the identical model elsewhere is the closest replacement there is.
+      const groupList = [...groups.values()].map((g) => [...g].sort(byOrderThenScore));
+      groupList.sort((a, b) => scoreOf(a[0]) - scoreOf(b[0]) || byOrderThenScore(a[0], b[0]));
+
+      // Rule 2: walk the score-ordered groups, gathering each run that is within the band of
+      // its own leader, and let Order arrange each run.
+      const clusters = [];
+      for (const group of groupList) {
+        const open = clusters[clusters.length - 1];
+        const leader = open ? scoreOf(open[0][0]) : 0;
+        if (open && scoreOf(group[0]) <= leader * (1 + TIE_BAND)) open.push(group);
+        else clusters.push([group]);
+      }
+      for (const cluster of clusters) cluster.sort((a, b) => byOrderThenScore(a[0], b[0]));
+      const ranked = clusters.flat(2);
+      // Order decided whenever the winning cluster held more than one distinct model — the
+      // score alone did not separate them.
+      const orderDecided = clusters[0]?.length > 1;
       const chosen = ranked[0];
       return {
         model: chosen,
@@ -384,7 +457,12 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
         reasons: [
           `reach '${chosen.reach}' within '${wantReach}'`,
           wantCaps.length ? `has ${wantCaps.join(', ')}` : 'no special capability needed',
-          `best by ${prefer} (${ranked.length} eligible)`,
+          // Say WHICH lever decided. "best by balanced" when the real reason was the
+          // Order the user set reads as the router ignoring them — the complaint that
+          // surfaced this bug in the first place.
+          orderDecided
+            ? `order ${chosen.providerRank} broke a tie among ${ranked.length} eligible (by ${prefer})`
+            : `best by ${prefer} (${ranked.length} eligible)`,
         ],
         rejected,
         runnersUp: ranked.slice(1).map((m) => m.id),

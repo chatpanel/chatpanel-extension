@@ -559,4 +559,22 @@ console.log('✓ requirements: derived from the prompt, eliminating rather than 
   assert.ok(stillThere.includes('redaction'), 'redaction could be switched off');
 }
 
+// A hand-set Order must outrank one we merely GUESSED. The two shared a number range once,
+// so choosing "Order: 1" still lost to a local model we had silently rated 0 — the top of the
+// list was not actually the top.
+{
+  const cfg = {
+    endpoints: [
+      { id: 'ollama', name: 'Local', model: 'qwen3:8b', baseUrl: 'http://127.0.0.1:11434' },
+      { id: 'oai', name: 'OpenAI', model: 'gpt-5.5', baseUrl: 'https://api.openai.com' },
+    ],
+    ui: { routing: { models: { oai: { providerRank: 1 } } } },
+  };
+  const c = candidatesFrom(cfg);
+  const picked = c.find((m) => m.id === 'oai');
+  const guessed = c.find((m) => m.id === 'ollama');
+  assert.ok(picked.providerRank < guessed.providerRank,
+    'An order the user picked outranks every rank we inferred.');
+}
+
 console.log('✓ router plugins: strategies listed and switchable, redaction listed and not');

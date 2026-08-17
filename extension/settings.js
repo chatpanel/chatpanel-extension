@@ -5009,7 +5009,7 @@ async function renderRoutingModels() {
     // capability; it wins when the candidates are otherwise equal, which is exactly the case
     // where the same model is served from several places.
     const prefer = document.createElement('select');
-    prefer.title = 'Order to prefer providers when several can serve the same request equally well. Never overrides a real difference in speed, cost or capability.';
+    prefer.title = 'Order to prefer providers when several can serve the same request equally well — 1 is tried first. Decides outright between two routes to the SAME model; between different models it breaks a near-tie, and never overrides a real difference in speed, cost or capability.';
     const blank = document.createElement('option');
     blank.value = '';
     blank.textContent = `Order: auto (${order.indexOf(m.id) + 1})`;
@@ -5017,7 +5017,8 @@ async function renderRoutingModels() {
     for (let n = 1; n <= candidates.length; n++) {
       const o = document.createElement('option');
       o.value = String(n);
-      o.textContent = `Order: ${n}`;
+      // Say which end wins. A bare number leaves the user guessing whether 1 or N is first.
+      o.textContent = n === 1 ? 'Order: 1 (first)' : n === candidates.length ? `Order: ${n} (last)` : `Order: ${n}`;
       prefer.append(o);
     }
     prefer.value = saved[m.id]?.providerRank == null ? '' : String(saved[m.id].providerRank);
