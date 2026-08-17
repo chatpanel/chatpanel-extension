@@ -130,10 +130,10 @@ function wireTabs() {
     // Usage renders lazily and only when visible — trigger it whenever the panel
     // is shown (a Cmd+R deep-link to #usage or last-tab restore reveals it without
     // a click), else it sits at the static "Loading…" placeholder forever.
-    if (name === 'usage') renderUsage();
+
     // Same lazy rule as usage: the log module and the analysis load only when this tab is
     // actually shown, so a user who never opens Activity never pays for it.
-    if (name === 'activity') renderActivity();
+    if (name === 'activity') { renderUsage(); renderActivity(); }
   };
   const exists = (name) => !!document.querySelector(`.tab[data-tab="${name}"]`);
   // Notes/Meetings/History are merged into one "Workspace" tab as sections. Keep
@@ -4706,6 +4706,13 @@ async function renderActivity() {
   }
 
   const { runs: allRuns } = rd.groupRuns(events);
+  // Price the runs here rather than inside run-details: the rate table is data on its own
+  // release schedule, and a pure analysis module that must be edited when a price moves is
+  // the wrong shape.
+  try {
+    const { costFor } = await import('./js/usage-pricing.js');
+    rd.withCost(allRuns, costFor);
+  } catch { /* unpriced runs still render */ }
 
   // Every surface reports here now (chat, note, meeting, assist, watch), so the list
   // needs to be narrowable — and background helper calls (title, topic extraction,
@@ -4771,8 +4778,12 @@ async function renderActivity() {
     const spent = run.tokens
       ? `${run.tokens.toLocaleString()} tok${run.estimated ? '~' : ''}`
       : '';
+    // What THIS turn cost. The totals card above answers "how much have I spent"; only the
+    // row can answer "which turn spent it", and that is the question that changes what a
+    // user does next.
+    const cost = run.usd != null ? `${run.estimated ? '≈' : ''}$${run.usd < 0.01 ? run.usd.toFixed(4) : run.usd.toFixed(2)}` : '';
     const ctxCost = run.contextTokens ? `${run.contextTokens.toLocaleString()} ctx` : '';
-    meta.textContent = [dur, setup, ttft, spent, ctxCost, run.model || '', `${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`]
+    meta.textContent = [dur, setup, ttft, spent, cost, ctxCost, run.model || '', `${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`]
       .filter(Boolean).join(' · ');
     const kind = document.createElement('span');
     kind.className = `run-kind kind-${run.kind}`;

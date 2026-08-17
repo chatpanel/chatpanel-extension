@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createAppender } from '../extension/js/events/event.js';
-import { groupRuns, summarizeRun, findRepeats, verdict, toSanitizedReport } from '../extension/js/run-details.js';
+import { groupRuns, summarizeRun, findRepeats, verdict, toSanitizedReport, withCost } from '../extension/js/run-details.js';
 
 let n = 0;
 const a = createAppender({ host: 'ext', now: () => 1_700_000_000_000 + (n * 10), newId: () => `e${n++}` });
@@ -230,3 +230,39 @@ assert.equal(spend.tokens, 4420, 'spend must be in + out, or a long answer looks
 assert.equal(spend.tokensIn, 4100);
 assert.equal(spend.model, 'claude');
 assert.equal(spend.estimated, false);
+
+// PER-TURN COST. The totals view could say how much was spent; only a run can say which
+// turn spent it, and that is the question that changes what a user does next.
+const priced = withCost(
+  [summarizeRun('t60', [
+    a.append('turn.started', { turnId: 't60', kind: 'chat' }),
+    a.append('turn.ended', { turnId: 't60', reason: 'ok', ms: 100, tokensIn: 1_000_000, tokensOut: 0, model: 'gpt-4o' }),
+  ])],
+  ({ inputTokens }) => ({ usd: inputTokens / 1_000_000 * 2.5, estimated: false }),
+);
+assert.equal(priced[0].usd, 2.5);
+
+// A run with no recorded usage is unpriced, not free. Showing $0.00 for a turn whose cost
+// we never learned is a confident lie; blank is the honest answer.
+const unpriced = withCost(
+  [summarizeRun('t61', [
+    a.append('turn.started', { turnId: 't61', kind: 'chat' }),
+    a.append('turn.ended', { turnId: 't61', reason: 'ok', ms: 10 }),
+  ])],
+  () => ({ usd: 0, estimated: false }),
+);
+assert.equal(unpriced[0].usd, undefined);
+
+// An unknown model marks the run estimated rather than dropping the cost.
+const est = withCost(
+  [summarizeRun('t62', [
+    a.append('turn.started', { turnId: 't62', kind: 'note' }),
+    a.append('turn.ended', { turnId: 't62', reason: 'ok', ms: 10, tokensIn: 100, tokensOut: 10, model: 'some-local-thing' }),
+  ])],
+  () => ({ usd: null, estimated: true }),
+);
+assert.equal(est[0].usd, null);
+assert.equal(est[0].estimated, true);
+
+// Pricing is optional — a caller without a rate table still gets runs.
+assert.equal(withCost([{ tokensIn: 5 }], null)[0].usd, undefined);

@@ -196,6 +196,28 @@ export function findRepeats(toolCalls, min = 2) {
     .sort((a, b) => b.count - a.count);
 }
 
+/**
+ * Attach per-turn cost. Kept OUT of summarizeRun and off this module's imports: the rate
+ * table is data that changes on its own schedule, and a pure analysis module that has to be
+ * edited when a price moves is the wrong shape. Callers pass `costFor` in.
+ */
+export function withCost(runs, costFor) {
+  if (typeof costFor !== 'function') return runs;
+  for (const r of runs) {
+    if (r.tokensIn == null && r.tokensOut == null) continue;
+    const { usd, estimated } = costFor({
+      model: r.model,
+      inputTokens: r.tokensIn || 0,
+      outputTokens: r.tokensOut || 0,
+      cacheReadTokens: r.turn?.cacheReadTokens || 0,
+      estimated: r.estimated,
+    }) || {};
+    r.usd = usd ?? null;
+    if (estimated) r.estimated = true;
+  }
+  return runs;
+}
+
 /** One-line verdict for a run. */
 export function verdict(run) {
   if (run.open) return { level: 'info', text: 'Still running, or interrupted before it finished' };
