@@ -1613,6 +1613,18 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call)
       if (!marked) throw err;
       tried.push(current.id);
 
+      // Do not ANNOUNCE a model we are not going to call. The loop used to pick and announce
+      // the next one and only then discover it was out of attempts, so the chain named a
+      // model that never ran and the error shown came from the hop before it — the two
+      // disagreed, and the one the user could see was the wrong one.
+      if (attempt === MAX_ATTEMPTS - 1) {
+        const e = new Error(
+          `${tried.length} models tried, none could answer. Last error — ${err.message}`,
+        );
+        e.cause = err;
+        throw e;
+      }
+
       const [router, store] = await Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)]);
       const next = await router.routeForTurn(settings, store?.resolveTarget, {
         capabilities: (tools?.specs || []).length ? ['tools'] : [],
