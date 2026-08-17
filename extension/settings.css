@@ -745,3 +745,14 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
   width: 100%; text-align: left; cursor: pointer; font: inherit; color: inherit;
 }
 .plugin-go { flex: none; font-size: 11px; color: var(--muted, #8b93a7); white-space: nowrap; }
+
+/* Where you just landed. Brief on purpose — long enough to catch the eye, short enough
+   not to become decoration. */
+.config-flash {
+  animation: config-flash 1.4s ease-out;
+  border-radius: 8px;
+}
+@keyframes config-flash {
+  0%, 40% { box-shadow: 0 0 0 3px #4fb0ff66; }
+  100% { box-shadow: 0 0 0 3px transparent; }
+}

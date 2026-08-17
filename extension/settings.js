@@ -4739,6 +4739,14 @@ async function renderPlugins() {
       link.append(text, go);
       link.addEventListener('click', () => {
         document.querySelector(`.tab[data-tab="${p.configTab}"]`)?.click();
+        // Land ON the control, not merely on the panel that contains it. A tab with six
+        // sections is not an answer to "where do I configure this", and a brief highlight
+        // is what tells the eye which of them it was.
+        const target = p.configAnchor && $(p.configAnchor);
+        if (!target) return;
+        target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        target.classList.add('config-flash');
+        setTimeout(() => target.classList.remove('config-flash'), 1400);
       });
       box.append(link);
       continue;
@@ -4791,13 +4799,27 @@ const KIND_ORDER = {
  */
 function externalPlugins() {
   const out = [];
-  for (const e of webSearchEngines || []) {
+  // Reconciled from SAVED settings at render time, not read from `webSearchEngines`.
+  // That array is the Tools tab's editing buffer — it holds unsaved edits and is only
+  // populated once that tab has been through its load path, so reading it here showed
+  // state that did not match what search would actually do. The saved settings are the
+  // one thing both agree on.
+  const ws = settings?.ui?.webSearch || {};
+  let engines = [];
+  try {
+    engines = migrateEngines(ws.engines, { hasKey: !!ws.reader?.key });
+  } catch { engines = []; }
+  for (const e of engines) {
     if (e.retired) continue;
     out.push({
       id: `engine:${e.id}`, kind: 'engine', label: e.name || e.id,
       description: e.needsKey ? 'Search API — needs a key.' : 'Search engine.',
       state: e.enabled === false ? 'Off' : 'On',
-      configTab: 'api',
+      // The engine editor lives in the MCP/Tools panel, not the API one. Pointing at the
+      // wrong tab is worse than not linking: the user lands somewhere plausible, cannot
+      // find the control, and concludes it is missing.
+      configTab: 'mcp',
+      configAnchor: 'websearch-engines',
     });
   }
   for (const srv of (settings?.mcpServers || [])) {
@@ -4806,6 +4828,7 @@ function externalPlugins() {
       description: srv.command ? 'Local server, run through the bridge.' : 'Remote MCP server.',
       state: srv.enabled === false ? 'Off' : 'On',
       configTab: 'mcp',
+      configAnchor: 'mcp-list',
     });
   }
   return out;
