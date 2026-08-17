@@ -250,3 +250,28 @@ assert.equal(await failoverStrategy.decide(pool, {}), null);
 assert.equal((await failoverStrategy.decide([pool[0]], { like: failed }))[0].id, 'tiny');
 
 console.log('✓ failover: same model first, comparable next, inferior only as a last resort');
+
+// A RETIRED MODEL IS RETIRED EVERYWHERE. "Same model at another provider" is the ideal
+// replacement when the PROVIDER declined — out of credits, rate limited — and the worst
+// possible one when the MODEL is gone. deepseek-v4-flash reaching end of life on HuggingFace
+// means the identical name on NVIDIA is equally dead, and preferring it walks into the same
+// wall, which is exactly what happened.
+{
+  const providers = [
+    { id: 'hfSame', model: 'deepseek-ai/DeepSeek-V4-Flash', capabilities: ['tools'], quality: 0.7, costPer1k: 1 },
+    { id: 'other', model: 'claude-sonnet', capabilities: ['tools'], quality: 0.6, costPer1k: 3 },
+  ];
+  const declined = { model: 'deepseek-v4-flash', capabilities: ['tools'], reason: 'quota' };
+  assert.equal((await failoverStrategy.decide(providers, { like: declined }))[0].id, 'hfSame',
+    'a provider running out of credits should be replaced by the same model elsewhere');
+
+  const retired = { ...declined, reason: 'gone' };
+  assert.equal((await failoverStrategy.decide(providers, { like: retired }))[0].id, 'other',
+    'a retired model was replaced by the same retired model at another provider');
+
+  // Unless it is the only thing left — a turn on the same name somewhere else still beats no
+  // turn at all, and the health memo will have stood the dead one down anyway.
+  assert.equal((await failoverStrategy.decide([providers[0]], { like: retired }))[0].id, 'hfSame');
+}
+
+console.log('✓ failover reasons: same model for a provider saying no, a different one for a model that is gone');

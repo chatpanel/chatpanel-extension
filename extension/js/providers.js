@@ -1586,37 +1586,55 @@ function modelLabelOf(agent) {
  */
 async function withFailover(agent, settings, tools, turn, onEvent, signal, call) {
   const chose = agent?.routedVia || agent?.kind === 'router';
-  try {
-    const out = await call(agent);
-    if (agent?.id) (await import('./model-health.js')).markHealthy(agent.id);
-    return out;
-  } catch (err) {
-    if (!chose || signal?.aborted) throw err;
-    const health = await import('./model-health.js');
-    const marked = health.markUnhealthy(agent.id, err);
-    // A 400 or a bad key is OUR request being wrong, and every other model would refuse it
-    // too. Retrying would turn one clear error into three slow ones.
-    if (!marked) throw err;
+  // KEEP TRYING, not once. The first replacement can decline too — a retired model is often
+  // retired at every provider, so one retry lands on the same wall and the turn dies anyway.
+  // Bounded, because a user waiting on an answer should not sit through eight failures.
+  const MAX_ATTEMPTS = 4;
+  const tried = [];
+  let current = agent;
+  let lastErr = null;
 
-    const [router, store] = await Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)]);
-    const next = await router.routeForTurn(settings, store?.resolveTarget, {
-      capabilities: (tools?.specs || []).length ? ['tools'] : [],
-      force: true,
-      exclude: [agent.id],
-      // Replace like with like. The task did not get easier because the provider said no,
-      // so the closest available model — ideally the SAME one elsewhere — is the right
-      // answer, and the cheapest is not.
-      like: { model: agent.model, capabilities: agent.routedVia?.capabilities || [], quality: agent.routedVia?.quality },
-    });
-    if (!next?.target) throw err;   // nothing left to try — the original error is the honest one
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    try {
+      const out = await call(current);
+      if (current?.id) (await import('./model-health.js')).markHealthy(current.id);
+      return out;
+    } catch (err) {
+      lastErr = err;
+      if (!chose || signal?.aborted) throw err;
+      const health = await import('./model-health.js');
+      const marked = health.markUnhealthy(current.id, err);
+      // A 400 or a bad key is OUR request being wrong, and every other model would refuse it
+      // too. Retrying would turn one clear error into four slow ones.
+      if (!marked) throw err;
+      tried.push(current.id);
 
-    const to = next.decision.model.label || next.decision.model.id;
-    turn.emit('automation.fired', { ruleId: 'router:failover', classUsed: 'R', from: agent.id, to, reason: marked.reason });
-    // Tell the panel, because an answer arriving from a different model than the byline
-    // promised is exactly the kind of silent substitution this codebase keeps removing.
-    onEvent?.({ type: 'routed', model: to, reasons: [`${agent.name || agent.id} declined (${marked.reason})`, ...next.decision.reasons] });
-    return call({ ...agent, ...next.target, routedVia: { model: to, reasons: next.decision.reasons } });
+      const [router, store] = await Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)]);
+      const next = await router.routeForTurn(settings, store?.resolveTarget, {
+        capabilities: (tools?.specs || []).length ? ['tools'] : [],
+        force: true,
+        exclude: tried,
+        // Replace like with like — and pass WHY it failed, because "same model elsewhere" is
+        // the best replacement for a provider saying no and the worst one for a model that
+        // no longer exists.
+        like: {
+          model: current.model,
+          capabilities: current.routedVia?.capabilities || [],
+          quality: current.routedVia?.quality,
+          reason: marked.reason,
+        },
+      });
+      if (!next?.target) throw err;   // nothing left to try — the original error is honest
+
+      const to = next.decision.model.label || next.decision.model.id;
+      turn.emit('automation.fired', { ruleId: 'router:failover', classUsed: 'R', from: current.id, to, reason: marked.reason });
+      // Tell the panel, because an answer arriving from a different model than the byline
+      // promised is exactly the kind of silent substitution this codebase keeps removing.
+      onEvent?.({ type: 'routed', model: to, reasons: [`${current.name || current.id} declined (${marked.reason})`, ...next.decision.reasons] });
+      current = { ...agent, ...next.target, routedVia: { model: to, reasons: next.decision.reasons } };
+    }
   }
+  throw lastErr;
 }
 
 /**

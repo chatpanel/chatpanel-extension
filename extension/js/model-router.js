@@ -238,6 +238,15 @@ export const failoverStrategy = defineRouteStrategy({
     const failed = need.like;
     if (!failed) return null;
     const sameModel = (m) => !!failed.model && normModel(m) === normModel(failed);
+    // A RETIRED MODEL IS RETIRED EVERYWHERE. "Same model at another provider" is the ideal
+    // replacement when the provider declined — out of credits, rate limited — and the worst
+    // possible one when the MODEL is gone: deepseek-v4-flash reaching end of life on
+    // HuggingFace means the identical name on NVIDIA is equally dead, so preferring it walks
+    // straight into the same wall.
+    if (failed.reason === 'gone') {
+      const alive = eligible.filter((m) => !sameModel(m));
+      if (alive.length) eligible = alive;
+    }
     const covers = (m) => (failed.capabilities || []).every((c) => m.capabilities.includes(c));
     const q = (m) => (Number.isFinite(m.quality) ? m.quality : 0.5);
     const rank = (m) => (sameModel(m) ? 0 : covers(m) ? 1 : 2);
