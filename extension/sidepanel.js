@@ -491,7 +491,7 @@ async function pageToolProvider(resolvedAgent) {
   const { withGuidance } = await import('./js/group-dispatch.js');
   return {
     specs: [buildDispatchSpec(specs)],
-    execute: withGuidance(makeDispatchExecutor(specs, guardedExecute), system),
+    execute: withGuidance(makeDispatchExecutor(specs, withTimeout(guardedExecute)), system),
     // SAY THAT IT CAN, AND SAY WHERE.
     //
     // The deferred manual opened by asserting the connection is real ("these are the ONLY
@@ -519,6 +519,40 @@ async function pageToolProvider(resolvedAgent) {
  * CDP. Every call here is one an adapter is allowed to make — a deliberately small surface,
  * since an adapter is a plugin and a plugin should not be handed the whole page API.
  */
+/**
+ * A page action that never returns leaves the turn open forever.
+ *
+ * A real run drew its circle correctly and then sat at "page… 71s" with Stop as the only way
+ * out — the model had finished, and a tool call was still waiting on a tab that was never
+ * going to answer. Nothing in the loop had an opinion about how long a click may take.
+ *
+ * The timeout returns a RESULT rather than throwing: a tool that timed out is information
+ * the model can act on — try a different approach, or tell the user — while an exception
+ * ends the turn and loses everything already done.
+ *
+ * Generous, because a real page can be slow: a screenshot on a heavy canvas, a form that
+ * triggers navigation. This catches "never", not "slow".
+ */
+const PAGE_ACTION_TIMEOUT_MS = 45_000;
+
+function withTimeout(run, ms = PAGE_ACTION_TIMEOUT_MS) {
+  return async (name, input, meta) => {
+    let timer;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(JSON.stringify({
+        error: `The page action "${input?.action || name}" did not respond within ${Math.round(ms / 1000)}s.`,
+        hint: 'The tab may have navigated, closed, or be blocked by a dialog. Take a screenshot to see the current state, or ask the user what to do.',
+        timedOut: true,
+      })), ms);
+    });
+    try {
+      return await Promise.race([run(name, input, meta), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
 function adapterCtx(tabId, cdp) {
   return {
     cdp,
