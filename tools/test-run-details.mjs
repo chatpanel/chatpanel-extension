@@ -28,7 +28,11 @@ for (let i = 0; i < 6; i++) {
 const run = summarizeRun('t1', evs);
 assert.equal(run.toolCalls.length, 6);
 assert.equal(run.failures.length, 6);
-assert.equal(run.tokens, 900);
+// `contextTokens` is the prompt we BUILT; `tokens` is what the turn SPENT. Conflating
+// them made a turn answering from a small context read the same as one that burned a huge
+// one — and hid the dispatchers' savings in the very view meant to show them.
+assert.equal(run.contextTokens, 900);
+assert.equal(run.tokens, null, 'a run with no provider usage must not claim a spend');
 assert.equal(run.context.pageArmed, true);
 
 // The diagnostic that matters: a repeated identical failure is a harness problem.
@@ -214,3 +218,15 @@ const old = summarizeRun('t41', [
   a.append('turn.ended', { turnId: 't41', reason: 'ok', ms: 10 }),
 ]);
 assert.equal(old.context.prepMs, null);
+
+// Real spend comes from the provider, reported by the loop while it runs.
+const spend = summarizeRun('t50', [
+  a.append('turn.started', { turnId: 't50', kind: 'chat' }),
+  a.append('context.assembled', { turnId: 't50', budget: 0, used: 440, parts: {}, resident: [], reachableCount: 1 }),
+  a.append('turn.ended', { turnId: 't50', reason: 'ok', ms: 3000, tokensIn: 4100, tokensOut: 320, model: 'claude', estimated: false }),
+]);
+assert.equal(spend.contextTokens, 440);
+assert.equal(spend.tokens, 4420, 'spend must be in + out, or a long answer looks free');
+assert.equal(spend.tokensIn, 4100);
+assert.equal(spend.model, 'claude');
+assert.equal(spend.estimated, false);

@@ -1242,7 +1242,21 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
     const agentId = agent?.agentId || agent?.id || agent?.name || usageCtx?.agentId || null;
     const ctx = { surface: usageCtx?.surface || 'other', sourceId: usageCtx?.sourceId, agentId };
     onEvent = (ev) => {
-      if (ev && ev.type === 'usage') import('./usage-meter.js').then((m) => m.recordUsageEvent(ev, ctx)).catch(() => {});
+      if (ev && ev.type === 'usage') {
+        import('./usage-meter.js').then((m) => m.recordUsageEvent(ev, ctx)).catch(() => {});
+        // Put the REAL cost on the turn record. Activity previously showed the resident
+        // tool-schema cost under a "tok" label, which is a fact about the prompt we built,
+        // not about what the turn spent — so a turn that answered from a 4k-token context
+        // and one that burned 40k both read the same.
+        turn.report({
+          tokensIn: ev.inputTokens ?? null,
+          tokensOut: ev.outputTokens ?? null,
+          cacheReadTokens: ev.cacheReadTokens ?? null,
+          model: ev.model || null,
+          provider: ev.provider || null,
+          estimated: !!ev.estimated,
+        });
+      }
       return rawOnEvent?.(ev);
     };
 

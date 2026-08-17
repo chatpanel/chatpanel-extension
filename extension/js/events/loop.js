@@ -74,13 +74,18 @@ export function createTurnRunner({ now = () => 0, newId, emit = () => {}, decide
 
     const startedAt = now();
     let closed = false;
+    // Facts the loop learns while running — token usage, the model that actually served
+    // it — belong on the turn record. The loop may CONTRIBUTE them; it still cannot
+    // decide when the turn ends. Handing over the payload is not the same as handing over
+    // the lifetime, and only the second one was ever the problem.
+    let reported = {};
     // The ONE place a turn closes. Idempotent because a retry path or a double-catch must
     // not be able to write two endings for one turn — a log that can say a turn ended
     // twice cannot be replayed.
     const close = (reason, produced) => {
       if (closed) return;
       closed = true;
-      emit('turn.ended', { turnId, reason, stepped: !!produced, ms: now() - startedAt, kind });
+      emit('turn.ended', { ...reported, turnId, reason, stepped: !!produced, ms: now() - startedAt, kind });
     };
 
     emit('turn.started', {
@@ -101,6 +106,13 @@ export function createTurnRunner({ now = () => 0, newId, emit = () => {}, decide
         request,
         /** Report that something reached the user — this is a fact about the turn, not control over it. */
         produced: () => { produced = true; },
+        /**
+         * Contribute facts to the turn record (tokens, model, cost). Merged into
+         * `turn.ended`, and never able to overwrite the fields the runner owns — a loop
+         * that could rewrite its own turnId or reason would be holding lifetime again by
+         * another name.
+         */
+        report: (fields) => { if (fields && typeof fields === 'object') reported = { ...reported, ...fields }; },
         /** Loops emit their own domain events; lifetime is still not theirs. */
         emit: (type, payload) => emit(type, { turnId, ...payload }),
       });

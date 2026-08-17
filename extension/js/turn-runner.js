@@ -42,6 +42,19 @@ export function getTurnRunner() {
  */
 export async function runAsTurn(spec, request, fn) {
   const runner = await getTurnRunner();
-  if (!runner) return fn({ turnId: request?.turnId || null, emit: () => {}, produced: () => {} });
+  // The degraded context must satisfy the SAME contract, or the fallback turns a logging
+  // failure into the chat failure it exists to prevent — a body calling turn.report()
+  // would throw here while working everywhere else.
+  if (!runner) {
+    return fn({
+      turnId: request?.turnId || null,
+      kind: request?.kind || 'other',
+      request: request || {},
+      signal: request?.signal,
+      emit: () => {},
+      produced: () => {},
+      report: () => {},
+    });
+  }
   return runner.run({ id: spec.id, kind: spec.kind, background: spec.background, run: fn }, request);
 }

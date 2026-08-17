@@ -36,10 +36,11 @@ assert.equal(out, 'the answer', 'a turn did not survive an unavailable event log
 // the degraded path does not need its own code path in every caller.
 const seen = await runAsTurn({ id: 'loop:test', kind: 'chat' }, {}, (turn) => {
   turn.produced();
+  turn.report({ tokensIn: 10 });
   turn.emit('capability.invoked', { capability: 'page' });
   return Object.keys(turn).sort();
 });
-assert.deepEqual(seen, ['emit', 'kind', 'produced', 'request', 'signal', 'turnId'],
+assert.deepEqual(seen, ['emit', 'kind', 'produced', 'report', 'request', 'signal', 'turnId'],
   'the loop context changed shape — every loop body is written against these keys');
 
 // It still refuses to hand a loop the ability to close its own turn. The guarantee is the
@@ -56,3 +57,15 @@ await assert.rejects(
 );
 
 console.log('✓ turn lifetime: surfaces classified, background folded, log never load-bearing');
+
+// The DEGRADED context must satisfy the same contract. Otherwise the fallback — which
+// exists so a logging failure never becomes a chat failure — becomes one: a body calling
+// report() would throw there while working everywhere else. Found by this test, not in
+// production.
+const { getTurnRunner } = await import('../extension/js/turn-runner.js');
+const real = await getTurnRunner();
+const degraded = { turnId: null, kind: 'other', request: {}, signal: undefined, emit() {}, produced() {}, report() {} };
+if (real) {
+  const live = await runAsTurn({ id: 'loop:test', kind: 'chat' }, {}, (t) => Object.keys(t).sort());
+  assert.deepEqual(live, Object.keys(degraded).sort(), 'the live and degraded contexts have drifted apart');
+}

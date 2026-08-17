@@ -65,7 +65,13 @@ export function summarizeRun(turnId, events) {
         turn = { ...(turn || {}), startedAt: e.at, kind: p.kind || 'chat', agentId: p.agentId || null, background: !!p.background };
         break;
       case 'turn.ended':
-        turn = { ...(turn || {}), endedAt: e.at, reason: p.reason || 'ok', ms: p.ms ?? null, stepped: p.stepped !== false };
+        turn = {
+          ...(turn || {}), endedAt: e.at, reason: p.reason || 'ok', ms: p.ms ?? null, stepped: p.stepped !== false,
+          // What the turn actually SPENT, as reported by the provider.
+          tokensIn: p.tokensIn ?? null, tokensOut: p.tokensOut ?? null,
+          cacheReadTokens: p.cacheReadTokens ?? null,
+          model: p.model || null, provider: p.provider || null, estimated: !!p.estimated,
+        };
         break;
       case 'context.assembled':
         context = {
@@ -147,7 +153,17 @@ export function summarizeRun(turnId, events) {
     denials,
     failures: toolCalls.filter((c) => c.ok === false),
     repeats: findRepeats(toolCalls),
-    tokens: context?.used || 0,
+    // TWO DIFFERENT NUMBERS, no longer conflated. `contextTokens` is what we PUT in front
+    // of the model — the resident tool schemas, a fact about the prompt we built.
+    // `tokens` is what the turn SPENT. Showing the first under a "tok" label made a turn
+    // that answered from a small context and one that burned a huge one read identically,
+    // and made the dispatchers' savings invisible in the very view meant to show them.
+    contextTokens: context?.used || 0,
+    tokens: (turn?.tokensIn ?? 0) + (turn?.tokensOut ?? 0) || null,
+    tokensIn: turn?.tokensIn ?? null,
+    tokensOut: turn?.tokensOut ?? null,
+    model: turn?.model || null,
+    estimated: !!turn?.estimated,
   };
 }
 

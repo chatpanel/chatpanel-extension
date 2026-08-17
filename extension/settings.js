@@ -4763,7 +4763,13 @@ async function renderActivity() {
     // different problem from a slow model, and one number cannot say which.
     const prep = run.context?.prepMs;
     const setup = prep != null && prep >= 250 ? `${(prep / 1000).toFixed(1)}s setup` : '';
-    meta.textContent = [dur, setup, run.tokens ? `${run.tokens} tok` : '', `${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`]
+    // Spend first, prompt size second — they answer different questions and the old row
+    // showed only the second under a label that read like the first.
+    const spent = run.tokens
+      ? `${run.tokens.toLocaleString()} tok${run.estimated ? '~' : ''}`
+      : '';
+    const ctxCost = run.contextTokens ? `${run.contextTokens.toLocaleString()} ctx` : '';
+    meta.textContent = [dur, setup, spent, ctxCost, `${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`]
       .filter(Boolean).join(' · ');
     const kind = document.createElement('span');
     kind.className = `run-kind kind-${run.kind}`;
