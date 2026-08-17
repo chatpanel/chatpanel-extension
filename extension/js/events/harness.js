@@ -46,6 +46,16 @@ export function replay(stored, { blobs = null, invariantOptions = {} } = {}) {
   const turns = [];
   if (blobs) {
     for (const e of ordered) {
+      // What the model was SHOWN and what it SAID are refs too, and they are the half a
+      // reader most wants replayed. Checking only `resident` verified the toolset while
+      // leaving the conversation unverified — the part that actually reconstructs a turn.
+      if (String(e.type).startsWith('assistant.')) {
+        const r = resolveRef(e.payload.ref, (x) => blobs.lookup(x));
+        if (r.resolution === RESOLUTION.EXACT) refs.exact++;
+        else if (r.resolution === RESOLUTION.UNAVAILABLE) refs.unavailable++;
+        else refs.drifted.push({ eventId: e.id, ref: r.ref, actualHash: r.actualHash });
+        continue;
+      }
       if (e.type !== 'context.assembled') continue;
       const resolved = e.payload.resident.map((ref) => resolveRef(ref, (r) => blobs.lookup(r)));
       for (const r of resolved) {

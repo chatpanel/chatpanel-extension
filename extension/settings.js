@@ -5270,6 +5270,49 @@ function renderTrajectory(box, entries, log, lanes) {
   search.addEventListener('input', () => paint(search.value.trim().toLowerCase()));
 }
 
+/**
+ * Re-run the recorded log and report whether it reconstructs.
+ *
+ * This is the determinism claim made checkable on the user's OWN data rather than in a test
+ * fixture. It verifies the three things we actually promise: that ordering comes from
+ * causes and sequence rather than a clock, that the invariants hold, and that every
+ * recorded Ref still resolves to the content it named.
+ *
+ * What it deliberately does NOT do is re-execute anything. A replay that re-ran tool calls
+ * would send emails and click buttons again; the claim is that the RECORD reconstructs, not
+ * that the world can be rewound.
+ */
+async function verifyReplay() {
+  const out = $('activity-replay-out');
+  if (!out) return;
+  out.classList.remove('hidden');
+  out.textContent = 'Replaying…';
+  try {
+    const [log, harness] = await Promise.all([
+      import('./js/event-log.js'),
+      import('./js/events/harness.js'),
+    ]);
+    const [events, blobs] = await Promise.all([log.all(), log.blobLookupTable()]);
+    if (!events.length) { out.textContent = 'Nothing recorded yet.'; return; }
+    const report = harness.replay(events, { blobs });
+    out.textContent = '';
+    const head = document.createElement('b');
+    head.className = report.ok ? 'ok' : 'err';
+    head.textContent = report.ok
+      ? `PASS — ${report.events} events reconstruct exactly`
+      : `FAIL — ${report.events} events, ${report.violations.length} invariant violation(s), ${report.refs.drifted.length} drifted`;
+    const pre = document.createElement('pre');
+    pre.className = 'tj-raw';
+    // A shredded blob is a PASS and says so, because deletion is a feature — reporting it
+    // as damage would make "delete my data" look like corruption.
+    pre.textContent = harness.formatReport(report);
+    out.append(head, pre);
+  } catch (e) {
+    out.textContent = `Could not replay: ${e?.message || e}`;
+  }
+}
+
+$('activity-replay')?.addEventListener('click', verifyReplay);
 $('activity-refresh')?.addEventListener('click', renderActivity);
 $('activity-kind')?.addEventListener('change', renderActivity);
 $('activity-background')?.addEventListener('change', renderActivity);

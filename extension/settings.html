@@ -879,9 +879,11 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
             <label class="check tiny" style="margin:0">
               <input type="checkbox" id="activity-background"> Show background work
             </label>
+            <button id="activity-replay" class="btn" type="button" title="Re-run the recorded log and check it reconstructs">Verify replay</button>
             <button id="activity-export" class="btn" type="button">Export (JSONL)</button>
             <button id="activity-clear" class="btn danger" type="button">Clear activity</button>
           </div>
+          <div id="activity-replay-out" class="replay-out hidden"></div>
           <div id="activity-runs" class="activity-runs"></div>
         </div>
       </section>

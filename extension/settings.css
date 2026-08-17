@@ -756,3 +756,8 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
   0%, 40% { box-shadow: 0 0 0 3px #4fb0ff66; }
   100% { box-shadow: 0 0 0 3px transparent; }
 }
+
+/* Replay verification — the determinism claim, checked on the user's own log. */
+.replay-out { margin: 10px 0; display: grid; gap: 6px; }
+.replay-out b.ok { color: #3ecf8e; }
+.replay-out b.err { color: #f8737f; }

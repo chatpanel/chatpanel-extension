@@ -288,6 +288,30 @@ export async function getBlob(ref) {
   }
 }
 
+/**
+ * A blob lookup shaped for the replay harness.
+ *
+ * The harness asks `lookup(ref)` and compares the hash it gets back. Because blobs are
+ * keyed BY content hash, a stored blob's hash is the key it was found under — so a mismatch
+ * cannot happen through storage, only through the ref naming something that is gone. That
+ * makes UNAVAILABLE the honest answer for a shredded blob, and DRIFTED reserved for a ref
+ * whose source genuinely changed.
+ */
+export async function blobLookupTable() {
+  try {
+    const { db } = await open();
+    const keys = await new Promise((resolve) => {
+      const req = db.transaction(BLOBS, 'readonly').objectStore(BLOBS).getAllKeys();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => resolve([]);
+    });
+    const have = new Set(keys);
+    return { lookup: (ref) => (have.has(ref?.hash) ? { hash: ref.hash } : null) };
+  } catch {
+    return { lookup: () => null };
+  }
+}
+
 /** Drop blobs older than the oldest event we still hold — content never outlives its record. */
 export async function pruneBlobs(oldestEventAt) {
   if (!Number.isFinite(oldestEventAt)) return 0;
