@@ -52,39 +52,38 @@ export function meetReach(a, b) {
  * against localhost may well want that traffic to reach a cloud model, and a rule they cannot
  * see is a rule they cannot correct.
  */
-export const DEFAULT_INTERNAL_PATTERNS = Object.freeze([
-  // Loopback — this machine.
-  'localhost',
-  '127.0.0.0/8',
-  '::1',
-  '0.0.0.0/8',
-  // Private IPv4 (RFC 1918) and the carrier-grade range some corporate networks use.
-  '10.0.0.0/8',
-  '172.16.0.0/12',
-  '192.168.0.0/16',
-  '100.64.0.0/10',
-  // Link-local, v4 and v6: an address that never routes off the local segment.
-  '169.254.0.0/16',
-  'fe80::/10',
-  // Unique local addresses — the IPv6 equivalent of 10.x.
-  'fc00::/7',
-  // Names that cannot exist on the public internet: reserved by RFC or conventional on
-  // private networks and home routers.
-  '*.internal',
-  '*.intranet',
-  '*.corp',
-  '*.lan',
-  '*.local',
-  '*.localdomain',
-  '*.home',
-  '*.home.arpa',
-  '*.private',
-  '*.test',
-  '*.invalid',
-  // A bare hostname with no dot (http://wiki/, http://tickets/) only resolves inside a private
-  // search domain — it cannot be a public site. Note this covers 'localhost' too.
-  '<intranet>',
+export const INTERNAL_PATTERN_CATALOG = Object.freeze([
+  { pattern: 'localhost', label: 'This machine, by name' },
+  { pattern: '127.0.0.0/8', label: 'Loopback' },
+  { pattern: '::1', label: 'Loopback (IPv6)' },
+  { pattern: '0.0.0.0/8', label: 'This network' },
+  { pattern: '10.0.0.0/8', label: 'Private network' },
+  { pattern: '172.16.0.0/12', label: 'Private network' },
+  { pattern: '192.168.0.0/16', label: 'Private network (home / office)' },
+  { pattern: '100.64.0.0/10', label: 'Carrier-grade NAT — used by some corporate networks' },
+  { pattern: '169.254.0.0/16', label: 'Link-local — never routes off this segment' },
+  { pattern: 'fe80::/10', label: 'Link-local (IPv6)' },
+  { pattern: 'fc00::/7', label: 'Unique local (IPv6) — the 10.x of IPv6' },
+  { pattern: '*.internal', label: 'Reserved name' },
+  { pattern: '*.intranet', label: 'Reserved name' },
+  { pattern: '*.corp', label: 'Conventional corporate suffix' },
+  { pattern: '*.lan', label: 'Conventional LAN suffix' },
+  { pattern: '*.local', label: 'mDNS / Bonjour' },
+  { pattern: '*.localdomain', label: 'Default suffix on many routers' },
+  { pattern: '*.home', label: 'Home network' },
+  { pattern: '*.home.arpa', label: 'Home network (RFC 8375)' },
+  { pattern: '*.private', label: 'Conventional private suffix' },
+  { pattern: '*.test', label: 'Reserved for testing (RFC 2606)' },
+  { pattern: '*.invalid', label: 'Reserved as never-resolvable' },
+  { pattern: '<intranet>', label: 'Any bare hostname with no dots, e.g. http://wiki/ — includes localhost' },
 ]);
+
+/**
+ * The patterns on by default. Derived from the catalog so the list a UI offers and the list
+ * the classifier applies cannot drift — two copies of this would mean a rule someone can see
+ * and not switch off, or switch off and not escape.
+ */
+export const DEFAULT_INTERNAL_PATTERNS = Object.freeze(INTERNAL_PATTERN_CATALOG.map((x) => x.pattern));
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 
 function ipToInt(host) {

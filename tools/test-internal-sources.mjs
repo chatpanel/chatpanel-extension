@@ -170,3 +170,39 @@ console.log('✓ internal sources: the built-in list is seeded, visible and edit
 }
 
 console.log('✓ internal sources: every candidate is a line, and each can be excluded alone');
+
+// ── excluding ONE pattern, not all or nothing ───────────────────────────────
+{
+  const { INTERNAL_PATTERN_CATALOG, DEFAULT_INTERNAL_PATTERNS } = await import('../extension/js/events/sources.js');
+
+  // Every built-in is independently switchable. All-or-nothing would force someone testing
+  // against localhost to give up the private ranges as well.
+  const without = (p) => DEFAULT_INTERNAL_PATTERNS.filter((x) => x !== p);
+  const cases = [
+    ['10.0.0.0/8', 'http://10.4.2.9/x'],
+    ['192.168.0.0/16', 'http://192.168.1.10/x'],
+    ['fc00::/7', 'http://[fd12::1]/x'],
+    ['*.local', 'http://printer.local/x'],
+    ['100.64.0.0/10', 'http://100.70.0.1/x'],
+  ];
+  for (const [pattern, url] of cases) {
+    assert.ok(sourceGuardFor({}, [url]), `${url} is internal by default`);
+    assert.equal(sourceGuardFor({ privacy: { internalPatterns: without(pattern) } }, [url]), null,
+      `unticking ${pattern} releases exactly ${url}`);
+    // …and releasing that one leaves every other rule standing.
+    assert.ok(sourceGuardFor({ privacy: { internalPatterns: without(pattern) } }, ['http://172.16.0.1/x'])
+      || pattern === '172.16.0.0/12', 'the other rules are untouched');
+  }
+
+  // The UI writes chosen built-ins plus the user's own, deduplicated: a domain typed by hand
+  // that is already a built-in must not appear twice, where unticking one box would look
+  // like it had done nothing.
+  const merged = [...new Set([...without('*.corp'), 'acme-corp.example', '*.local'])];
+  assert.equal(merged.filter((x) => x === '*.local').length, 1);
+  assert.ok(!merged.includes('*.corp'));
+
+  // Every row the UI offers is a rule the classifier actually applies.
+  assert.deepEqual(INTERNAL_PATTERN_CATALOG.map((x) => x.pattern), [...DEFAULT_INTERNAL_PATTERNS]);
+}
+
+console.log('✓ internal sources: any single pattern can be excluded on its own');

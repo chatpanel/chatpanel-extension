@@ -781,8 +781,19 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .routing-caps { display: flex; gap: 8px; flex: none; }
 .routing-model select { max-width: 150px; }
 
-/* Internal-sites: the models allowed to answer an internal page. Every one is listed —
-   a truncated list cannot answer the only question being asked of it ("is mine on it?"). */
+/* Internal sites. Each built-in address family is its OWN row, so any single one can be
+   excluded — all-or-nothing would force someone testing against localhost to give up the
+   private ranges too. */
+.internal-catalog { display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr));
+  gap:2px 16px; margin:6px 0 8px; max-height:270px; overflow-y:auto; padding:8px 10px;
+  border:1px solid var(--border); border-radius:8px; background:var(--field); }
+.internal-rule { display:flex; align-items:baseline; gap:8px; padding:3px 0; cursor:pointer; }
+.internal-rule input { margin:0; flex:none; }
+.internal-rule code { font-size:11.5px; color:var(--text); white-space:nowrap; }
+.internal-rule .sub { font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* The models allowed to answer an internal page. Every one is listed — a truncated list
+   cannot answer the only question being asked of it ("is mine on it?"). */
 .internal-models { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
 .internal-models .chip { font-size:11px; color:var(--muted); background:var(--field);
   border:1px solid var(--border); border-radius:6px; padding:1px 6px; }

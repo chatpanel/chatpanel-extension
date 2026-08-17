@@ -419,18 +419,21 @@ npx @chatpanel/bridge</code></pre>
           </div>
           <p class="muted">Redaction removes sensitive <em>values</em>. This decides where a page may be
             <strong>sent at all</strong>: when a turn draws on an internal source, only a local model may answer it —
-            whichever model is selected. The list below starts with the addresses that can only exist on a private
-            network; <strong>edit it freely</strong> — remove <code>localhost</code> if you test against a local server
-            that is not really internal, and add your own domains for internal sites on public DNS.</p>
+            whichever model is selected. Everything that can only exist on a private network is covered below and <strong>on by default</strong> — untick
+            any that are not internal for you (a local dev server you deliberately test against a cloud model), and add
+            your own domains for internal sites that sit on public DNS.</p>
           <label class="row"><input type="checkbox" id="internal-guard" checked>
             <span>Keep content from internal sites on this device</span></label>
+          <div class="field">
+            <span>Addresses treated as internal
+              <span class="sub">— on by default; untick any that are not internal for you</span></span>
+            <div id="internal-catalog" class="internal-catalog"></div>
+            <button type="button" class="btn small" id="internal-restore">Restore all defaults</button>
+          </div>
           <label class="field">
-            <span>Internal addresses <span class="sub">one per line</span></span>
-            <textarea id="internal-patterns" rows="12" spellcheck="false"></textarea>
-            <span class="sub">A domain covers its subdomains (<code>acme.example</code> matches
-              <code>wiki.acme.example</code>). Also accepted: a CIDR range (<code>10.0.0.0/8</code>) and
-              <code>&lt;intranet&gt;</code>, meaning any bare hostname with no dots — <code>http://wiki/</code> can only
-              resolve inside a private network — which includes <code>localhost</code>, so allowing a local dev server means removing both lines. Emptying the list disables host matching entirely.</span>
+            <span>My own internal domains <span class="sub">one per line — a domain covers its subdomains</span></span>
+            <textarea id="internal-patterns" rows="4" spellcheck="false"
+              placeholder="acme-corp.example&#10;*.eng.acme-corp.example"></textarea>
           </label>
           <label class="field">
             <span>Where these may be answered</span>

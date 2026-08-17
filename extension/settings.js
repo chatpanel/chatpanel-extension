@@ -8,7 +8,7 @@ import { getSettings, saveSettings, uid, exportAllData, exportDataArchive, impor
 import { readZipEntry } from './js/zip.js';
 // Small, pure and dependency-free — the seed list is needed synchronously when the panel
 // renders, and deferring one frozen array would cost a frame to save nothing.
-import { DEFAULT_INTERNAL_PATTERNS } from './js/events/sources.js';
+import { DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './js/events/sources.js';
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
 import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, setAutoBackupHour, runAutoBackup } from './js/auto-backup.js';
 import { encryptBackup, decryptBackup, isEncryptedBackup } from './js/crypto-backup.js';
@@ -3577,23 +3577,67 @@ function renderPrefs() {
   $('pref-live-notes').value = String(settings.ui.liveNotesIntervalMin ?? 2);
   $('pref-meeting-window').value = String(settings.ui.meetingWindowMin ?? 0);
   $('pref-meeting-summary-style').value = settings.ui.meetingSummaryStyle === 'detailed' ? 'detailed' : 'concise';
-  // Internal sites — a REACH ceiling, not a redaction rule. Auto-saves: an "internal sites"
-  // list that only takes effect after a Save button is a list that is quietly not in effect.
+  // Internal sites — a REACH ceiling, not a redaction rule.
+  //
+  // The built-ins are TOGGLES, not lines in a textarea. Hand-editing a list that contains
+  // `<intranet>` and `fc00::/7` asks the reader to know what those mean before they can turn
+  // one off; a labelled checkbox asks nothing. Storage stays a single flat pattern list, so
+  // the contract does not have to know this UI exists.
   {
     const priv = settings.privacy || (settings.privacy = {});
     const guard = $('internal-guard');
     const pats = $('internal-patterns');
     const ceil = $('internal-ceiling');
     const note = $('internal-note');
-    if (guard && pats && ceil) {
-      guard.checked = priv.internalGuard !== false;
-      // Seeded visibly, so every rule in force is one the user can read and delete. A rule
-      // that only exists in code cannot be corrected when it is wrong for this machine.
-      pats.value = (Array.isArray(priv.internalPatterns) ? priv.internalPatterns : DEFAULT_INTERNAL_PATTERNS).join('\n');
-      // Emptying the box protects nothing, so the greyed-out defaults are what to restore —
-      // a placeholder of invented example domains would have been advice nobody asked for.
-      pats.placeholder = DEFAULT_INTERNAL_PATTERNS.join('\n');
-      ceil.value = priv.internalCeiling === 'trusted' ? 'trusted' : 'device';
+    const cat = $('internal-catalog');
+    const restore = $('internal-restore');
+    if (guard && pats && ceil && cat) {
+      const active = () => new Set(Array.isArray(priv.internalPatterns) ? priv.internalPatterns : DEFAULT_INTERNAL_PATTERNS);
+      const boxes = new Map();
+
+      const renderCatalog = () => {
+        const on = active();
+        cat.replaceChildren();
+        boxes.clear();
+        for (const { pattern, label } of INTERNAL_PATTERN_CATALOG) {
+          const row = document.createElement('label');
+          row.className = 'internal-rule';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = on.has(pattern);
+          cb.addEventListener('change', write);
+          boxes.set(pattern, cb);
+          const code = document.createElement('code');
+          code.textContent = pattern;
+          const desc = document.createElement('span');
+          desc.className = 'sub';
+          desc.textContent = label;
+          row.append(cb, code, desc);
+          cat.appendChild(row);
+        }
+      };
+
+      // Anything saved that is NOT a built-in is the user's own — shown separately so their
+      // domains are never mixed in with two dozen address ranges they did not write.
+      const renderCustom = () => {
+        const known = new Set(DEFAULT_INTERNAL_PATTERNS);
+        const mine = (Array.isArray(priv.internalPatterns) ? priv.internalPatterns : []).filter((p) => !known.has(p));
+        pats.value = mine.join('\n');
+      };
+
+      async function write() {
+        const chosen = INTERNAL_PATTERN_CATALOG.map((x) => x.pattern).filter((p) => boxes.get(p)?.checked);
+        const mine = pats.value.split(/[\n,]+/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+        settings.privacy = settings.privacy || {};
+        settings.privacy.internalGuard = guard.checked;
+        settings.privacy.internalCeiling = ceil.value === 'trusted' ? 'trusted' : 'device';
+        // Deduplicated: a domain typed by hand that is already a built-in must not make the
+        // same rule appear twice, where unticking one box would look like it did nothing.
+        settings.privacy.internalPatterns = [...new Set([...chosen, ...mine])];
+        await saveSettings(settings);
+        refresh();
+      }
+
       const refresh = async () => {
         // Say whether the rule can actually be honoured. A ceiling with no model under it
         // means every internal page is refused rather than protected, and the person needs
@@ -3630,17 +3674,18 @@ function renderPrefs() {
           note.append(head, list);
         } catch { note.textContent = ''; }
       };
-      const write = async () => {
-        settings.privacy = settings.privacy || {};
-        settings.privacy.internalGuard = guard.checked;
-        settings.privacy.internalCeiling = ceil.value === 'trusted' ? 'trusted' : 'device';
-        settings.privacy.internalPatterns = pats.value.split(/[\n,]+/).map((x) => x.trim().toLowerCase()).filter(Boolean);
-        await saveSettings(settings);
-        refresh();
-      };
+
+      guard.checked = priv.internalGuard !== false;
+      ceil.value = priv.internalCeiling === 'trusted' ? 'trusted' : 'device';
+      renderCatalog();
+      renderCustom();
       guard.addEventListener('change', write);
       ceil.addEventListener('change', write);
       pats.addEventListener('change', write);
+      restore?.addEventListener('click', async () => {
+        for (const [p, cb] of boxes) cb.checked = DEFAULT_INTERNAL_PATTERNS.includes(p);
+        await write();
+      });
       refresh();
     }
   }
