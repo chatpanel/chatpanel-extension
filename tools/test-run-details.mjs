@@ -68,3 +68,44 @@ assert.ok(!text.includes('"elements":['), 'raw arguments leaked into the sanitiz
 assert.equal(report.runs[0].calls[0].args.elements, 'array(2)');
 
 console.log('✓ run details: grouping, repeated-failure diagnosis, sanitized export');
+
+// ---------------------------------------------------------------- turn boundaries
+// Explicit turn/start and turn/end are what let a trajectory NEST: without them the log
+// is a flat list of calls and you can see what happened but not what it belonged to.
+const t = (turnId) => [
+  a.append('turn.started', { turnId, kind: 'chat', agentId: 'claude' }),
+  a.append('context.assembled', { turnId, budget: 0, used: 900, parts: {}, resident: [], reachableCount: 1 }),
+  invoked(turnId, 'click_at', `${turnId}-k`),
+  resulted(turnId, 'click_at', `${turnId}-k`, true, 'page ok'),
+];
+
+const okRun = summarizeRun('t10', [...t('t10'), a.append('turn.ended', { turnId: 't10', reason: 'ok', stepped: true, ms: 4200 })]);
+assert.equal(okRun.turn.reason, 'ok');
+assert.equal(okRun.ms, 4200);
+assert.equal(okRun.open, false);
+assert.equal(verdict(okRun).level, 'ok');
+
+// Stopped by the user reads as a choice, not a failure.
+const stopped = summarizeRun('t11', [...t('t11'), a.append('turn.ended', { turnId: 't11', reason: 'aborted', stepped: true, ms: 900 })]);
+assert.equal(verdict(stopped).text, 'Stopped by you');
+assert.equal(verdict(stopped).level, 'info');
+
+// A turn that opened and never closed is still running — or was interrupted by a reload,
+// which is worth seeing rather than silently rendering as finished.
+const openRun = summarizeRun('t12', t('t12'));
+assert.equal(openRun.open, true);
+assert.match(verdict(openRun).text, /Still running, or interrupted/);
+
+// A turn that died before any tool ran is a different failure from a tool that failed.
+const early = summarizeRun('t13', [
+  a.append('turn.started', { turnId: 't13', kind: 'chat' }),
+  a.append('turn.ended', { turnId: 't13', reason: 'error', stepped: false, ms: 120 }),
+]);
+assert.equal(verdict(early).level, 'warn');
+assert.match(verdict(early).text, /failed before any tool ran/);
+
+// Ordering uses the turn's own start, so runs sort by when they began.
+const { runs: ordered } = groupRuns([...t('t14'), a.append('turn.ended', { turnId: 't14', reason: 'ok', stepped: true }), ...t('t15')]);
+assert.ok(ordered.length >= 2 && ordered[0].at >= ordered[1].at);
+
+console.log('✓ run details: turn boundaries, open runs, abort vs error');

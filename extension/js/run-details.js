@@ -38,12 +38,19 @@ export function groupRuns(events) {
 export function summarizeRun(turnId, events) {
   const calls = new Map(); // idempotencyKey -> { name, ok, ms, summary, args }
   let context = null;
+  let turn = null;         // explicit boundaries, when the run recorded them
   const capabilities = [];
   const denials = [];
 
   for (const e of events) {
     const p = e.payload || {};
     switch (e.type) {
+      case 'turn.started':
+        turn = { ...(turn || {}), startedAt: e.at, kind: p.kind || 'chat', agentId: p.agentId || null };
+        break;
+      case 'turn.ended':
+        turn = { ...(turn || {}), endedAt: e.at, reason: p.reason || 'ok', ms: p.ms ?? null, stepped: p.stepped !== false };
+        break;
       case 'context.assembled':
         context = {
           used: p.used || 0,
@@ -84,7 +91,12 @@ export function summarizeRun(turnId, events) {
   const toolCalls = [...calls.values()].sort((a, b) => a.at - b.at);
   return {
     turnId,
-    at: events[0]?.at || 0,
+    turn,
+    // A turn that opened but never closed is still running — or was interrupted by a
+    // reload, which is itself worth seeing rather than silently rendering as finished.
+    open: !!(turn?.startedAt && !turn?.endedAt),
+    at: turn?.startedAt || events[0]?.at || 0,
+    ms: turn?.ms ?? null,
     events: events.length,
     context,
     toolCalls,
@@ -119,6 +131,11 @@ export function findRepeats(toolCalls, min = 2) {
 
 /** One-line verdict for a run. */
 export function verdict(run) {
+  if (run.open) return { level: 'info', text: 'Still running, or interrupted before it finished' };
+  if (run.turn?.reason === 'aborted') return { level: 'info', text: 'Stopped by you' };
+  if (run.turn?.reason === 'error' && !run.failures.length) {
+    return { level: 'warn', text: 'The turn failed before any tool ran' };
+  }
   if (run.repeats.length) {
     const r = run.repeats[0];
     return { level: 'bad', text: `${r.name} failed ${r.count}× with the same error — likely a harness problem, not the model` };
@@ -135,6 +152,8 @@ export function toSanitizedReport(runs) {
     generated: 'run-details/v1',
     runs: runs.map((r) => ({
       at: r.at,
+      ms: r.ms,
+      reason: r.turn?.reason || null,
       tokens: r.tokens,
       parts: r.context?.parts || {},
       toolsOffered: r.context?.reachableCount || 0,

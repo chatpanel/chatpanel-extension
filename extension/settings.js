@@ -4719,7 +4719,8 @@ async function renderActivity() {
     verdict.textContent = v.text;
     const meta = document.createElement('span');
     meta.className = 'run-meta';
-    meta.textContent = `${run.tokens ? `${run.tokens} tok · ` : ''}${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`;
+    const dur = run.ms != null ? `${(run.ms / 1000).toFixed(1)}s · ` : '';
+    meta.textContent = `${dur}${run.tokens ? `${run.tokens} tok · ` : ''}${run.toolCalls.length} call${run.toolCalls.length === 1 ? '' : 's'}`;
     head.append(when, verdict, meta);
     row.append(head);
 
