@@ -19,6 +19,7 @@ import {
   collectMarks, clickAtSynthetic,
 } from './page-actions.js';
 import {
+  readAxTree,
   cdpFillForm, cdpClickElement, cdpClickByText, cdpFillCombobox, cdpScreenshot,
   cdpClickAt, cdpMoveMouse, cdpTypeText, cdpPressKey, cdpScroll, cdpDrag, cdpInputSequence,
   cdpCapturePointer, cdpEvaluate,
@@ -279,7 +280,10 @@ export const PAGE_TOOL_SPECS = [
     name: 'inspect_page',
     description:
       "Read the active browser tab's interactive elements: fillable form fields, " +
-      'clickable buttons, AND links (anchors). Returns each with a stable `selector` ' +
+      'clickable buttons, AND links (anchors), plus an `accessibility` list of every ' +
+      'named control with its role and state (what a screen reader sees). PREFER acting ' +
+      'by NAME from that list — click_by_text with the name — over estimating pixel ' +
+      'coordinates; the browser already knows where things are. Returns each with a stable `selector` ' +
       '— fields also carry label/type/current value/(dropdown) options; links carry ' +
       'their text and href. ALWAYS call this first so you know the exact selectors ' +
       'before filling or clicking. To click a link (e.g. a “comments” link), find it ' +
@@ -757,7 +761,18 @@ export function makePageToolExecutor(tabId, { cdp = false, adapter = null, devJs
         return JSON.stringify(await readPageText(tabId, Number(input?.maxChars) || 40000));
       }
       if (name === 'inspect_page') {
-        return JSON.stringify(compactInspect(await inspectForms(tabId)));
+        const dom = compactInspect(await inspectForms(tabId));
+        // The accessibility tree alongside the DOM inspection, when CDP is available.
+        // Names and roles are what a small model can actually aim with — it guessed pixel
+        // coordinates twice, drew nothing, and reported success. Best-effort: a page
+        // without a tree (or a stripped build) still gets the DOM answer it always got.
+        if (cdp) {
+          try {
+            const ax = await readAxTree(tabId);
+            if (ax?.nodes?.length) return JSON.stringify({ ...dom, accessibility: ax.nodes, axTruncated: ax.truncated });
+          } catch { /* fall through to the DOM-only answer */ }
+        }
+        return JSON.stringify(dom);
       }
       if (name === 'marked_screenshot') {
         const image = await screenshot(tabId, cdp);

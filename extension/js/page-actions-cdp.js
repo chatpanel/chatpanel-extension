@@ -131,6 +131,58 @@ function ensureDetachHook() {
 const send = (tabId, method, params) =>
   api.debugger.sendCommand({ tabId }, method, params || {});
 
+/**
+ * The page as Chrome's ACCESSIBILITY TREE — roles and names, not coordinates.
+ *
+ * Everything else here synthesizes input at pixel positions, and a small model is bad at
+ * pixels: it guessed 500,630 and then 500,550, drew nothing, and reported success. That is
+ * not a prompting problem. Asking a model to estimate where a button is, when the browser
+ * already knows its name and role, is asking the wrong question.
+ *
+ * Chrome computes this tree for screen readers, so it is maintained by someone else, works
+ * on apps we have never seen, and needs no per-site rules — the thing the hostname table
+ * was rejected for. "Click the button named 'Rectangle'" is a request a 2B model can get
+ * right; "click at 500,630" is not.
+ *
+ * A canvas exposes nothing here, so pixels remain the answer for drawing apps. This is an
+ * addition to that path, not a replacement for it.
+ */
+export async function readAxTree(tabId, { max = 200 } = {}) {
+  await ensureAttached(tabId);
+  await send(tabId, 'Accessibility.enable');
+  const res = await send(tabId, 'Accessibility.getFullAXTree', { depth: -1 });
+  const nodes = res?.nodes || [];
+  const val = (p) => (p && typeof p === 'object' ? p.value : p);
+  const out = [];
+  for (const n of nodes) {
+    if (n.ignored) continue;
+    const role = String(val(n.role) || '');
+    const name = String(val(n.name) || '').replace(/\s+/g, ' ').trim();
+    // A node with no name cannot be asked for by name, so it is noise here — the DOM
+    // inspector still covers selector-based work.
+    if (!name || !INTERESTING_ROLES.has(role)) continue;
+    const props = {};
+    for (const p of n.properties || []) {
+      const v = val(p.value);
+      // Only states that change what a model should DO with the node.
+      if (['disabled', 'checked', 'expanded', 'focused', 'required', 'selected'].includes(p.name) && v !== false && v != null) {
+        props[p.name] = v;
+      }
+    }
+    out.push({ role, name: name.length > 120 ? `${name.slice(0, 117)}…` : name, ...(Object.keys(props).length ? { state: props } : {}) });
+    if (out.length >= max) break;
+  }
+  return { nodes: out, truncated: out.length >= max };
+}
+
+// Roles worth offering a model: things it can act on or read as structure. Everything else
+// (generic containers, presentational wrappers) is tree noise that would crowd out the rest.
+const INTERESTING_ROLES = new Set([
+  'button', 'link', 'textbox', 'searchbox', 'combobox', 'listbox', 'option', 'checkbox',
+  'radio', 'switch', 'slider', 'spinbutton', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+  'tab', 'treeitem', 'heading', 'img', 'dialog', 'alert', 'status', 'progressbar',
+]);
+
 async function script(tabId, func, args = []) {
   const [inj] = await api.scripting.executeScript({ target: { tabId }, func, args });
   return inj?.result;
