@@ -313,3 +313,112 @@ export function filterEntries(entries, query) {
   if (!q) return entries;
   return entries.filter((e) => `${e.title} ${e.detail || ''}`.toLowerCase().includes(q));
 }
+
+/**
+ * Group runs into THREADS, because a run on its own is not the unit anyone reasons about.
+ *
+ * The activity log listed 1,205 independent rows. But nobody asks "what did run 847 do" —
+ * they ask what happened in a conversation, a meeting, a note. And those are not one run
+ * each: a meeting holds its live monitors and its summaries, a note holds every pass over
+ * it including a swarm of agents, a chat holds every message. Flattening that loses the only
+ * structure the data has.
+ *
+ * Three levels, matching what the runs already record:
+ *   thread (surface + sourceId) → turn (one run) → entries (user, context, tools, assistant)
+ *
+ * A run with no sourceId is its OWN thread rather than being pooled with other orphans:
+ * without an id there is no evidence two runs are related, and inventing a shared parent
+ * would group unrelated work under one heading — the opposite of the problem being fixed.
+ */
+export function threadsOf(runs = []) {
+  const byKey = new Map();
+  for (const run of runs) {
+    if (!run) continue;
+    const surface = run.surface || run.turn?.surface || run.kind || 'other';
+    const sourceId = run.sourceId || run.turn?.sourceId || null;
+    const key = sourceId ? `${surface}:${sourceId}` : `run:${run.turnId || run.id}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, { key, surface, sourceId, runs: [], startedAt: Infinity, endedAt: -Infinity, ms: 0, tokensIn: 0, tokensOut: 0, calls: 0, errors: 0 });
+    }
+    const t = byKey.get(key);
+    t.runs.push(run);
+    const at = run.at ?? run.turn?.startedAt ?? 0;
+    t.startedAt = Math.min(t.startedAt, at);
+    t.endedAt = Math.max(t.endedAt, run.turn?.endedAt ?? at);
+    t.ms += run.turn?.ms || 0;
+    t.tokensIn += run.turn?.tokensIn || 0;
+    t.tokensOut += run.turn?.tokensOut || 0;
+    t.calls += run.calls?.length || 0;
+    if (run.turn?.reason && run.turn.reason !== 'ok') t.errors += 1;
+  }
+  const threads = [...byKey.values()].map((t) => ({
+    ...t,
+    startedAt: Number.isFinite(t.startedAt) ? t.startedAt : 0,
+    endedAt: Number.isFinite(t.endedAt) ? t.endedAt : 0,
+    // Chronological WITHIN the thread — a conversation read bottom-up is not a conversation.
+    runs: [...t.runs].sort((a, b) => (a.at ?? 0) - (b.at ?? 0)),
+    turns: t.runs.length,
+  }));
+  // Most recently active first, which is the one question a log answers on open.
+  threads.sort((a, b) => b.endedAt - a.endedAt);
+  return threads;
+}
+
+/** A readable heading for a thread, from whatever it recorded. */
+export function threadTitle(thread, titleFor = () => null) {
+  const named = thread.sourceId ? titleFor(thread.surface, thread.sourceId) : null;
+  if (named) return named;
+  const first = thread.runs?.[0];
+  // Falling back to the surface plus a short id beats "Untitled": it still distinguishes two
+  // threads from each other, which is the minimum a heading has to do.
+  const short = thread.sourceId ? String(thread.sourceId).slice(-6) : String(first?.turnId || '').slice(-6);
+  const label = { chat: 'Chat', note: 'Note', meeting: 'Meeting' }[thread.surface] || (thread.surface || 'Run');
+  return short ? `${label} · ${short}` : label;
+}
+
+/**
+ * Split a recorded prompt into the rows a reader needs to tell things apart.
+ *
+ * The prompt was one row called "Prompt". But "why did it answer that" is nearly always a
+ * question about WHICH input said something — the person, the page attached to their
+ * message, or the instructions we added — and one row cannot answer it. So the same four
+ * things that are recorded separately are shown separately:
+ *
+ *   SYSTEM   ours, with the tool preamble as its own row: it is the largest single thing we
+ *            inject and it was hiding inside a total nobody could attribute
+ *   USER     what the person typed, and nothing else
+ *   CONTEXT  what was attached, one row each, named rather than pasted — including whether
+ *            the model was handed it or had to ask
+ *   ASSISTANT / TOOL rows come from the events, not from here
+ */
+export function promptEntries(prompt, at = 0) {
+  const out = [];
+  if (!prompt || typeof prompt !== 'object') return out;
+  if (prompt.system) {
+    out.push({ kind: 'system', at, title: 'System prompt', detail: `${approxChars(prompt.system)} chars`, text: prompt.system });
+  }
+  if (prompt.toolSystem) {
+    out.push({ kind: 'system', at, title: 'Tool instructions', detail: `${approxChars(prompt.toolSystem)} chars`, text: prompt.toolSystem });
+  }
+  for (const m of prompt.messages || []) {
+    if (!m || !String(m.content || '').trim()) continue;
+    out.push({
+      kind: m.role === 'assistant' ? 'assistant' : 'user',
+      at, title: m.role === 'assistant' ? 'Assistant' : 'User',
+      detail: '', text: String(m.content),
+    });
+  }
+  for (const c of prompt.context || []) {
+    out.push({
+      kind: 'context', at,
+      title: c.title || c.kind || 'Attached',
+      // "read on demand" vs "included" are two very different turns that otherwise look
+      // identical in a log, so the distinction is on the row rather than buried in the data.
+      detail: [c.url, c.chars ? `${c.chars} chars` : '', c.deferred ? 'read on demand' : 'included'].filter(Boolean).join(' · '),
+      data: c,
+    });
+  }
+  return out;
+}
+
+const approxChars = (s) => String(s || '').length;

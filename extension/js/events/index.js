@@ -37,7 +37,7 @@ export { defineSearchEngine, reconcileEngines, attemptOrder, ENGINE_KINDS, Searc
 export { defineToolGroup, createToolGroupRegistry, ToolGroupError } from './tool-groups.js';
 export { defineAdapter, createAdapterRegistry, AdapterError } from './adapters.js';
 export { linkifyCitations, sourcesFromToolText } from './citations.js';
-export { buildTrajectory, phasesOf, lanesOf, filterEntries, displayName, ENTRY_KINDS } from './trajectory.js';
+export { buildTrajectory, phasesOf, lanesOf, filterEntries, displayName, ENTRY_KINDS, threadsOf, threadTitle, promptEntries } from './trajectory.js';
 export { createTurnRunner, defineLoop, LOOP_KINDS, LoopError } from './loop.js';
 export { defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, signalsFrom, requirementsFor, requirementsForStep, sameModelKey, REACH, RouterError } from './router.js';
 export { makeSourceStore, manifestText, readSource, sourceId } from './sources-retrieval.js';

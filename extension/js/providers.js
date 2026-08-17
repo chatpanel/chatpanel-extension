@@ -1295,6 +1295,7 @@ export function turnSpecFor({ usage, tools, onDelta, agent } = {}) {
       turnId: usage?.turnId,
       kind,
       agentId: agent?.agentId || agent?.id || agent?.name || usage?.agentId || null,
+      surface: usage?.surface || null,
       sourceId: usage?.sourceId || null,
       background,
     },
@@ -1986,16 +1987,40 @@ function recordRouteDecision(turn, agent, settings, tools, messages) {
  * content never travels inside an event.
  */
 function recordPrompt(turn, agent, messages, tools) {
+  // FOUR DIFFERENT THINGS, RECORDED AS FOUR. They were flattened into one blob, so the
+  // trajectory could not tell the user's own words from the page that was attached to them
+  // or from the instructions we added — and "why did it answer that" is usually a question
+  // about which of those three said something.
+  //
+  //   system   — what WE told the model (ours, and the tool preamble, kept apart)
+  //   user     — what the person actually typed
+  //   context  — what was attached to it, named rather than inlined
+  //   tools    — what it was allowed to call
+  const context = [];
+  for (const m of messages || []) {
+    for (const a of m?.attachments || []) {
+      context.push({
+        kind: a.kind || 'context',
+        title: a.title || a.url || '',
+        url: a.url || '',
+        chars: String(a.text || '').length,
+        // Whether the model was HANDED this or had to ask for it. Two very different turns
+        // that otherwise look identical in the log.
+        deferred: /^\(not included/.test(String(a.text || '')),
+      });
+    }
+  }
   const text = JSON.stringify({
     system: agent?.systemPrompt || '',
-    messages: (messages || []).map((m) => ({ role: m.role, content: m.content })),
-    tools: (tools?.specs || []).map((t) => t.name || t.function?.name).filter(Boolean),
     toolSystem: tools?.system || '',
+    messages: (messages || []).map((m) => ({ role: m.role, content: m.content })),
+    context,
+    tools: (tools?.specs || []).map((t) => t.name || t.function?.name).filter(Boolean),
   }, null, 2);
   import('./event-log.js')
     .then(async (m) => {
       const ref = await m.putBlob(text, 'chat');
-      if (ref) turn.emit('assistant.prompted', { ref, chars: text.length });
+      if (ref) turn.emit('assistant.prompted', { ref, chars: text.length, contextCount: context.length });
     })
     .catch(() => {});
 }

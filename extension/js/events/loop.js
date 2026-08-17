@@ -95,6 +95,10 @@ export function createTurnRunner({ now = () => 0, newId, emit = () => {}, decide
     emit('turn.started', {
       turnId, kind, loopId: loop.id,
       agentId: request.agentId || null,
+      // WHICH THREAD THIS BELONGS TO. A run on its own is not the unit anyone reasons about —
+      // a conversation is, and a meeting or a note can hold many runs (live monitors,
+      // summaries, a swarm of agents). Without both halves the log is 1,205 unrelated rows.
+      surface: request.surface || null,
       sourceId: request.sourceId || null,
       background: request.background ?? loop.background,
     });
