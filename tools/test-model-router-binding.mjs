@@ -300,3 +300,27 @@ console.log('✓ failover reasons: same model for a provider saying no, a differ
 }
 
 console.log('✓ failover class: like is replaced by like, and a CLI agent is not an API model');
+
+// STRUCTURED WORK WANTS A MODEL, NOT AN AGENT. A canvas or spreadsheet adapter is one call:
+// hand it the data, it applies it, done. A CLI agent runs its OWN loop — explores, reads
+// files, decides what to do next — and having applied the shapes correctly it carries on,
+// because finishing is not something its loop is told about. A user watched the circle
+// appear and then waited until they killed the process.
+{
+  const both = [
+    { id: 'agent', classUsed: 'A', capabilities: ['tools', 'reasoning', 'coding'], quality: 0.9, costPer1k: 0 },
+    { id: 'model', classUsed: 'C', capabilities: ['tools', 'reasoning'], quality: 0.7, costPer1k: 3 },
+  ];
+  const drawing = { signals: { complexity: 'high' }, structured: true };
+  assert.equal((await complexityStrategy.decide(both, drawing))[0].id, 'model',
+    'a structured drawing task went to a CLI agent that will not stop');
+
+  // Without structured work, the better model wins on quality as before.
+  assert.equal((await complexityStrategy.decide(both, { signals: { complexity: 'high' } }))[0].id, 'agent');
+
+  // Not a hard filter: with only agents available, an agent that overruns still beats no
+  // answer at all.
+  assert.equal((await complexityStrategy.decide([both[0]], drawing))[0].id, 'agent');
+}
+
+console.log('✓ structured tasks prefer a model over an agent that runs its own loop');

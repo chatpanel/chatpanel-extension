@@ -208,7 +208,22 @@ export const complexityStrategy = defineRouteStrategy({
     if (sig?.approxTokens > 20_000) wants.add('long-context');
     const fit = (m) => [...wants].filter((c) => m.capabilities.includes(c)).length;
     const best = Math.max(...eligible.map(fit));
-    const shortlist = best > 0 ? eligible.filter((m) => fit(m) === best) : eligible;
+    let shortlist = best > 0 ? eligible.filter((m) => fit(m) === best) : eligible;
+
+    // STRUCTURED WORK WANTS A MODEL, NOT AN AGENT.
+    //
+    // A canvas or spreadsheet adapter is one call: hand it the data, it applies it, done. A
+    // CLI agent runs its OWN loop — it explores, reads files, decides what to do next — and
+    // having applied the shapes correctly it carries on, because finishing is not something
+    // its loop is told about. A user watched the circle appear and then waited until they
+    // killed the process.
+    //
+    // Not a hard filter: on a setup with only agents, an agent that overruns still beats no
+    // answer.
+    if (need.structured) {
+      const models = shortlist.filter((m) => m.classUsed !== 'A');
+      if (models.length) shortlist = models;
+    }
     // Rank by declared quality, then by cost as the tiebreak among equals. A model with an
     // unknown quality sits mid-table rather than last, so a newly added model is not
     // permanently skipped.
