@@ -363,10 +363,10 @@ export function routingSettings(settings = {}) {
  */
 export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false, request = null, structured = false, exclude = [], like = null } = {}) {
   const cfg = routingSettings(settings);
-  // `force` is the user having selected Auto: choosing the router IS the instruction to
-  // route, and making them also flip a settings dial would be asking for the same consent
-  // twice.
-  if (!force && cfg.mode !== 'on') return null;
+  // `force` is the user having selected Auto, which is the ONLY thing that turns routing on.
+  // A settings mode that could route an explicitly chosen model would override the user's own
+  // selection — they picked it for a reason.
+  if (!force) return null;
   try {
     const router = buildRouter(settings, resolveTarget);
     const decision = await router.routeWith({

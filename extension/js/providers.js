@@ -1688,10 +1688,15 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call)
 async function pickRoutedAgent(agent, settings, tools, turn, messages) {
   try {
     const [router, store] = await Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)]);
-    // Selecting "Auto" IS the instruction to route — asking the user to also flip a settings
-    // dial would be requesting the same consent twice.
+    // AUTO IS THE ONLY SWITCH.
+    //
+    // A settings dial that applied routing to an explicitly chosen model overrode the user's
+    // own selection — they picked that model for a reason, and answering from another is
+    // exactly the substitution this codebase keeps removing. Picking Auto is how routing is
+    // turned on; picking a model is how it is turned off. There is no third state, and the
+    // dial that created one was mine.
     const chose = agent?.kind === 'router' || agent?.id === 'router:auto';
-    if (!chose && router.routingSettings(settings).mode !== 'on') return null;
+    if (!chose) return null;
     // A page or canvas action is inherently hard: exact coordinates, a structured payload,
     // and a result that is visibly wrong when the model guesses. Cost is the right
     // tie-breaker between models that can all do the job, and the wrong one when they cannot.

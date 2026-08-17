@@ -70,28 +70,31 @@ const { routingSettings, routeForTurn } = await import('../extension/js/model-ro
 assert.equal(routingSettings({}).mode, 'observe');
 assert.equal(routingSettings({ ui: { routing: { mode: 'on' } } }).mode, 'on');
 
-// Observe and off both decline to choose — only "on" returns a target.
+// AUTO IS THE ONLY SWITCH. A settings mode that could route an explicitly chosen model would
+// override the user's own selection — they picked that model for a reason, and answering from
+// another is exactly the substitution this codebase keeps removing.
 assert.equal(await routeForTurn(settings, undefined, {}), null);
-assert.equal(await routeForTurn({ ...settings, ui: { routing: { mode: 'off' } } }, undefined, {}), null);
+assert.equal(await routeForTurn({ ...settings, ui: { routing: { mode: 'on' } } }, undefined, {}), null,
+  'a settings dial routed a request the user had not asked to route');
 
-const on = { ...settings, ui: { routing: { mode: 'on', reach: 'device' } } };
-const picked = await routeForTurn(on, undefined, {});
+const on = { ...settings, ui: { routing: { reach: 'device' } } };
+const picked = await routeForTurn(on, undefined, { force: true });
 assert.ok(picked?.target, 'routing was on and chose nothing');
 assert.equal(picked.decision.model.label, 'Ollama · gemma-4-26b');
 
 // WHAT THE TURN NEEDS OUTRANKS THE SAVED PREFERENCE. A turn carrying tools cannot use a
 // model without them, whatever the dials say.
-const toolsOnly = { ...settings, ui: { routing: { mode: 'on', reach: 'any', prefer: 'cost' } } };
-const withTools = await routeForTurn(toolsOnly, undefined, { capabilities: ['tools'] });
+const toolsOnly = { ...settings, ui: { routing: { reach: 'any', prefer: 'cost' } } };
+const withTools = await routeForTurn(toolsOnly, undefined, { capabilities: ['tools'], force: true });
 assert.ok(withTools.decision.model.capabilities.includes('tools'));
 
 // Constraints nothing satisfies mean the caller's own choice stands, rather than an error
 // or a silent downgrade to something forbidden.
-const impossible = { ...settings, ui: { routing: { mode: 'on', reach: 'device', maxCostPer1k: 0, maxLatencyMs: 1 } } };
-assert.equal(await routeForTurn(impossible, undefined, {}), null);
+const impossible = { ...settings, ui: { routing: { reach: 'device', maxCostPer1k: 0, maxLatencyMs: 1 } } };
+assert.equal(await routeForTurn(impossible, undefined, { force: true }), null);
 
 // A decision naming something unresolvable also defers rather than guessing.
-assert.equal(await routeForTurn({ endpoints: [], agents: [], ui: { routing: { mode: 'on' } } }, undefined, {}), null);
+assert.equal(await routeForTurn({ endpoints: [], agents: [] }, undefined, { force: true }), null);
 
 console.log('✓ routing modes: observe by default, on chooses, and every uncertainty defers');
 
@@ -162,7 +165,7 @@ console.log('✓ overrides: the user corrects the guesses, but can never widen r
 }
 
 // And a saved rating actually reaches the router.
-const rated = candidatesFrom({ ...settings, ui: { routing: { mode: 'on', reach: 'any', models: { 'mqk41ucyhmz1au': { quality: 0.9 } } } } });
+const rated = candidatesFrom({ ...settings, ui: { routing: { reach: 'any', models: { 'mqk41ucyhmz1au': { quality: 0.9 } } } } });
 assert.equal(rated.find((m) => m.id === 'mqk41ucyhmz1au').quality, 0.9);
 
 console.log('✓ routing settings: dials and per-model ratings share a branch without deleting each other');
