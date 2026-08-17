@@ -1340,7 +1340,7 @@ function citationCollector(tools) {
   };
 }
 
-async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction, usage: usageCtx, timing }, turn) {
+async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction, usage: usageCtx, timing, sources }, turn) {
   // Per-round-trip records for this turn. Accumulated rather than overwritten — see the
   // usage handler below.
   const requests = [];
@@ -1445,13 +1445,33 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   // other would. Returns null in every uncertain case, and null means "leave the choice
   // alone": routing must never be the reason a message fails to send.
   {
-    const routed = await pickRoutedAgent(agent, settings, tools, turn, messages);
+    const routed = await pickRoutedAgent(agent, settings, tools, turn, messages, sources);
     if (routed) {
       agent = routed;
       // Tell the panel, so the reply can name the model that answered. Emitted as an event
       // rather than returned, because the answer streams — by the time a return value
       // arrives the user has been reading text from a model they cannot identify.
       if (routed.routedVia) onEvent?.({ type: 'routed', ...routed.routedVia });
+    }
+  }
+
+  // ── the source ceiling ────────────────────────────────────────────────────
+  //
+  // ROUTING IS NOT ENOUGH. `pickRoutedAgent` returns null in every uncertain case and null
+  // means "leave the choice alone" — which is right for a preference and catastrophic for a
+  // privacy rule: an internal page with no local model available would have gone to the
+  // third party the user had selected. And routing only runs under Auto, so a manually
+  // chosen cloud model bypassed it entirely.
+  //
+  // So this is a GATE, not a ranking. It runs on every turn, after routing has had its
+  // chance to pick something local, and it REFUSES rather than substituting: silently
+  // answering from a different model is the substitution this codebase keeps removing, and
+  // silently sending anyway is the leak it exists to stop.
+  {
+    const gate = await sourceGate(agent, settings, messages, sources);
+    if (gate?.blocked) {
+      onEvent?.({ type: 'blocked', reason: 'internal-source', detail: gate.why, model: modelLabelOf(agent) });
+      throw new Error(gate.message);
     }
   }
 
@@ -1695,13 +1715,60 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call)
 }
 
 /**
+ * Would this turn send internal material to a model that is too far away?
+ *
+ * Sources come from two places: every context attachment the conversation carries (a page,
+ * a selection, a fetched URL — each keeps the `url` it came from), plus anything the caller
+ * states outright. The WHOLE conversation is scanned, not just the newest message, because
+ * an internal page attached three turns ago is still in the text being sent now.
+ *
+ * Returns `{ blocked, why, message }` or null. Dynamic-import so the model-router graph
+ * stays off the first-paint path.
+ */
+function sourceUrlsOf(messages, extraSources = []) {
+  const urls = [];
+  for (const m of messages || []) {
+    for (const a of m?.attachments || []) if (a?.url) urls.push(a.url);
+  }
+  for (const s of extraSources || []) if (s) urls.push(typeof s === 'string' ? s : (s.url || s.href || ''));
+  return urls.filter(Boolean);
+}
+
+export async function sourceGate(agent, settings, messages, extraSources = []) {
+  try {
+    const { sourceGuardFor, reachOf } = await import('./model-router.js');
+    const guard = sourceGuardFor(settings, sourceUrlsOf(messages, extraSources));
+    if (!guard) return null;
+    const REACH = ['device', 'trusted', 'any'];
+    const allowed = REACH.indexOf(guard.reach);
+    const actual = REACH.indexOf(reachOf(agent || {}));
+    if (actual <= allowed) return null;
+    const where = guard.reach === 'device' ? 'stay on this device' : 'stay inside your workspace';
+    return {
+      blocked: true,
+      why: guard.why,
+      // Name the source, the model and the way out. A refusal a person cannot act on gets
+      // switched off wholesale, which would leave them worse protected than before.
+      message: `Not sent: ${guard.why}. "${modelLabelOf(agent) || 'this model'}" is outside that, and content from an internal source must ${where}. `
+        + 'Pick a local model (or run one), or remove this site under Settings → Privacy → Internal sites.',
+    };
+  } catch {
+    // A BROKEN GUARD MUST NOT BECOME AN OPEN GATE — but it must not block every turn either.
+    // The compromise: fail open ONLY when the guard itself could not run, and say so, so a
+    // bug here is visible rather than silently permissive.
+    console.warn('[chatpanel] source guard did not run; turn allowed');
+    return null;
+  }
+}
+
+/**
  * The routed model, or null to keep the caller's choice.
  *
  * Every failure path returns null. A router that can break a turn is worse than no router,
  * and "the model I picked was ignored because routing threw" is the least explicable failure
  * this could produce.
  */
-async function pickRoutedAgent(agent, settings, tools, turn, messages) {
+async function pickRoutedAgent(agent, settings, tools, turn, messages, sources = []) {
   try {
     const [router, store] = await Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)]);
     // AUTO IS THE ONLY SWITCH.
@@ -1729,6 +1796,10 @@ async function pickRoutedAgent(agent, settings, tools, turn, messages) {
       // The request itself, so complexity, modality and volume can be read for free rather
       // than guessed at or asked of a model.
       request: { messages },
+      // Where the material came from. Given to the router so Auto can pick something local
+      // BEFORE the gate has to refuse — a turn answered on-device is a better outcome than a
+      // turn correctly blocked.
+      sources: sourceUrlsOf(messages, sources),
     };
     const routed = await router.routeForTurn(settings, store?.resolveTarget, need);
     if (!routed?.target) {
@@ -1791,6 +1862,7 @@ function recordRouteDecision(turn, agent, settings, tools, messages) {
         request: { messages },
         structured: (tools?.specs || []).some((t) => /^(structured_insert|sheet_write)$/.test(t.name || t.function?.name || '')),
         pageTools: (tools?.specs || []).some((t) => (t.name || t.function?.name) === 'page'),
+        sources: sourceUrlsOf(messages),
       });
       const preview = await router.previewRoute(settings, store?.resolveTarget, need);
       const used = agent?.id || agent?.name || agent?.model || null;

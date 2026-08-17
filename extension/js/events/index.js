@@ -39,7 +39,8 @@ export { defineAdapter, createAdapterRegistry, AdapterError } from './adapters.j
 export { linkifyCitations, sourcesFromToolText } from './citations.js';
 export { buildTrajectory, phasesOf, lanesOf, filterEntries, displayName, ENTRY_KINDS } from './trajectory.js';
 export { createTurnRunner, defineLoop, LOOP_KINDS, LoopError } from './loop.js';
-export { defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, signalsFrom, requirementsFor, requirementsForStep, REACH, RouterError } from './router.js';
+export { defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, signalsFrom, requirementsFor, requirementsForStep, sameModelKey, REACH, RouterError } from './router.js';
+export { classifySource, hostMatches, meetReach, sourcePolicyFor, DEFAULT_INTERNAL_PATTERNS } from './sources.js';
 export { defineRule, createRuleEngine, SUPPRESSED, RuleError } from './rules.js';
 export { defineMeetingAnalyzer, createAnalyzerRegistry, CADENCES, AnalyzerError } from './meeting-analyzers.js';
 export { explainMcpError, packageFromArgs } from './mcp-errors.js';

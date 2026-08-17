@@ -3574,6 +3574,51 @@ function renderPrefs() {
   $('pref-live-notes').value = String(settings.ui.liveNotesIntervalMin ?? 2);
   $('pref-meeting-window').value = String(settings.ui.meetingWindowMin ?? 0);
   $('pref-meeting-summary-style').value = settings.ui.meetingSummaryStyle === 'detailed' ? 'detailed' : 'concise';
+  // Internal sites — a REACH ceiling, not a redaction rule. Auto-saves: an "internal sites"
+  // list that only takes effect after a Save button is a list that is quietly not in effect.
+  {
+    const priv = settings.privacy || (settings.privacy = {});
+    const guard = $('internal-guard');
+    const pats = $('internal-patterns');
+    const ceil = $('internal-ceiling');
+    const note = $('internal-note');
+    if (guard && pats && ceil) {
+      guard.checked = priv.internalGuard !== false;
+      pats.value = (Array.isArray(priv.internalPatterns) ? priv.internalPatterns : []).join('\n');
+      ceil.value = priv.internalCeiling === 'trusted' ? 'trusted' : 'device';
+      const refresh = async () => {
+        // Say whether the rule can actually be honoured. A ceiling with no model under it
+        // means every internal page is refused rather than protected, and the person needs
+        // to know that BEFORE they hit it mid-turn.
+        try {
+          const { candidatesFrom, reachOf } = await import('./js/model-router.js');
+          const allowed = ceil.value === 'trusted' ? ['device', 'trusted'] : ['device'];
+          const usable = candidatesFrom(settings).filter((m) => allowed.includes(reachOf(
+            [...(settings.endpoints || []), ...(settings.agents || [])].find((t) => (t.id || t.name || t.model) === m.id) || {},
+          )));
+          note.textContent = !guard.checked
+            ? 'Off — content from internal sites is sent to whichever model is selected.'
+            : usable.length
+              ? `${usable.length} model${usable.length === 1 ? '' : 's'} can answer these: ${usable.slice(0, 3).map((m) => m.label).join(', ')}${usable.length > 3 ? '…' : ''}`
+              : 'No local model is configured, so turns that draw on an internal site will be refused rather than sent. Add a local endpoint (Ollama, LM Studio) to answer them.';
+          note.classList.toggle('warn', guard.checked && !usable.length);
+        } catch { note.textContent = ''; }
+      };
+      const write = async () => {
+        settings.privacy = settings.privacy || {};
+        settings.privacy.internalGuard = guard.checked;
+        settings.privacy.internalCeiling = ceil.value === 'trusted' ? 'trusted' : 'device';
+        settings.privacy.internalPatterns = pats.value.split(/[\n,]+/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+        await saveSettings(settings);
+        refresh();
+      };
+      guard.addEventListener('change', write);
+      ceil.addEventListener('change', write);
+      pats.addEventListener('change', write);
+      refresh();
+    }
+  }
+
   // Privacy tab — reversible PII redaction.
   const pii = settings.ui.piiRedaction || {};
   $('priv-mode').value = pii.mode || 'off';

@@ -25,7 +25,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FILES = [
   'index.js', 'event.js', 'ref.js', 'order.js', 'upcast.js',
   'capability.js', 'invariants.js', 'store.js', 'registry.js', 'harness.js',
-  'kernel.js', 'loop.js', 'trajectory.js', 'citations.js', 'adapters.js', 'tool-groups.js', 'search-engines.js', 'manifest.js', 'mcp-errors.js', 'meeting-analyzers.js', 'rules.js', 'router.js',
+  'kernel.js', 'loop.js', 'trajectory.js', 'citations.js', 'adapters.js', 'tool-groups.js', 'search-engines.js', 'manifest.js', 'mcp-errors.js', 'meeting-analyzers.js', 'rules.js', 'router.js', 'sources.js',
 ];
 
 function pkgDir() {

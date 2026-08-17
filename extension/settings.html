@@ -415,6 +415,31 @@ npx @chatpanel/bridge</code></pre>
       <section class="panel hidden" data-panel="privacy">
         <div class="card">
           <div class="card-head">
+            <h2>Internal sites <span class="sub">— content from these never leaves your machine</span></h2>
+          </div>
+          <p class="muted">Redaction removes sensitive <em>values</em>. This decides where a page may be
+            <strong>sent at all</strong>: when a turn draws on an internal source, only a local model may answer it —
+            whichever model is selected. Private addresses (<code>10.x</code>, <code>192.168.x</code>,
+            <code>localhost</code>) and single-word hosts (<code>http://wiki/</code>) are covered with no setup. Add your
+            own domains for internal sites that sit on public DNS.</p>
+          <label class="row"><input type="checkbox" id="internal-guard" checked>
+            <span>Keep content from internal sites on this device</span></label>
+          <label class="field">
+            <span>My internal domains <span class="sub">one per line — a domain covers its subdomains</span></span>
+            <textarea id="internal-patterns" rows="4" spellcheck="false"
+              placeholder="acme-corp.example&#10;*.eng.acme-corp.example"></textarea>
+          </label>
+          <label class="field">
+            <span>Where these may be answered</span>
+            <select id="internal-ceiling">
+              <option value="device">This device only — a model running locally</option>
+              <option value="trusted">My workspace — also allows a gateway or LAN model you run</option>
+            </select>
+          </label>
+          <p class="muted" id="internal-note"></p>
+        </div>
+        <div class="card">
+          <div class="card-head">
             <h2>Privacy <span class="sub">— redact PII before it reaches a model</span></h2>
           </div>
           <p class="muted">Sensitive values are replaced before anything reaches a model, then restored in the reply you

@@ -15,23 +15,27 @@ import {
   defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, signalsFrom, requirementsFor,
   sameModelKey,
 } from './events/router.js';
+import { classifySource, sourcePolicyFor, DEFAULT_INTERNAL_PATTERNS } from './events/sources.js';
 import { healthOf } from './model-health.js';
 
 /** Where a request must travel to reach this target — the only attribute privacy depends on. */
-function reachOf(target) {
+export function reachOf(target) {
   // A bridge agent runs a CLI on the user's own machine; the model behind it may still be
   // remote, which is why this says 'trusted' rather than 'device'. Claiming otherwise would
   // let a device-only request reach a cloud model through a local process.
   if (target.kind === 'bridge') return 'trusted';
-  //判 locality from the URL rather than importing providers.js: this module is loaded by
-  // the settings page, and pulling the provider graph in to answer one question would put a
-  // large subtree on a page that does not otherwise need it.
   const url = String(target.baseUrl || target.url || '');
   if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(:|\/|$)/i.test(url)) return 'device';
   // A .local or on-LAN host is the user's own machine or network — not a third party, but
-  // not the device either.
-  if (/^https?:\/\/([^/]*\.local|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(url)) return 'trusted';
-  return 'any';
+  // not the device either. Same private-address rules as the source classifier, so
+  // "internal" cannot mean one thing for a page and another for an endpoint.
+  //
+  // BUT THE FAIL-SAFE DIRECTION IS OPPOSITE HERE. classifySource fails CLOSED — an
+  // unreadable URL counts as internal, because a source we cannot identify must not be sent
+  // out. A DESTINATION we cannot identify is the reverse: calling it 'trusted' would admit
+  // it to a restricted turn. So an unparseable endpoint is treated as the furthest reach.
+  const c = classifySource(url);
+  return c.internal && c.matched !== 'unparseable' ? 'trusted' : 'any';
 }
 
 /**
@@ -470,7 +474,7 @@ export function routingSettings(settings = {}) {
  * message fails to send: a router that occasionally defers is fine, one that can break a
  * turn is not.
  */
-export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false, request = null, structured = false, pageTools = false, exclude = [], like = null } = {}) {
+export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false, request = null, structured = false, pageTools = false, exclude = [], like = null, sources = [] } = {}) {
   const cfg = routingSettings(settings);
   // `force` is the user having selected Auto, which is the ONLY thing that turns routing on.
   // A settings mode that could route an explicitly chosen model would override the user's own
@@ -480,7 +484,7 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
     const router = buildRouter(settings, resolveTarget);
     // One construction, shared with the observer — see needForTurn.
     const decision = await router.routeWith({
-      ...needForTurn(settings, { capabilities, request, structured, pageTools }),
+      ...needForTurn(settings, { capabilities, request, structured, pageTools, sources }),
       exclude,
       like,
     });
@@ -504,23 +508,57 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
  * class of bug as the duplicated engine list: two implementations of one decision drift, and
  * the one nobody is watching is the one that goes wrong.
  */
-export function needForTurn(settings, { capabilities = [], request = null, structured = false, pageTools = false, force = false } = {}) {
+/**
+ * The internal-source policy, read from settings in ONE place.
+ *
+ * Defaults are ON and claim only what an address proves — private ranges and single-label
+ * hosts genuinely cannot be public sites, so there is nothing to opt into and no false
+ * positives to apologise for. Anything beyond that (a company domain on public DNS) is the
+ * user's own pattern, because from here it is indistinguishable from any other public host.
+ */
+export function sourcePolicySettings(settings = {}) {
+  const cfg = settings?.privacy || {};
+  const extra = (Array.isArray(cfg.internalPatterns) ? cfg.internalPatterns : String(cfg.internalPatterns || '').split(/[\s,]+/))
+    .map((x) => String(x || '').trim().toLowerCase())
+    .filter(Boolean);
+  return {
+    enabled: cfg.internalGuard !== false,
+    patterns: [...DEFAULT_INTERNAL_PATTERNS, ...extra],
+    ceiling: cfg.internalCeiling === 'trusted' ? 'trusted' : 'device',
+  };
+}
+
+/** What the sources of a turn allow. Returns null when the guard is off or nothing matched. */
+export function sourceGuardFor(settings, sources = []) {
+  const policy = sourcePolicySettings(settings);
+  if (!policy.enabled || !sources?.length) return null;
+  const p = sourcePolicyFor(sources, { patterns: policy.patterns, ceiling: policy.ceiling });
+  return p.internal ? p : null;
+}
+
+export function needForTurn(settings, { capabilities = [], request = null, structured = false, pageTools = false, force = false, sources = [] } = {}) {
   const signals = request ? signalsFrom(request) : {};
   // REQUIREMENTS FIRST. What the work needs eliminates candidates; cost and speed only order
   // what survives. A preference lets an unsuitable model win once the better ones decline,
   // which is exactly how a chain of five ended on one that could not do the job.
   const req = requirementsFor(signals, { structured, pageTools, hasTools: capabilities.includes('tools') });
+  // WHERE IT CAME FROM IS A CEILING, NOT A PREFERENCE. Routing asked what the work needed and
+  // never asked what it was about, so an internal page was summarised by a public inference
+  // host. This narrows reach and can only narrow it — reach is never relaxed (see the
+  // relaxation order in the router), so no later step can trade it away for capability.
+  const guard = sourceGuardFor(settings, sources);
   return {
     // With no stated deadline or budget, "reasonably fast and reasonably cheap" is what
     // anybody means — and it only ever decides between models that already qualify.
     prefer: 'balanced',
-    reach: 'any',
+    reach: guard ? guard.reach : 'any',
     capabilities: [...new Set([...capabilities, ...req.required])],
     minQuality: req.minQuality,
     // Which requirements may be given up if nothing qualifies — never `tools`, and never
     // reach. See requirementsFor.
     negotiable: req.negotiable,
-    requirementReasons: req.why,
+    requirementReasons: guard ? [...req.why, guard.why] : req.why,
+    sourceGuard: guard,
     signals,
     requestText: request ? String(request.text || (request.messages || []).map((m) => m?.content || '').join('\n')).slice(-2000) : '',
     structured,
