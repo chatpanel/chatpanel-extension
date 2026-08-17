@@ -817,6 +817,28 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
   }
   if (!res.ok) throw new Error(`Bridge: HTTP ${res.status} — ${await safeText(res)}`);
 
+  // STOP IS AN INSTRUCTION, NOT A DROPPED SOCKET.
+  //
+  // Aborting the fetch left the bridge to infer cancellation from a socket close, which
+  // arrives late and, on a request whose body was already consumed, may not arrive at all —
+  // a codex shell step ran on for minutes after Stop. The bridge now names each run, and we
+  // tell it to stop that run by name. The socket path stays as the backstop for a panel
+  // that crashes.
+  let runId = null;
+  const cancelRun = () => {
+    if (!runId) return;
+    const id = runId;
+    runId = null;
+    fetch(`${base}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+      // NOT the turn's signal: this request exists BECAUSE that signal fired, and passing it
+      // would abort the cancellation itself.
+    }).catch(() => {});
+  };
+  signal?.addEventListener?.('abort', cancelRun, { once: true });
+
   let full = '';
   // Token accounting for CLI agents. Newer bridges emit a {type:'usage'} SSE
   // event (real counts from Claude Code / Codex stream-json); older ones don't,
@@ -829,6 +851,12 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
     try {
       ev = JSON.parse(data);
     } catch {
+      continue;
+    }
+    if (ev.type === 'run') {
+      runId = ev.id;
+      // Stop may have been pressed before the id arrived — honour it the moment it does.
+      if (signal?.aborted) cancelRun();
       continue;
     }
     if (ev.type === 'delta' && ev.text) {
