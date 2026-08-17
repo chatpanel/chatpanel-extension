@@ -40,7 +40,10 @@ assert.ok(outer.remoteTools.has(MCP_TOOL_NAME), 'the dispatcher is missing from 
 // mcp_call.
 assert.ok(!/One or more MCP servers are connected/.test(String(outer.system || '')),
   'the shared MCP rulebook is resident again — the dispatcher name re-admitted it');
-assert.ok(estimate(outer.system) < 40, `resident system is still ${estimate(outer.system)} tokens`);
+// The ~600-token rulebook must stay deferred. A capability statement is resident and
+// intentional: naming the tool without saying what it reaches is what let a model answer
+// "I do not have access" with the tool in hand.
+assert.ok(estimate(outer.system) < 120, `resident system is ${estimate(outer.system)} tokens — the rulebook is back`);
 
 // Every server tool stays reachable — the cap stops being a capability decision.
 const actions = wrapped.specs[0].parameters.properties.action.enum;

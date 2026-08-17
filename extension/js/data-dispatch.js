@@ -31,7 +31,19 @@ export function dataDispatchProvider(inner) {
     name: DATA_TOOL_NAME,
     description: DESCRIPTION,
     // One line resident, not 678. The rest travels with `describe`.
-    resident: 'Call `find` to search the user\'s own chats, notes and meetings, or the web.',
+    // SAY THAT IT HAS THE DATA, not just that a tool exists.
+    //
+    // Asked "check my meetings with <name>", a model answered "I do not have access to your
+    // personal calendar, emails, or meeting history" — while `find` was sitting in its
+    // toolset. The old line named the tool and left the capability to be inferred, and
+    // inference is what small models are worst at. Same refusal the page tool produced
+    // ("I cannot type into your Google Sheet"), same fix: state it.
+    resident:
+      "You HAVE access to the user's own ChatPanel data — their past chats, notes, and "
+      + 'meeting transcripts and summaries — through the `find` tool, plus the web. When the '
+      + 'question is about past meetings, notes, people, decisions, or anything the user '
+      + 'discussed or wrote, call `find` FIRST and answer from what it returns. Never tell '
+      + 'the user you cannot access their meetings, notes or history: you can.',
     inner,
     remote: false, // local execution — history is on-device, web search is proxied per settings
   });

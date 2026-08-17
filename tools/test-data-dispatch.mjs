@@ -17,9 +17,13 @@ console.log(`  data tools: ${beforeTok} → ${afterTok} tokens (${Math.round((1 
 assert.ok(afterTok < beforeTok / 3, `expected a large cut, got ${beforeTok} → ${afterTok}`);
 assert.equal(wrapped.specs.length, 1, 'more than one tool is still resident');
 
-// The 678-token guidance block must NOT be resident — that block is what made the model
-// open a conversation by reciting its own tools.
-assert.ok(estimate(wrapped.system) < 30, 'the system prompt is still carrying the guidance');
+// The 678-token GUIDANCE block must not be resident — that block is what made the model
+// open a conversation by reciting its own tools. What IS resident is a capability
+// statement, and that one earns its tokens: without it a model answered "I do not have
+// access to your meeting history" while this very tool sat in its toolset. The guard is
+// against the manual coming back, not against saying what the tool can do.
+assert.ok(estimate(wrapped.system) < 120, `resident system is ${estimate(wrapped.system)} tokens — the guidance block is back`);
+assert.ok(!/citation/i.test(String(wrapped.system)), 'the detailed guidance leaked into the prompt');
 
 // ── everything stays reachable: nothing was traded away for the saving ───────
 const enumerated = wrapped.specs[0].parameters.properties.action.enum;

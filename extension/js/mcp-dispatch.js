@@ -38,7 +38,11 @@ export function mcpDispatchProvider(inner) {
   return makeDispatchProvider({
     name: MCP_TOOL_NAME,
     description: DESCRIPTION,
-    resident: 'Call `mcp` to reach the user\'s connected MCP servers (their own integrations).',
+    // Same lesson as the data and page groups: name the capability, not just the tool.
+    resident:
+      "You HAVE access to the user's connected MCP servers — their own integrations — "
+      + 'through the `mcp` tool. When a request matches a connected server\'s domain, call '
+      + 'it rather than saying the integration is unavailable.',
     inner,
     // Load-bearing for redaction, not bookkeeping. See the note above.
     remote: true,
