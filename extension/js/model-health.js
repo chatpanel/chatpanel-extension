@@ -43,11 +43,21 @@ export function classifyFailure(err) {
   // model name, a deprecation notice — every other model would handle this request fine, so
   // failing the turn is the one response that helps nobody. Checked BEFORE the generic 4xx
   // rule, which would otherwise read this as our mistake and refuse to fail over.
-  if (status === 410 || /end of life|no longer available|has been (retired|deprecated|removed)|model.*not found|unknown model|decommissioned/i.test(text)) return 'gone';
+  if (status === 410
+    || /end of life|no longer available|has been (retired|deprecated|removed)|decommissioned/i.test(text)
+    // "The model X does not exist or you do not have access to it" — a 404 naming a model is
+    // the provider saying THIS model is unusable, not that our request was malformed. Every
+    // other model would have answered, so treating it as our mistake ends the turn for no
+    // reason.
+    || /model.*(does not exist|not found|no access|do not have access)|unknown model|no such model/i.test(text)) return 'gone';
   if (status >= 500 || /overloaded|unavailable|timeout|ECONNRESET/i.test(text)) return 'server';
-  // A 400 or 401 IS our request or our key being wrong. Standing the model down would hide a
-  // configuration error behind a health problem, and the user would fix the wrong thing.
-  if (status >= 400 && status < 500) return null;
+  // ONLY these are OUR fault. A 400 is a malformed request, a 401/403 a key problem — every
+  // model would refuse them identically, so retrying turns one clear error into four slow
+  // ones and hides a configuration problem behind a health one.
+  if ([400, 401, 403].includes(status)) return null;
+  // Everything else gets tried elsewhere. A router that gives up on an unrecognised failure
+  // is a router that gives up, and the user asked for the next option — not for a verdict on
+  // whose fault it was.
   return 'unknown';
 }
 

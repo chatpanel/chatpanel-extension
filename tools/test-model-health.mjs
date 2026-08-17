@@ -17,6 +17,9 @@ assert.equal(classifyFailure(new Error('fetch failed: ECONNRESET')), 'server');
 // would have read it as our mistake and refused to fail over.
 assert.equal(classifyFailure(new Error('HTTP 410 — {"title":"Gone","status":410,"detail":"The model has reached its end of life on 2026-08-07 and is no longer available."}')), 'gone');
 assert.equal(classifyFailure({ status: 404, message: 'unknown model xyz' }), 'gone');
+// The real Groq 404: a model that does not exist is the provider saying THIS model is
+// unusable, not that our request was malformed. Every other model would have answered.
+assert.equal(classifyFailure(new Error('HTTP 404 — {"error":{"message":"The model llama-3.1-8b-instant does not exist or you do not have access to it."}}')), 'gone');
 assert.equal(classifyFailure(new Error('This model has been deprecated')), 'gone');
 markUnhealthy('dead', { status: 410, message: 'end of life' });
 assert.equal(healthOf('dead').available, false, 'a retired model stayed in rotation');
@@ -29,6 +32,14 @@ assert.ok(healthOf('dead').until - Date.now() > 60 * 60_000);
 // send the user to fix the wrong thing.
 assert.equal(classifyFailure({ status: 400 }), null);
 assert.equal(classifyFailure({ status: 401 }), null);
+assert.equal(classifyFailure({ status: 403 }), null);
+
+// EVERYTHING ELSE GETS TRIED ELSEWHERE. A router that gives up on an unrecognised failure is
+// a router that gives up — the user asked for the next option, not for a verdict on whose
+// fault it was.
+assert.equal(classifyFailure({ status: 404, message: 'Not Found' }), 'unknown');
+assert.equal(classifyFailure({ status: 422, message: 'Unprocessable' }), 'unknown');
+assert.equal(classifyFailure(new Error('socket hang up')), 'unknown');
 assert.equal(markUnhealthy('m', { status: 401 }), null, 'a bad key stood the model down');
 assert.equal(healthOf('m').available, true);
 

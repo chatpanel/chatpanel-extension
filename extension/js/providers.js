@@ -1589,7 +1589,11 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call)
   // KEEP TRYING, not once. The first replacement can decline too — a retired model is often
   // retired at every provider, so one retry lands on the same wall and the turn dies anyway.
   // Bounded, because a user waiting on an answer should not sit through eight failures.
-  const MAX_ATTEMPTS = 4;
+  // Enough to work through a realistic set of models rather than sampling it. A user with
+  // eight endpoints who watches five decline has been told nothing useful by stopping at
+  // four — but this is still bounded, because sitting through every failure is its own kind
+  // of broken.
+  const MAX_ATTEMPTS = 6;
   const tried = [];
   let current = agent;
   let lastErr = null;
@@ -1627,7 +1631,17 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call)
           classUsed: current.routedVia?.classUsed || (current.kind === 'bridge' ? 'A' : 'C'),
         },
       });
-      if (!next?.target) throw err;   // nothing left to try — the original error is honest
+      if (!next?.target) {
+        // Genuinely out of options. Say that, rather than showing the last provider's error
+        // as though it were the whole story — "Groq says no" and "every model you have said
+        // no" are different problems with different fixes.
+        const e = new Error(
+          `${tried.length} model${tried.length === 1 ? '' : 's'} tried, none could answer. `
+          + `Last error — ${err.message}`,
+        );
+        e.cause = err;
+        throw e;
+      }
 
       const to = next.decision.model.label || next.decision.model.id;
       turn.emit('automation.fired', { ruleId: 'router:failover', classUsed: 'R', from: current.id, to, reason: marked.reason });
