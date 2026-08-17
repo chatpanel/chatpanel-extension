@@ -427,11 +427,24 @@ async function pageToolProvider(resolvedAgent) {
   // dispatcher carries the same reach for a quarter of it, with each action's full schema
   // one `describe` call away. The guard stays underneath, on the REAL action name, so the
   // dispatcher is never a route around the confirmation gate or the site grant.
+  //
+  // THE SCHEMAS WERE COLLAPSED; THE GUIDANCE WAS NOT. This provider's `system` is ~2,500
+  // tokens of how-to-drive-a-page instruction — pointer lock, spreadsheet commits, canvas
+  // sensing — and it was resident on EVERY turn, including "how is the weather". Collapsing
+  // twenty schemas into one tool and then shipping the manual anyway saved a quarter of
+  // what it should have.
+  //
+  // So the manual travels with `describe`, exactly as the data and MCP groups already do.
+  // A turn that never touches the page pays one line; a turn that does reads the guidance
+  // at the moment it is about to act on it — which is also when it is most likely to follow
+  // it, rather than a thousand tokens earlier.
   const { buildDispatchSpec, makeDispatchExecutor } = await import('./js/page-dispatch.js');
+  const { withGuidance } = await import('./js/group-dispatch.js');
   return {
     specs: [buildDispatchSpec(specs)],
-    execute: makeDispatchExecutor(specs, guardedExecute),
-    system,
+    execute: withGuidance(makeDispatchExecutor(specs, guardedExecute), system),
+    system: 'Call `page` to read or act on the user\'s current browser tab; '
+      + '{"action":"describe","args":{"tool":"<action>"}} returns an action\'s schema and how to use it.',
   };
 }
 
