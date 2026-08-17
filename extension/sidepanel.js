@@ -96,7 +96,7 @@ import {
 // Pure, tiny, no transitive graph — safe on the first-paint path (the heavy
 // canvas-adapters / page-actions bodies stay dynamic-imported inside pageToolProvider).
 import { KIND_VERB } from './js/page-match.js';
-import { syncPageContext } from './js/page-capability.js';
+import { syncPageContext, setPageToolFactory, acquirePageTools } from './js/page-capability.js';
 import {
   PAGE_MODES,
   PAGE_DECISIONS,
@@ -488,7 +488,15 @@ async function toolsetFor(
 ) {
   // Page-action tools need a live tab + confirm dialogs — skip them for background
   // callers (e.g. auto-refreshing live monitors) that shouldn't drive the tab.
-  const page = pageTools ? await pageToolProvider(resolvedAgent) : null;
+  //
+  // Taken from the CAPABILITY now, not built here. The turn is one caller among several
+  // (a rule or a schedule can acquire the same tools with no conversation in existence),
+  // and the capability answers all of them identically — so automation cannot reach
+  // further than a conversation can. Falls back to direct construction when the capability
+  // is not armed yet, which keeps the very first turn after load working exactly as before.
+  const page = pageTools
+    ? (await acquirePageTools(resolvedAgent)) ?? (await pageToolProvider(resolvedAgent))
+    : null;
   const history = historyRag || skillRun?.history || null;
   const { buildTurnTools } = await import('./js/turn-tools.js'); // heavy toolset graph, on-demand
   const built = await buildTurnTools({
@@ -3405,6 +3413,11 @@ function pageDecisionNow() {
 // Publish the page context and let the dependent render. One entry point instead of four
 // call sites, and the button resets on withdrawal without anyone remembering to reset it.
 function syncPageActBtn() {
+  // The capability owns availability; the side panel still owns construction, because the
+  // provider needs panel state (confirm dialogs, per-site trust, learned controls). Passing
+  // it in keeps the 250-line body where its dependencies are instead of dragging them into
+  // a shared module.
+  setPageToolFactory((agent) => pageToolProvider(agent));
   const tab = state.activeTab;
   void syncPageContext(tab?.id ? { tab, decision: pageDecisionNow() } : null, {
     onArm: (v) => paintPageActBtn(v.decision),

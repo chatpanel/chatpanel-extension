@@ -45,6 +45,7 @@ export function createRegistry({ onEvent = null } = {}) {
   const components = new Map();    // id  -> record
   let settling = false;
   let disposed = false;
+  let withdrawing = false;   // see withdrawSync — suspends settling inside rule 2's window
 
   const emit = (event, detail) => { if (onEvent) onEvent({ event, ...detail }); };
 
@@ -134,11 +135,28 @@ export function createRegistry({ onEvent = null } = {}) {
   function withdrawSync(key) {
     const binding = bindings.get(key);
     if (!binding) return;
-    for (const record of components.values()) {
-      if (record.state === STATE.ACTIVE && record.requires.includes(key)) deactivate(record);
+    // Rule 2 creates a window: dependents are stood down while the binding they need is
+    // still present, precisely so their teardown can use it. Anything that settles inside
+    // that window sees an inactive component whose requirement is still satisfied and
+    // dutifully re-activates it — the component arms, then disarms again a moment later.
+    //
+    // That happens as soon as a second dependent exists, because tearing IT down withdraws
+    // what IT provided, and a nested withdrawal settles. With one dependent the window was
+    // never entered, which is why this survived until a second one was added.
+    //
+    // So the window is closed rather than the re-activation being detected afterwards:
+    // settling is suspended until the binding is actually gone.
+    const outermost = !withdrawing;
+    withdrawing = true;
+    try {
+      for (const record of components.values()) {
+        if (record.state === STATE.ACTIVE && record.requires.includes(key)) deactivate(record);
+      }
+      bindings.delete(key);
+      emit('withdrawn', { key });
+    } finally {
+      if (outermost) withdrawing = false;
     }
-    bindings.delete(key);
-    emit('withdrawn', { key });
     queueSettle();
   }
 
@@ -163,7 +181,7 @@ export function createRegistry({ onEvent = null } = {}) {
     }
   }
 
-  function queueSettle() { if (!settling) settle(); }
+  function queueSettle() { if (!settling && !withdrawing) settle(); }
 
   function register({ name, requires = [], apply }) {
     if (typeof apply !== 'function') throw new TypeError('registry: component.apply required');
