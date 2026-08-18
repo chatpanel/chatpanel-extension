@@ -134,3 +134,49 @@ const first = (out) => (Array.isArray(out) ? out[0] : out);
 }
 
 console.log('✓ order settles every tie in the router — and overrides nothing');
+
+// ── AND ELIMINATION IS NOT A TIE ────────────────────────────────────────────
+//
+// "Order 1 and Order 2 are for the same purpose, so Order 1 should have won." It would have,
+// if it had been in the running: a model ruled out by REACH never enters the ordering, so
+// there is no tie for its order to break. The trace has to say so, or the only visible facts
+// are that Order 1 existed and Order 2 answered.
+{
+  const cfg = {
+    agents: [
+      { id: 'pinned-first', name: 'Agent A', kind: 'bridge', model: 'opus' },
+      { id: 'pinned-second', name: 'Agent B', kind: 'bridge', model: 'gpt-5.6-sol' },
+    ],
+    endpoints: [],
+    privacy: { internalCeiling: 'trusted' },
+    // A bridge agent is 'trusted' by default. Widening one to 'any' is a statement that it
+    // reaches a third party — and reach overrides may only ever widen, because narrowing
+    // would let a device-only turn reach out on one typo.
+    ui: { routing: { models: { 'pinned-first': { providerRank: 1, reach: 'any' }, 'pinned-second': { providerRank: 2 } } } },
+  };
+  const internal = [{ url: 'https://wiki/pages/123' }];   // single-label host: not a public site
+  const r = await routeForTurn(cfg, undefined, {
+    force: true, capabilities: ['tools'], sources: internal,
+    request: { messages: [{ content: 'summarise this page for me' }] },
+  });
+
+  assert.equal(r.decision.model.id, 'pinned-second', 'a model eliminated by reach still won on its order');
+  const out = r.graph.nodes.find((n) => n.id === 'pinned-first');
+  assert.equal(out.eligible, false);
+  assert.match(out.why, /exceeds/);
+  assert.equal(out.rank, null, 'an eliminated model was given a place in the ranking');
+
+  // The constraint that did it, named — host and rule, not just "trusted".
+  assert.ok(r.graph.constraints.some((c) => /wiki/.test(c) && /intranet/.test(c)),
+    'the trace capped the turn without saying which source did it');
+
+  // Clear the widening and the same turn goes to Order 1, which is the whole point.
+  const narrowed = { ...cfg, ui: { routing: { models: { 'pinned-first': { providerRank: 1 }, 'pinned-second': { providerRank: 2 } } } } };
+  const r2 = await routeForTurn(narrowed, undefined, {
+    force: true, capabilities: ['tools'], sources: internal,
+    request: { messages: [{ content: 'summarise this page for me' }] },
+  });
+  assert.equal(r2.decision.model.id, 'pinned-first', 'with reach in range, the order the user set did not decide');
+}
+
+console.log('✓ reach eliminates before order orders — and the trace names what capped the turn');

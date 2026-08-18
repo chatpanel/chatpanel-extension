@@ -36,6 +36,16 @@ export function renderRouteGraph(graph) {
     box.append(head);
   }
 
+  // WHAT NARROWED THE FIELD, before anything was ranked. A model eliminated by reach never
+  // entered the ordering at all, so "why didn't my Order 1 win" is usually answered here
+  // rather than in the list below — and until this was shown, the answer was invisible.
+  if (graph.constraints?.length) {
+    const box2 = el('div', 'rg-constraints');
+    box2.append(el('span', 'rg-constraints-label', 'constraints'));
+    for (const c of graph.constraints) box2.append(el('span', 'rg-constraint', c));
+    box.append(box2);
+  }
+
   // THE CHAIN: where this turn goes if the model declines, and after that. Drawn as a walk
   // because that is what it is — each hop is chosen relative to the one before it, not read
   // off a ranking.

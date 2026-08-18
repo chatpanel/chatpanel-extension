@@ -39,7 +39,7 @@ const num = (v) => (Number.isFinite(v) ? v : null);
  *   chain   — [chosen, ...replacements], the walk each subsequent decline would take.
  */
 export function routeGraph({ decision = null, models = [], hops = 4 } = {}) {
-  if (!decision) return { chosen: null, strategy: null, reasons: [], nodes: [], chain: [], eliminated: 0 };
+  if (!decision) return { chosen: null, strategy: null, reasons: [], constraints: [], nodes: [], chain: [], eliminated: 0 };
 
   const eligible = decision.eligible || [];
   const eligibleIds = new Set(eligible.map((m) => m.id));
@@ -77,6 +77,10 @@ export function routeGraph({ decision = null, models = [], hops = 4 } = {}) {
     chosen: decision.model?.id || null,
     strategy: decision.strategy || null,
     reasons: decision.reasons || [],
+    // WHY the constraints are what they are — which page capped the reach, what set the
+    // quality floor. "reach 'trusted' within 'trusted'" says a ceiling applied and not what
+    // imposed it, and an unexplained restriction is one people switch off wholesale.
+    constraints: decision.constraints || [],
     nodes,
     chain: projectChain(decision, hops),
     eliminated: nodes.filter((n) => !n.eligible).length,

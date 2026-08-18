@@ -490,6 +490,18 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
     route(need = {}) {
       const wantReach = REACH.includes(need.reach) ? need.reach : 'any';
       const wantCaps = need.capabilities || [];
+      // WHY THE CONSTRAINTS ARE WHAT THEY ARE. `requirementReasons` was built on every turn
+      // and read by nothing, so the single most consequential thing that can happen to a
+      // route — a source capping its reach — was computed, named, and thrown away. The trace
+      // said "reach 'trusted' within 'trusted'" and could not say which page made it trusted,
+      // which is the difference between a restriction someone understands and one they switch
+      // off wholesale.
+      //
+      // Declared up here because the no-candidate return cites it too: "nothing qualified" is
+      // the case where knowing what narrowed the field matters most. Carried separately from
+      // `reasons` — that is the one-line summary in the activity strip, this is the detail the
+      // graph exists to show.
+      const constraints = need.requirementReasons || [];
       const rejected = [];
       const eligible = registry.filter((m) => {
         if (!m.available) { rejected.push({ id: m.id, why: 'unavailable' }); return false; }
@@ -560,7 +572,7 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
             };
           }
         }
-        return { model: null, reasons: ['no candidate satisfies the constraints'], rejected };
+        return { model: null, reasons: ['no candidate satisfies the constraints'], constraints, rejected };
       }
 
       const prefer = need.prefer || 'balanced';
@@ -698,6 +710,7 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
       return {
         model: chosen,
         eligible: ranked,
+        constraints,
         strategy: declared ? 'declared-default' : 'default-score',
         reasons: [
           `reach '${chosen.reach}' within '${wantReach}'`,
