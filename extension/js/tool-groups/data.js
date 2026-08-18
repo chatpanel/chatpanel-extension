@@ -25,7 +25,7 @@ export const dataGroup = defineToolGroup({
   id: 'data',
   label: "The user's own data and the web",
   priority: 50,
-  applies: (ctx) => !!ctx.resolvedAgent && (ctx.includeHistory !== false || ctx.includeWebSearch !== false),
+  applies: (ctx) => !!ctx.resolvedAgent && (ctx.includeHistory !== false || ctx.includeWebSearch !== false || !!ctx.noteWriter),
   async build(ctx) {
     const { settings = {}, license = null } = ctx;
     const pro = isPro(license);
@@ -50,9 +50,19 @@ export const dataGroup = defineToolGroup({
     const inner = buildToolset(providers);
     // Opt-out exists because a model that handles a flat toolset better should not be
     // forced through indirection.
-    if (settings?.ui?.dataDispatch === false) {
-      return inner ? { specs: inner.specs, system: inner.system, execute: inner.execute } : null;
-    }
-    return dataDispatchProvider(inner);
+    const read = settings?.ui?.dataDispatch === false
+      ? (inner ? { specs: inner.specs, system: inner.system, execute: inner.execute } : null)
+      : dataDispatchProvider(inner);
+
+    // WRITING IS A SEPARATE TOOL, on purpose. `find` searches and reads; folding a write into
+    // a dispatcher named "find" would hide the one action with a side effect behind the name
+    // of the ones without. It is also why the write tool is not collapsed with the others: a
+    // model choosing to modify the user's notes should be choosing something that says so.
+    //
+    // Supplied by the SURFACE (ctx.noteWriter) rather than built here, because every write
+    // asks the user to confirm and shows them the result — both of which need a window.
+    const providersOut = [read, ctx.noteWriter].filter(Boolean);
+    if (!providersOut.length) return null;
+    return providersOut.length === 1 ? providersOut[0] : buildToolset(providersOut);
   },
 });

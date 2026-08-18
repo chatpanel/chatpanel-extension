@@ -643,6 +643,52 @@ function summarizeResult(out) {
 // Rough token estimate — the same 4-chars-per-token rule the dispatcher budget uses.
 const approxTokens = (v) => (v == null ? 0 : Math.round(JSON.stringify(v).length / 4));
 
+/**
+ * The tool that WRITES the user's notes — built here because both halves need a window.
+ *
+ * Asked to save a finding, an agent tried to drive the Notes page with browser automation,
+ * was correctly blocked from a chrome-extension:// URL, and offered to hand back
+ * copy-paste-ready text. It was right that no write tool existed; the user was the clipboard.
+ *
+ * TWO THINGS MAKE IT SAFE TO OFFER, and both are borrowed rather than invented:
+ *
+ *   The same confirmation the page tools use. A write to the user's own data is exactly that
+ *   class of action: the card names the concrete intent ("Create a note titled X"), and a
+ *   decline is final. The preference is shared with page actions deliberately — someone who
+ *   has already said "stop asking me before you act" has answered this question too.
+ *
+ *   The note OPENS as it is written. A permission dialog that is followed by nothing visible
+ *   asks the user to take the result on trust; watching the note appear is what makes the
+ *   grant meaningful, and it is what they asked for.
+ */
+async function noteWriteProvider(resolvedAgent) {
+  if (!resolvedAgent) return null;
+  const [{ NOTE_TOOL_SPECS, makeNoteToolExecutor }, store] = await Promise.all([
+    import('./js/note-tools.js'),
+    import('./js/store-notes.js'),
+  ]);
+  const execute = makeNoteToolExecutor({
+    store,
+    // Same card, same wording, same 'deny' semantics as a page action.
+    confirm: async (detail) => ((await confirmPageAction(detail)) === 'deny' ? 'deny' : 'allow'),
+    needsConfirm: state.settings.ui?.pageActionConfirm !== false,
+    agentLabel: resolvedAgent.name || resolvedAgent.model || 'AI',
+    onWrote: (id, action) => {
+      // Show it happening. A new tab for a created note; an existing one is focused if it is
+      // already open, so a run of appends does not open a tab per call.
+      const url = chrome.runtime.getURL(`notes.html#${encodeURIComponent(id)}`);
+      chrome.tabs.query({ url: chrome.runtime.getURL('notes.html') }, (tabs) => {
+        const open = (tabs || [])[0];
+        if (open?.id) chrome.tabs.update(open.id, { url, active: true });
+        else chrome.tabs.create({ url });
+      });
+      toast(action === 'create' ? '📝 Note created' : '📝 Note updated');
+      logEvent('capability.activated', { capability: 'notes.write', classUsed: 'R', granted: true, reason: action });
+    },
+  });
+  return { specs: NOTE_TOOL_SPECS, execute };
+}
+
 // Build the full toolset for a turn. The side-panel-specific part — page-action
 // tools (they need a live web tab + confirm dialogs) — is assembled here; the
 // portable part (history + web-search + MCP + narrowing) is delegated to the
@@ -676,6 +722,7 @@ async function toolsetFor(
     // can act on. Absent on an older bridge, which is fine — the note falls back to naming
     // the usual suspects.
     connectors: (state.bridge?.agents || []).find((a) => a.id === resolvedAgent?.bridgeAgent)?.connectors || [],
+    noteWriter: await noteWriteProvider(resolvedAgent),
     userText,
     attachments,
     mcpMode,
