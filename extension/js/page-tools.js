@@ -32,10 +32,22 @@ import { CALIBRATE_TOOL_SPEC, calibrateTurn } from './page-calibrate.js';
 // but the hard rule overriding everything is step 4/6: judge "done" from the
 // SCREENSHOT, never from your plan, and never fabricate a result.
 export const PAGE_AUTOMATION_SYSTEM =
-  'USE ONLY the ChatPanel browser tools provided here (inspect_page, screenshot, read_canvas, ' +
-  'structured_insert, click_element, click_by_text, click_at, type_text, press_key, fill_form, ' +
-  'scroll, …) to see and act on this page — they are the ONLY tools connected to the user’s real, ' +
-  'logged-in browser tab.\n' +
+  'USE ONLY the ChatPanel browser tools provided here (read_page, inspect_page, screenshot, ' +
+  'read_canvas, structured_insert, click_element, click_by_text, click_at, type_text, press_key, ' +
+  'fill_form, scroll, …) to see and act on this page — they are the ONLY tools connected to the ' +
+  'user’s real, logged-in browser tab.\n' +
+  // READING IS A FIRST-CLASS USE OF THIS TAB, and it was missing from the list above — every
+  // tool named was an ACTION tool, so a model asked to summarise an article found nothing here
+  // for reading and reached for its own fetch. In a real log: 40 screenshots and 10 read_page
+  // calls, plus minute-long turns that made no ChatPanel call at all.
+  'TO READ WHAT THE PAGE SAYS — an article, thread, comments, a document — call read_page. One ' +
+  'call returns the body as text with nav and ads stripped, so it replaces a scroll-and-' +
+  'screenshot loop.\n' +
+  'DO NOT FETCH THE URL. Fetching, web-search, or any "read this link" tool of your own gets a ' +
+  'DIFFERENT page from the one the user is looking at: not logged in, not rendered, often a ' +
+  'login wall, a paywall or raw HTML — which is why those calls fail. This tab is already open, ' +
+  'authenticated and rendered; read_page reads THAT. Screenshots are for when the LAYOUT matters, ' +
+  'never for reading text.\n' +
   'CRITICAL: do NOT use any built-in / in-app / native browser, computer-use, or an MCP like ' +
   '`agent.browsers` / a node REPL to drive the page. Those open a SEPARATE browser that is NOT wired ' +
   'to the user’s Chrome — they will report no tabs (`agent.browsers.list()` → `[]`, "Browser is not ' +

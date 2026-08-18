@@ -502,8 +502,25 @@ async function pageToolProvider(resolvedAgent) {
     //
     // Naming the actual page is what makes it concrete rather than a capability in the
     // abstract. Costs a handful of tokens and removes a whole class of refusal.
+    // READING COMES FIRST, AND IT HAS TO BE HERE.
+    //
+    // This line used to say the tab could be "read and acted on" and then list only ACTIONS —
+    // type into cells, click controls, fill forms, draw. A model asked to summarise the
+    // article in front of it read that as a tool for filling forms, and fetched the URL with
+    // its own web tool instead: a different page, not logged in, not rendered, which is why
+    // those calls come back as login walls and errors, and why the turn takes a minute.
+    //
+    // It belongs in the RESIDENT line rather than the deferred manual because the manual
+    // arrives with the first `page` result — and the whole failure is that there is no first
+    // `page` call. Guidance that only appears after the mistake cannot prevent it. A real log
+    // showed minute-long turns with page, find and mcp all armed and zero ChatPanel calls.
     system: [`You are connected to the user's LIVE browser tab${pageLabel ? ` — ${pageLabel}` : ''}, and can `
-      + 'read and act on it with the `page` tool: type into cells, click controls, fill forms, draw. '
+      + 'read and act on it with the `page` tool. To READ what it says — an article, thread, '
+      + 'comments, a document — call {"action":"read_page"} FIRST: one call returns the body as '
+      + 'text with nav and ads stripped. Do NOT fetch the URL with a web tool of your own and do '
+      + 'NOT screenshot to read text — this tab is already open, logged in and rendered, so a '
+      + 'fetch gets a different, unauthenticated page and a screenshot is a slow way to read. '
+      + 'You can also type into cells, click controls, fill forms and draw. '
       + 'Never tell the user you cannot interact with the page — you can. '
       + '{"action":"describe","args":{"tool":"<action>"}} returns any action\'s full schema and how to use it.'
       // Canvas drawing advice belongs to a canvas. It was in the base blurb, so every turn on
@@ -1969,7 +1986,24 @@ async function send() {
     // The page to auto-include: a normal web tab, or one of our own dashboards read
     // from storage (captureTab handles both — inject vs. storage-by-hash-id).
     const pageTab = state.activeTab || state.ownPageTab;
+    // DON'T READ A PAGE TO SAY HELLO. This capture injects into the tab and pulls its text on
+    // every send — visible as the "Reading this page…" toast — and for a greeting the result
+    // is thrown away twice over: the turn arms no tools, so nothing can read the source, and
+    // the source manifest that would advertise it is never built. It was pure latency on the
+    // one kind of turn where latency is all the user perceives.
+    //
+    // The SAME rule the toolset uses, asked here because this runs first. It reads a string;
+    // asking twice costs nothing, and one definition of "asks for nothing" is the point.
+    const { toolNeedFor } = await import('./js/events/tool-need.js');
+    const wantsMaterial = toolNeedFor({
+      request: { text: raw },
+      attachments: state.attachments,
+      // Only what is actually in scope this early in the send: `historyRag` is resolved
+      // further down, and a /history command is not a pleasantry anyway.
+      explicit: !!skillRun || normalizeMcpTurnMode(state.settings.ui?.mcpToolsMode) === MCP_TURN_MODES.ON,
+    }).tools;
     if (
+      wantsMaterial &&
       !skipLivePageForHistoryIntent &&
       !onMeetingTab &&
       state.usePage &&
@@ -1978,7 +2012,11 @@ async function send() {
     ) {
       try {
         toast('Reading this page…');
-        state.attachments.unshift(await captureTab(pageTab.id));
+        // MARKED AS AMBIENT. Nobody attached this — it is the tab the user happens to be on,
+        // and the difference matters downstream: a turn carrying material the user chose
+        // needs the means to work on it, while "hi" on a search results page does not.
+        // Without the mark, the auto-attached page armed the full toolset on every greeting.
+        state.attachments.unshift({ ...(await captureTab(pageTab.id)), auto: true });
       } catch {
         toast("⚠ Couldn't read this page; sending without it", 2200);
       }

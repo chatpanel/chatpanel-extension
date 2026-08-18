@@ -42,7 +42,7 @@ export { linkifyCitations, sourcesFromToolText } from './citations.js';
 export { buildTrajectory, phasesOf, lanesOf, filterEntries, displayName, ENTRY_KINDS, threadsOf, threadTitle, promptEntries, turnsOf, threadTree } from './trajectory.js';
 export { createTurnRunner, defineLoop, LOOP_KINDS, LoopError } from './loop.js';
 export { defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, signalsFrom, requirementsFor, requirementsForStep, preferenceFor, failoverOrder, pinnedOrderOf, FAILOVER_CLASS_GAP, FAILOVER_CAPABILITY_GAP, sameModelKey, REACH, RouterError } from './router.js';
-export { makeSourceStore, manifestText, readSource, sourceId } from './sources-retrieval.js';
+export { makeSourceStore, manifestText, shortUrl, readSource, sourceId } from './sources-retrieval.js';
 export { classifySource, extractUrls, hostMatches, meetReach, sourcePolicyFor, DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './sources.js';
 export { defineRule, createRuleEngine, SUPPRESSED, RuleError } from './rules.js';
 export { defineMeetingAnalyzer, createAnalyzerRegistry, CADENCES, AnalyzerError } from './meeting-analyzers.js';

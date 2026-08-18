@@ -76,9 +76,20 @@ function isPleasantry(text) {
  */
 export function toolNeedFor({ request = null, signals = null, attachments = [], explicit = false } = {}) {
   if (explicit) return { tools: true, why: 'the turn asked for tools' };
-  // Material the user handed over is a reason to have the means to work on it, and an
-  // attachment is never a pleasantry however short the message is.
-  if (attachments?.length) return { tools: true, why: 'the turn carries an attachment' };
+  // MATERIAL THE USER HANDED OVER — not the tab that happens to be open.
+  //
+  // The side panel auto-attaches the current page to every send, so "hi" on a search results
+  // page arrived carrying an attachment and armed the full toolset: three tools, ~2,300
+  // tokens and a page read, to say hello back. The open tab is METADATA about where the user
+  // is, not content they asked about; treating the two the same made the ambient page defeat
+  // this rule on every turn where it mattered.
+  //
+  // `auto` marks it. A page the user genuinely attached has no such mark and still counts —
+  // and a message that ASKS about the page ("summarise this") is not a pleasantry anyway, so
+  // it arms tools by the ordinary path rather than by what happens to be attached.
+  if ((attachments || []).some((a) => a && !a.auto)) {
+    return { tools: true, why: 'the turn carries an attachment' };
+  }
 
   const text = String(request?.text ?? (request?.messages || []).map((m) => m?.content || '').join('\n'));
   if (!isPleasantry(text)) return { tools: true, why: 'the request may need something fetched' };

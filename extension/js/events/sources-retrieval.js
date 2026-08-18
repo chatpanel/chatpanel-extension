@@ -68,10 +68,40 @@ export function makeSourceStore(sources = []) {
   };
 }
 
+/**
+ * WHERE IT CAME FROM, not the whole address bar.
+ *
+ * A Google results URL carries about a thousand characters of tracking parameters — sca_esv,
+ * gs_lp, sclient — and the manifest printed every one of them, on every turn, in a line whose
+ * job is "here is a source you may read". That is a quarter of a thousand tokens of noise the
+ * model cannot use and must still read past.
+ *
+ * The host and path identify the source; the query string is kept only when it is short
+ * enough to be meaning rather than machinery. An unparseable URL is left exactly as given —
+ * guessing at a string we could not read is how a source becomes unidentifiable.
+ */
+export function shortUrl(url, max = 120) {
+  const raw = String(url || '');
+  if (!raw || raw.length <= max) return raw;
+  try {
+    const u = new URL(raw);
+    const base = `${u.host}${u.pathname}`.replace(/\/$/, '');
+    // A short query is often the whole point of the address ("?q=how+do+tides+work");
+    // a long one is machinery. Keep the first parameter when it fits, drop the rest.
+    const first = [...u.searchParams.entries()][0];
+    const q = first && `${first[0]}=${first[1]}`;
+    const withQ = q && `${base}?${q}`;
+    const out = withQ && withQ.length <= max ? withQ : base;
+    return out.length <= max ? `${out}…` : `${out.slice(0, max)}…`;
+  } catch {
+    return `${raw.slice(0, max)}…`;
+  }
+}
+
 /** One line per source: what it is, where it came from, what it would cost to read. */
 export function manifestText(store) {
   if (!store?.entries?.length) return '';
-  const lines = store.entries.map((e) => `- ${e.id} — ${e.title}${e.url ? ` (${e.url})` : ''} · ~${e.tokens} tokens`);
+  const lines = store.entries.map((e) => `- ${e.id} — ${e.title}${e.url ? ` (${shortUrl(e.url)})` : ''} · ~${e.tokens} tokens`);
   return [
     'Attached sources (NOT included below — read them with the `source` tool):',
     ...lines,
