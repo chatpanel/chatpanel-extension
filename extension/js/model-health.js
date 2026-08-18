@@ -37,6 +37,12 @@ const COOLDOWN_MS = {
   // down for the rest of the session is the honest answer; anything shorter just repeats the
   // same failure on a timer.
   gone: 24 * 60 * 60_000,
+  // The account needs reconnecting — a human action, on no timetable. Retrying on a short
+  // timer just walks the chain back into the same wall every turn.
+  auth: 6 * 60 * 60_000,
+  // A request this provider would not take. Another may; this one probably still will not,
+  // but it is worth re-checking well before an auth problem.
+  request: 10 * 60_000,
   // Anything else — treat as transient and barely stand it down at all.
   unknown: 30_000,
 };
@@ -70,10 +76,27 @@ export function classifyFailure(err) {
     // the user fixes the setting, and every other model can still answer.
     || /invalid model selection|not recognized as a (known|custom) model|unsupported model/i.test(text)) return 'gone';
   if (status >= 500 || /overloaded|unavailable|timeout|ECONNRESET/i.test(text)) return 'server';
-  // ONLY these are OUR fault. A 400 is a malformed request, a 401/403 a key problem — every
-  // model would refuse them identically, so retrying turns one clear error into four slow
-  // ones and hides a configuration problem behind a health one.
-  if ([400, 401, 403].includes(status)) return null;
+  // A BROKEN CONNECTION IS THIS PROVIDER'S, NOT THE REQUEST'S.
+  //
+  // These were all read as "our fault, every model would refuse it identically" and returned
+  // null, which makes the turn DIE rather than fail over. An expired refresh token is the
+  // clearest counter-example there is: "OAuth token exchange failed: HTTP 400 — invalid_grant"
+  // says this provider's credentials went stale, and every other model would have answered
+  // the question fine. The user watched a turn stop dead on it.
+  //
+  // Stood down for a LONG time, because unlike a rate limit this does not heal on its own —
+  // someone has to reconnect the account. Standing it down is what stops the chain walking
+  // back into it every turn until they do.
+  if (status === 401 || status === 403
+    || /oauth|invalid[_ ]?grant|refresh[_ ]?token|token exchange|api[_ ]?key|unauthorized|not authenticated|authentication|credential|expired token|sign in|log ?in again/i.test(text)) {
+    return 'auth';
+  }
+  // A plain 400 usually IS a malformed request — but not always: providers reject each
+  // other's parameters, tool schemas and sampling settings all the time, so the same call
+  // that one refuses another accepts. Failing over costs one extra attempt; dead-ending costs
+  // the user their turn, and the terminal error still names what went wrong when everything
+  // has been tried. Nothing ends in limbo.
+  if (status === 400) return 'request';
   // Everything else gets tried elsewhere. A router that gives up on an unrecognised failure
   // is a router that gives up, and the user asked for the next option — not for a verdict on
   // whose fault it was.
@@ -135,9 +158,15 @@ export function healthOf(id, modelName = '') {
     return { available: true, rateLimited: false, reason: null };
   }
   return {
-    // A rate limit is "not right now"; a quota, outage or retirement is "not available". The
-    // router rejects both, but the reason it shows the user is different.
-    available: !['quota', 'server', 'gone'].includes(h.reason),
+    // A rate limit is "not right now"; a quota, outage, retirement, broken connection or
+    // rejected request is "not available". The router rejects both, but the reason it shows
+    // the user is different.
+    //
+    // `auth` belongs here and it is the reason this list was wrong: a provider whose
+    // credentials expired stayed "available", so the router kept choosing it and the same
+    // stale token failed the same way every turn. Standing it down is what makes the failover
+    // stick rather than bounce.
+    available: !['quota', 'server', 'gone', 'auth', 'request'].includes(h.reason),
     rateLimited: h.reason === 'rate',
     reason: h.reason,
     until: h.until,

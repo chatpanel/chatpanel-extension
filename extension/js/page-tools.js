@@ -43,6 +43,12 @@ export const PAGE_AUTOMATION_SYSTEM =
   'TO READ WHAT THE PAGE SAYS — an article, thread, comments, a document — call read_page. One ' +
   'call returns the body as text with nav and ads stripped, so it replaces a scroll-and-' +
   'screenshot loop.\n' +
+  // A whole-page read of a long wiki page is ~10,000 tokens of mostly navigation. One real
+  // turn made nine of them chasing a single answer.
+  'PASS A QUERY to read_page when you want something SPECIFIC from a long page — ' +
+  '{"action":"read_page","args":{"query":"what X means"}} returns the matching sections in ' +
+  'document order. Reading a long page whole, repeatedly, to hunt for one paragraph is the ' +
+  'slow and expensive way; ask for what you need.\n' +
   'DO NOT FETCH THE URL. Fetching, web-search, or any "read this link" tool of your own gets a ' +
   'DIFFERENT page from the one the user is looking at: not logged in, not rendered, often a ' +
   'login wall, a paywall or raw HTML — which is why those calls fail. This tab is already open, ' +
@@ -279,11 +285,19 @@ export const PAGE_TOOL_SPECS = [
       + 'usually replaces a whole scroll-and-screenshot loop. Use this whenever the task '
       + 'is to read, summarise, quote or answer questions about what the page SAYS. '
       + 'Screenshots are for when the LAYOUT matters (charts, canvases, where a control '
-      + 'sits); they are a poor and expensive way to read text.',
+      + 'sits); they are a poor and expensive way to read text. '
+      + 'PASS A QUERY when you want something specific from a long page — you get the '
+      + 'matching sections in document order instead of the first N characters, which on a '
+      + 'documentation or wiki page is almost never the part you needed.',
     parameters: {
       type: 'object',
       properties: {
-        maxChars: { type: 'number', description: 'Cap on returned characters (default 40000).' },
+        query: {
+          type: 'string',
+          description: 'What you are looking for. Returns the matching sections instead of the whole page.',
+        },
+        maxTokens: { type: 'number', description: 'Budget for a query read (default 2000).' },
+        maxChars: { type: 'number', description: 'Cap when reading the WHOLE page (default 40000).' },
       },
       required: [],
     },
@@ -797,7 +811,29 @@ export function makePageToolExecutor(tabId, { cdp = false, adapter = null, devJs
         return JSON.stringify(await calibrateTurn(tabId, { delta: input?.delta, viewportWidth: vp?.w }));
       }
       if (name === 'read_page') {
-        return JSON.stringify(await readPageText(tabId, Number(input?.maxChars) || 40000));
+        // A QUERY GETS THE RELEVANT PART, NOT THE FIRST N CHARACTERS.
+        //
+        // Without one this returns the head of the document up to a cap, and on a long wiki
+        // or documentation page the head is navigation and breadcrumbs. A real turn made nine
+        // read_page calls and pulled ~99,000 characters — about 25,000 tokens — to answer one
+        // question, because each read returned a whole page and none of them returned the
+        // paragraph that mattered.
+        //
+        // The selection is the SAME code the `source` tool uses (@chatpanel/events) — chunk,
+        // score by term overlap, keep document order, stay inside a budget. Two
+        // implementations of "which part of this text answers the question" would drift, and
+        // this one has to agree with the one the manifest already advertises.
+        const query = String(input?.query || '').trim();
+        if (!query) {
+          return JSON.stringify(await readPageText(tabId, Number(input?.maxChars) || 40000));
+        }
+        // Read wide before selecting: the point of a query is to reach past the head, so a
+        // narrow read first would defeat it.
+        const full = await readPageText(tabId, 400000);
+        const { makeSourceStore, readSource } = await import('./events/sources-retrieval.js');
+        const store = makeSourceStore([{ kind: 'page', title: full.title || '', url: full.url || '', text: full.text || '' }]);
+        const hit = readSource(store, { id: 'page-1', query, maxTokens: Number(input?.maxTokens) || 2000 });
+        return JSON.stringify({ ...hit, query, ofChars: full.chars ?? (full.text || '').length });
       }
       if (name === 'inspect_page') {
         const dom = compactInspect(await inspectForms(tabId));

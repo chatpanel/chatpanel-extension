@@ -31,12 +31,36 @@ assert.equal(healthOf('dead').available, false, 'a retired model stayed in rotat
 // the same failure on a timer.
 assert.ok(healthOf('dead').until - Date.now() > 60 * 60_000);
 
-// A 400 or 401 is OUR request or OUR key being wrong, and every other model would refuse it
-// too. Standing the model down would hide a configuration error behind a health problem and
-// send the user to fix the wrong thing.
-assert.equal(classifyFailure({ status: 400 }), null);
-assert.equal(classifyFailure({ status: 401 }), null);
-assert.equal(classifyFailure({ status: 403 }), null);
+// A BROKEN CONNECTION IS THIS PROVIDER'S, NOT THE REQUEST'S.
+//
+// These used to return null, which makes the turn DIE instead of failing over. An expired
+// refresh token is the clearest counter-example: "OAuth token exchange failed: HTTP 400 —
+// invalid_grant" says this provider's credentials went stale, and every other model would
+// have answered the question fine. A user watched a turn stop dead on exactly that.
+assert.equal(classifyFailure({ status: 401 }), 'auth');
+assert.equal(classifyFailure({ status: 403 }), 'auth');
+assert.equal(
+  classifyFailure(new Error('OAuth token exchange failed: HTTP 400 — {"error":"invalid_grant","error_description":"Invalid refresh_token"}')),
+  'auth',
+  'an expired refresh token ended the turn instead of moving to the next model',
+);
+// Stood down for HOURS, because unlike a rate limit this does not heal on its own — someone
+// has to reconnect the account. That is what stops the chain walking back into it every turn.
+markUnhealthy('stale', { status: 401 });
+assert.equal(healthOf('stale').available, false);
+assert.ok(healthOf('stale').until - Date.now() > 60 * 60_000);
+
+// A plain 400 usually IS a malformed request — but providers reject each other's parameters,
+// tool schemas and sampling settings all the time, so the same call one refuses another
+// accepts. Failing over costs one attempt; dead-ending costs the user their turn.
+assert.equal(classifyFailure({ status: 400 }), 'request');
+assert.equal(classifyFailure(new Error('HTTP 400 — unsupported parameter: temperature')), 'request');
+
+// NOTHING ENDS IN LIMBO. Whatever went wrong, there is always a next model to try; the
+// terminal error still names the failure once everything has been tried.
+for (const st of [400, 401, 403, 404, 410, 422, 429, 500]) {
+  assert.ok(classifyFailure({ status: st }), `status ${st} dead-ends the turn`);
+}
 
 // EVERYTHING ELSE GETS TRIED ELSEWHERE. A router that gives up on an unrecognised failure is
 // a router that gives up — the user asked for the next option, not for a verdict on whose
@@ -44,8 +68,9 @@ assert.equal(classifyFailure({ status: 403 }), null);
 assert.equal(classifyFailure({ status: 404, message: 'Not Found' }), 'unknown');
 assert.equal(classifyFailure({ status: 422, message: 'Unprocessable' }), 'unknown');
 assert.equal(classifyFailure(new Error('socket hang up')), 'unknown');
-assert.equal(markUnhealthy('m', { status: 401 }), null, 'a bad key stood the model down');
-assert.equal(healthOf('m').available, true);
+// A model with no id cannot be recorded against anything — that is the only case left where
+// there is nothing to stand down.
+assert.equal(markUnhealthy('', { status: 500 }), null);
 
 // Quota takes a model out of rotation; the router rejects it as unavailable.
 const q = markUnhealthy('hf', new Error('402 depleted your monthly included credits'));
@@ -104,3 +129,47 @@ assert.equal(healthOf('elsewhere', 'llama-3.1-8b-instant').available, false);
 assert.equal(healthOf('groq2', 'llama-3.3-70b').available, true);
 
 console.log('✓ model health: behaviour beats configuration, and a model failing everywhere is learned once');
+
+// ── A FAILURE MOVES TO THE NEXT MODEL, IT DOES NOT LEAVE THE TURN IN LIMBO ───
+//
+// The end-to-end shape of the bug: a provider's refresh token went stale, the failure was
+// read as "our request is wrong, every model would refuse it", and the turn stopped dead
+// with an OAuth error instead of asking the next model on the chain. Every other model was
+// healthy and would have answered.
+{
+  const { candidatesFrom, routeForTurn } = await import('../extension/js/model-router.js');
+  resetHealth();
+
+  const cfg = {
+    endpoints: [
+      { id: 'stale', name: 'HuggingFace', baseUrl: 'https://huggingface.co/v1', model: 'deepseek-ai/DeepSeek-V4-Flash' },
+      { id: 'other', name: 'NVIDIA', baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'deepseek-ai/deepseek-v4-flash' },
+    ],
+    agents: [],
+  };
+
+  // Healthy to begin with: both are candidates.
+  assert.equal(candidatesFrom(cfg).every((m) => m.available), true);
+
+  // The exact error the user saw.
+  const err = new Error('OAuth token exchange failed: HTTP 400 — {"error":"invalid_grant","error_description":"Invalid refresh_token"}');
+  const marked = markUnhealthy('stale', err, 'deepseek-ai/DeepSeek-V4-Flash');
+  assert.ok(marked, 'the turn had nothing to fail over WITH — this is what ended it');
+  assert.equal(marked.reason, 'auth');
+
+  // The broken provider drops out of the candidate set…
+  const after = Object.fromEntries(candidatesFrom(cfg).map((m) => [m.id, m.available]));
+  assert.equal(after.stale, false, 'a provider with stale credentials stayed selectable');
+
+  // …and a re-route lands on a working one rather than throwing.
+  const next = await routeForTurn(cfg, undefined, {
+    force: true, exclude: ['stale'],
+    request: { messages: [{ content: 'what did they do here' }] },
+    like: { model: 'deepseek-ai/DeepSeek-V4-Flash', quality: 0.9, capabilities: [], classUsed: 'C', reason: 'auth' },
+  });
+  assert.ok(next?.target, 'the turn had nowhere to go after a credentials failure');
+  assert.equal(next.decision.model.id, 'other');
+  resetHealth();
+}
+
+console.log('✓ model health: a broken connection fails over and stands the provider down');

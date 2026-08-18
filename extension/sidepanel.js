@@ -517,7 +517,9 @@ async function pageToolProvider(resolvedAgent) {
     system: [`You are connected to the user's LIVE browser tab${pageLabel ? ` — ${pageLabel}` : ''}, and can `
       + 'read and act on it with the `page` tool. To READ what it says — an article, thread, '
       + 'comments, a document — call {"action":"read_page"} FIRST: one call returns the body as '
-      + 'text with nav and ads stripped. Do NOT fetch the URL with a web tool of your own and do '
+      + 'text with nav and ads stripped. On a LONG page pass a query — '
+      + '{"action":"read_page","args":{"query":"…"}} — to get the matching sections instead of '
+      + 'the first few thousand characters. Do NOT fetch the URL with a web tool of your own and do '
       + 'NOT screenshot to read text — this tab is already open, logged in and rendered, so a '
       + 'fetch gets a different, unauthenticated page and a screenshot is a slow way to read. '
       + 'You can also type into cells, click controls, fill forms and draw. '
