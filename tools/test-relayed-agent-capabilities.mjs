@@ -51,4 +51,33 @@ for (const forbidden of [/bypass/i, /ignore the user/i, /without asking/i, /disa
   assert.doesNotMatch(note, forbidden, `the capability note contains ${forbidden}`);
 }
 
+// ── AND IT NAMES WHAT THE AGENT ACTUALLY HAS ────────────────────────────────
+//
+// The bridge reads each agent's own MCP config and reports the server NAMES on /health.
+// "You have slack and jira configured" is a fact the agent can act on; a generic list invites
+// it to look for connectors it does not have and read the whole paragraph as hypothetical.
+{
+  const named = ownToolsSystem({ kind: 'bridge' }, ['slack', 'jira-cloud', 'github']);
+  assert.match(named, /you have slack, jira-cloud, github configured/);
+  // The generic list is gone once we know the real one — otherwise it says both.
+  assert.doesNotMatch(named, /Confluence, calendar, email/);
+
+  // AN OLDER BRIDGE SENDS NOTHING, and that must not be worse than before the feature: the
+  // generic wording still beats the silence that made an agent hand the question back.
+  assert.match(ownToolsSystem({ kind: 'bridge' }, []), /Slack, Jira, GitHub/);
+  assert.match(ownToolsSystem({ kind: 'bridge' }), /Slack, Jira, GitHub/);
+
+  // Deduped and bounded: this rides in every turn's system prompt, so forty servers cost a
+  // line, not a paragraph.
+  const many = ownToolsSystem({ kind: 'bridge' }, [...Array(40)].map((_, i) => `srv-${i}`).concat('srv-0'));
+  assert.equal((many.match(/srv-\d+/g) || []).length, 24);
+
+  // Junk in the list never reaches the prompt.
+  assert.match(ownToolsSystem({ kind: 'bridge' }, ['slack', '', '   ', null, 7]), /you have slack configured/);
+
+  // AN API MODEL STILL GETS NOTHING, connectors or not — it has no tools of its own, so the
+  // note would be noise on every turn.
+  assert.equal(ownToolsSystem({ kind: 'endpoint' }, ['slack']), '');
+}
+
 console.log('✓ relayed agents: ChatPanel bounds what it owns, and does not disown the rest');

@@ -671,6 +671,11 @@ async function toolsetFor(
     license: state.license,
     bridgeUrl: state.settings.bridgeUrl,
     bridgeAvailable: !!state.bridge?.ok,
+    // WHAT THIS AGENT CAN ALREADY REACH, as the bridge read it out of the agent's own config.
+    // Turns "you may use your own connectors" from a hopeful generality into a fact the agent
+    // can act on. Absent on an older bridge, which is fine — the note falls back to naming
+    // the usual suspects.
+    connectors: (state.bridge?.agents || []).find((a) => a.id === resolvedAgent?.bridgeAgent)?.connectors || [],
     userText,
     attachments,
     mcpMode,

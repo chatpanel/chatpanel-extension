@@ -29,15 +29,32 @@ export function isRelayedAgent(agent) {
 /**
  * The capability note for a relayed agent, or '' for an API model (which has no tools of its
  * own, so the whole question does not arise).
+ *
+ * @param connectors the agent's OWN MCP server names, as the bridge read them out of that
+ *        agent's config (`/health` → `agents[].connectors`). Naming them beats listing
+ *        plausible ones: "you have slack and jira connected" is a fact the agent can act on,
+ *        while a generic list invites it to look for connectors it does not have and conclude
+ *        the whole paragraph is hypothetical.
+ *
+ *        NAMING THEM DISCLOSES NOTHING. This is the agent's own configuration, read from the
+ *        agent's own config file, told back to that same agent — which already has it. The
+ *        prompt is rebuilt per agent, so a failover to a different one does not carry the
+ *        first one's connectors along.
+ *
+ *        Empty is the honest fallback, not a failure: an older bridge sends no connectors,
+ *        and a generic list still beats the silence that made an agent hand the question back.
  */
-export function ownToolsSystem(agent) {
+export function ownToolsSystem(agent, connectors = []) {
   if (!isRelayedAgent(agent)) return '';
+  const named = [...new Set((connectors || []).filter((c) => typeof c === 'string' && c.trim()))].slice(0, 24);
+  const yours = named.length
+    ? `your own MCP connectors — you have ${named.join(', ')} configured — plus your filesystem and your shell`
+    : 'your own MCP connectors (Slack, Jira, GitHub, Confluence, calendar, email), your filesystem, your shell';
   return [
     'YOUR OWN TOOLS STILL APPLY. The ChatPanel tools above are authoritative for what only',
     'ChatPanel can reach — this browser tab, the user\'s ChatPanel notes/chats/meetings, and the',
     'MCP servers they connected THERE. They are not a restriction on the rest of your toolset.',
-    'For anything else — your own MCP connectors (Slack, Jira, GitHub, Confluence, calendar,',
-    'email), your filesystem, your shell — use them normally.',
+    `For anything else — ${yours} — use them normally.`,
     'FINISH THE JOB RATHER THAN HANDING IT BACK. If the answer points somewhere you can reach —',
     'a thread, a ticket, a repo, a document — go and read it, then answer. Telling the user to',
     'go and look something up themselves is a last resort, for when you genuinely have no tool',

@@ -43,6 +43,7 @@ export async function buildTurnTools({
   includeHistory = true,     // Notes/side panel: read-only search over your own data
   includeWebSearch = true,
   includeMcp = true,
+  connectors = [],           // a relayed agent's OWN MCP server names, from the bridge's /health
   extraProviders = [],       // surface-specific providers prepended verbatim
   onMcpError = () => {},
 } = {}) {
@@ -121,7 +122,7 @@ export async function buildTurnTools({
   // by an agent that also carries its own connectors they add up to "do not use your own
   // tools", which nobody meant. Added last so it qualifies the rules above rather than being
   // qualified by them.
-  const own = ownToolsSystem(resolvedAgent);
+  const own = ownToolsSystem(resolvedAgent, connectors);
   if (toolset && own) toolset.system = [toolset.system, own].filter(Boolean).join('\n\n');
   return toolset;
 }
