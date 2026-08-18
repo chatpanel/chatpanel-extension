@@ -144,6 +144,14 @@ export function defineRouteStrategy({ id, label, classUsed = 'R', timeoutMs = 0,
 // ESTIMATES; a gap smaller than this says nothing real, so the user's Order decides instead.
 const TIE_BAND = 0.10;
 
+// The exchange rate the balanced trade runs on: how many seconds of waiting one unit of
+// cost (per 1k tokens) is worth. Adding raw seconds to raw cost would set this to 1 —
+// "a second is worth a dollar" — and that is not a decision anyone made, it is the accident
+// of two numbers sharing an addition. At 5, a free model on the user's own machine is not
+// outbid by a paid one merely for being nearer: no quota, no outage and no third party are
+// worth a few seconds, which is the same reasoning the provider order already encodes.
+const SECONDS_PER_UNIT_COST = 5;
+
 /**
  * The model name stripped of provider prefix and tag, so the SAME model matches across hosts:
  * `deepseek-ai/DeepSeek-V4-Flash` and `deepseek/deepseek-v4-flash` are one model reached two
@@ -199,8 +207,12 @@ export function signalsFrom(request = {}) {
     // action verb and of any reference to the user's own data is robust to spelling. 'my',
     // 'this page' and 'here' count as references, so "whats my longest streak" is work — it
     // needs the page — even though it is shorter than most greetings.
+    // `summar` and `analy` carry an explicit \w* because the alternation ends in \b: written
+    // bare, they demanded a word boundary immediately after the prefix, so "summarize this
+    // document" matched nothing and was classified as SMALL TALK. A prefix that can never
+    // fire is worse than an absent one — it reads as covered.
     smalltalk: chars < 100 && !/```/.test(text)
-      && !/\b(draw|click|open|fill|read|find|search|edit|write|create|update|delete|run|fix|change|add|remove|select|scroll|extract|summar|analy|check|review|list|show|go to|navigate|my|mine|this page|here|it|that)\b/i.test(text),
+      && !/\b(draw|click|open|fill|read|find|search|edit|write|create|update|delete|run|fix|change|add|remove|select|scroll|extract|summar\w*|analy\w*|check|review|list|show|go to|navigate|my|mine|this page|here|it|that)\b/i.test(text),
     chars,
   };
 }
@@ -218,7 +230,7 @@ export function signalsFrom(request = {}) {
  * judgement call a model needs to make — length, code fences, images and adapter tools are
  * all readable for free, which is what makes this class R and instant.
  */
-export function requirementsFor(signals = {}, { structured = false, hasTools = false, pageTools = false } = {}) {
+export function requirementsFor(signals = {}, { structured = false, hasTools = false, pageTools = false, background = false } = {}) {
   const required = new Set();
   let minQuality = 0;
   const why = [];
@@ -255,7 +267,18 @@ export function requirementsFor(signals = {}, { structured = false, hasTools = f
     minQuality = Math.max(minQuality, 0.55);
     why.push('it must produce an exact structured payload');
   }
-  if (signals.complexity === 'high') {
+  // LENGTH IS NOT DIFFICULTY WHEN THE LENGTH IS THE MATERIAL.
+  //
+  // Complexity is read from the whole prompt, which is right for a chat turn — a long message
+  // usually is a harder request. It is backwards for BACKGROUND extraction: the topic pass
+  // inlines an entire transcript, so a conversation carrying one pasted dashboard produced a
+  // 6,300-character prompt, read as 'high', and a quality floor that eliminated every local
+  // model. The one call that should always be cheap got more expensive the more material
+  // there was to chew through.
+  //
+  // Needing to FIT is a separate requirement and is still applied above (long-context).
+  // What is dropped here is only the quality FLOOR, and only for work nobody is waiting on.
+  if (signals.complexity === 'high' && !background) {
     minQuality = Math.max(minQuality, 0.55);
     why.push('the task is complex');
   }
@@ -271,6 +294,143 @@ export function requirementsFor(signals = {}, { structured = false, hasTools = f
   // turn will not use.
   const negotiable = signals.smalltalk ? [...required] : [...required].filter((c) => c !== 'tools');
   return { required: [...required], negotiable, minQuality, why };
+}
+
+/**
+ * WHICH AXIS THIS REQUEST CARES ABOUT — quality, speed, or the trade between them.
+ *
+ * `prefer` was hardcoded to 'balanced' for every turn, on the reasoning that "reasonably
+ * fast and reasonably cheap is what anybody means". It is not. A greeting means fast: no
+ * answer to "hi" is improved by a frontier model thinking about it, and waiting is the only
+ * thing the user can perceive. A refactor across five files means good: saving three seconds
+ * on an answer that has to be redone is not a saving. The axis that matters is a property of
+ * the REQUEST, and it is readable for free from the same signals everything else here uses.
+ *
+ * Requirements still come first and are unaffected — this only ORDERS what already qualifies.
+ * That is what makes 'latency' safe to mean literally the fastest model: a task with a
+ * quality floor has already eliminated everything below it, so "fastest" can only ever pick
+ * the fastest model that was good enough.
+ *
+ * Class R: length, code fences, images. No model call.
+ */
+export function preferenceFor(signals = {}, { structured = false, minQuality = 0, hasTools = false, background = false } = {}) {
+  // NOBODY IS WAITING, AND NOBODY IS READING IT. A title, a topic pass, a grammar fix: work
+  // the user did not ask for, whose output is a short structured artifact, and which has a
+  // deterministic fallback when the model declines. The honest axis for that is what it
+  // costs — and it comes first, because such a pass reads as 'high' complexity purely from
+  // the size of the material it was handed.
+  if (background) return { prefer: 'cost', why: 'background work — spend as little as possible' };
+  // EXACTNESS AND DIFFICULTY BUY QUALITY. A structured payload is visibly wrong when it is
+  // wrong, and a complex task redone is slower than a slow task done once.
+  if (structured || signals.complexity === 'high' || signals.code || signals.modality === 'vision') {
+    return { prefer: 'quality', why: 'the task is exact or hard — get it right rather than quick' };
+  }
+  // NOTHING TO GET RIGHT MEANS GET IT BACK — but only when the turn genuinely asks for
+  // nothing, and `smalltalk` alone is too generous to decide that. It calls "what did we
+  // decide in the standup" trivial, and answering THAT on an 8B instant model to save half a
+  // second is the same mistake as the greeting on a frontier model, pointing the other way.
+  //
+  // So the turn must ALSO be carrying no tools. That is not a second guess at triviality: it
+  // is the answer toolNeedFor already gave, from a much narrower test, and a turn armed with
+  // the means to look something up is by definition one that might. Composing the two beats
+  // restating either.
+  if (signals.smalltalk && !hasTools && !minQuality) {
+    return { prefer: 'latency', why: 'nothing to look up — answer fast' };
+  }
+  return { prefer: 'balanced', why: 'no reason to favour speed or quality' };
+}
+
+/**
+ * The order to try replacements in when a model declines — CLOSEST FIRST, in both directions.
+ *
+ * Lives here rather than in the strategy that calls it because two things need this answer:
+ * the failover itself, and anything that wants to SHOW the chain before it happens. A
+ * projected chain computed by a second implementation would eventually disagree with the real
+ * one, and a picture that lies about what the router will do is worse than no picture.
+ *
+ * Ranking by absolute quality made failover a one-way escalator and was wrong at both ends
+ * at once: a greeting on an 8B that declined climbed to a frontier model, and a frontier model
+ * that declined dropped to an 8B. The task did not get easier when the provider said no, and
+ * it did not get harder when a small one did.
+ *
+ * So the ordering is DISTANCE from what failed. Quality distance is the spine; being a
+ * different KIND of thing (an API model answers a request, a CLI agent runs its own loop) and
+ * missing a capability the failed model had are each additional distance rather than separate
+ * tiers — a tier ordering let "same class" outrank a two-tier quality drop, which is exactly
+ * how the frontier-to-8B hop happened.
+ *
+ * Nothing is ELIMINATED. A distant model still beats no answer, so the last hop of a long
+ * chain is allowed to be a poor match; this decides order, never eligibility.
+ *
+ * @param failed { model, quality, capabilities, classUsed, reason } — the model that declined.
+ *        `reason: 'gone'` means the MODEL is retired rather than the provider saying no, so
+ *        the same name elsewhere is equally dead and is dropped instead of preferred.
+ */
+/**
+ * The position the user CHOSE, or Infinity when we only guessed one.
+ *
+ * A hand-set Order was honoured in the score path and ignored everywhere else, so the moment
+ * any strategy had an opinion the user's stated preference stopped existing: three models of
+ * identical quality, one of them pinned to Order 1, and escalation picked a different one
+ * because it costs less per 1k. The reasoning already written for the score path applies
+ * verbatim here — they can see the prices and chose anyway.
+ *
+ * Strictly a TIE-BREAK, and only for pinned orders. It never outranks the axis a strategy
+ * exists to judge: a genuinely better model still wins, and an order we inferred from a URL
+ * stays below cost where it belongs.
+ */
+export function pinnedOrderOf(m) {
+  return m?.orderPinned && Number.isFinite(m.providerRank) ? m.providerRank : Infinity;
+}
+
+export const FAILOVER_CLASS_GAP = 0.25;
+export const FAILOVER_CAPABILITY_GAP = 0.25;
+
+export function failoverOrder(candidates = [], failed = {}) {
+  const sameModel = (m) => !!failed.model && sameModelKey(m) === sameModelKey(failed);
+  // A RETIRED MODEL IS RETIRED EVERYWHERE. "Same model at another provider" is the ideal
+  // replacement when the provider declined — out of credits, rate limited — and the worst
+  // possible one when the model is gone: deepseek-v4-flash reaching end of life on one host
+  // means the identical name on another is equally dead, so preferring it walks into the
+  // same wall.
+  let pool = [...candidates];
+  if (failed.reason === 'gone') {
+    const alive = pool.filter((m) => !sameModel(m));
+    if (alive.length) pool = alive;
+  }
+  const q = (m) => (Number.isFinite(m.quality) ? m.quality : 0.5);
+  const covers = (m) => (failed.capabilities || []).every((c) => (m.capabilities || []).includes(c));
+  const sameClass = (m) => !failed.classUsed || m.classUsed === failed.classUsed;
+  const qf = Number.isFinite(failed.quality) ? failed.quality : null;
+
+  if (qf !== null) {
+    // The same model elsewhere is distance zero by definition: identical capability, merely a
+    // different bill.
+    const distance = (m) => (sameModel(m) ? -1 : Math.abs(q(m) - qf)
+      + (sameClass(m) ? 0 : FAILOVER_CLASS_GAP)
+      + (covers(m) ? 0 : FAILOVER_CAPABILITY_GAP));
+    return pool
+      .map((m) => ({ m, d: distance(m) }))
+      .sort((a, b) => a.d - b.d
+        || pinnedOrderOf(a.m) - pinnedOrderOf(b.m)
+        || a.m.costPer1k - b.m.costPer1k
+        || String(a.m.id).localeCompare(String(b.m.id)))
+      .map((x) => x.m);
+  }
+
+  // WITHOUT A QUALITY TO BE CLOSE TO, closeness is not a question that can be asked — so fall
+  // back to tiers, which at least keep like with like. A caller inside ChatPanel always knows
+  // the quality of the model it just called; an external one describing a failure it did not
+  // route may not.
+  const rank = (m) => {
+    if (sameModel(m)) return 0;
+    if (sameClass(m) && covers(m)) return 1;
+    if (sameClass(m)) return 2;
+    if (covers(m)) return 3;   // capable but a different kind of thing
+    return 4;
+  };
+  return pool.sort((a, b) => rank(a) - rank(b) || q(b) - q(a)
+    || pinnedOrderOf(a) - pinnedOrderOf(b) || a.costPer1k - b.costPer1k);
 }
 
 /**
@@ -404,6 +564,22 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
       }
 
       const prefer = need.prefer || 'balanced';
+      // LOWER IS BETTER, and each preference optimises the axis it names.
+      //
+      // Two bugs lived here. The balanced score MULTIPLIED time by money, so a single zero
+      // annihilated everything else: every free model scored exactly 0 — a local 8B and a
+      // local 26B were indistinguishable, and the winner among them fell to provider order
+      // and then to alphabetical id. Meanwhile 'latency' and 'cost' both DIVIDED by quality,
+      // which inverts them: asking for speed ranked a frontier model above an 8B at the same
+      // latency, and asking for cheap ranked a $5 model above a $2 one. A preference that
+      // does the opposite of what it is named is worse than not offering it.
+      //
+      // So: a single-axis preference reads that axis and nothing else, and only `balanced`
+      // trades — adding time and money (never multiplying) and dividing by quality, which is
+      // what "worth paying for" means. Requirements have already eliminated everything
+      // unsuitable by this point (see requirementsFor), so optimising cost or speed hard
+      // cannot reach a model that could not do the job: minQuality is the floor, this is
+      // only the ordering above it.
       const score = (m) => {
         // Load is a multiplier rather than a term: a busy model is worse at everything it
         // offers, not merely a bit more expensive.
@@ -412,10 +588,10 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
         // zero — burying every model we have not benchmarked would make the router
         // permanently prefer whatever it happened to measure first.
         const q = Number.isFinite(m.quality) ? Math.max(0.1, m.quality) : 0.5;
-        if (prefer === 'latency') return (m.latencyMs * busy) / q;
-        if (prefer === 'cost') return (m.costPer1k * busy) / q;
+        if (prefer === 'latency') return m.latencyMs * busy;
+        if (prefer === 'cost') return m.costPer1k * busy;
         if (prefer === 'quality') return busy / q;
-        return ((m.latencyMs / 1000) * m.costPer1k * busy) / q;
+        return ((m.latencyMs / 1000) + m.costPer1k * SECONDS_PER_UNIT_COST) * busy / q;
       };
       // ORDER IS A SETTING, NOT A TIE-BREAK THAT NEVER FIRES.
       //
@@ -481,24 +657,59 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
         else clusters.push([group]);
       }
       for (const cluster of clusters) cluster.sort((a, b) => byOrderThenScore(a[0], b[0]));
-      const ranked = clusters.flat(2);
+      let ranked = clusters.flat(2);
+
+      // THE CATCH-ALL IS A MODEL THE USER NAMED, not a guess the score made.
+      //
+      // When no strategy has an opinion and the request has no axis it cares about, the
+      // score was still producing an answer — from inferred latency and a cost regex, i.e.
+      // from guesses, and presenting it as a decision. That is the one situation where there
+      // IS a right answer and it is not ours to invent: the model the user put at Order 1 is
+      // them saying "this one, unless there is a reason". Honouring it everywhere else and
+      // then overriding it here, on a guess, is the router ignoring the only explicit
+      // instruction it was given.
+      //
+      // PINNED ONLY. An inferred rank is our guess at provider preference and must not act
+      // as a declaration; `orderPinned` is what separates a number the user chose from a
+      // number we made up. Most setups pin nothing and are unaffected — the score still
+      // decides, exactly as before.
+      //
+      // AND ONLY WHEN NOTHING HAS AN OPINION. A derived preference IS a rule speaking: a
+      // greeting asking for speed, a structured payload asking for quality. Those outrank
+      // the default, or every turn would land on Order 1 and the rules would be decoration.
+      // 'balanced' is the literal "no reason to favour either axis" case (see preferenceFor),
+      // which is precisely when a default is the honest answer.
+      //
+      // Strategies outrank it too, by construction: routeWith consults them after this and
+      // the first opinion wins. Rules first, the user's default when they are silent.
+      const declared = prefer === 'balanced'
+        ? ranked.filter((m) => m.orderPinned).sort((a, b) => a.providerRank - b.providerRank)[0]
+        : null;
+      if (declared) ranked = [declared, ...ranked.filter((m) => m !== declared)];
+
       // Order decided whenever the winning cluster held more than one distinct model — the
       // score alone did not separate them.
       const orderDecided = clusters[0]?.length > 1;
+      // HOW MANY ACTUALLY TIED, not how many were eligible. "order 1 broke a tie among 16
+      // eligible" reads as sixteen models scoring the same when two did, which sends anyone
+      // debugging a surprising route looking in entirely the wrong place.
+      const tiedCount = (clusters[0] || []).flat().length;
       const chosen = ranked[0];
       return {
         model: chosen,
         eligible: ranked,
-        strategy: 'default-score',
+        strategy: declared ? 'declared-default' : 'default-score',
         reasons: [
           `reach '${chosen.reach}' within '${wantReach}'`,
           wantCaps.length ? `has ${wantCaps.join(', ')}` : 'no special capability needed',
           // Say WHICH lever decided. "best by balanced" when the real reason was the
           // Order the user set reads as the router ignoring them — the complaint that
           // surfaced this bug in the first place.
-          orderDecided
-            ? `order ${chosen.providerRank} broke a tie among ${ranked.length} eligible (by ${prefer})`
-            : `best by ${prefer} (${ranked.length} eligible)`,
+          declared
+            ? `your default (Order ${chosen.providerRank}) — nothing about this turn asked for anything else`
+            : orderDecided
+              ? `order ${chosen.providerRank} broke a ${tiedCount}-way tie by ${prefer}, of ${ranked.length} eligible`
+              : `best by ${prefer} (${ranked.length} eligible)`,
         ],
         rejected,
         runnersUp: ranked.slice(1).map((m) => m.id),
@@ -544,11 +755,26 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
         const invented = (Array.isArray(picked) ? picked : [picked]).length - list.length;
         if (!list.length) continue;
 
+        // THE ORDERING IS THE DECISION'S, NOT THE SCORE'S.
+        //
+        // `eligible` was left as the base ranking while `model` became the strategy's pick,
+        // so the two disagreed the moment any strategy fired: the list said opus was first
+        // and the chosen model was Codex, sitting somewhere in the middle. Everything
+        // downstream reads `eligible` as "the order this decision put them in" — the graph
+        // ranks nodes by it, runnersUp slices it — so a stale ordering is not a cosmetic
+        // problem, it is the picture contradicting itself in front of the person using it to
+        // debug the router.
+        //
+        // The strategy's list first, then whatever it did not rank, in the order the score
+        // left them. A strategy narrows and reorders; it does not delete the rest.
+        const rest = base.eligible.filter((m) => !list.includes(m));
+        const ordered = [...list, ...rest];
         return {
           ...base,
           model: list[0],
+          eligible: ordered,
           strategy: plan.id,
-          runnersUp: list.slice(1).map((m) => m.id),
+          runnersUp: ordered.slice(1).map((m) => m.id),
           reasons: [
             ...base.reasons.slice(0, -1),
             `chosen by '${plan.id}' (class ${plan.classUsed}) from ${base.eligible.length} eligible`,

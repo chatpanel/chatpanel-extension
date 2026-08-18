@@ -118,6 +118,10 @@ export function buildTrajectory(events) {
             from: p.from, to: p.to, applied,
             agrees: p.agrees, strategy: p.strategy,
             reasons: p.reasons, eligible: p.eligible, rejected: p.rejected,
+            // Every candidate and the projected failover chain, carried through so a viewer
+            // can DRAW the decision. Passed along rather than rebuilt here: this file turns
+            // events into entries, it does not re-derive what the router already decided.
+            graph: p.graph || null,
           },
         });
         break;

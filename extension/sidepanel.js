@@ -1122,19 +1122,23 @@ function renderAgentName() {
 }
 
 /**
- * Which model will ACTUALLY answer — shown before you send, not discovered afterwards.
+ * Auto names a model when a turn names one, and not a moment before.
  *
- * Routing happened inside the call, so the header named the agent you picked while a
- * different model answered. Being told after the fact which model was used is not the same
- * as knowing before you press send, and for a decision about where your text goes it is the
- * wrong way round.
+ * This chip used to PREVIEW a choice at idle by asking the router what it would pick for a
+ * request that did not exist yet. With no message to read, deterministic rules have nothing to
+ * be deterministic about, so the answer was whatever scored best in the abstract — a default,
+ * dressed up as the destination for text the user had not written. Worse, producing it meant
+ * reading `ui.routing` on every render, and that branch belongs to the settings panel's TEST
+ * HARNESS ("which model would answer, and why"): a value someone set while exploring showed
+ * up in the header looking like a binding.
  *
- * Free to compute — routing is a rule, no model call — so it can run on every header render.
+ * Auto is a decision deferred to send time — the request goes to the router with the turn, and
+ * the rules read the turn. Until then the chip says exactly that; once the turn runs, `routed`
+ * events name the model actually working, hop by hop.
  */
-// Bumped by every render AND by every live route, so a preview that resolves late cannot
-// overwrite the model that is actually answering. Both write the same element and the async
-// one started first — without this the header flickers back to the guess mid-turn.
-let routeRenderSeq = 0;
+// The model answering the turn on screen. Kept so an unrelated re-render — a bridge poll, an
+// agent-menu click — cannot wipe the one fact that is live while it still is.
+let liveRoute = null;
 
 /**
  * The model doing the work right now — just the one, not the route it took to get there.
@@ -1147,7 +1151,7 @@ let routeRenderSeq = 0;
 function showLiveRoute(model, reasons = []) {
   const el = $('agent-routed');
   if (!el || !model) return;
-  routeRenderSeq++;   // invalidate any preview still in flight
+  liveRoute = { model, reasons };
   el.classList.remove('hidden');
   el.textContent = model;
   el.classList.add('live');
@@ -1157,29 +1161,27 @@ function showLiveRoute(model, reasons = []) {
 function renderRoutedTarget() {
   const el = $('agent-routed');
   if (!el) return;
-  const seq = ++routeRenderSeq;
-  el.classList.remove('live');
   const current = currentAgent();
   // Only Auto needs this. When you have picked a specific model, that model answers and a
   // badge saying so is noise; when you have picked Auto, "which one" is the entire question.
-  if (!isRouterTarget(current)) { el.classList.add('hidden'); return; }
-  import('./js/model-router.js')
-    .then(async (router) => {
-      const cfg = router.routingSettings(state.settings);
-      const need = { capabilities: state.settings?.ui?.pageActions ? ['tools'] : [] };
-      const preview = await router.previewRoute(state.settings, (t) => resolveTarget(t, state.settings), { ...cfg, ...need });
-      if (seq !== routeRenderSeq) return;   // a live route landed while this was resolving
-      if (!preview.chosen) {
-        el.classList.remove('hidden');
-        el.textContent = 'no model fits';
-        el.title = (preview.rejected || []).map((r) => `${r.id} — ${r.why}`).join('\n') || 'No models configured.';
-        return;
-      }
-      el.classList.remove('hidden');
-      el.textContent = `→ ${preview.chosen}`;
-      el.title = ['This model will answer.', ...(preview.reasons || [])].join('\n');
-    })
-    .catch(() => el.classList.add('hidden'));
+  if (!isRouterTarget(current)) { liveRoute = null; el.classList.add('hidden'); return; }
+  // A turn in flight owns the chip. Re-rendering the header for some unrelated reason must not
+  // replace the model that is answering with a description of what happens next time.
+  if (liveRoute && state.conv && state.streams.has(state.conv.id)) {
+    showLiveRoute(liveRoute.model, liveRoute.reasons);
+    return;
+  }
+  liveRoute = null;
+  el.classList.remove('live');
+  el.classList.remove('hidden');
+  // Nothing is computed here — no router, no settings, no candidates. The only question this
+  // can honestly answer at idle is whether there is anything at all to route to, which the
+  // availability dot already knows.
+  const avail = agentAvailability(current);
+  el.textContent = avail.ok ? 'picks per message' : 'no models yet';
+  el.title = avail.ok
+    ? 'Auto chooses when you send, from the message itself — nothing is pinned in advance.\nClick to see the models it chooses among.'
+    : 'Nothing to route to yet — add a model in Settings.';
 }
 
 function agentModelLabel(target) {
@@ -2430,8 +2432,8 @@ async function runStream(agent, assistant, conv) {
     state.streams.delete(conv.id);
     ensureActivityTimer();
     if (conv.id === state.conv.id) {
-      // Back to a prediction for the NEXT message: the live label described a turn that is
-      // now over, and leaving it would claim the same model will answer again.
+      // The live label described a turn that is now over; leaving it would claim the same
+      // model answers the next message too, which is the one thing Auto never promises.
       renderRoutedTarget();
       updateComposerUI();
       renderActivity();
@@ -2484,7 +2486,17 @@ function topicTarget(fallbackId = '') {
   return target ? resolveTarget(target, state.settings) : null;
 }
 
-async function extractTopicItems(kind, title, text, fallbackId = '') {
+/**
+ * @param context what the flattened transcript INLINED (topicSourcesFor*), so the record can
+ *        name it. The prompt derives its context list from `message.attachments`, and this
+ *        call passes one synthetic message with none — the material is already inside the
+ *        text. Without declaring it the record claimed no context while thousands of
+ *        characters of attached page text sat in the body.
+ * @param sourceId which conversation/meeting this ran for, so background work is filterable
+ *        in the trace and its tokens are attributed to topic extraction rather than to
+ *        'other'.
+ */
+async function extractTopicItems(kind, title, text, fallbackId = '', { context = [], sourceId = '' } = {}) {
   const { fallbackTopicItems, topicExtractionPrompt, parseTopicExtractionResponse } = await import('./js/topic-extraction.js');
   const target = topicTarget(fallbackId);
   if (!target) return { items: fallbackTopicItems(text, 10), fallback: true, targetId: '' };
@@ -2494,6 +2506,11 @@ async function extractTopicItems(kind, title, text, fallbackId = '') {
       agent: { ...target, systemPrompt: 'Return only valid JSON. Do not include markdown fences.', temperature: 0.2, maxTokens: 500 },
       messages: [{ role: 'user', content: topicExtractionPrompt({ kind, title, text }) }],
       settings: state.settings,
+      context,
+      // NOT A CHAT TURN. Background extraction shared the chat surface, so a run that nobody
+      // asked for was indistinguishable from one they did — and its tokens were billed to
+      // 'other'.
+      usage: { surface: 'topics', sourceId, background: true },
       onDelta: (d) => { out += d; },
       onEvent: () => {},
     });
@@ -2508,7 +2525,7 @@ async function extractTopicItems(kind, title, text, fallbackId = '') {
 async function maybeExtractConversationTopics(conv) {
   const cfg = topicExtractionConfig();
   if (cfg.enabled === false || !conv?.id) return;
-  const { topicSourceTextForConversation, contentHash, shouldExtractTopics, makeTopicIndex } = await import('./js/topic-extraction.js');
+  const { topicSourceTextForConversation, topicSourcesForConversation, contentHash, shouldExtractTopics, makeTopicIndex } = await import('./js/topic-extraction.js');
   const text = topicSourceTextForConversation(conv);
   if (!text) return;
   const hash = contentHash(text);
@@ -2518,7 +2535,10 @@ async function maybeExtractConversationTopics(conv) {
   if (topicJobs.has(key)) return;
   topicJobs.add(key);
   try {
-    const { items, fallback, targetId: usedTargetId } = await extractTopicItems('chat', conv.title || 'Chat', text, conv.agentId);
+    const { items, fallback, targetId: usedTargetId } = await extractTopicItems(
+      'chat', conv.title || 'Chat', text, conv.agentId,
+      { context: topicSourcesForConversation(conv), sourceId: conv.id },
+    );
     conv.topics = makeTopicIndex({ hash, targetId: usedTargetId || targetId, items, fallback });
     await saveConversation(conv);
     refreshHistory();
@@ -2530,7 +2550,7 @@ async function maybeExtractConversationTopics(conv) {
 async function maybeExtractMeetingTopics(id) {
   const cfg = topicExtractionConfig();
   if (cfg.enabled === false || !id) return;
-  const { contentHash, topicSourceTextForMeeting, insightTopicItemsFromNotes, shouldExtractTopics, makeTopicIndex } = await import('./js/topic-extraction.js');
+  const { contentHash, topicSourceTextForMeeting, topicSourcesForMeeting, insightTopicItemsFromNotes, shouldExtractTopics, makeTopicIndex } = await import('./js/topic-extraction.js');
   const key = `meeting:${id}`;
   if (topicJobs.has(key)) return;
   topicJobs.add(key);
@@ -2549,7 +2569,10 @@ async function maybeExtractMeetingTopics(id) {
       await saveMeetingTopics(id, makeTopicIndex({ hash, targetId, items: insightTopics, fallback: false }));
       return;
     }
-    const { items, fallback, targetId: usedTargetId } = await extractTopicItems('meeting', rec.title || 'Meeting', text, state.settings?.activeAgentId);
+    const { items, fallback, targetId: usedTargetId } = await extractTopicItems(
+      'meeting', rec.title || 'Meeting', text, state.settings?.activeAgentId,
+      { context: topicSourcesForMeeting(rec, notes), sourceId: id },
+    );
     await saveMeetingTopics(id, makeTopicIndex({ hash, targetId: usedTargetId || targetId, items, fallback }));
   } finally {
     topicJobs.delete(key);

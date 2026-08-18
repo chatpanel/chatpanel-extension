@@ -14,6 +14,7 @@
 // inline `toolsetFor` + redaction wiring, so the two can never drift.
 
 import { buildToolset } from './toolset.js';
+import { toolNeedFor } from './events/tool-need.js';
 import { narrowToolset, isLocalToolSpec } from './tool-select.js';
 import { buildToolGroups } from './tool-groups/index.js';
 import { usableServers } from './tool-groups/mcp.js';
@@ -45,6 +46,31 @@ export async function buildTurnTools({
   onMcpError = () => {},
 } = {}) {
   const startedAt = Date.now();
+
+  // DOES THIS TURN NEED TOOLS AT ALL — asked of the message, before anything is built.
+  //
+  // Every turn used to be armed identically whatever was said, so "hi" reached the model
+  // carrying a history dispatcher, an MCP dispatcher and ~1,200 tokens of rulebook. That is
+  // not only waste: a turn that CARRIES tools requires a model that can CALL them, so a
+  // greeting eliminated every model without the capability and then paid a CLI agent two
+  // seconds to spawn a process in order to wave back. Equipment is not demand.
+  //
+  // The rule lives in @chatpanel/events beside the router's own signals — the gateway and
+  // the bridge arm turns too, and a second definition of "asks for nothing" would drift from
+  // the one the router uses. It is deliberately narrow: pleasantries only, everything else
+  // armed, because withholding history tools from a real question is the worse error by far.
+  //
+  // Explicit intent is never second-guessed: MCP mode 'on', the /history hint, or a running
+  // skill all mean the user or a skill already answered this question.
+  const need = toolNeedFor({
+    request: { text: userText },
+    attachments,
+    explicit: normalizeMcpTurnMode(mcpMode) === MCP_TURN_MODES.ON || !!skillRun || !!history?.enabled,
+  });
+  // Nothing built means no MCP connect either — the 'setup' seconds a greeting used to spend
+  // were mostly that.
+  if (!need.tools) return undefined;
+
   const providers = [...extraProviders];
 
   // TOOL GROUPS ARE REGISTERED, NOT WRITTEN OUT HERE.

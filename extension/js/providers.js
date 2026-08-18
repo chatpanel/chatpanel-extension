@@ -1310,6 +1310,22 @@ export async function streamChat(opts = {}) {
  * the swallowed Enter key, every activity row reading `page`). Each was fixed by pulling
  * the decision into a function a test could call.
  */
+/**
+ * Work nobody asked for and nobody is watching — a title, a topic pass, a grammar fix.
+ *
+ * ONE definition, because two things now depend on it: how the turn is recorded, and how it
+ * is ROUTED. A background pass that the log folds away and the router still treats as a
+ * user-facing request is the sort of disagreement that only shows up on the bill.
+ *
+ * A CALLER THAT KNOWS, SAYS. The heuristic reads "streams nothing to a human" as "has no
+ * onDelta", which is wrong for a caller using onDelta purely to COLLECT its output — the
+ * topic pass does exactly that, so the one thing named as infrastructure above was the one
+ * thing classified as foreground.
+ */
+export function isBackgroundTurn({ usage, tools, onDelta } = {}) {
+  return usage?.background ?? (!(tools?.specs || []).length && !onDelta);
+}
+
 export function turnSpecFor({ usage, tools, onDelta, agent } = {}) {
   const kind = usage?.surface || 'other';
   // A turn that streams nothing to a human and calls no tool is infrastructure — a title,
@@ -1317,7 +1333,7 @@ export function turnSpecFor({ usage, tools, onDelta, agent } = {}) {
   // model call) but folded out of the default view, or one note buries its own run under
   // a dozen one-token rows. This reads a signal the call already carries rather than
   // guessing from maxTokens.
-  const background = !(tools?.specs || []).length && !onDelta;
+  const background = isBackgroundTurn({ usage, tools, onDelta });
   return {
     loop: { id: `loop:${kind}`, kind, background },
     request: {
@@ -1408,7 +1424,10 @@ function citationCollector(tools, turn = null) {
 /** Tools whose job is to RETURN material rather than to act on something. */
 const RETRIEVAL_TOOLS = new Set(['find', 'source', 'history_search', 'web_search', 'search', 'fetch', 'read_page']);
 
-async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction, usage: usageCtx, timing, sources }, turn) {
+async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction, usage: usageCtx, timing, sources, context }, turn) {
+  // Same answer the turn record uses — routing and recording must not disagree about whether
+  // anyone asked for this turn.
+  const background = isBackgroundTurn({ usage: usageCtx, tools, onDelta });
   // Per-round-trip records for this turn. Accumulated rather than overwritten — see the
   // usage handler below.
   const requests = [];
@@ -1504,7 +1523,7 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
     // Only when routing did NOT apply. When Auto answered, the applied decision is already
     // recorded, and adding an observation computed separately is how the log came to say
     // "would route to Gemma4" about a turn OpenCode answered.
-    if (agent?.kind !== 'router' && agent?.id !== 'router:auto') recordRouteDecision(turn, agent, settings, tools, messages);
+    if (agent?.kind !== 'router' && agent?.id !== 'router:auto') recordRouteDecision(turn, agent, settings, tools, messages, background);
     // Also on the turn record, so a reader does not have to join two events to answer
     // "where did the time go".
     turn.report({ prepMs: tools?.prepMs ?? null, mcpMs: tools?.mcpMs ?? null });
@@ -1516,7 +1535,7 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   // other would. Returns null in every uncertain case, and null means "leave the choice
   // alone": routing must never be the reason a message fails to send.
   {
-    const routed = await pickRoutedAgent(agent, settings, tools, turn, messages, sources);
+    const routed = await pickRoutedAgent(agent, settings, tools, turn, messages, sources, background);
     if (routed) {
       agent = routed;
       // Tell the panel, so the reply can name the model that answered. Emitted as an event
@@ -1573,11 +1592,12 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
     // This path returns early — which is exactly how the turn once escaped without
     // closing, and how it would now escape without a transcript. Both belong on every
     // exit, not on the one that happened to be edited last.
-    recordPrompt(turn, agent, messages, tools);
+    recordPrompt(turn, agent, messages, tools, context);
     const cites = citationCollector(tools, turn);
     const full = await withFailover(
       agent, settings, tools, turn, onEvent, signal,
       (a) => dispatchStream({ agent: a, messages, settings, signal, onDelta, onEvent, tools: cites.tools }),
+      messages,
     );
     if (typeof full === 'string' ? full.trim() : full) turn.produced();
     const cited = typeof full === 'string' ? await cites.apply(full) : full;
@@ -1633,8 +1653,12 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   // Appended AFTER redaction so it isn't itself redacted.
   const systemPrompt = tools ? combineSystemPrompt(red.system, placeholderToolNote({ toolData: activeCfg.toolData })) : red.system;
   const safeAgent = { ...agent, systemPrompt };
-  const restorer = makeStreamRestorer(vault);
   const rawOnDelta = onDelta;
+  // ONE RESTORER PER ATTEMPT. It buffers a partial placeholder across deltas, so a stream
+  // that dies mid-token leaves a fragment behind — carried into a replacement, that fragment
+  // would be prepended to the new answer. Reassigned inside the call below, and `flush()`
+  // afterwards therefore drains the one that actually ran.
+  let restorer = makeStreamRestorer(vault);
   const wrappedOnDelta = rawOnDelta ? (d) => rawOnDelta(restorer.push(d)) : rawOnDelta;
   const wrappedOnEvent = onEvent
     ? (ev) => onEvent(ev && (ev.input != null || ev.result != null)
@@ -1655,16 +1679,31 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   // What the model is ABOUT to be shown — recorded before the call, so a turn that dies
   // mid-stream still says what was asked. Deliberately the REDACTED copy: it is what the
   // model actually saw, which makes it both the honest record and the safer one.
-  recordPrompt(turn, safeAgent, red.messages, safeTools);
+  recordPrompt(turn, safeAgent, red.messages, safeTools, context);
 
   // No try/catch. The one that used to be here existed solely to close the turn on the
   // error path; the runner does that in its own `finally`, so an exception simply
   // propagates and the turn is still recorded as failed.
   const cites = citationCollector(safeTools, turn);
-  const full = await dispatchStream({
-    agent: safeAgent, messages: red.messages, settings, signal,
-    onDelta: wrappedOnDelta, onEvent: wrappedOnEvent, tools: cites.tools,
-  });
+  // FAILOVER APPLIES HERE TOO. This path called dispatchStream directly, so a declining model
+  // killed the turn outright — and only for users who had redaction ON. Privacy and
+  // reliability are not a trade: turning redaction on must not quietly remove the thing that
+  // keeps a turn alive when a provider says no.
+  const full = await withFailover(
+    safeAgent, settings, safeTools, turn, wrappedOnEvent, signal,
+    (a) => {
+      restorer = makeStreamRestorer(vault);
+      // The REDACTED system prompt, re-applied over whatever the replacement target carries.
+      // `withFailover` spreads the new target over the agent, and a target with a system
+      // prompt of its own would otherwise replace the redacted copy with the raw one — a leak
+      // that only appears on the second hop, which is the hardest kind to notice.
+      return dispatchStream({
+        agent: { ...a, systemPrompt }, messages: red.messages, settings, signal,
+        onDelta: wrappedOnDelta, onEvent: wrappedOnEvent, tools: cites.tools,
+      });
+    },
+    red.messages,
+  );
   const tail = restorer.flush();
   if (tail && rawOnDelta) rawOnDelta(tail);
   if (typeof full === 'string' ? full.trim() : full) turn.produced();
@@ -1697,7 +1736,7 @@ function modelLabelOf(agent) {
  * ONLY WHEN THE ROUTER CHOSE. If the user picked a specific model, silently answering from a
  * different one would be worse than the error: they asked for that model for a reason.
  */
-async function withFailover(agent, settings, tools, turn, onEvent, signal, call) {
+async function withFailover(agent, settings, tools, turn, onEvent, signal, call, messages = []) {
   const chose = agent?.routedVia || agent?.kind === 'router';
   // KEEP TRYING, not once. The first replacement can decline too — a retired model is often
   // retired at every provider, so one retry lands on the same wall and the turn dies anyway.
@@ -1745,6 +1784,12 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call)
         capabilities: (tools?.specs || []).length ? ['tools'] : [],
         force: true,
         exclude: tried,
+        // THE SECOND HOP IS THE SAME TURN. Without this the re-route saw no request at all,
+        // so every replacement was chosen as though the turn were a generic one: the axis the
+        // first hop was routed on (speed for a greeting, quality for exact work) was
+        // recomputed from nothing and came back 'balanced'. A chain that forgets what it is
+        // answering will not degrade in the direction it started in.
+        request: { messages },
         // Replace like with like — and pass WHY it failed, because "same model elsewhere" is
         // the best replacement for a provider saying no and the worst one for a model that
         // no longer exists.
@@ -1934,7 +1979,7 @@ export async function sourceGate(agent, settings, messages, extraSources = []) {
  * and "the model I picked was ignored because routing threw" is the least explicable failure
  * this could produce.
  */
-async function pickRoutedAgent(agent, settings, tools, turn, messages, sources = []) {
+async function pickRoutedAgent(agent, settings, tools, turn, messages, sources = [], background = false) {
   try {
     const [router, store] = await Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)]);
     // AUTO IS THE ONLY SWITCH.
@@ -1970,6 +2015,9 @@ async function pickRoutedAgent(agent, settings, tools, turn, messages, sources =
       // BEFORE the gate has to refuse — a turn answered on-device is a better outcome than a
       // turn correctly blocked.
       sources: sourceUrlsOf(messages, sources),
+      // Work nobody asked for does not get a quality floor from the size of the material it
+      // was handed — see requirementsFor.
+      background,
     };
     const routed = await router.routeForTurn(settings, store?.resolveTarget, need);
     if (!routed?.target) {
@@ -1991,6 +2039,11 @@ async function pickRoutedAgent(agent, settings, tools, turn, messages, sources =
       from, to,
       strategy: routed.decision.strategy,
       reasons: routed.decision.reasons,
+      // Every candidate and the projected failover chain, so the trace can DRAW the decision
+      // instead of asserting it. Three lines of prose can say which model won; they cannot
+      // say what nearly won, what was eliminated and why, or where the turn goes next — which
+      // are the questions actually asked when a route looks wrong.
+      graph: routed.graph || null,
     });
     // The caller's system prompt and per-turn overrides survive; only the target changes.
     // `routedVia` travels with the agent so the reply can say which model answered and why —
@@ -2022,7 +2075,7 @@ async function pickRoutedAgent(agent, settings, tools, turn, messages, sources =
  * Fire-and-forget and free to compute (class R, no model call), so an observation can never
  * cost or break the turn it observes.
  */
-function recordRouteDecision(turn, agent, settings, tools, messages) {
+function recordRouteDecision(turn, agent, settings, tools, messages, background = false) {
   Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)])
     .then(async ([router, store]) => {
       // THE SAME inputs the applier uses. Constructing this separately is what made the
@@ -2033,6 +2086,7 @@ function recordRouteDecision(turn, agent, settings, tools, messages) {
         structured: (tools?.specs || []).some((t) => /^(structured_insert|sheet_write)$/.test(t.name || t.function?.name || '')),
         pageTools: (tools?.specs || []).some((t) => (t.name || t.function?.name) === 'page'),
         sources: sourceUrlsOf(messages),
+        background,
       });
       const preview = await router.previewRoute(settings, store?.resolveTarget, need);
       const used = agent?.id || agent?.name || agent?.model || null;
@@ -2046,6 +2100,7 @@ function recordRouteDecision(turn, agent, settings, tools, messages) {
         reasons: preview.reasons,
         eligible: preview.eligible,
         rejected: preview.rejected,
+        graph: preview.graph || null,
       });
     })
     .catch(() => {});
@@ -2058,7 +2113,7 @@ function recordRouteDecision(turn, agent, settings, tools, messages) {
  * no transcript. The event carries only a hash — see I7 in @chatpanel/events for why
  * content never travels inside an event.
  */
-function recordPrompt(turn, agent, messages, tools) {
+function recordPrompt(turn, agent, messages, tools, declared = []) {
   // FOUR DIFFERENT THINGS, RECORDED AS FOUR. They were flattened into one blob, so the
   // trajectory could not tell the user's own words from the page that was attached to them
   // or from the instructions we added — and "why did it answer that" is usually a question
@@ -2068,7 +2123,15 @@ function recordPrompt(turn, agent, messages, tools) {
   //   user     — what the person actually typed
   //   context  — what was attached to it, named rather than inlined
   //   tools    — what it was allowed to call
-  const context = [];
+  // WHAT A CALLER INLINED, DECLARED RATHER THAN INFERRED.
+  //
+  // This list is derived from `m.attachments`, which works for a chat turn and silently
+  // reports NOTHING for a caller that folded its material into the text itself — the topic
+  // extractor flattens a whole transcript, attachments and all, into one string, and the
+  // record then claimed no context was attached while three thousand characters of it sat
+  // inside `content`. The blob was honest and the summary beside it was not, which is the
+  // exact failure this function was written against.
+  const context = [...declared];
   for (const m of messages || []) {
     for (const a of m?.attachments || []) {
       context.push({

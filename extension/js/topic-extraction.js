@@ -468,6 +468,53 @@ export function topicSourceTextForConversation(conv) {
   return lines.join('\n').trim();
 }
 
+/**
+ * WHAT THE FLATTENED TEXT ACTUALLY SWALLOWED — so the record can say so.
+ *
+ * The builders above fold a whole conversation into one string, attachments and all, and the
+ * prompt record derives its context list from `message.attachments`. A caller that inlines
+ * therefore reported NO context while thousands of characters of attached page text sat
+ * inside the message body: the blob was honest and the summary beside it was not.
+ *
+ * Declared HERE, beside the flattening, because this is the only place that knows what was
+ * folded in. Asking the caller to reconstruct it would be a second implementation of the
+ * same walk, and it would drift the first time one of these builders changed.
+ *
+ * `inlined: true` is the distinction that matters — the model was handed this material as
+ * text, not offered it as a source it could go and fetch.
+ */
+export function topicSourcesForConversation(conv) {
+  const out = [];
+  for (const m of conv?.messages || []) {
+    if (m.pending || m.error || !(m.role === 'user' || m.role === 'assistant')) continue;
+    if (!m.content && !m.attachments?.length) continue;
+    for (const a of m.attachments || []) {
+      if (a.kind === 'image' || !a.text) continue;
+      out.push({
+        kind: a.kind || 'context',
+        title: a.title || a.url || '',
+        url: a.url || '',
+        // The TRUNCATED length, because that is what was actually inlined — reporting the
+        // original would overstate what the model saw.
+        chars: Math.min(String(a.text).length, 3000),
+        inlined: true,
+      });
+    }
+  }
+  return out;
+}
+
+/** The same, for a meeting: its transcript and chat are the material, named rather than counted. */
+export function topicSourcesForMeeting(rec, notes = '') {
+  const out = [];
+  if (notes) out.push({ kind: 'summary', title: 'Meeting summary', url: '', chars: Math.min(String(notes).length, 12000), inlined: true });
+  const segs = (rec?.segments || []).filter((s) => s?.text).length;
+  if (segs) out.push({ kind: 'transcript', title: `${segs} transcript segments`, url: '', chars: 0, inlined: true });
+  const chat = (rec?.chat || []).filter((c) => c?.text).length;
+  if (chat) out.push({ kind: 'chat', title: `${chat} chat messages`, url: '', chars: 0, inlined: true });
+  return out;
+}
+
 // Neutralize forged section fences ("---") inside untrusted transcript/title text
 // so it can't pose as a new structural section / instruction block in the prompt.
 function sanitizeTopicText(s) {

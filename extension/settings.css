@@ -814,3 +814,51 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .thread-meta { font-size:11px; color:var(--muted); white-space:nowrap; }
 .thread-meta.warn { color:#b45309; }
 .thread-row > .run-row { margin:0 8px 6px 22px; }
+
+/* ── the routing decision, drawn ──────────────────────────────────────────────
+   A route row used to show a JSON blob, which is the record rather than the
+   explanation. What is actually being looked for is what nearly won, what was
+   ruled out and why, and where the turn goes if this model declines. */
+.rg { padding: 8px 10px; border-top: 1px solid var(--line, #23283a); display: grid; gap: 8px; }
+.rg-why { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.rg-strategy {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  padding: 2px 6px; border-radius: 4px; background: #3a2f4a; color: #c9a7f5;
+}
+.rg-reason { font-size: 11px; color: var(--muted, #8b93a7); }
+.rg-reason + .rg-reason::before { content: '· '; }
+
+/* The chain is a WALK — each hop chosen relative to the one before it. Scrolls in
+   its own box so a long chain never widens the page. */
+.rg-chain { display: flex; align-items: center; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+.rg-chain-label {
+  flex: none; font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted, #8b93a7);
+}
+.rg-hop {
+  flex: none; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--line, #2a2f3d); color: var(--muted-2, #b8c0d0); white-space: nowrap;
+}
+.rg-hop-chosen { border-color: var(--accent, #4fb0ff); color: var(--accent, #4fb0ff); }
+.rg-arrow { flex: none; color: var(--muted, #8b93a7); font-size: 11px; }
+
+.rg-nodes { display: grid; gap: 2px; }
+.rg-node {
+  display: flex; gap: 8px; align-items: baseline; font-size: 11px;
+  padding: 3px 8px; border-radius: 4px; background: var(--panel-2, #171b26);
+}
+.rg-chosen { outline: 1px solid var(--accent, #4fb0ff); }
+/* Ruled out before ranking ever ran — dimmed, but never hidden: a decision whose
+   losers you cannot see is an assertion. */
+.rg-out { opacity: .55; }
+.rg-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg, #e6e9f0); }
+.rg-facts { flex: none; display: flex; gap: 6px; font-variant-numeric: tabular-nums; }
+.rg-fact { font-style: normal; color: var(--muted, #8b93a7); }
+.rg-reach-device { color: #7fd6a4; }
+.rg-reach-trusted { color: #d9c07a; }
+/* An order the user PINNED is an instruction; one we inferred is a guess. */
+.rg-pinned { color: var(--accent, #4fb0ff); }
+.rg-out-why { flex: none; color: var(--muted, #8b93a7); max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rg-note { margin: 0; font-size: 11px; color: var(--muted, #8b93a7); }
+/* With the picture above it, the raw record is reference rather than the main event. */
+.rg-raw { max-height: 160px; }

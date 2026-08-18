@@ -5683,6 +5683,15 @@ function renderTrajectory(box, entries, log, lanes) {
       el.addEventListener('toggle', async () => {
         if (!el.open || loaded) return;
         loaded = true;
+        // A ROUTE IS DRAWN, NOT DUMPED. The blob is the record; the picture is the
+        // explanation — what nearly won, what was eliminated and why, and where this turn
+        // goes if the model declines. Loaded on demand, like every other row's content, so
+        // it costs nothing on a trace nobody opens.
+        if (entry.kind === 'route' && entry.data?.graph) {
+          const { renderRouteGraph } = await import('./js/route-graph-view.js');
+          const view = renderRouteGraph(entry.data.graph);
+          if (view) { el.insertBefore(view, body); body.classList.add('rg-raw'); }
+        }
         if (!entry.ref) { body.textContent = JSON.stringify(entry.data ?? { detail: entry.detail }, null, 2); return; }
         body.textContent = 'Loading…';
         const text = await log.getBlob(entry.ref);

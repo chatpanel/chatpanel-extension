@@ -23,7 +23,7 @@
 // package stays pure so the identical code runs in the extension, gateway and bridge, and
 // so replay is reproducible (order.js never consults wall time; I6 asserts it).
 
-export const LOOP_KINDS = Object.freeze(['chat', 'note', 'meeting', 'watch', 'assist', 'suggestion', 'other']);
+export const LOOP_KINDS = Object.freeze(['chat', 'note', 'meeting', 'watch', 'assist', 'suggestion', 'topics', 'other']);
 
 export class LoopError extends Error {
   constructor(code, message) { super(message); this.name = 'LoopError'; this.code = code; }

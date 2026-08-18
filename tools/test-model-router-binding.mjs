@@ -365,12 +365,30 @@ console.log('✓ structured tasks prefer a model over an agent that runs its own
     { id: 'cc', label: 'Claude Code', model: 'claude-sonnet', capabilities: ['tools'], quality: 0.9, costPer1k: 0 },
     { id: 'cx', label: 'Codex · gpt-5.6-sol', model: 'gpt-5.6-sol', capabilities: ['tools'], quality: 0.9, costPer1k: 0 },
   ];
-  const ask = (t) => explicitModelStrategy.decide(pool, { requestText: t });
+  // Returns a RANKED LIST now, not one model — the other routes that matched the same name
+  // become the runners-up, so a decline is replaced by another route to the model the user
+  // actually asked for.
+  const ask = async (t) => {
+    const out = await explicitModelStrategy.decide(pool, { requestText: t });
+    return Array.isArray(out) ? out[0] : out;
+  };
 
   assert.equal((await ask('use formulas and create a 2 times table here. use claude')).id, 'cc');
   assert.equal((await ask('draw this with codex')).id, 'cx');
   assert.equal((await ask('ask claude code to review this')).id, 'cc');
   assert.equal((await ask('switch to codex')).id, 'cx');
+
+  // WHICH ONE, when the name matches several. This took the first match in SCORE order, so
+  // "use claude" on a setup with three Claude routes let a cost-and-latency guess decide a
+  // question the user had answered twice — once by naming the model, once by ordering the
+  // routes to it.
+  const three = [
+    { id: 'cheap', label: 'Claude via Aggregator', model: 'claude-sonnet', capabilities: [], quality: 0.9, costPer1k: 0, providerRank: 1030, orderPinned: false },
+    { id: 'mine', label: 'Claude direct', model: 'claude-sonnet', capabilities: [], quality: 0.9, costPer1k: 3, providerRank: 1, orderPinned: true },
+  ];
+  const picked = await explicitModelStrategy.decide(three, { requestText: 'use claude' });
+  assert.equal(picked[0].id, 'mine', 'a cost guess chose which route to the named model, over the order the user set');
+  assert.equal(picked[1].id, 'cheap', 'the other route to the same model was dropped instead of kept as a runner-up');
 
   // CONSERVATIVE ON PURPOSE. A false positive silently sends work to the wrong model, which
   // is worse than missing an unusual phrasing — so only imperative forms count.
@@ -615,3 +633,271 @@ console.log('✓ router plugins: strategies listed and switchable, redaction lis
 }
 
 console.log('✓ routing: decisions name a model, and a greeting is not escalated');
+
+// SPEED HAS TO BE ABLE TO FIND THE SMALL MODEL. Latency was inferred from WHERE a model runs
+// and nothing else — every hosted model 700ms, every local one 1500ms — so an 8B and a
+// frontier model at the same provider were equally fast, and "prefer latency" could never
+// pick the one thing it exists to pick.
+{
+  const c = candidatesFrom({
+    endpoints: [
+      { id: 'tiny', name: 'Groq', baseUrl: 'https://api.groq.com/v1', model: 'llama-3.1-8b-instant' },
+      { id: 'big', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.5' },
+      { id: 'localTiny', name: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen3:8b' },
+    ],
+  });
+  const lat = Object.fromEntries(c.map((m) => [m.id, m.latencyMs]));
+  assert.ok(lat.tiny < lat.big, 'an 8B was not judged faster than a frontier model at the same provider');
+  // Where it runs still dominates: a local 8B is not faster than a hosted one.
+  assert.ok(lat.localTiny > lat.tiny, 'a local model was judged faster than a hosted one');
+}
+
+// WHICH AXIS THE REQUEST CARES ABOUT, read from the request rather than fixed at 'balanced'.
+{
+  const { needForTurn } = await import('../extension/js/model-router.js');
+
+  // A greeting carrying nothing means fast: no answer to "hi" is improved by a frontier
+  // model deliberating over it, and the wait is the only thing the user can perceive.
+  assert.equal(needForTurn({}, { request: { messages: [{ content: 'hi' }] } }).prefer, 'latency');
+
+  // But a turn CARRYING TOOLS is never "answer fast at any quality" — `smalltalk` alone is
+  // too generous to decide that, and it calls a question about the user's own meetings
+  // trivial. Answering that on an 8B to save half a second is the same mistake as the
+  // greeting on a frontier model, pointing the other way.
+  assert.equal(
+    needForTurn({}, { capabilities: ['tools'], request: { messages: [{ content: 'what did we decide in the standup' }] } }).prefer,
+    'balanced',
+    'a turn armed with the means to look something up asked for speed at any quality',
+  );
+
+  // Exact work buys quality, and says so.
+  const drawing = needForTurn({}, {
+    capabilities: ['tools'], structured: true,
+    request: { messages: [{ content: 'draw a circle around the logo' }] },
+  });
+  assert.equal(drawing.prefer, 'quality');
+  assert.ok(drawing.requirementReasons.some((w) => /right rather than quick/.test(w)),
+    'the chosen axis did not explain itself');
+}
+
+console.log('✓ preference: read from the request, and speed can actually find the small model');
+
+// ── the failover chain degrades nearest-first, in BOTH directions ────────────
+//
+// Ranking replacements by absolute quality made failover a one-way escalator, and it was
+// wrong at both ends at once: a greeting on an 8B that declined climbed to a frontier model,
+// and a frontier model that declined dropped to an 8B — the exact substitution this strategy
+// exists to prevent. The task did not get easier when the provider said no, and it did not
+// get harder when a small one did.
+{
+  const cfg = {
+    endpoints: [
+      { id: 'ollama8', name: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen3:8b' },
+      { id: 'ollama26', name: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'gemma-4-26b' },
+      { id: 'oai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.5' },
+      { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/v1', model: 'llama-3.1-8b-instant' },
+    ],
+    agents: [{ id: 'cc', name: 'Claude Code', kind: 'bridge', model: 'opus' }],
+  };
+  const by = Object.fromEntries(candidatesFrom(cfg).map((m) => [m.id, m]));
+
+  // The chain exactly as withFailover drives it: exclude what was tried, describe what failed.
+  const chainFrom = async (startId) => {
+    const tried = [startId];
+    for (let i = 0; i < 4; i++) {
+      const cur = by[tried.at(-1)];
+      const next = await routeForTurn(cfg, undefined, {
+        force: true, exclude: tried,
+        like: { model: cur.model, capabilities: [], quality: cur.quality, reason: 'server', classUsed: cur.classUsed },
+      });
+      if (!next?.target) break;
+      tried.push(next.decision.model.id);
+    }
+    return tried;
+  };
+
+  const fromTiny = await chainFrom('groq');
+  assert.equal(fromTiny[1], 'ollama8', 'a failed 8B escalated instead of moving sideways');
+  assert.equal(fromTiny.at(-1), 'cc', 'the most distant model was not last');
+  // Monotonic: every hop is at least as far from the start as the one before it.
+  const dist = (id) => Math.abs(by[id].quality - by.groq.quality);
+  for (let i = 2; i < fromTiny.length; i++) {
+    assert.ok(dist(fromTiny[i]) >= dist(fromTiny[i - 1]), `hop ${i} jumped back towards the start`);
+  }
+
+  const fromBig = await chainFrom('oai');
+  assert.equal(fromBig[1], 'cc', 'a failed frontier model was not replaced by a comparable one');
+  assert.equal(fromBig.at(-1), 'groq', 'a failed frontier model fell straight to an 8B');
+}
+
+console.log('✓ failover: closest replacement first, and the chain never jumps back');
+
+// ── the decision, as a picture ──────────────────────────────────────────────
+//
+// A route explained itself in three lines of prose: which model, and two reasons. Enough to
+// read one decision, nowhere near enough to find a wrong one — it cannot say what nearly won,
+// what was eliminated and why, or where the turn goes next. Those are the only questions
+// anyone opens a route row to ask.
+{
+  const { routeGraph } = await import('../extension/js/events/route-graph.js');
+
+  const cfg = {
+    endpoints: [
+      { id: 'ollama', name: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'gemma-4-26b' },
+      { id: 'oai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.5' },
+      { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/v1', model: 'llama-3.1-8b-instant' },
+    ],
+    agents: [{ id: 'cc', name: 'Claude Code', kind: 'bridge', model: 'opus' }],
+  };
+
+  const routed = await routeForTurn(cfg, undefined, { force: true, request: { messages: [{ content: 'hi' }] } });
+  assert.ok(routed.graph, 'a routing decision shipped without its graph');
+  assert.equal(routed.graph.chosen, routed.decision.model.id);
+  assert.equal(routed.graph.nodes.length, 4, 'a candidate is missing from the picture');
+  assert.ok(routed.graph.nodes[0].chosen, 'the chosen model is not shown first');
+
+  // THE PROJECTION MUST MATCH THE REAL WALK. A picture that lies about what the router is
+  // going to do is worse than no picture, which is why the chain is computed by the same
+  // failoverOrder that will actually walk it — asserted here rather than assumed.
+  const projected = routed.graph.chain.map((h) => h.id);
+  const actual = [projected[0]];
+  for (let i = 0; i < 3; i++) {
+    const cur = candidatesFrom(cfg).find((m) => m.id === actual.at(-1));
+    const next = await routeForTurn(cfg, undefined, {
+      force: true, exclude: actual, request: { messages: [{ content: 'hi' }] },
+      like: { model: cur.model, capabilities: [], quality: cur.quality, reason: 'server', classUsed: cur.classUsed },
+    });
+    if (!next?.target) break;
+    actual.push(next.decision.model.id);
+  }
+  assert.deepEqual(projected.slice(0, actual.length), actual,
+    'the drawn chain disagrees with the chain the router would actually walk');
+
+  // A model ruled out before ranking is shown WITH its reason — a decision whose losers you
+  // cannot see is an assertion.
+  const withTools = await routeForTurn({ ...cfg, endpoints: [...cfg.endpoints, { id: 'noTools', name: 'Bare', baseUrl: 'https://x/v1' }] },
+    undefined, { force: true, capabilities: ['vision'], request: { messages: [{ content: 'what is in this picture' }] } });
+  const ruled = withTools.graph.nodes.filter((n) => !n.eligible);
+  assert.ok(ruled.length, 'nothing was ruled out on a vision request with text-only models');
+  assert.ok(ruled.every((n) => n.why), 'a model was ruled out with no reason shown');
+}
+
+console.log('✓ route graph: every candidate, with the chain the router will really walk');
+
+// ── CLEARING AN OVERRIDE MUST NOT SET IT TO ZERO ────────────────────────────
+//
+// The settings selects write `null` for their "default" option, and the guard was
+// `Number.isFinite(Number(v))` — but Number(null) is 0, and 0 is finite. So picking
+// "Speed: default" made a model claim it answers in 0 ms, "Cost: default" made it free,
+// "Quality: default" made it worthless, and clearing Order pinned it at position 0 ahead of
+// everything, flagged as deliberate.
+//
+// It hid while the balanced score multiplied cost by latency — every free model scored 0
+// anyway. The moment a request could ask for SPEED, a model with a CLEARED speed field beat
+// every model with a real one, and "hi" went to the most expensive model configured.
+{
+  const inferred = { id: 'x', reach: 'trusted', capabilities: ['tools'], costPer1k: 5, latencyMs: 1050, quality: 0.9, providerRank: 1020, orderPinned: false };
+
+  const cleared = applyOverride(inferred, { latencyMs: null, costPer1k: null, quality: null, providerRank: null });
+  assert.equal(cleared.latencyMs, 1050, 'clearing the speed made the model instant');
+  assert.equal(cleared.costPer1k, 5, 'clearing the cost made the model free');
+  assert.equal(cleared.quality, 0.9, 'clearing the quality made the model worthless');
+  assert.equal(cleared.providerRank, 1020, 'clearing the order pinned it to position 0');
+  assert.equal(cleared.orderPinned, false, 'a cleared order was recorded as a deliberate choice');
+
+  // Empty strings and undefined are the same statement: not set.
+  const blank = applyOverride(inferred, { latencyMs: '', costPer1k: undefined, quality: '' });
+  assert.equal(blank.latencyMs, 1050);
+  assert.equal(blank.quality, 0.9);
+
+  // A DELIBERATE zero still means zero — "Cost: free" is a real answer, and this must not
+  // become a rule that ignores it.
+  const zeroed = applyOverride(inferred, { costPer1k: 0, quality: 0, providerRank: 1 });
+  assert.equal(zeroed.costPer1k, 0, 'a deliberate "free" was thrown away');
+  assert.equal(zeroed.quality, 0);
+  assert.equal(zeroed.providerRank, 1);
+  assert.equal(zeroed.orderPinned, true);
+
+  // END TO END: the turn that produced this. "hi" asks for speed, and a model whose speed
+  // field was CLEARED used to claim 0 ms — unbeatable, and then an Order 1 pin broke the
+  // two-way tie with the other cleared model. Both symptoms have to be gone: no phantom
+  // zero, and a decision the score actually made rather than one Order fell back on.
+  const cfg = {
+    endpoints: [{ id: 'fast', name: 'Groq', baseUrl: 'https://api.groq.com/v1', model: 'llama-3.1-8b-instant' }],
+    agents: [{ id: 'cc', name: 'Claude Code', kind: 'bridge', model: 'opus' }],
+    // Exactly what the settings page writes for "default", plus a real Order 1.
+    ui: { routing: { models: { cc: { latencyMs: null, costPer1k: null, providerRank: 1 } } } },
+  };
+  const hi = await routeForTurn(cfg, undefined, { force: true, request: { messages: [{ content: 'hi' }] } });
+  assert.ok(hi.decision.model.latencyMs > 0, 'a cleared speed field still reports as instant');
+  assert.equal(hi.decision.model.id, 'fast', 'a pinned Order won a request for speed over a genuinely faster model');
+  assert.doesNotMatch(hi.decision.reasons.at(-1), /broke a/,
+    'the score failed to separate them and Order decided by default');
+}
+
+// A CORRECTED QUALITY CORRECTS THE SPEED DERIVED FROM IT. Latency is inferred from size, so
+// a user telling us a model is stronger than we guessed left behind a latency computed from
+// the guess — the two numbers then described different models.
+{
+  const base = { endpoints: [{ id: 'e', name: 'Host', baseUrl: 'https://a/v1', model: 'some-new-thing' }] };
+  const guessed = candidatesFrom(base)[0];
+  const corrected = candidatesFrom({ ...base, ui: { routing: { models: { e: { quality: 0.9 } } } } })[0];
+  assert.ok(corrected.latencyMs > guessed.latencyMs,
+    'a model corrected upward kept the speed inferred from the old guess');
+  // Unless the user set the speed themselves, in which case theirs is the answer.
+  const pinnedSpeed = candidatesFrom({ ...base, ui: { routing: { models: { e: { quality: 0.9, latencyMs: 400 } } } } })[0];
+  assert.equal(pinnedSpeed.latencyMs, 400);
+}
+
+console.log('✓ overrides: cleared means cleared, a deliberate zero still means zero');
+
+// ── A HAND-SET ORDER IS HONOURED WHEREVER A TIE HAPPENS ─────────────────────
+//
+// Order was honoured in the score path and ignored everywhere else, so the moment any
+// strategy had an opinion the user's stated preference stopped existing: three CLI agents of
+// identical quality, one of them pinned to Order 1, and escalation picked a different one
+// because it costs less per 1k. The reasoning already written for the score path applies
+// verbatim — they can see the prices and chose anyway.
+{
+  const { complexityStrategy, failoverStrategy } = await import('../extension/js/model-router.js');
+  // From the shared package: both the extension's strategies and the shared failover ordering
+  // read the same definition of "an order the user chose".
+  const { pinnedOrderOf } = await import('../extension/js/events/router.js');
+
+  const agent = (id, over) => ({ id, label: id, classUsed: 'A', capabilities: ['tools', 'coding', 'reasoning'], quality: 0.9, costPer1k: 2, providerRank: 1020, orderPinned: false, ...over });
+  const pool = [
+    agent('opus', { costPer1k: 5, providerRank: 1, orderPinned: true }),
+    agent('codex', { providerRank: 2, orderPinned: true }),
+    agent('opencode', { providerRank: 10, orderPinned: true }),
+    agent('hf', { classUsed: 'C', capabilities: ['tools'], costPer1k: 1 }),
+  ];
+
+  const ranked = await complexityStrategy.decide(pool, { signals: { complexity: 'high' } });
+  assert.equal(ranked[0].id, 'opus', 'the model pinned to Order 1 lost its own tie on a cost guess');
+  assert.deepEqual(ranked.slice(0, 3).map((m) => m.id), ['opus', 'codex', 'opencode'], 'the pinned order is not the order');
+
+  // STILL ONLY A TIE-BREAK. Quality is the axis this strategy exists to judge, so a genuinely
+  // better model beats the pin — order must never become an override.
+  const better = [
+    agent('strong', { quality: 0.95, costPer1k: 9 }),
+    agent('pinned', { quality: 0.6, costPer1k: 0, providerRank: 1, orderPinned: true }),
+  ];
+  assert.equal((await complexityStrategy.decide(better, { signals: { complexity: 'high' } }))[0].id, 'strong',
+    'a pinned order outranked a real quality difference');
+
+  // An INFERRED order stays below cost, where a guess belongs.
+  const guessed = [agent('cheap', { costPer1k: 1, providerRank: 1 }), agent('dear', { costPer1k: 8, providerRank: 2 })];
+  assert.equal((await complexityStrategy.decide(guessed, { signals: { complexity: 'high' } }))[0].id, 'cheap',
+    'an order we merely inferred outranked a real cost difference');
+  assert.equal(pinnedOrderOf(guessed[0]), Infinity);
+
+  // Failover breaks its own ties the same way: equally close replacements, user's order wins.
+  const replacements = [
+    agent('farA', { quality: 0.9, costPer1k: 1 }),
+    agent('farB', { quality: 0.9, costPer1k: 1, providerRank: 1, orderPinned: true }),
+  ];
+  const order = await failoverStrategy.decide(replacements, { like: { model: 'x', quality: 0.9, capabilities: [], classUsed: 'A', reason: 'server' } });
+  assert.equal(order[0].id, 'farB', 'two equally close replacements ignored the order the user set');
+}
+
+console.log('✓ order: a hand-set position breaks ties inside strategies too, and never overrides quality');

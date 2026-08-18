@@ -13,8 +13,9 @@
 
 import {
   defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, signalsFrom, requirementsFor,
-  sameModelKey,
+  preferenceFor, failoverOrder, pinnedOrderOf,
 } from './events/router.js';
+import { routeGraph } from './events/route-graph.js';
 import { classifySource, sourcePolicyFor, DEFAULT_INTERNAL_PATTERNS } from './events/sources.js';
 import { healthOf } from './model-health.js';
 
@@ -145,6 +146,33 @@ function qualityOf(target) {
 }
 
 /** Rough relative cost — unitless, and only ever compared against its siblings. */
+/**
+ * Roughly how long this model takes, from the two things that actually decide it.
+ *
+ * This used to read WHERE a model runs and nothing else — every hosted model 700ms, every
+ * local one 1500ms — so an 8B and a frontier model at the same provider were equally fast.
+ * Asking the router for speed could therefore never find the small model, which is the one
+ * thing "prefer latency" exists to do.
+ *
+ * SIZE IS THE OTHER HALF. A frontier model thinks for longer than an 8B wherever it runs,
+ * and quality is the only size signal available here — it is already inferred from the
+ * parameter count in the name (see qualityOf), and already correctable by the user, so
+ * deriving from it keeps one number to fix rather than two.
+ *
+ * Still a guess, deliberately crude: this only has to ORDER models. Health can measure the
+ * real thing later and override it per model, which is exactly why it is a plain field.
+ */
+function latencyOf(reach, quality) {
+  // A local model is slower to first token than a hosted one far more often than not: no
+  // warm pool, and usually a laptop rather than a datacentre.
+  const base = reach === 'device' ? 1500 : 700;
+  const q = Number.isFinite(quality) ? quality : 0.5;
+  // 0.6 + q: an 8B (0.3) is ~0.9x the base, a frontier model (0.9) ~1.5x. A spread of under
+  // two to one, because the difference is real but not the order of magnitude a bigger
+  // coefficient would claim.
+  return Math.round(base * (0.6 + q));
+}
+
 function costOf(target, reach) {
   if (reach === 'device') return 0;
   const m = String(target.model || '').toLowerCase();
@@ -171,18 +199,41 @@ function costOf(target, reach) {
  * A model that reaches further can serve fewer kinds of request, so outward is the safe
  * direction and inward is the one that has to be earned rather than declared.
  */
+/**
+ * A number the user actually SET, or null for "cleared — use what we inferred".
+ *
+ * CLEARING AN OVERRIDE WAS SETTING IT TO ZERO. The settings selects write `null` for their
+ * "default" option, and the guard here was `Number.isFinite(Number(v))` — but `Number(null)`
+ * is 0 and 0 is finite, so every cleared field became a real, extreme value. Picking
+ * "Speed: default" made a model claim it answers in 0 ms; "Cost: default" made it free;
+ * "Quality: default" made it worthless; and clearing Order pinned it at position 0, ahead of
+ * everything, flagged as a deliberate choice.
+ *
+ * It stayed invisible while the balanced score multiplied cost by latency — every free model
+ * scored 0 anyway. The moment a request could ask for SPEED, a model with a cleared speed
+ * field beat everything that had a real one, and "hi" went to the most expensive model
+ * configured. An unset field must read as unset.
+ */
+function numericOverride(v) {
+  if (v === null || v === undefined || v === '' || typeof v === 'boolean') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export function applyOverride(inferred, override = {}) {
   if (!override || typeof override !== 'object') return inferred;
   const out = { ...inferred };
-  if (Number.isFinite(Number(override.providerRank))) {
-    out.providerRank = Number(override.providerRank);
+  const rank = numericOverride(override.providerRank);
+  if (rank !== null) {
+    out.providerRank = rank;
     // Flagged as chosen, not guessed: the router honours a hand-set order outright between
     // two routes to one model, and treats the order we inferred as a tie-break only.
     out.orderPinned = true;
   }
   if (Array.isArray(override.capabilities)) out.capabilities = [...override.capabilities];
   for (const key of ['costPer1k', 'latencyMs', 'quality']) {
-    if (Number.isFinite(Number(override[key]))) out[key] = Number(override[key]);
+    const n = numericOverride(override[key]);
+    if (n !== null) out[key] = n;
   }
   if (typeof override.available === 'boolean') out.available = override.available;
   if (override.reach && REACH_RANK[override.reach] > REACH_RANK[inferred.reach]) {
@@ -227,8 +278,7 @@ export function candidatesFrom(settings = {}, resolveTarget = (x) => x, { ignore
       classUsed: reach === 'device' ? 'L' : (kind === 'bridge' ? 'A' : 'C'),
       capabilities: capabilitiesOf(t),
       costPer1k: costOf(t, reach),
-      // A local model is slower to first token than a hosted one far more often than not.
-      latencyMs: reach === 'device' ? 1500 : 700,
+      latencyMs: latencyOf(reach, qualityOf(t)),
       quality: qualityOf(t),
       providerRank: providerRankOf(t, kind),
       available: t.enabled !== false,
@@ -237,6 +287,11 @@ export function candidatesFrom(settings = {}, resolveTarget = (x) => x, { ignore
     // and cannot answer; routing to it because its config still looks good is what a user
     // experiences as "it keeps picking the broken one".
     const configured = applyOverride(inferred, overrides[id]);
+    // A CORRECTED QUALITY CORRECTS THE SPEED DERIVED FROM IT. Latency is inferred from size
+    // (see latencyOf), so a user who tells us a model is stronger than we guessed was leaving
+    // behind a latency computed from the guess — the two numbers described different models.
+    // Unless they set the speed themselves, in which case theirs is the answer.
+    if (numericOverride(overrides[id]?.latencyMs) === null) configured.latencyMs = latencyOf(reach, configured.quality);
     const live = healthOf(id, configured.model);
     out.push(defineModel({
       ...configured,
@@ -290,6 +345,12 @@ export const complexityStrategy = defineRouteStrategy({
     // armed looked like exact structured work. Equipment is not demand — the same conflation
     // that put a quality floor on a greeting, in a second place.
     if (sig?.smalltalk) return null;
+    // NOR DOES BACKGROUND WORK ESCALATE. Dropping the quality floor for a topic pass and then
+    // letting escalation rank by quality anyway would move the same decision one step down
+    // and change nothing — the floor eliminated the local models, this would simply rank them
+    // last. Both read 'high' from the size of the material rather than the difficulty of the
+    // ask, so both have to abstain.
+    if (need.background) return null;
     const hard = sig?.complexity === 'high' || sig?.modality === 'vision' || need.structured;
     if (!hard) return null;   // no opinion on easy work — let cost decide
     // Prefer a model that claims what this task actually wants. Not a hard filter: declaring
@@ -318,11 +379,21 @@ export const complexityStrategy = defineRouteStrategy({
       const models = shortlist.filter((m) => m.classUsed !== 'A');
       if (models.length) shortlist = models;
     }
-    // Rank by declared quality, then by cost as the tiebreak among equals. A model with an
-    // unknown quality sits mid-table rather than last, so a newly added model is not
-    // permanently skipped.
+    // Rank by declared quality — the axis this strategy exists to judge — then by the ORDER
+    // the user set, and only then by cost. A model with an unknown quality sits mid-table
+    // rather than last, so a newly added model is not permanently skipped.
+    //
+    // ORDER BEFORE COST, and this is the fix for a real complaint: three CLI agents of
+    // identical quality, one of them pinned to Order 1, and escalation picked a different one
+    // because it is cheaper per 1k. A hand-set order is a statement — they can see the prices
+    // and chose anyway — and it was being honoured in the score path and nowhere else, so
+    // the moment any strategy had an opinion the user's own preference stopped existing.
+    //
+    // Still only a TIE-BREAK: quality decides first, so a genuinely better model beats the
+    // pinned one, and an INFERRED order stays below cost where a guess belongs.
     const q = (m) => (Number.isFinite(m.quality) ? m.quality : 0.5);
-    return [...shortlist].sort((a, b) => q(b) - q(a) || a.costPer1k - b.costPer1k);
+    return [...shortlist].sort((a, b) => q(b) - q(a)
+      || pinnedOrderOf(a) - pinnedOrderOf(b) || a.costPer1k - b.costPer1k);
   },
 });
 
@@ -346,32 +417,12 @@ export const failoverStrategy = defineRouteStrategy({
   decide: async (eligible, need) => {
     const failed = need.like;
     if (!failed) return null;
-    const sameModel = (m) => !!failed.model && sameModelKey(m) === sameModelKey(failed);
-    // A RETIRED MODEL IS RETIRED EVERYWHERE. "Same model at another provider" is the ideal
-    // replacement when the provider declined — out of credits, rate limited — and the worst
-    // possible one when the MODEL is gone: deepseek-v4-flash reaching end of life on
-    // HuggingFace means the identical name on NVIDIA is equally dead, so preferring it walks
-    // straight into the same wall.
-    if (failed.reason === 'gone') {
-      const alive = eligible.filter((m) => !sameModel(m));
-      if (alive.length) eligible = alive;
-    }
-    const covers = (m) => (failed.capabilities || []).every((c) => m.capabilities.includes(c));
-    const q = (m) => (Number.isFinite(m.quality) ? m.quality : 0.5);
-    // SAME KIND OF THING. Class is not a quality score, it is how the model is REACHED: an
-    // API model answers a request, a CLI agent spawns a process with its own tools, its own
-    // loop and its own idea of what to do next. Substituting one for the other mid-task is
-    // not a fallback, it is a different program — a drawing request handed to a coding agent
-    // went off reading files for a minute instead.
-    const sameClass = (m) => !failed.classUsed || m.classUsed === failed.classUsed;
-    const rank = (m) => {
-      if (sameModel(m)) return 0;
-      if (sameClass(m) && covers(m)) return 1;
-      if (sameClass(m)) return 2;
-      if (covers(m)) return 3;   // capable but a different kind of thing
-      return 4;
-    };
-    return [...eligible].sort((a, b) => rank(a) - rank(b) || q(b) - q(a) || a.costPer1k - b.costPer1k);
+    // THE ORDERING ITSELF LIVES IN @chatpanel/events, because two things need it: this
+    // strategy, and the projected chain the trace draws before any of it happens. A picture
+    // computed by a second implementation would eventually disagree with the real failover,
+    // and one that lies about what the router will do is worse than no picture. The strategy
+    // is the thin part — knowing there IS something to replace.
+    return failoverOrder(eligible, failed);
   },
 });
 
@@ -404,11 +455,20 @@ export const explicitModelStrategy = defineRouteStrategy({
     for (const m of text.matchAll(directive)) asked.push(m[1].trim());
     if (!asked.length) return null;
 
-    const hit = eligible.find((cand) => {
+    const matches = eligible.filter((cand) => {
       const names = [cand.label, cand.model, cand.id].filter(Boolean).map((x) => String(x).toLowerCase());
       return asked.some((want) => names.some((n) => n.includes(want) || want.includes(n.split(' · ')[0])));
     });
-    return hit || null;   // named something we do not have? say nothing and let the rest decide
+    if (!matches.length) return null;   // named something we do not have? say nothing and let the rest decide
+    // WHICH ONE, when the name matches several. This took the FIRST match in score order, so
+    // "use claude" on a setup with three Claude routes picked whichever happened to score
+    // best — a cost-and-latency guess deciding a question the user had already answered
+    // twice: once by naming the model, and once by ordering the routes to it.
+    //
+    // Returned as a LIST rather than a single model, so the ones that also matched become the
+    // runners-up: if the first declines, failover replaces it with another route to the model
+    // that was actually asked for.
+    return [...matches].sort((a, b) => pinnedOrderOf(a) - pinnedOrderOf(b));
   },
 });
 
@@ -485,8 +545,10 @@ export function routingSettings(settings = {}) {
  * message fails to send: a router that occasionally defers is fine, one that can break a
  * turn is not.
  */
-export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false, request = null, structured = false, pageTools = false, exclude = [], like = null, sources = [] } = {}) {
-  const cfg = routingSettings(settings);
+export async function routeForTurn(settings, resolveTarget, { capabilities = [], force = false, request = null, structured = false, pageTools = false, exclude = [], like = null, sources = [], background = false } = {}) {
+  // Nothing is read from `ui.routing` here — deliberately. The dials are a test harness, and
+  // the only thing a real turn takes from settings is the model list itself (candidatesFrom,
+  // via buildRouter below) plus the per-model FACTS the user corrected there.
   // `force` is the user having selected Auto, which is the ONLY thing that turns routing on.
   // A settings mode that could route an explicitly chosen model would override the user's own
   // selection — they picked it for a reason.
@@ -495,7 +557,7 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
     const router = buildRouter(settings, resolveTarget);
     // One construction, shared with the observer — see needForTurn.
     const decision = await router.routeWith({
-      ...needForTurn(settings, { capabilities, request, structured, pageTools, sources }),
+      ...needForTurn(settings, { capabilities, request, structured, pageTools, sources, background }),
       exclude,
       like,
     });
@@ -504,7 +566,12 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
       .find((t) => (t.id || t.name || t.model) === decision.model.id);
     if (!raw) return null;
     const target = resolveTarget ? resolveTarget(raw) : raw;
-    return target ? { target, decision } : null;
+    // The whole picture, alongside the answer: every candidate with the numbers that decided
+    // it, and the chain this turn would walk if the model declines. Derived from the decision
+    // that was already made — arithmetic, no second routing pass — so recording it on every
+    // turn costs nothing worth measuring, and finding a wrong decision stops meaning reading
+    // the code.
+    return target ? { target, decision, graph: routeGraph({ decision, models: router.models() }) } : null;
   } catch {
     return null;
   }
@@ -552,33 +619,45 @@ export function sourceGuardFor(settings, sources = []) {
   return p.internal ? p : null;
 }
 
-export function needForTurn(settings, { capabilities = [], request = null, structured = false, pageTools = false, force = false, sources = [] } = {}) {
+export function needForTurn(settings, { capabilities = [], request = null, structured = false, pageTools = false, force = false, sources = [], background = false } = {}) {
   const signals = request ? signalsFrom(request) : {};
   // REQUIREMENTS FIRST. What the work needs eliminates candidates; cost and speed only order
   // what survives. A preference lets an unsuitable model win once the better ones decline,
   // which is exactly how a chain of five ended on one that could not do the job.
-  const req = requirementsFor(signals, { structured, pageTools, hasTools: capabilities.includes('tools') });
+  const req = requirementsFor(signals, { structured, pageTools, hasTools: capabilities.includes('tools'), background });
   // WHERE IT CAME FROM IS A CEILING, NOT A PREFERENCE. Routing asked what the work needed and
   // never asked what it was about, so an internal page was summarised by a public inference
   // host. This narrows reach and can only narrow it — reach is never relaxed (see the
   // relaxation order in the router), so no later step can trade it away for capability.
   const guard = sourceGuardFor(settings, sources);
+  // WHICH AXIS THIS REQUEST CARES ABOUT, read from the request rather than fixed at
+  // 'balanced' for everything. A greeting means fast — no answer to "hi" is improved by a
+  // frontier model thinking about it. A refactor means good — three seconds saved on an
+  // answer that has to be redone is not a saving. It only ever ORDERS what already
+  // qualifies; `req` above is what eliminates.
+  const pref = preferenceFor(signals, {
+    structured,
+    minQuality: req.minQuality,
+    // The same fact requirementsFor was given: a turn carrying tools is one that might use
+    // them, so it is never "answer fast at any quality".
+    hasTools: capabilities.includes('tools'),
+    background,
+  });
   return {
-    // With no stated deadline or budget, "reasonably fast and reasonably cheap" is what
-    // anybody means — and it only ever decides between models that already qualify.
-    prefer: 'balanced',
+    prefer: pref.prefer,
     reach: guard ? guard.reach : 'any',
     capabilities: [...new Set([...capabilities, ...req.required])],
     minQuality: req.minQuality,
     // Which requirements may be given up if nothing qualifies — never `tools`, and never
     // reach. See requirementsFor.
     negotiable: req.negotiable,
-    requirementReasons: guard ? [...req.why, guard.why] : req.why,
+    requirementReasons: [...(guard ? [...req.why, guard.why] : req.why), pref.why],
     sourceGuard: guard,
     signals,
     requestText: request ? String(request.text || (request.messages || []).map((m) => m?.content || '').join('\n')).slice(-2000) : '',
     structured,
     force,
+    background,
   };
 }
 
@@ -597,6 +676,10 @@ export async function previewRoute(settings, resolveTarget, need = {}) {
       rejected: (decision.rejected || []).map((x) => ({ ...x, id: nameOf(x.id) })),
       runnersUp: (decision.runnersUp || []).map(nameOf),
       eligible: (decision.eligible || []).map((m) => m.label),
+      // The picture, on the OBSERVED path too. A turn where the user picked the model
+      // themselves is exactly where "what would the router have done, and why" is worth
+      // seeing — and it was the one path that recorded `graph: null`.
+      graph: routeGraph({ decision, models: router.models() }),
     };
   } catch (e) {
     return { chosen: null, error: e.message };
