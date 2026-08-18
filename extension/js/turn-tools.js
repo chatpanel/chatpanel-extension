@@ -15,6 +15,7 @@
 
 import { buildToolset } from './toolset.js';
 import { toolNeedFor } from './events/tool-need.js';
+import { ownToolsSystem } from './agent-capabilities.js';
 import { narrowToolset, isLocalToolSpec } from './tool-select.js';
 import { buildToolGroups } from './tool-groups/index.js';
 import { usableServers } from './tool-groups/mcp.js';
@@ -115,6 +116,13 @@ export async function buildTurnTools({
   const skillSystem = skillToolSystem(systemSkillRun, usable);
   if (!toolset && skillSystem) return { specs: [], execute: async () => '', system: skillSystem };
   if (toolset && skillSystem) toolset.system = [skillSystem, toolset.system].filter(Boolean).join('\n\n');
+  // WHAT THE AGENT MAY STILL DO ON ITS OWN. Everything this harness says about the relayed
+  // tools is a restriction — each written to stop a specific substitution — and read together
+  // by an agent that also carries its own connectors they add up to "do not use your own
+  // tools", which nobody meant. Added last so it qualifies the rules above rather than being
+  // qualified by them.
+  const own = ownToolsSystem(resolvedAgent);
+  if (toolset && own) toolset.system = [toolset.system, own].filter(Boolean).join('\n\n');
   return toolset;
 }
 

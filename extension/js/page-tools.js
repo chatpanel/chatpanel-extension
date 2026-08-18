@@ -32,10 +32,17 @@ import { CALIBRATE_TOOL_SPEC, calibrateTurn } from './page-calibrate.js';
 // but the hard rule overriding everything is step 4/6: judge "done" from the
 // SCREENSHOT, never from your plan, and never fabricate a result.
 export const PAGE_AUTOMATION_SYSTEM =
-  'USE ONLY the ChatPanel browser tools provided here (read_page, inspect_page, screenshot, ' +
-  'read_canvas, structured_insert, click_element, click_by_text, click_at, type_text, press_key, ' +
-  'fill_form, scroll, …) to see and act on this page — they are the ONLY tools connected to the ' +
-  'user’s real, logged-in browser tab.\n' +
+  // SCOPED TO THE TAB, DELIBERATELY. This opened "USE ONLY the ChatPanel browser tools" with
+  // no boundary, and two paragraphs of "do NOT use your own" after it — so a CLI agent with a
+  // Slack or Jira connector read the whole block as "do not use your own tools", and answered
+  // a question about an internal thread by telling the user to go and look it up themselves.
+  // The restriction is about THIS TAB, which only these tools can reach. Everything the agent
+  // can do elsewhere is still its to do — see the capability note the relay adds.
+  'TO SEE OR ACT ON THIS BROWSER TAB use only the ChatPanel browser tools provided here ' +
+  '(read_page, inspect_page, screenshot, read_canvas, structured_insert, click_element, ' +
+  'click_by_text, click_at, type_text, press_key, fill_form, scroll, …) — they are the ONLY ' +
+  'tools connected to the user’s real, logged-in browser tab. This is a rule about the TAB, ' +
+  'not about your other tools.\n' +
   // READING IS A FIRST-CLASS USE OF THIS TAB, and it was missing from the list above — every
   // tool named was an ACTION tool, so a model asked to summarise an article found nothing here
   // for reading and reached for its own fetch. In a real log: 40 screenshots and 10 read_page
@@ -49,7 +56,8 @@ export const PAGE_AUTOMATION_SYSTEM =
   '{"action":"read_page","args":{"query":"what X means"}} returns the matching sections in ' +
   'document order. Reading a long page whole, repeatedly, to hunt for one paragraph is the ' +
   'slow and expensive way; ask for what you need.\n' +
-  'DO NOT FETCH THE URL. Fetching, web-search, or any "read this link" tool of your own gets a ' +
+  'DO NOT FETCH THIS TAB\'S URL. Fetching, web-search, or any "read this link" tool of your own ' +
+  'gets a ' +
   'DIFFERENT page from the one the user is looking at: not logged in, not rendered, often a ' +
   'login wall, a paywall or raw HTML — which is why those calls fail. This tab is already open, ' +
   'authenticated and rendered; read_page reads THAT. Screenshots are for when the LAYOUT matters, ' +

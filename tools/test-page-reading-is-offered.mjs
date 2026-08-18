@@ -27,15 +27,18 @@ assert.match(readPage.description, /PASS A QUERY/);
 assert.ok(readPage.parameters.properties.maxTokens, 'a query read has no budget');
 
 // The deferred manual names it among the tools to use, rather than listing only actions.
-assert.match(PAGE_AUTOMATION_SYSTEM, /USE ONLY the ChatPanel browser tools provided here \(read_page/,
+assert.match(PAGE_AUTOMATION_SYSTEM, /use only the ChatPanel browser tools provided here \s*\(read_page/,
   'the manual lists only action tools, so reading has no entry point');
+// SCOPED TO THE TAB. Unbounded, it read as "do not use your own tools" to an agent carrying
+// its own connectors — see test-relayed-agent-capabilities.mjs.
+assert.match(PAGE_AUTOMATION_SYSTEM, /This is a rule about the TAB, not about your other tools/);
 assert.match(PAGE_AUTOMATION_SYSTEM, /TO READ WHAT THE PAGE SAYS/);
 assert.match(PAGE_AUTOMATION_SYSTEM, /PASS A QUERY to read_page/,
   'nothing tells the model it can ask a long page a question');
 
 // And it forbids the thing the models were actually doing. The old prohibition covered a
 // separate BROWSER — a URL fetch is not a browser, so it never read as prohibited.
-assert.match(PAGE_AUTOMATION_SYSTEM, /DO NOT FETCH THE URL/);
+assert.match(PAGE_AUTOMATION_SYSTEM, /DO NOT FETCH THIS TAB'S URL/);
 assert.match(PAGE_AUTOMATION_SYSTEM, /not logged in, not rendered/);
 assert.match(PAGE_AUTOMATION_SYSTEM, /Screenshots are for when the LAYOUT matters, never for reading text/);
 
