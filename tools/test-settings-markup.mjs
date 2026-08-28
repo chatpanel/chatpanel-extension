@@ -57,6 +57,12 @@ assert.match(accountPanel, /id="autobackup-destination"/, 'Automatic backup shou
 assert.match(accountPanel, /value="drive"/, 'Automatic backup should support Drive-only with no local file.');
 assert.match(accountPanel, /value="both"/, 'Automatic backup should support local and Drive together.');
 assert.match(accountPanel, /id="drive-backup-restore"/, 'Settings should restore encrypted backups directly from Drive.');
+assert.match(accountPanel, /id="autobackup-device-name"/, 'Automatic Drive backups should have a user-recognizable device name.');
+assert.match(accountPanel, /id="drive-backup-restore-all"/, 'Settings should merge the latest Drive snapshot from every device.');
+assert.match(accountPanel, /seven weekday files per device/, 'Settings should explain per-device rotation.');
+assert.match(accountPanel, /settings and sign-ins were kept|settings stay local/, 'Settings should explain history-only cross-device restore.');
+assert.match(js, /includeSettings:\s*!historyOnly/, 'Drive restore should explicitly prevent machine-local settings from crossing devices.');
+assert.match(js, /latestGoogleDriveBackupsByDevice/, 'Settings should merge the latest snapshot from each Drive device.');
 assert.doesNotMatch(accountPanel, /id="drive-client-id"/, 'Users should not have to configure a Google OAuth client id.');
 assert.match(accountPanel, /No Google developer setup is required/, 'Settings should explain the one-time user authorization flow.');
 assert.match(accountPanel, /device-local key/, 'Settings should disclose how unattended backup credentials are stored.');

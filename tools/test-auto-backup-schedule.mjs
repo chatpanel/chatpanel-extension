@@ -23,6 +23,7 @@ const {
   backupDayKey, stableBackupJson, scheduledBackupDue, coalesceBackupRun,
   normalizeBackupDestination, backupDestinationIncludes, setAutoBackupPassphrase,
   destinationAfterDriveConnect, getBackupState, setAutoBackupEnabled,
+  backupDeviceSlot, backupFilenameForDevice, setBackupDeviceName,
 } = await import('../extension/js/auto-backup.js');
 const at = (iso) => new Date(iso);
 assert.equal(backupDayKey(at('2026-08-28T20:00:00')), '2026-08-28');
@@ -40,6 +41,11 @@ assert.equal(backupDestinationIncludes('both', 'drive'), true);
 assert.equal(backupDestinationIncludes('drive', 'local'), false);
 assert.equal(destinationAfterDriveConnect('local'), 'drive', 'a new Drive connection should replace the untouched local default');
 assert.equal(destinationAfterDriveConnect('both'), 'both', 'an explicit Both choice should be preserved');
+assert.equal(backupDeviceSlot('ABCDEF12-3456-7890-extra'), 'abcdef1234567890');
+assert.equal(
+  backupFilenameForDevice('ABCDEF12-3456-7890', at('2026-08-28T20:00:00')),
+  'chatpanel-backup-abcdef1234567890-Fri.encrypted.json',
+);
 
 let release;
 let starts = 0;
@@ -58,6 +64,11 @@ assert.equal(localStore['chatpanel:autoBackup'].passphrase, undefined, 'backup p
 assert.equal(localStore['chatpanel:autoBackup'].encryptedPassphrase?.__enc, 1, 'unattended password should persist only as ciphertext');
 delete sessionStore['chatpanel:autoBackupPassphrase'];
 assert.equal((await getBackupState()).passphrase, 'portable-test-password', 'device-wrapped password should unlock after a browser restart');
+const firstDeviceState = await getBackupState();
+assert.match(firstDeviceState.deviceId, /^[a-z0-9]{16}$/, 'each install should have a stable Drive backup device id');
+assert.equal((await getBackupState()).deviceId, firstDeviceState.deviceId, 'backup device id should survive later state reads');
+await setBackupDeviceName('  Work   Mac  ');
+assert.equal((await getBackupState()).deviceName, 'Work Mac', 'device label should be normalized and persisted');
 await setAutoBackupEnabled(true);
 assert.equal(lastAlarm.name, 'chatpanel-auto-backup');
 assert.ok(Number.isFinite(lastAlarm.options.when), 'daily schedule should use an exact wall-clock alarm');

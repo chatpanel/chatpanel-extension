@@ -16,6 +16,9 @@ const OAUTH_BROKER = 'https://api.chatpanel.net/oauth/google';
 const AUTH_TRANSPORT = 'broker-v1';
 const FOLDER_NAME = 'ChatPanel Backups';
 const EXPIRY_SKEW_MS = 60_000;
+const LEGACY_BACKUP_RE = /^chatpanel-backup-(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\.encrypted\.json$/;
+const DEVICE_BACKUP_RE = /^chatpanel-backup-([a-z0-9]{12,16})-(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\.encrypted\.json$/;
+const WEEKDAY_NAMES = new Set(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
 
 function browserIdentity(explicit) {
   const api = explicit || globalThis.browser?.identity || globalThis.chrome?.identity;
@@ -179,13 +182,44 @@ export async function listGoogleDriveBackups({ accessToken = '', fetchImpl = fet
   );
 }
 
+export function googleDriveBackupDevice(file) {
+  const props = file?.appProperties || {};
+  const match = DEVICE_BACKUP_RE.exec(String(file?.name || ''));
+  const id = String(props.backupDeviceId || match?.[1] || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 16);
+  if (!id) return {
+    id: 'legacy',
+    name: LEGACY_BACKUP_RE.test(String(file?.name || '')) ? 'Legacy backups' : 'Unlabelled backups',
+    legacy: true,
+  };
+  const cleanName = String(props.backupDeviceName || '').replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 64);
+  return { id, name: cleanName || `Device ${id.slice(-6)}`, legacy: false };
+}
+
+export function latestGoogleDriveBackupsByDevice(files = []) {
+  const latest = new Map();
+  for (const file of files) {
+    const device = googleDriveBackupDevice(file);
+    const existing = latest.get(device.id);
+    const modified = Date.parse(file?.modifiedTime || '') || 0;
+    const existingModified = Date.parse(existing?.modifiedTime || '') || 0;
+    if (!existing || modified > existingModified) latest.set(device.id, file);
+  }
+  return [...latest.values()].sort((a, b) => (Date.parse(b?.modifiedTime || '') || 0) - (Date.parse(a?.modifiedTime || '') || 0));
+}
+
 export async function uploadEncryptedBackupToDrive(blob, {
-  filename, accessToken = '', fetchImpl = fetch,
+  filename, deviceId = '', deviceName = '', weekday = '', accessToken = '', fetchImpl = fetch,
 } = {}) {
   if (!(blob instanceof Blob) || !blob.size) throw new Error('Encrypted backup payload is empty.');
-  if (!/^chatpanel-backup-(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\.encrypted\.json$/.test(filename || '')) {
+  const match = DEVICE_BACKUP_RE.exec(filename || '');
+  if (!match) {
     throw new Error('Invalid ChatPanel backup filename.');
   }
+  const normalizedDeviceId = String(deviceId || match[1]).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 16);
+  if (normalizedDeviceId !== match[1]) throw new Error('Backup device identity does not match its filename.');
+  const normalizedWeekday = WEEKDAY_NAMES.has(weekday) ? weekday : match[2];
+  const normalizedDeviceName = String(deviceName || `Device ${normalizedDeviceId.slice(-6)}`)
+    .replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 64);
   const token = accessToken || await getAccessToken(fetchImpl);
   const folderId = await ensureBackupFolder(token, fetchImpl);
   const files = await listFiles(token, `${qLiteral(folderId)} in parents and name = ${qLiteral(filename)} and trashed = false`, fetchImpl);
@@ -197,7 +231,15 @@ export async function uploadEncryptedBackupToDrive(blob, {
   const metadata = {
     name: filename,
     mimeType: 'application/json',
-    appProperties: { chatpanelBackup: '1', encrypted: '1', format: 'chatpanel-backup-encrypted' },
+    appProperties: {
+      chatpanelBackup: '1',
+      encrypted: '1',
+      format: 'chatpanel-backup-encrypted',
+      backupSchema: 'device-v1',
+      backupDeviceId: normalizedDeviceId,
+      backupDeviceName: normalizedDeviceName,
+      backupDay: normalizedWeekday,
+    },
     ...(!existing ? { parents: [folderId] } : {}),
   };
   const init = await fetchImpl(initUrl, {

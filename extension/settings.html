@@ -1255,7 +1255,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
             <p class="muted">
               Keep a copy of all your data <strong>outside</strong> the extension so a
               reinstall cannot lose it. Choose local Downloads, your Google Drive, or both.
-              ChatPanel compresses first, encrypts locally, and rotates seven weekday files.
+              ChatPanel compresses first, encrypts locally, and rotates seven weekday files per device.
               Google receives only ciphertext and never receives your backup password.
             </p>
             <label class="check"><input type="checkbox" id="autobackup-enabled" /> Back up my encrypted data every day</label>
@@ -1266,6 +1266,12 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                 <option value="drive">Google Drive only (no local file)</option>
                 <option value="both">Local Downloads and Google Drive</option>
               </select>
+            </div>
+            <div class="field">
+              <label for="autobackup-device-name">This device’s backup name</label>
+              <input id="autobackup-device-name" type="text" maxlength="64"
+                     placeholder="For example: Work Mac or Personal Mac" />
+              <p class="muted tiny">Give each browser profile a recognizable name. Every device gets its own seven rotating Drive slots, so one machine never overwrites another machine’s backups.</p>
             </div>
             <div class="field">
               <label for="autobackup-hour">Run the daily backup</label>
@@ -1303,8 +1309,9 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
               </div>
               <div class="row">
                 <button id="drive-backup-restore" class="btn">Restore selected Drive backup</button>
+                <button id="drive-backup-restore-all" class="btn">Merge latest from all devices</button>
               </div>
-              <p class="muted tiny">Drive restore downloads ciphertext into memory, asks for the password above, and imports it. It does not save a temporary local backup file.</p>
+              <p class="muted tiny">Drive restore downloads ciphertext into memory and decrypts it with the automatic-backup password above. It always merges chats, meetings, and notes. API keys, OAuth sign-ins, gateway configuration, and other device settings stay local. No temporary backup file is saved.</p>
             </div>
             <p id="local-download-help" class="muted">
               <strong>Browser download setting:</strong> for Chrome or Edge, open the browser's

@@ -897,19 +897,21 @@ export async function exportAllData() {
 }
 
 // Restore a full backup. Conversations and meetings honor `mode` ('merge' |
-// 'replace'). Settings are configuration (not a list), so when present they are
-// always applied over the defaults — that's what makes a fresh install match the
-// source machine. Returns per-kind results (settings: true when restored).
-export async function importAllData(data, { mode = 'merge' } = {}) {
+// 'replace'). Manual file restore keeps the portable full-restore defaults.
+// Drive sync can opt out of machine-local configuration and OAuth credentials so
+// a work device cannot silently reconfigure a personal device (or vice versa).
+export async function importAllData(data, {
+  mode = 'merge', includeSettings = true, includeOAuthTokens = includeSettings,
+} = {}) {
   const conversations = await importConversations(data, { mode }); // validates the file
   const meetings = await importMeetings(data.meetings, { mode });
   const notes = await importNotes(data.notes, { mode }); // v5+; older backups have no notes
   // v6+: Notes UI + co-writer config (localStorage). Older backups have none.
-  if (data.notesConfig && typeof data.notesConfig === 'object') {
+  if (includeSettings && data.notesConfig && typeof data.notesConfig === 'object') {
     await importNotesConfig(data.notesConfig, { mode });
   }
   let settings = false;
-  if (data.settings && typeof data.settings === 'object') {
+  if (includeSettings && data.settings && typeof data.settings === 'object') {
     const merged = mergeSettings(defaultSettings(), data.settings); // folds in any newer fields
     await writeSettings(merged); // seals secrets at rest; onChanged clears the cache
     _settingsCache = null;
@@ -917,7 +919,7 @@ export async function importAllData(data, { mode = 'merge' } = {}) {
   }
   // OAuth tokens (v4+) ride along so restored endpoints stay signed in. Honor the
   // same merge/replace mode as the rest of the backup.
-  if (data.oauthTokens && typeof data.oauthTokens === 'object') {
+  if (includeOAuthTokens && data.oauthTokens && typeof data.oauthTokens === 'object') {
     await importOAuthTokens(data.oauthTokens, { mode });
   }
   return { conversations, meetings, notes, settings };

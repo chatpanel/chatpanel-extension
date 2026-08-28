@@ -12,7 +12,7 @@
 // fixed, non-interpolated locations. Drive receives only the encrypted Blob.
 
 import { exportAllData, getSettings } from './store.js';
-import { getLicense, can } from './license.js';
+import { getLicense, can, getInstallId } from './license.js';
 import { encryptBackup } from './crypto-backup.js';
 import { uploadEncryptedBackupToDrive } from './drive-backup.js';
 import { isSealed, openJSON, sealJSON } from './secret-crypto.js';
@@ -28,11 +28,31 @@ const DEFAULT_STATE = {
   enabled: false, lastAt: 0, lastDay: '', lastHash: '', lastError: '',
   lastGatewayError: '', count: 0, meetingsCount: 0, lastBytes: 0, hour: 20,
   gatewayBackupIndex: false, destination: 'local', lastDriveFileId: '',
+  deviceId: '', deviceName: '',
 };
+
+export function backupDeviceSlot(value) {
+  const normalized = String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (normalized.length < 12) throw new Error('Could not create a stable backup identity for this device.');
+  return normalized.slice(0, 16);
+}
+
+export function normalizeBackupDeviceName(value, deviceId = '') {
+  const clean = String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 64);
+  if (clean) return clean;
+  const suffix = backupDeviceSlot(deviceId).slice(-6);
+  return `Device ${suffix}`;
+}
+
+export function backupFilenameForDevice(deviceId, value = new Date()) {
+  const d = value instanceof Date ? value : new Date(value);
+  return `chatpanel-backup-${backupDeviceSlot(deviceId)}-${WEEKDAYS[d.getDay()]}.encrypted.json`;
+}
 
 export async function getBackupState() {
   const got = await chrome.storage.local.get(K_STATE);
   const stored = got[K_STATE] && typeof got[K_STATE] === 'object' ? { ...got[K_STATE] } : {};
+  let stateChanged = false;
   let sessionPassphrase = '';
   try { sessionPassphrase = (await chrome.storage.session.get(K_SESSION_PASSPHRASE))[K_SESSION_PASSPHRASE] || ''; } catch { /* unavailable */ }
   if (!sessionPassphrase && isSealed(stored.encryptedPassphrase)) {
@@ -47,8 +67,21 @@ export async function getBackupState() {
     const sealed = await sealJSON(sessionPassphrase);
     if (isSealed(sealed)) stored.encryptedPassphrase = sealed;
     delete stored.passphrase;
-    await chrome.storage.local.set({ [K_STATE]: stored });
+    stateChanged = true;
   }
+  const priorDeviceId = stored.deviceId;
+  try {
+    stored.deviceId = backupDeviceSlot(priorDeviceId || await getInstallId());
+  } catch {
+    stored.deviceId = backupDeviceSlot(await getInstallId());
+  }
+  const deviceName = normalizeBackupDeviceName(stored.deviceName, stored.deviceId);
+  if (stored.deviceName !== deviceName) {
+    stored.deviceName = deviceName;
+    stateChanged = true;
+  }
+  if (priorDeviceId !== stored.deviceId) stateChanged = true;
+  if (stateChanged) await chrome.storage.local.set({ [K_STATE]: stored });
   const out = { ...DEFAULT_STATE, ...stored, passphrase: sessionPassphrase };
   if (!Number.isInteger(out.hour) || out.hour < 0 || out.hour > 23) out.hour = DEFAULT_STATE.hour;
   out.destination = normalizeBackupDestination(out.destination);
@@ -125,7 +158,7 @@ function bytesToBase64(bytes) {
 // Best-effort: never let cleanup fail a backup.
 async function deleteOtherFormat(extRegex) {
   try {
-    const items = await chrome.downloads.search({ filenameRegex: `chatpanel-backup-[A-Za-z]+\\.${extRegex}$` });
+    const items = await chrome.downloads.search({ filenameRegex: `chatpanel-backup-(?:[a-z0-9]{12,16}-)?[A-Za-z]+\\.${extRegex}$` });
     for (const it of items) {
       await chrome.downloads.removeFile(it.id).catch(() => {});
       await chrome.downloads.erase({ id: it.id }).catch(() => {});
@@ -217,13 +250,17 @@ async function runAutoBackupOnce({ force = false, now = new Date() } = {}) {
 
     // Fixed, non-interpolated path under the user's Downloads dir. Weekday name
     // gives an automatic 7-file rolling window via conflictAction:'overwrite'.
-    const slot = `chatpanel-backup-${WEEKDAYS[now.getDay()]}`;
-    const basename = `${slot}.encrypted.json`;
+    const basename = backupFilenameForDevice(state.deviceId, now);
     const filename = `${FOLDER}/${basename}`;
 
     let driveFile = null;
     if (backupDestinationIncludes(state.destination, 'drive')) {
-      driveFile = await uploadEncryptedBackupToDrive(blob, { filename: basename });
+      driveFile = await uploadEncryptedBackupToDrive(blob, {
+        filename: basename,
+        deviceId: state.deviceId,
+        deviceName: state.deviceName,
+        weekday: WEEKDAYS[now.getDay()],
+      });
     }
 
     if (backupDestinationIncludes(state.destination, 'local')) {
@@ -311,6 +348,13 @@ export async function setAutoBackupPassphrase(passphrase) {
 
 export async function setAutoBackupDestination(destination) {
   await patchBackupState({ destination: normalizeBackupDestination(destination), lastError: '' });
+}
+
+export async function setBackupDeviceName(name) {
+  const state = await getBackupState();
+  const deviceName = normalizeBackupDeviceName(name, state.deviceId);
+  await patchBackupState({ deviceName });
+  return { ok: true, deviceName };
 }
 
 export async function setBackupGatewayIndex(enabled) {

@@ -10,9 +10,9 @@ import { readZipEntry } from './js/zip.js';
 // renders, and deferring one frozen array would cost a frame to save nothing.
 import { DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './js/events/sources.js';
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
-import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, setAutoBackupHour, setBackupGatewayIndex, setAutoBackupDestination, backupDestinationIncludes, destinationAfterDriveConnect, runAutoBackup } from './js/auto-backup.js';
+import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, setAutoBackupHour, setBackupGatewayIndex, setAutoBackupDestination, setBackupDeviceName, backupDestinationIncludes, destinationAfterDriveConnect, runAutoBackup } from './js/auto-backup.js';
 import { encryptBackup, decryptBackup, isEncryptedBackup } from './js/crypto-backup.js';
-import { googleDriveRedirectUri, connectGoogleDrive, disconnectGoogleDrive, getGoogleDriveConnection, listGoogleDriveBackups, downloadGoogleDriveBackup } from './js/drive-backup.js';
+import { googleDriveRedirectUri, connectGoogleDrive, disconnectGoogleDrive, getGoogleDriveConnection, listGoogleDriveBackups, downloadGoogleDriveBackup, googleDriveBackupDevice, latestGoogleDriveBackupsByDevice } from './js/drive-backup.js';
 import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, previewRedaction, traceFlow } from './js/providers.js';
 import { buildToolset } from './js/toolset.js';
 import { getMcpProviders } from './js/mcp-manager.js';
@@ -4559,10 +4559,16 @@ function wire() {
 function wireBackup() {
   const msg = $('backup-msg');
 
-  const restoreBackupData = async (data, status = msg) => {
-    if (isEncryptedBackup(data)) data = await decryptBackup(data, $('backup-password').value);
-    const mode = $('backup-replace').checked ? 'replace' : 'merge';
-    const { conversations, meetings, notes, settings: settingsRestored } = await importAllData(data, { mode });
+  const restoreBackupData = async (data, status = msg, {
+    historyOnly = false, modeOverride = '', password = '', quiet = false,
+  } = {}) => {
+    if (isEncryptedBackup(data)) data = await decryptBackup(data, password || $('backup-password').value);
+    const mode = modeOverride || ($('backup-replace').checked ? 'replace' : 'merge');
+    const { conversations, meetings, notes, settings: settingsRestored } = await importAllData(data, {
+      mode,
+      includeSettings: !historyOnly,
+      includeOAuthTokens: !historyOnly,
+    });
     const parts = [`${conversations.imported} conversation${conversations.imported === 1 ? '' : 's'}`];
     if (meetings.imported) parts.push(`${meetings.imported} meeting${meetings.imported === 1 ? '' : 's'}`);
     if (notes?.imported) parts.push(`${notes.imported} note${notes.imported === 1 ? '' : 's'}`);
@@ -4579,7 +4585,10 @@ function wireBackup() {
     }
     renderStorageHealth();
     const skipped = (conversations.total - conversations.imported) + (meetings.total - meetings.imported);
-    setStatus(status, `✓ Restored ${parts.join(' + ')}${skipped ? ` (${skipped} skipped)` : ''}. Reopen ChatPanel to see everything.`, 'ok');
+    if (!quiet) {
+      const scope = historyOnly ? ' History was merged; this device’s settings and sign-ins were kept.' : '';
+      setStatus(status, `✓ Restored ${parts.join(' + ')}${skipped ? ` (${skipped} skipped)` : ''}.${scope} Reopen ChatPanel to see everything.`, 'ok');
+    }
     return { conversations, meetings, notes, settingsRestored };
   };
 
@@ -4680,8 +4689,10 @@ function wireAutoBackup(restoreBackupData) {
   };
   const hourSel = $('autobackup-hour');
   const destination = $('autobackup-destination');
+  const deviceName = $('autobackup-device-name');
   const driveStatus = $('drive-status');
   const driveList = $('drive-backup-list');
+  let driveBackupFiles = [];
   // Populate 12am–11pm once (value = 0–23 local hour).
   if (hourSel && hourSel.options.length <= 1) {
     for (let h = 0; h < 24; h++) {
@@ -4707,6 +4718,7 @@ function wireAutoBackup(restoreBackupData) {
     if (pw) pw.value = st.passphrase || '';
     if (hourSel) hourSel.value = Number.isInteger(st.hour) ? String(st.hour) : '';
     if (destination) destination.value = st.destination || 'local';
+    if (deviceName) deviceName.value = st.deviceName || '';
     $('local-download-help')?.classList.toggle('hidden', !backupDestinationIncludes(st.destination, 'local'));
     showState(st);
   });
@@ -4731,14 +4743,17 @@ function wireAutoBackup(restoreBackupData) {
   const refreshDriveBackups = async () => {
     setStatus(driveStatus, 'Loading encrypted Drive backups…');
     const files = await listGoogleDriveBackups();
+    driveBackupFiles = files;
     driveList.replaceChildren();
     if (!files.length) driveList.add(new Option('No ChatPanel backups found', ''));
     for (const file of files) {
+      const device = googleDriveBackupDevice(file);
       const when = file.modifiedTime ? new Date(file.modifiedTime).toLocaleString() : 'unknown date';
       const size = file.size ? fmtSize(Number(file.size)).trim() : '';
-      driveList.add(new Option(`${file.name} — ${when}${size}`, file.id));
+      driveList.add(new Option(`${device.name} — ${file.name} — ${when}${size}`, file.id));
     }
-    setStatus(driveStatus, `✓ Found ${files.length} encrypted backup${files.length === 1 ? '' : 's'} in Drive.`, 'ok');
+    const devices = new Set(files.map((file) => googleDriveBackupDevice(file).id));
+    setStatus(driveStatus, `✓ Found ${files.length} encrypted backup${files.length === 1 ? '' : 's'} from ${devices.size} device${devices.size === 1 ? '' : 's'} in Drive.`, 'ok');
   };
 
   showDriveConnection().catch((e) => setStatus(driveStatus, '✕ ' + (e.message || e), 'err'));
@@ -4765,6 +4780,7 @@ function wireAutoBackup(restoreBackupData) {
   };
   $('drive-disconnect').onclick = async () => {
     await disconnectGoogleDrive();
+    driveBackupFiles = [];
     driveList.replaceChildren(new Option('Connect and refresh to list backups', ''));
     await showDriveConnection();
   };
@@ -4774,7 +4790,43 @@ function wireAutoBackup(restoreBackupData) {
     try {
       setStatus(driveStatus, 'Downloading encrypted backup into memory…');
       const data = await downloadGoogleDriveBackup(driveList.value);
-      await restoreBackupData(data, driveStatus);
+      await restoreBackupData(data, driveStatus, {
+        historyOnly: true,
+        modeOverride: 'merge',
+        password: pw?.value || $('backup-password').value,
+      });
+    } catch (e) { setStatus(driveStatus, '✕ ' + (e.message || e), 'err'); }
+  };
+  $('drive-backup-restore-all').onclick = async () => {
+    // Import older device snapshots first. If the same record exists on several
+    // devices, the most recently completed device snapshot is applied last.
+    const latest = latestGoogleDriveBackupsByDevice(driveBackupFiles)
+      .sort((a, b) => (Date.parse(a?.modifiedTime || '') || 0) - (Date.parse(b?.modifiedTime || '') || 0));
+    if (!latest.length) return setStatus(driveStatus, 'Refresh Drive backups first.', 'err');
+    try {
+      let conversationCount = 0;
+      let meetingCount = 0;
+      let notesCount = 0;
+      const password = pw?.value || $('backup-password').value;
+      for (let i = 0; i < latest.length; i++) {
+        const file = latest[i];
+        const device = googleDriveBackupDevice(file);
+        setStatus(driveStatus, `Merging ${device.name} (${i + 1} of ${latest.length})…`);
+        const data = await downloadGoogleDriveBackup(file.id);
+        const result = await restoreBackupData(data, driveStatus, {
+          historyOnly: true,
+          modeOverride: 'merge',
+          password,
+          quiet: true,
+        });
+        conversationCount += result.conversations.imported;
+        meetingCount += result.meetings.imported;
+        notesCount += result.notes?.imported || 0;
+      }
+      const parts = [`${conversationCount} conversation record${conversationCount === 1 ? '' : 's'}`];
+      if (meetingCount) parts.push(`${meetingCount} meeting record${meetingCount === 1 ? '' : 's'}`);
+      if (notesCount) parts.push(`${notesCount} note record${notesCount === 1 ? '' : 's'}`);
+      setStatus(driveStatus, `✓ Merged the latest backup from ${latest.length} device${latest.length === 1 ? '' : 's'}: ${parts.join(' + ')}. Duplicate IDs were updated; this device’s settings and sign-ins were kept.`, 'ok');
     } catch (e) { setStatus(driveStatus, '✕ ' + (e.message || e), 'err'); }
   };
 
@@ -4782,6 +4834,14 @@ function wireAutoBackup(restoreBackupData) {
     hourSel.onchange = async () => {
       await setAutoBackupHour(hourSel.value);
       showState(await getBackupState());
+    };
+  }
+
+  if (deviceName) {
+    deviceName.onchange = async () => {
+      const saved = await setBackupDeviceName(deviceName.value);
+      deviceName.value = saved.deviceName;
+      toast(`Drive backup device name saved as “${saved.deviceName}”.`);
     };
   }
 
