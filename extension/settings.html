@@ -1220,9 +1220,8 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
               (API endpoints &amp; keys, agents, MCP servers, skills, preferences),
               endpoint sign-ins, all chat history and all captured meetings.
               Restore it on a <strong>fresh install on another machine</strong>
-              to bring your whole setup across. Everything stays on your device —
-              nothing is uploaded. Your Pro license isn’t included — it re-activates
-              from your purchase email.
+              to bring your whole setup across. Backups can stay local, go directly
+              to your own Google Drive, or use both. Your Pro license isn’t included.
             </p>
             <p class="muted">
               With <strong>no password</strong> you get a browsable <code>.zip</code>
@@ -1252,36 +1251,66 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
             <div id="backup-msg" class="status"></div>
 
             <div class="endpoint-section">
-            <h3 class="priv-h">Automatic daily backup to disk</h3>
+            <h3 class="priv-h">Automatic encrypted backups</h3>
             <p class="muted">
               Keep a copy of all your data <strong>outside</strong> the extension so a
-              reinstall can never lose it. Once a day (when something changed) ChatPanel
-              writes the full backup .zip to your <strong>Downloads → ChatPanel Backups</strong>
-              folder, rotating by weekday so the last 7 days are kept. If you ever
-              reinstall and the extension loses its data, just <em>Restore from file</em>
-              with the newest backup. The file contains your API keys &amp; sign-ins — it
-              stays on your disk and is never uploaded, so keep your Downloads folder safe.
+              reinstall cannot lose it. Choose local Downloads, your Google Drive, or both.
+              ChatPanel compresses first, encrypts locally, and rotates seven weekday files.
+              Google receives only ciphertext and never receives your backup password.
             </p>
-            <label class="check"><input type="checkbox" id="autobackup-enabled" /> Back up my data to disk every day</label>
+            <label class="check"><input type="checkbox" id="autobackup-enabled" /> Back up my encrypted data every day</label>
+            <div class="field">
+              <label for="autobackup-destination">Backup destination</label>
+              <select id="autobackup-destination">
+                <option value="local">Local Downloads only</option>
+                <option value="drive">Google Drive only (no local file)</option>
+                <option value="both">Local Downloads and Google Drive</option>
+              </select>
+            </div>
             <div class="field">
               <label for="autobackup-hour">Run the daily backup</label>
-              <select id="autobackup-hour">
-                <option value="">Automatically (~24h after it's armed)</option>
-              </select>
-              <p class="muted tiny">Pick a time of day (your local time), or leave it automatic. “Back up now” below is a one-off and doesn’t change this schedule.</p>
+              <select id="autobackup-hour"></select>
+              <p class="muted tiny">Pick one local time. ChatPanel writes at most one completed automatic backup per calendar day. If Chrome was closed then, the next browser start catches up only after the selected hour and only when today’s backup has not already completed. “Back up now” is an explicit one-off.</p>
             </div>
             <div class="field">
-              <label for="autobackup-password">Encrypt disk backups (optional)</label>
+              <label for="autobackup-password">Backup encryption password (required)</label>
               <input id="autobackup-password" type="password" autocomplete="off"
-                     placeholder="Password for the daily files — leave blank for plain .zip" />
+                     placeholder="Required for encrypted daily backups" />
             </div>
             <p class="muted">
-              Encrypts every daily file so a backup that leaves this machine (cloud-synced
-              Downloads, a shared PC) is unreadable without the password. Because the backup
-              runs unattended, this password is stored locally on this device. Restore it the
-              same way — type the password in the box above before choosing the file. Turning
-              encryption on automatically removes any earlier plain <code>.zip</code> backups
-              ChatPanel wrote, so no unencrypted copy is left behind.
+              For unattended schedules, the password is encrypted with a device-local key and
+              stored only inside this browser profile. It is never synced or uploaded. Restore on
+              another machine by connecting the same Drive account and entering the same password.
+              There is no password recovery; anyone controlling this unlocked browser profile can
+              run its configured backups.
+            </p>
+            <div id="drive-backup-config" class="endpoint-section">
+              <h3>Google Drive</h3>
+              <div class="field">
+                <label for="drive-redirect-uri">Browser callback</label>
+                <input id="drive-redirect-uri" type="text" readonly />
+                <p class="muted tiny">No Google developer setup is required. Connect once to your own Google account; ChatPanel securely refreshes authorization for scheduled backups on this browser. The callback is tied to this installed browser build.</p>
+              </div>
+              <div class="row">
+                <button id="drive-connect" class="btn">Connect Google Drive</button>
+                <button id="drive-disconnect" class="btn">Disconnect</button>
+                <button id="drive-refresh" class="btn">Refresh backups</button>
+              </div>
+              <div id="drive-status" class="status"></div>
+              <div class="field">
+                <label for="drive-backup-list">Encrypted backups in Drive</label>
+                <select id="drive-backup-list"><option value="">Connect and refresh to list backups</option></select>
+              </div>
+              <div class="row">
+                <button id="drive-backup-restore" class="btn">Restore selected Drive backup</button>
+              </div>
+              <p class="muted tiny">Drive restore downloads ciphertext into memory, asks for the password above, and imports it. It does not save a temporary local backup file.</p>
+            </div>
+            <p id="local-download-help" class="muted">
+              <strong>Browser download setting:</strong> for Chrome or Edge, open the browser's
+              Downloads settings and turn <strong>off</strong> “Ask where to save each file before
+              downloading.” This is required only for Local or Both; Drive-only never invokes
+              Downloads and never shows a file prompt.
             </p>
             <div class="row">
               <button id="autobackup-now" class="btn">Back up now</button>

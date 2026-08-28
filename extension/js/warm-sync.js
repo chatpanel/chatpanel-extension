@@ -3,13 +3,29 @@
 // can search the full corpus off the browser thread. On-device only — this talks to
 // localhost; the data never leaves the machine. See docs/architecture-data-tiers.
 //
-// Sends UPSERTS for everything present + TOMBSTONES for ids that vanished since the last
-// sync (so deletes propagate). The gateway upsert is idempotent, so a resend is safe.
+// Missing browser records are deliberately not tombstoned: they may have aged out
+// of IndexedDB while remaining in an encrypted backup.
 
 import { loadHistorySources } from './history-rag.js';
 
-let lastIds = new Set(); // ids sent on the previous successful sync (for tombstoning)
 let syncing = false;
+const MAX_BATCH_BYTES = 4 * 1024 * 1024;
+
+export function chunkHistoryUpserts(upserts, maxBytes = MAX_BATCH_BYTES) {
+  const batches = [];
+  let batch = [];
+  let bytes = 32;
+  const encoder = new TextEncoder();
+  for (const record of upserts) {
+    const recordBytes = encoder.encode(JSON.stringify(record)).byteLength + 2;
+    if (batch.length && bytes + recordBytes > maxBytes) {
+      batches.push(batch); batch = []; bytes = 32;
+    }
+    batch.push(record); bytes += recordBytes;
+  }
+  if (batch.length) batches.push(batch);
+  return batches;
+}
 
 // One sync pass. `gatewayUrl` is the local gateway base (e.g. http://127.0.0.1:4320).
 // Injectable deps keep it unit-testable. Returns a small summary; never throws.
@@ -25,19 +41,19 @@ export async function syncHistoryToGateway(gatewayUrl, {
     const upserts = sources
       .filter((s) => s && s.id && s.text)
       .map((s) => ({ id: s.id, text: s.text, title: s.title || '', type: s.type || '', date: s.date || 0 }));
-    const nowIds = new Set(upserts.map((u) => u.id));
-    const removes = [...lastIds].filter((id) => !nowIds.has(id));
-    if (!upserts.length && !removes.length) { lastIds = nowIds; return { ok: true, size: 0, sent: 0, removed: 0 }; }
-    const res = await fetchImpl(`${String(gatewayUrl).replace(/\/$/, '')}/v1/history/ingest`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ upserts, removes }),
-      signal,
-    });
-    if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : 'no-response'}`);
-    const out = await res.json().catch(() => ({}));
-    lastIds = nowIds; // only advance the tombstone baseline on success
-    return { ok: true, size: out.size, sent: upserts.length, removed: removes.length };
+    if (!upserts.length) return { ok: true, size: 0, sent: 0, removed: 0, batches: 0 };
+    let size = 0;
+    const batches = chunkHistoryUpserts(upserts);
+    for (const batch of batches) {
+      const res = await fetchImpl(`${String(gatewayUrl).replace(/\/$/, '')}/v1/history/ingest`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ upserts: batch, removes: [] }), signal,
+      });
+      if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : 'no-response'}`);
+      const out = await res.json().catch(() => ({}));
+      size = out.size ?? size;
+    }
+    return { ok: true, size, sent: upserts.length, removed: 0, batches: batches.length };
   } catch (e) {
     return { ok: false, error: e && e.message ? e.message : String(e) };
   } finally {
@@ -45,6 +61,6 @@ export async function syncHistoryToGateway(gatewayUrl, {
   }
 }
 
-// Reset the tombstone baseline (e.g. after the gateway restarts and loses its index, so
-// the next sync re-sends everything as upserts rather than only the delta).
-export function resetWarmSyncBaseline() { lastIds = new Set(); }
+// Retained for callers/tests from the earlier tombstone implementation. Every
+// archive-preserving sync now sends current records as idempotent upserts.
+export function resetWarmSyncBaseline() { /* retained for API compatibility */ }

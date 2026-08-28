@@ -947,9 +947,9 @@ async function init() {
   renderUpgradeChip();
   maybeShowUpdateBanner();
   scheduleLiveNotes({ force: true }); // arm the global meeting-scribe loop (off-tab safe)
-  // NB: NO warm sync on the load path. The gateway's warm index is persistent
-  // (SQLite + backup-seeded) and kept fresh by the on-change handler, so panel open
-  // stays hot-only and instant. Warm work happens on demand / on change, never here.
+  // Opt-in sync starts after first paint/idle. Requests are chunked and preserve
+  // records that now exist only in encrypted backups.
+  maybeWarmSync({ immediate: true });
   if (state.settings.ui?.railCollapsed) {
     document.body.classList.add('rail-collapsed');
     const t = $('rail-toggle');

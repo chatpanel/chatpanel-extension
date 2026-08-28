@@ -11,7 +11,7 @@ import { revalidate } from './js/license.js';
 import { meetingMatches } from './js/meeting-platforms.js';
 import { persistMeeting, getLatestSessionRecord, markMeetingEnded, getMeetingIndex, meetingPlatform } from './js/store-meetings.js';
 import { captureToInbox } from './js/store-notes.js';
-import { runAutoBackup, syncBackupAlarm, BACKUP_ALARM } from './js/auto-backup.js';
+import { runScheduledBackupIfDue, syncBackupAlarm, BACKUP_ALARM } from './js/auto-backup.js';
 
 const REVALIDATE_ALARM = 'chatpanel-revalidate-license';
 const MEETING_HB_ALARM = 'chatpanel-meeting-hb'; // un-throttled heartbeat that keeps backgrounded meeting tabs flushing
@@ -224,20 +224,20 @@ chrome.runtime.onInstalled.addListener(() => {
 
   // Re-arm the daily auto-backup alarm if the user had it enabled (alarms can be
   // dropped on update). syncBackupAlarm() is a no-op when the feature is off.
-  syncBackupAlarm().catch(() => {});
+  syncBackupAlarm().then(() => runScheduledBackupIfDue()).catch(() => {});
 });
 
 // Re-check on browser start and on the alarm. revalidate() self-throttles and
 // fails open, so calling it liberally is safe.
 chrome.runtime.onStartup.addListener(() => {
   revalidate().catch(() => {});
-  // Catch up a backup the device missed while it was off — runAutoBackup
-  // self-gates on Pro and skips when nothing changed, so this is cheap.
-  runAutoBackup().catch(() => {});
+  syncBackupAlarm().then(() => runScheduledBackupIfDue()).catch(() => {});
 });
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === REVALIDATE_ALARM) revalidate().catch(() => {});
-  else if (a.name === BACKUP_ALARM) runAutoBackup().catch(() => {});
+  else if (a.name === BACKUP_ALARM) {
+    runScheduledBackupIfDue().finally(() => syncBackupAlarm()).catch(() => {});
+  }
   else if (a.name === MEETING_HB_ALARM) meetingHeartbeat().catch(() => {});
 });
 

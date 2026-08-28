@@ -1,43 +1,80 @@
-// Automatic daily backup to disk (Pro, opt-in).
+// Automatic daily encrypted backup to local disk, Google Drive, or both (Pro).
 //
 // Why this exists: chrome.storage.local and the meeting IndexedDB are scoped to
 // the *extension ID*. A manual reinstall (unpacked, or a sideload) can change
 // that ID and orphan all of the user's data — chats, meetings, settings. The fix
-// is to keep a copy *outside* extension storage. We write the same full portable
-// .zip the manual "Export all data" produces into Downloads/ChatPanel Backups/,
-// rotating by weekday so the last 7 days survive without the user ever confirming
-// a save. After a reinstall the user restores it with Settings → Restore.
+// is to keep a copy *outside* extension storage. The user chooses Downloads,
+// Google Drive, or both. Each destination rotates seven encrypted weekday files.
 //
 // SECURITY: this file contains secrets (API keys, MCP auth, OAuth tokens) exactly
 // like the manual export. It is therefore strictly Pro + opt-in, the entitlement
 // is re-checked on every scheduled run (fail-closed), and we only ever write to a
-// fixed, non-interpolated path under the user's own Downloads dir. Nothing is
-// uploaded — chrome.downloads writes to the local disk only.
+// fixed, non-interpolated locations. Drive receives only the encrypted Blob.
 
-import { exportAllData, exportDataArchive } from './store.js';
+import { exportAllData, getSettings } from './store.js';
 import { getLicense, can } from './license.js';
 import { encryptBackup } from './crypto-backup.js';
+import { uploadEncryptedBackupToDrive } from './drive-backup.js';
+import { isSealed, openJSON, sealJSON } from './secret-crypto.js';
 
 const K_STATE = 'chatpanel:autoBackup';
+const K_SESSION_PASSPHRASE = 'chatpanel:autoBackupPassphrase';
 export const BACKUP_ALARM = 'chatpanel-auto-backup';
 const FOLDER = 'ChatPanel Backups';
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+let backupRun = null;
 
-// `passphrase` (optional) encrypts the on-disk files. It's stored here because
-// the backup runs unattended in the service worker — documented as a tradeoff in
-// the UI. It protects the file once it leaves the machine, not against someone
-// who already has full extension-storage access.
-const DEFAULT_STATE = { enabled: false, passphrase: '', lastAt: 0, lastHash: '', lastError: '', count: 0, meetingsCount: 0, lastBytes: 0, hour: null };
+const DEFAULT_STATE = {
+  enabled: false, lastAt: 0, lastDay: '', lastHash: '', lastError: '',
+  lastGatewayError: '', count: 0, meetingsCount: 0, lastBytes: 0, hour: 20,
+  gatewayBackupIndex: false, destination: 'local', lastDriveFileId: '',
+};
 
 export async function getBackupState() {
   const got = await chrome.storage.local.get(K_STATE);
-  return { ...DEFAULT_STATE, ...(got[K_STATE] && typeof got[K_STATE] === 'object' ? got[K_STATE] : {}) };
+  const stored = got[K_STATE] && typeof got[K_STATE] === 'object' ? { ...got[K_STATE] } : {};
+  let sessionPassphrase = '';
+  try { sessionPassphrase = (await chrome.storage.session.get(K_SESSION_PASSPHRASE))[K_SESSION_PASSPHRASE] || ''; } catch { /* unavailable */ }
+  if (!sessionPassphrase && isSealed(stored.encryptedPassphrase)) {
+    const unlocked = await openJSON(stored.encryptedPassphrase);
+    if (typeof unlocked === 'string') sessionPassphrase = unlocked;
+  }
+  // One-time security migration: replace a legacy plaintext persisted password
+  // with a device-local AES-GCM envelope. Never retain plaintext on disk.
+  if (stored.passphrase) {
+    sessionPassphrase ||= String(stored.passphrase);
+    try { await chrome.storage.session.set({ [K_SESSION_PASSPHRASE]: sessionPassphrase }); } catch { /* unavailable */ }
+    const sealed = await sealJSON(sessionPassphrase);
+    if (isSealed(sealed)) stored.encryptedPassphrase = sealed;
+    delete stored.passphrase;
+    await chrome.storage.local.set({ [K_STATE]: stored });
+  }
+  const out = { ...DEFAULT_STATE, ...stored, passphrase: sessionPassphrase };
+  if (!Number.isInteger(out.hour) || out.hour < 0 || out.hour > 23) out.hour = DEFAULT_STATE.hour;
+  out.destination = normalizeBackupDestination(out.destination);
+  return out;
 }
 
 async function patchBackupState(patch) {
   const next = { ...(await getBackupState()), ...patch };
-  await chrome.storage.local.set({ [K_STATE]: next });
+  const { passphrase, ...persistent } = next;
+  await chrome.storage.local.set({ [K_STATE]: persistent });
+  if (Object.prototype.hasOwnProperty.call(patch, 'passphrase')) {
+    try {
+      if (passphrase) await chrome.storage.session.set({ [K_SESSION_PASSPHRASE]: passphrase });
+      else await chrome.storage.session.remove(K_SESSION_PASSPHRASE);
+    } catch { /* unavailable */ }
+  }
   return next;
+}
+
+export function normalizeBackupDestination(value) {
+  return value === 'drive' || value === 'both' ? value : 'local';
+}
+
+export function backupDestinationIncludes(destination, target) {
+  const value = normalizeBackupDestination(destination);
+  return value === 'both' || value === target;
 }
 
 async function sha256Hex(str) {
@@ -45,8 +82,26 @@ async function sha256Hex(str) {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Binary → base64 for the zip path (the encrypted path is already a JSON string
-// and crosses to the offscreen doc as text — no base64 needed there).
+export function backupDayKey(value = new Date()) {
+  const d = value instanceof Date ? value : new Date(value);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// exportAllData stamps exportedAt on every call. It is transport metadata, not a
+// content change; hashing it made every browser startup look like new data.
+export function stableBackupJson(data) {
+  return JSON.stringify({ ...data, exportedAt: 0 });
+}
+
+export function scheduledBackupDue(state, now = new Date()) {
+  if (!state?.enabled || !state.passphrase) return false;
+  const hour = Number.isInteger(state.hour) ? state.hour : DEFAULT_STATE.hour;
+  if (now.getHours() < hour) return false;
+  const lastDay = state.lastDay || (state.lastAt ? backupDayKey(state.lastAt) : '');
+  return lastDay !== backupDayKey(now);
+}
+
+// Binary → base64 for the encrypted JSON data URL.
 function bytesToBase64(bytes) {
   let bin = '';
   const CHUNK = 0x8000;
@@ -73,121 +128,198 @@ async function deleteOtherFormat(extRegex) {
   }
 }
 
-// Run one backup. `force` writes even when nothing changed (the "Back up now"
-// button / the toggle-on confirmation); the scheduled path skips an unchanged
-// snapshot so an idle week doesn't rewrite the same file daily ("incremental":
-// write only on change). Returns a small status object; never throws.
-export async function runAutoBackup({ force = false } = {}) {
+async function waitForDownload(downloadId, timeoutMs = 10 * 60 * 1000) {
+  const current = await chrome.downloads.search({ id: downloadId });
+  if (current[0]?.state === 'complete') return current[0];
+  if (current[0]?.state === 'interrupted') throw new Error(current[0]?.error || 'Backup download was interrupted.');
+  return new Promise((resolve, reject) => {
+    let timer;
+    const listener = (delta) => {
+      if (delta.id !== downloadId || !delta.state) return;
+      if (delta.state.current === 'complete') finish(null, delta);
+      else if (delta.state.current === 'interrupted') finish(new Error(delta.error?.current || 'Backup download was interrupted.'));
+    };
+    const finish = (error, value) => {
+      clearTimeout(timer);
+      chrome.downloads.onChanged.removeListener(listener);
+      if (error) reject(error); else resolve(value);
+    };
+    timer = setTimeout(() => finish(new Error('Timed out waiting for the backup file to finish writing.')), timeoutMs);
+    chrome.downloads.onChanged.addListener(listener);
+  });
+}
+
+async function handOffKeyAndIngest(state) {
+  if (!state.gatewayBackupIndex) return '';
+  try {
+    const settings = await getSettings();
+    const base = String(settings.gatewayUrl || settings.ui?.warmSearch?.url || 'http://127.0.0.1:4320').replace(/\/+$/, '');
+    const res = await fetch(`${base}/v1/history/key`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ passphrase: state.passphrase }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body?.error) throw new Error(body?.error?.message || body?.error || `gateway ${res.status}`);
+    return '';
+  } catch (e) {
+    return String(e?.message || e);
+  }
+}
+
+// Coalesce startup, alarm, and manual triggers. Browser startup can deliver a
+// persisted alarm at the same moment as catch-up; only one writer may own the
+// fixed weekday filename or update the completion marker.
+export async function coalesceBackupRun(start) {
+  if (backupRun) return backupRun;
+  backupRun = Promise.resolve().then(start);
+  try { return await backupRun; } finally { backupRun = null; }
+}
+
+// Run one backup. `force` is the explicit "Back up now" path. The scheduled path
+// is admitted only once per local calendar day by scheduledBackupDue(). Returns a
+// small status object and never throws.
+export function runAutoBackup(options = {}) {
+  return coalesceBackupRun(() => runAutoBackupOnce(options));
+}
+
+async function runAutoBackupOnce({ force = false, now = new Date() } = {}) {
   try {
     const license = await getLicense();
     if (!can(license, 'autoBackup')) {
       await patchBackupState({ lastError: 'Auto-backup is a Pro feature.' });
       return { ok: false, reason: 'not-pro' };
     }
-    // Export + hash.
-    const data = await exportAllData();
-    if (!data.count && !data.meetingsCount) return { ok: false, reason: 'empty' };
-    const hash = await sha256Hex(JSON.stringify(data));
     const state = await getBackupState();
-
-    // "Incremental": skip rewriting an unchanged snapshot on the scheduled path.
-    if (!force && hash === state.lastHash) {
-      return { ok: true, skipped: true, count: data.count, meetingsCount: data.meetingsCount };
+    if (!state.passphrase) {
+      await patchBackupState({ lastError: 'Set a backup password before running automatic backup.' });
+      return { ok: false, reason: 'passphrase-required' };
     }
+    if (!force && !scheduledBackupDue(state, now)) return { ok: true, skipped: true, reason: 'not-due' };
 
-    // Build the payload (compress-then-encrypt, or the deflate .zip). The encrypted
-    // envelope is already a JSON string (used as-is for the data: URL); the binary
-    // .zip is base64'd.
-    let payload, ext;
-    if (state.passphrase) {
-      const envelope = await encryptBackup(data, state.passphrase);
-      payload = { text: JSON.stringify(envelope), mime: 'application/json' };
-      ext = 'encrypted.json';
-    } else {
-      const { blob } = await exportDataArchive(data);
-      payload = { b64: bytesToBase64(new Uint8Array(await blob.arrayBuffer())), mime: 'application/zip' };
-      ext = 'zip';
-    }
+    // Export + stable content hash.
+    const data = await exportAllData();
+    if (!data.count && !data.meetingsCount && !data.notesCount) return { ok: false, reason: 'empty' };
+    const hash = await sha256Hex(stableBackupJson(data));
+
+    // Compress then encrypt exactly once. Both destinations receive the identical
+    // ciphertext; Drive-only never invokes chrome.downloads or persists locally.
+    const envelope = await encryptBackup(data, state.passphrase);
+    const text = JSON.stringify(envelope);
+    const blob = new Blob([text], { type: 'application/json' });
+    const bytes = blob.size;
 
     // Fixed, non-interpolated path under the user's Downloads dir. Weekday name
     // gives an automatic 7-file rolling window via conflictAction:'overwrite'.
-    const slot = `chatpanel-backup-${WEEKDAYS[new Date().getDay()]}`;
-    const filename = `${FOLDER}/${slot}.${ext}`;
+    const slot = `chatpanel-backup-${WEEKDAYS[now.getDay()]}`;
+    const basename = `${slot}.encrypted.json`;
+    const filename = `${FOLDER}/${basename}`;
 
-    // A data: URL downloads SILENTLY with saveAs:false at ANY size — that's how
-    // auto-backup has always written unattended (a 141 MB file wrote fine this way).
-    // We deliberately do NOT use chrome.downloads with a blob: URL: that trips
-    // Chrome's "Save as" dialog. If it still prompts, it's Chrome's global "Ask where
-    // to save each file before downloading" setting, which overrides saveAs.
-    const b64 = payload.b64 || bytesToBase64(new TextEncoder().encode(payload.text));
-    const bytes = Math.floor((b64.length * 3) / 4);
-    await chrome.downloads.download({ url: `data:${payload.mime};base64,${b64}`, filename, conflictAction: 'overwrite', saveAs: false });
+    let driveFile = null;
+    if (backupDestinationIncludes(state.destination, 'drive')) {
+      driveFile = await uploadEncryptedBackupToDrive(blob, { filename: basename });
+    }
 
-    // Remove any backups in the OTHER format so a plaintext .zip can't linger on
-    // disk after the user turns encryption on (and vice versa). chrome.downloads
-    // can only delete files it wrote itself — which our daily backups are.
-    await deleteOtherFormat(ext === 'zip' ? 'encrypted\\.json' : 'zip');
+    if (backupDestinationIncludes(state.destination, 'local')) {
+      // data: URLs write silently with saveAs:false. blob: URLs can trigger Save As.
+      const b64 = bytesToBase64(new TextEncoder().encode(text));
+      const downloadId = await chrome.downloads.download({
+        url: `data:application/json;base64,${b64}`, filename,
+        conflictAction: 'overwrite', saveAs: false,
+      });
+      await waitForDownload(downloadId);
+      await deleteOtherFormat('zip');
+    }
+
+    const lastGatewayError = backupDestinationIncludes(state.destination, 'local')
+      ? await handOffKeyAndIngest(state)
+      : '';
 
     await patchBackupState({
-      lastAt: Date.now(),
+      lastAt: now.getTime(),
+      lastDay: backupDayKey(now),
       lastHash: hash,
       lastError: '',
+      lastGatewayError,
       count: data.count,
       meetingsCount: data.meetingsCount,
       lastBytes: bytes,
+      lastDriveFileId: driveFile?.id || state.lastDriveFileId || '',
     });
-    return { ok: true, count: data.count, meetingsCount: data.meetingsCount, bytes };
+    return { ok: true, count: data.count, meetingsCount: data.meetingsCount, bytes, destination: state.destination };
   } catch (e) {
     await patchBackupState({ lastError: String(e?.message || e) });
     return { ok: false, reason: 'error', error: String(e?.message || e) };
   }
 }
 
-// Minutes until the next local occurrence of `hour`:00 (0–23). Used to pin the
-// daily backup to a time of day instead of "24h after it was armed".
-function minutesUntilHour(hour) {
+export async function runScheduledBackupIfDue({ now = new Date() } = {}) {
+  const state = await getBackupState();
+  if (!scheduledBackupDue(state, now)) return { ok: true, skipped: true, reason: 'not-due' };
+  return runAutoBackup({ force: false, now });
+}
+
+// Next local occurrence of `hour`:00 (0–23). A one-shot absolute alarm is
+// re-armed after every run so daylight-saving changes cannot drift the schedule.
+function nextBackupTime(hour) {
   const now = new Date();
   const next = new Date(now);
   next.setHours(hour, 0, 0, 0);
   if (next <= now) next.setDate(next.getDate() + 1);
-  return Math.max(1, Math.round((next - now) / 60000));
+  return next.getTime();
 }
 
 // Create or clear the daily alarm to match the saved preference. Idempotent —
 // safe to call on install, on startup, and whenever the toggle/time flips.
-// `hour` null → the old "~24h after arming" cadence; 0–23 → daily at that local
-// hour. periodInMinutes:1440 keeps it daily; the delay sets the FIRST fire (it
-// can drift up to an hour across DST — acceptable for a backup).
+// A concrete 0–23 local hour is always used. The one-shot alarm is recreated
+// after firing, preserving the selected wall-clock hour across DST changes.
 export async function syncBackupAlarm() {
-  const { enabled, hour } = await getBackupState();
-  if (!enabled) {
+  const { enabled, passphrase, hour } = await getBackupState();
+  if (!enabled || !passphrase) {
     await chrome.alarms.clear(BACKUP_ALARM);
     return;
   }
-  const delayInMinutes = Number.isInteger(hour) && hour >= 0 && hour <= 23 ? minutesUntilHour(hour) : 1440;
-  chrome.alarms.create(BACKUP_ALARM, { periodInMinutes: 1440, delayInMinutes });
+  chrome.alarms.create(BACKUP_ALARM, { when: nextBackupTime(hour) });
 }
 
-// Persist the daily backup time. `hour` 0–23 pins it to that local hour; null (or
-// '') restores the "~24h" cadence. Re-arms the alarm immediately.
+// Persist the daily backup time. `hour` 0–23 pins it to that local hour and re-arms
+// the alarm immediately.
 export async function setAutoBackupHour(hour) {
-  const h = hour === null || hour === '' || hour === undefined ? null : Math.max(0, Math.min(23, parseInt(hour, 10) || 0));
+  const parsed = parseInt(hour, 10);
+  const h = Number.isInteger(parsed) ? Math.max(0, Math.min(23, parsed)) : DEFAULT_STATE.hour;
   await patchBackupState({ hour: h });
   await syncBackupAlarm();
   return { ok: true, hour: h };
 }
 
-// Persist the optional disk-encryption passphrase. Empty string disables
-// encryption (future backups go out as plain .zip).
+// Automatic backup fails closed while the passphrase is empty.
 export async function setAutoBackupPassphrase(passphrase) {
-  await patchBackupState({ passphrase: String(passphrase || '') });
+  const value = String(passphrase || '');
+  const encryptedPassphrase = value ? await sealJSON(value) : '';
+  if (value && !isSealed(encryptedPassphrase)) {
+    throw new Error('Could not securely store the backup password. Automatic backup was not enabled.');
+  }
+  await patchBackupState({ passphrase: value, encryptedPassphrase, lastError: '' });
+  await syncBackupAlarm();
 }
 
-// Toggle handler for the settings UI. Turning it on runs an immediate first
-// backup so the user sees it work; turning it off clears the schedule.
+export async function setAutoBackupDestination(destination) {
+  await patchBackupState({ destination: normalizeBackupDestination(destination), lastError: '' });
+}
+
+export async function setBackupGatewayIndex(enabled) {
+  await patchBackupState({ gatewayBackupIndex: !!enabled });
+}
+
+// Toggle handler for the settings UI. Turning it on only arms the schedule;
+// turning it off clears the schedule.
 export async function setAutoBackupEnabled(enabled) {
+  const state = await getBackupState();
+  if (enabled && !state.passphrase) {
+    await patchBackupState({ enabled: false });
+    await syncBackupAlarm();
+    return { ok: false, reason: 'passphrase-required' };
+  }
   await patchBackupState({ enabled: !!enabled });
   await syncBackupAlarm();
-  if (enabled) return await runAutoBackup({ force: true });
-  return { ok: true };
+  return { ok: true, scheduled: !!enabled };
 }

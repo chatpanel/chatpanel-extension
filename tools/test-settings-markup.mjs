@@ -53,6 +53,13 @@ assert.ok(
 assert.match(css, /\.account-secondary-grid\s*\{[^}]*display:\s*grid/s, 'Account secondary cards should use CSS grid');
 assert.match(css, /\.account-secondary-grid\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax/s, 'Account secondary grid should use available width responsively');
 assert.match(css, /\.account-secondary-grid\s+\.card\s*\{[^}]*margin-bottom:\s*0/s, 'Cards inside Account secondary grid should not reserve full-width card spacing');
+assert.match(accountPanel, /id="autobackup-destination"/, 'Automatic backup should offer a destination selector.');
+assert.match(accountPanel, /value="drive"/, 'Automatic backup should support Drive-only with no local file.');
+assert.match(accountPanel, /value="both"/, 'Automatic backup should support local and Drive together.');
+assert.match(accountPanel, /id="drive-backup-restore"/, 'Settings should restore encrypted backups directly from Drive.');
+assert.doesNotMatch(accountPanel, /id="drive-client-id"/, 'Users should not have to configure a Google OAuth client id.');
+assert.match(accountPanel, /No Google developer setup is required/, 'Settings should explain the one-time user authorization flow.');
+assert.match(accountPanel, /device-local key/, 'Settings should disclose how unattended backup credentials are stored.');
 assert.match(
   css,
   /\.field\s*>\s*:is\(input,\s*select,\s*textarea,\s*\.combo\)\s*\{[^}]*flex:\s*0\s+0\s+auto/s,

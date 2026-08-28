@@ -10,8 +10,9 @@ import { readZipEntry } from './js/zip.js';
 // renders, and deferring one frozen array would cost a frame to save nothing.
 import { DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './js/events/sources.js';
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
-import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, setAutoBackupHour, runAutoBackup } from './js/auto-backup.js';
+import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, setAutoBackupHour, setBackupGatewayIndex, setAutoBackupDestination, backupDestinationIncludes, runAutoBackup } from './js/auto-backup.js';
 import { encryptBackup, decryptBackup, isEncryptedBackup } from './js/crypto-backup.js';
+import { googleDriveRedirectUri, connectGoogleDrive, disconnectGoogleDrive, getGoogleDriveConnection, listGoogleDriveBackups, downloadGoogleDriveBackup } from './js/drive-backup.js';
 import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, previewRedaction, traceFlow } from './js/providers.js';
 import { buildToolset } from './js/toolset.js';
 import { getMcpProviders } from './js/mcp-manager.js';
@@ -1391,6 +1392,11 @@ function renderGateway() {
       settings.ui.warmSearch = { enabled: warm.checked, url: normalizeGatewayUrl($('gw-url').value) || 'http://127.0.0.1:4320' };
       await saveSettings(settings);
       toast(warm.checked ? 'Indexing history to the gateway…' : 'Gateway search off');
+      if (warm.checked) {
+        const { syncHistoryToGateway } = await import('./js/warm-sync.js');
+        const result = await syncHistoryToGateway(settings.ui.warmSearch.url);
+        toast(result.ok ? `Indexed ${result.sent || 0} history records` : `History indexing failed: ${result.error || 'gateway unavailable'}`);
+      }
     };
   }
 
@@ -1408,7 +1414,11 @@ function wireBackupKeyHandoff() {
   const say = (t) => { if (status) status.textContent = t ? ` ${t}` : ''; };
 
   // Reflect whether the gateway already holds a key.
-  fetch(gwUrl() + '/v1/history/key').then((r) => r.json()).then((d) => { box.checked = !!d?.hasKey; }).catch(() => { box.checked = false; });
+  Promise.all([getBackupState(), fetch(gwUrl() + '/v1/history/key').then((r) => r.json())])
+    .then(async ([st, d]) => {
+      box.checked = !!d?.hasKey;
+      if (box.checked !== !!st.gatewayBackupIndex) await setBackupGatewayIndex(box.checked);
+    }).catch(() => { box.checked = false; });
 
   box.onchange = async () => {
     say('');
@@ -1425,11 +1435,13 @@ function wireBackupKeyHandoff() {
         });
         const d = await res.json();
         if (!res.ok || d?.error) throw new Error(d?.error?.message || `gateway ${res.status}`);
+        await setBackupGatewayIndex(true);
         say(`✓ Indexed ${d.ingested ?? 0} records${d.file ? ` from ${d.file.split('/').pop()}` : ''}.`);
       } else {
         await fetch(gwUrl() + '/v1/history/key', {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ passphrase: '' }),
         });
+        await setBackupGatewayIndex(false);
         say('Key forgotten.');
       }
     } catch (e) {
@@ -4547,6 +4559,30 @@ function wire() {
 function wireBackup() {
   const msg = $('backup-msg');
 
+  const restoreBackupData = async (data, status = msg) => {
+    if (isEncryptedBackup(data)) data = await decryptBackup(data, $('backup-password').value);
+    const mode = $('backup-replace').checked ? 'replace' : 'merge';
+    const { conversations, meetings, notes, settings: settingsRestored } = await importAllData(data, { mode });
+    const parts = [`${conversations.imported} conversation${conversations.imported === 1 ? '' : 's'}`];
+    if (meetings.imported) parts.push(`${meetings.imported} meeting${meetings.imported === 1 ? '' : 's'}`);
+    if (notes?.imported) parts.push(`${notes.imported} note${notes.imported === 1 ? '' : 's'}`);
+    if (settingsRestored) {
+      settings = await getSettings();
+      parts.push('settings');
+      renderEndpoints();
+      renderBridge();
+      renderBridgeAgents();
+      renderMcpServers();
+      renderSkills();
+      renderPrefs();
+      renderGateBadges();
+    }
+    renderStorageHealth();
+    const skipped = (conversations.total - conversations.imported) + (meetings.total - meetings.imported);
+    setStatus(status, `✓ Restored ${parts.join(' + ')}${skipped ? ` (${skipped} skipped)` : ''}. Reopen ChatPanel to see everything.`, 'ok');
+    return { conversations, meetings, notes, settingsRestored };
+  };
+
   $('backup-export').onclick = async () => {
     if (!can(license, 'exportChats')) {
       return setStatus(msg, '✨ Backup & restore is a Pro feature — upgrade above.', 'err');
@@ -4618,42 +4654,19 @@ function wireBackup() {
         text = new TextDecoder().decode(buf);
       }
       let data = JSON.parse(text);
-      // Encrypted backup? Decrypt with the password from the box (same field used
-      // for export). A wrong/empty password throws a friendly message.
-      if (isEncryptedBackup(data)) {
-        data = await decryptBackup(data, $('backup-password').value);
-      }
-      const mode = $('backup-replace').checked ? 'replace' : 'merge';
-      const { conversations, meetings, settings: settingsRestored } = await importAllData(data, { mode });
-      const parts = [`${conversations.imported} conversation${conversations.imported === 1 ? '' : 's'}`];
-      if (meetings.imported) parts.push(`${meetings.imported} meeting${meetings.imported === 1 ? '' : 's'}`);
-      if (settingsRestored) {
-        // Settings (endpoints, agents, MCP, skills, prefs) changed — reload & repaint.
-        settings = await getSettings();
-        parts.push('settings');
-        renderEndpoints();
-        renderBridge();
-        renderBridgeAgents();
-        renderMcpServers();
-        renderSkills();
-        renderPrefs();
-        renderGateBadges();
-      }
-      renderStorageHealth();
-      const skipped = (conversations.total - conversations.imported) + (meetings.total - meetings.imported);
-      setStatus(msg, `✓ Restored ${parts.join(' + ')}${skipped ? ` (${skipped} skipped)` : ''}. Reopen ChatPanel to see everything.`, 'ok');
+      await restoreBackupData(data, msg);
     } catch (err) {
       setStatus(msg, '✕ ' + (err.message || err), 'err');
     }
   };
 
-  wireAutoBackup();
+  wireAutoBackup(restoreBackupData);
 }
 
-// Daily automatic backup to disk (Pro). Same .zip as manual export, written to
-// Downloads/ChatPanel Backups/ on a schedule by the service worker. Here we only
-// drive the toggle / "Back up now" and reflect the saved state.
-function wireAutoBackup() {
+// Daily encrypted backup to disk (Pro), written to Downloads/ChatPanel Backups/
+// on the preferred schedule by the service worker. Here we only drive the toggle /
+// "Back up now" and reflect the saved state.
+function wireAutoBackup(restoreBackupData) {
   const toggle = $('autobackup-enabled');
   const status = $('autobackup-status');
   const pw = $('autobackup-password');
@@ -4666,6 +4679,9 @@ function wireAutoBackup() {
     return mb >= 1 ? ` (${mb.toFixed(1)} MB)` : ` (${Math.max(1, Math.round(n / 1024))} KB)`;
   };
   const hourSel = $('autobackup-hour');
+  const destination = $('autobackup-destination');
+  const driveStatus = $('drive-status');
+  const driveList = $('drive-backup-list');
   // Populate 12am–11pm once (value = 0–23 local hour).
   if (hourSel && hourSel.options.length <= 1) {
     for (let h = 0; h < 24; h++) {
@@ -4673,42 +4689,101 @@ function wireAutoBackup() {
       hourSel.add(new Option(`Daily at ${label}`, String(h)));
     }
   }
-  const hourText = (st) => (Number.isInteger(st.hour) ? ` · daily at ${st.hour % 12 || 12}${st.hour < 12 ? 'am' : 'pm'}` : '');
+  const hourText = (st) => ` · daily at ${st.hour % 12 || 12}${st.hour < 12 ? 'am' : 'pm'}`;
+  const destinationText = (value) => value === 'drive' ? 'Google Drive' : value === 'both' ? 'Downloads + Google Drive' : 'Downloads → ChatPanel Backups';
   const showState = (st) => {
-    if (st.lastError) return setStatus(status, '✕ ' + st.lastError, 'err');
     if (!st.enabled) return setStatus(status, 'Off — your data is only inside the extension.', '');
-    const lock = st.passphrase ? ' 🔒 encrypted' : '';
-    setStatus(status, `On${lock}${hourText(st)} — saved to Downloads → ChatPanel Backups. Last backup: ${fmt(st.lastAt)}${fmtSize(st.lastBytes)}.`, st.lastAt ? 'ok' : '');
+    if (!st.passphrase) return setStatus(status, 'Paused — set the backup password again on this device.', 'err');
+    if (st.lastError) return setStatus(status, '✕ ' + st.lastError, 'err');
+    const gatewayWarning = st.lastGatewayError ? ` Gateway indexing warning: ${st.lastGatewayError}.` : '';
+    setStatus(status, `On 🔒 compressed + encrypted${hourText(st)} — ${destinationText(st.destination)}. Last completed backup: ${fmt(st.lastAt)}${fmtSize(st.lastBytes)}.${gatewayWarning}`, st.lastAt ? 'ok' : '');
   };
-  // Persist the encryption passphrase from the field before any backup runs so
-  // the unattended service-worker write uses the latest value.
+  // Store a device-wrapped copy before any backup runs so the unattended
+  // service-worker write uses the latest value after browser restarts.
   const syncPass = () => setAutoBackupPassphrase(pw ? pw.value : '');
 
   getBackupState().then((st) => {
     toggle.checked = !!st.enabled;
     if (pw) pw.value = st.passphrase || '';
     if (hourSel) hourSel.value = Number.isInteger(st.hour) ? String(st.hour) : '';
+    if (destination) destination.value = st.destination || 'local';
+    $('local-download-help')?.classList.toggle('hidden', !backupDestinationIncludes(st.destination, 'local'));
     showState(st);
   });
 
+  try { $('drive-redirect-uri').value = googleDriveRedirectUri(); } catch { $('drive-redirect-uri').value = 'Available only inside a supported browser extension'; }
+
+  const saveDriveConfig = async () => {
+    await setAutoBackupDestination(destination?.value || 'local');
+  };
+
+  const showDriveConnection = async () => {
+    const connection = await getGoogleDriveConnection();
+    const disconnected = connection.reconnectRequired
+      ? 'Reconnect once to upgrade Google Drive for reliable scheduled backups.'
+      : 'Not connected.';
+    setStatus(driveStatus, connection.connected ? '✓ Google Drive connected. Only encrypted ChatPanel backup files are accessible.' : disconnected, connection.connected ? 'ok' : '');
+    return connection;
+  };
+
+  const refreshDriveBackups = async () => {
+    setStatus(driveStatus, 'Loading encrypted Drive backups…');
+    const files = await listGoogleDriveBackups();
+    driveList.replaceChildren();
+    if (!files.length) driveList.add(new Option('No ChatPanel backups found', ''));
+    for (const file of files) {
+      const when = file.modifiedTime ? new Date(file.modifiedTime).toLocaleString() : 'unknown date';
+      const size = file.size ? fmtSize(Number(file.size)).trim() : '';
+      driveList.add(new Option(`${file.name} — ${when}${size}`, file.id));
+    }
+    setStatus(driveStatus, `✓ Found ${files.length} encrypted backup${files.length === 1 ? '' : 's'} in Drive.`, 'ok');
+  };
+
+  showDriveConnection().catch((e) => setStatus(driveStatus, '✕ ' + (e.message || e), 'err'));
+
+  if (destination) destination.onchange = async () => {
+    await saveDriveConfig();
+    $('local-download-help')?.classList.toggle('hidden', !backupDestinationIncludes(destination.value, 'local'));
+    showState(await getBackupState());
+  };
+  $('drive-connect').onclick = async () => {
+    try {
+      setStatus(driveStatus, 'Connecting…');
+      await saveDriveConfig();
+      await connectGoogleDrive();
+      await showDriveConnection();
+      await refreshDriveBackups();
+    } catch (e) { setStatus(driveStatus, '✕ ' + (e.message || e), 'err'); }
+  };
+  $('drive-disconnect').onclick = async () => {
+    await disconnectGoogleDrive();
+    driveList.replaceChildren(new Option('Connect and refresh to list backups', ''));
+    await showDriveConnection();
+  };
+  $('drive-refresh').onclick = () => refreshDriveBackups().catch((e) => setStatus(driveStatus, '✕ ' + (e.message || e), 'err'));
+  $('drive-backup-restore').onclick = async () => {
+    if (!driveList.value) return setStatus(driveStatus, 'Select a Drive backup first.', 'err');
+    try {
+      setStatus(driveStatus, 'Downloading encrypted backup into memory…');
+      const data = await downloadGoogleDriveBackup(driveList.value);
+      await restoreBackupData(data, driveStatus);
+    } catch (e) { setStatus(driveStatus, '✕ ' + (e.message || e), 'err'); }
+  };
+
   if (hourSel) {
     hourSel.onchange = async () => {
-      await setAutoBackupHour(hourSel.value === '' ? null : hourSel.value);
+      await setAutoBackupHour(hourSel.value);
       showState(await getBackupState());
     };
   }
 
-  // Changing the passphrase must rewrite the on-disk file immediately: the
-  // change-detector hashes plaintext, so without this a newly-set password
-  // wouldn't take effect until the data itself next changes.
+  // Saving a password never starts an unexpected download. The schedule is the
+  // only automatic path; "Back up now" remains explicit.
   if (pw) {
     pw.onchange = async () => {
       await syncPass();
-      const st = await getBackupState();
-      if (st.enabled && can(license, 'autoBackup')) {
-        await runAutoBackup({ force: true });
-        showState(await getBackupState());
-      }
+      showState(await getBackupState());
+      toast('Backup password saved. Use “Back up now” to apply it immediately, or wait for the scheduled time.');
     };
   }
 
@@ -4719,11 +4794,18 @@ function wireAutoBackup() {
       return setStatus(status, '✨ Automatic backup is a Pro feature — upgrade above.', 'err');
     }
     const enabled = toggle.checked;
-    setStatus(status, enabled ? 'Turning on & taking a first backup…' : 'Turning off…');
+    setStatus(status, enabled ? 'Enabling the daily schedule…' : 'Turning off…');
     await syncPass();
-    const res = await setAutoBackupEnabled(enabled);
-    if (enabled && res && res.ok === false && res.reason !== 'empty') {
+    await saveDriveConfig();
+    if (enabled && backupDestinationIncludes(destination?.value, 'drive') && !(await getGoogleDriveConnection()).connected) {
       toggle.checked = false;
+      return setStatus(status, '✕ Connect Google Drive before enabling this destination.', 'err');
+    }
+    const res = await setAutoBackupEnabled(enabled);
+    if (enabled && res && res.ok === false) {
+      toggle.checked = false;
+      if (res.reason === 'passphrase-required') setStatus(status, '✕ Set a backup password before enabling automatic backup.', 'err');
+      return;
     }
     showState(await getBackupState());
   };
@@ -4734,11 +4816,12 @@ function wireAutoBackup() {
     }
     setStatus(status, 'Backing up…');
     await syncPass();
+    await saveDriveConfig();
     const res = await runAutoBackup({ force: true });
     if (res.ok) {
       const parts = [`${res.count} conversation${res.count === 1 ? '' : 's'}`];
       if (res.meetingsCount) parts.push(`${res.meetingsCount} meeting${res.meetingsCount === 1 ? '' : 's'}`);
-      setStatus(status, `✓ Backed up ${parts.join(' + ')} to Downloads → ChatPanel Backups.`, 'ok');
+      setStatus(status, `✓ Backed up ${parts.join(' + ')} to ${destinationText(res.destination)}.`, 'ok');
     } else if (res.reason === 'empty') {
       setStatus(status, 'No data to back up yet.', '');
     } else {
