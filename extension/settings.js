@@ -10,7 +10,7 @@ import { readZipEntry } from './js/zip.js';
 // renders, and deferring one frozen array would cost a frame to save nothing.
 import { DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './js/events/sources.js';
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
-import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, setAutoBackupHour, setBackupGatewayIndex, setAutoBackupDestination, backupDestinationIncludes, runAutoBackup } from './js/auto-backup.js';
+import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, setAutoBackupHour, setBackupGatewayIndex, setAutoBackupDestination, backupDestinationIncludes, destinationAfterDriveConnect, runAutoBackup } from './js/auto-backup.js';
 import { encryptBackup, decryptBackup, isEncryptedBackup } from './js/crypto-backup.js';
 import { googleDriveRedirectUri, connectGoogleDrive, disconnectGoogleDrive, getGoogleDriveConnection, listGoogleDriveBackups, downloadGoogleDriveBackup } from './js/drive-backup.js';
 import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, previewRedaction, traceFlow } from './js/providers.js';
@@ -4719,10 +4719,12 @@ function wireAutoBackup(restoreBackupData) {
 
   const showDriveConnection = async () => {
     const connection = await getGoogleDriveConnection();
+    const backupState = await getBackupState();
     const disconnected = connection.reconnectRequired
       ? 'Reconnect once to upgrade Google Drive for reliable scheduled backups.'
       : 'Not connected.';
-    setStatus(driveStatus, connection.connected ? '✓ Google Drive connected. Only encrypted ChatPanel backup files are accessible.' : disconnected, connection.connected ? 'ok' : '');
+    const connected = `✓ Google Drive connected. Current backup destination: ${destinationText(backupState.destination)}. Only encrypted ChatPanel backup files are accessible.`;
+    setStatus(driveStatus, connection.connected ? connected : disconnected, connection.connected ? 'ok' : '');
     return connection;
   };
 
@@ -4751,7 +4753,13 @@ function wireAutoBackup(restoreBackupData) {
       setStatus(driveStatus, 'Connecting…');
       await saveDriveConfig();
       await connectGoogleDrive();
+      const nextDestination = destinationAfterDriveConnect(destination?.value);
+      if (destination) destination.value = nextDestination;
+      await setAutoBackupDestination(nextDestination);
+      $('local-download-help')?.classList.toggle('hidden', !backupDestinationIncludes(nextDestination, 'local'));
+      if (nextDestination === 'drive') toast('Google Drive connected. Backup destination set to Google Drive only.');
       await showDriveConnection();
+      showState(await getBackupState());
       await refreshDriveBackups();
     } catch (e) { setStatus(driveStatus, '✕ ' + (e.message || e), 'err'); }
   };

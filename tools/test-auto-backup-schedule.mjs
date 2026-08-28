@@ -22,7 +22,7 @@ globalThis.chrome = {
 const {
   backupDayKey, stableBackupJson, scheduledBackupDue, coalesceBackupRun,
   normalizeBackupDestination, backupDestinationIncludes, setAutoBackupPassphrase,
-  getBackupState, setAutoBackupEnabled,
+  destinationAfterDriveConnect, getBackupState, setAutoBackupEnabled,
 } = await import('../extension/js/auto-backup.js');
 const at = (iso) => new Date(iso);
 assert.equal(backupDayKey(at('2026-08-28T20:00:00')), '2026-08-28');
@@ -38,6 +38,8 @@ assert.equal(normalizeBackupDestination('drive'), 'drive');
 assert.equal(normalizeBackupDestination('anything-else'), 'local');
 assert.equal(backupDestinationIncludes('both', 'drive'), true);
 assert.equal(backupDestinationIncludes('drive', 'local'), false);
+assert.equal(destinationAfterDriveConnect('local'), 'drive', 'a new Drive connection should replace the untouched local default');
+assert.equal(destinationAfterDriveConnect('both'), 'both', 'an explicit Both choice should be preserved');
 
 let release;
 let starts = 0;

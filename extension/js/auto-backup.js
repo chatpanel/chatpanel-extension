@@ -77,6 +77,13 @@ export function backupDestinationIncludes(destination, target) {
   return value === 'both' || value === target;
 }
 
+// Connecting Drive is an explicit request to use it. Replace only the untouched
+// local default; preserve an existing Drive/Both choice.
+export function destinationAfterDriveConnect(destination) {
+  const value = normalizeBackupDestination(destination);
+  return value === 'local' ? 'drive' : value;
+}
+
 async function sha256Hex(str) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
