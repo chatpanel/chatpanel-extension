@@ -25,3 +25,6 @@ Thumbs.db
 .idea/
 .claude/settings.local.json
 extension/assets/*.png.bak
+
+# graphify knowledge-graph output (local artifact; embeds absolute $HOME paths)
+graphify-out/
