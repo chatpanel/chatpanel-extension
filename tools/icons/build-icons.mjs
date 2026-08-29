@@ -1,5 +1,14 @@
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
-const dir = process.argv[2] || 'svg';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Resolve BOTH ends relative to this file, not the shell's cwd. It used to read './svg'
+// and write './icons.js', so it only did the right thing if you happened to `cd
+// tools/icons` first and then hand-copied the result into extension/js/ — a step that is
+// easy to forget and impossible for someone reproducing the build from source to guess.
+const here = dirname(fileURLToPath(import.meta.url));
+const dir = process.argv[2] || join(here, 'svg');
+const out = process.argv[3] || join(here, '..', '..', 'extension', 'js', 'icons.js');
 const files = readdirSync(dir).filter(f => f.endsWith('.svg')).sort();
 const inner = {};
 for (const f of files) {
@@ -102,6 +111,6 @@ if (typeof document !== 'undefined') {
   else hydrate();
 }
 `;
-writeFileSync('icons.js', banner + paths + aliases + emoji + body);
+writeFileSync(out, banner + paths + aliases + emoji + body);
 console.log('icons:', Object.keys(inner).length, 'aliases:', Object.keys(ALIAS).length, 'emoji:', Object.keys(EMOJI).length);
 console.log('bytes:', Buffer.byteLength(banner+paths+aliases+emoji+body));
