@@ -23,6 +23,7 @@ import { MCP_TURN_MODES, DEFAULT_AUTO_TOOL_CAP, normalizeMcpTurnMode } from './t
 import { skillToolSystem } from './skill-runtime.js';
 import { redactionEnabled } from './pii-pipeline.js';
 import { createVault } from './pii-redact.js';
+import { isPro } from './license.js';
 
 // Assemble the toolset for one turn: history + web-search + MCP providers (plus any
 // surface-specific `extraProviders`, e.g. the side panel's page-action tools),

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 
 const html = readFileSync(new URL('../extension/settings.html', import.meta.url), 'utf8');
 const js = readFileSync(new URL('../extension/settings.js', import.meta.url), 'utf8');
+const store = readFileSync(new URL('../extension/js/store.js', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../extension/settings.css', import.meta.url), 'utf8');
 const template = html.match(/<template id="endpoint-tpl">([\s\S]*?)<\/template>/)?.[1] || '';
 assert.ok(template, 'endpoint template should exist');
@@ -53,7 +54,20 @@ assert.ok(
 assert.match(css, /\.account-secondary-grid\s*\{[^}]*display:\s*grid/s, 'Account secondary cards should use CSS grid');
 assert.match(css, /\.account-secondary-grid\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax/s, 'Account secondary grid should use available width responsively');
 assert.match(css, /\.account-secondary-grid\s+\.card\s*\{[^}]*margin-bottom:\s*0/s, 'Cards inside Account secondary grid should not reserve full-width card spacing');
+assert.match(css, /--panel-2:\s*var\(--field\)/, 'Legacy plugin surfaces should inherit the active light or dark theme instead of falling back to dark.');
+assert.match(css, /--line:\s*var\(--border\)/, 'Legacy plugin borders should inherit the active theme.');
+assert.match(css, /\.routing-model\s*\{[^}]*grid-template-columns:[^}]*repeat\(5,/s, 'Each routing model should keep its five selectors in one compact row.');
+assert.match(css, /\.routing-model\s*>\s*select\s*\{[^}]*grid-column:\s*auto/s, 'Routing selectors should no longer be forced onto separate rows.');
+assert.match(css, /\.routing-caps\s*\{[^}]*flex-wrap:\s*nowrap/s, 'Model capability toggles should stay inline.');
+assert.match(js, /CAP_SHORT_LABELS/, 'Dense model rows should use compact capability labels while preserving their full tooltip text.');
 assert.match(accountPanel, /id="autobackup-destination"/, 'Automatic backup should offer a destination selector.');
+assert.doesNotMatch(accountPanel, /id="backup-export"/, 'Account should not offer a separate plaintext-capable export path.');
+assert.doesNotMatch(accountPanel, /Password \(optional\)|leave blank for none|plain browsable/, 'Backup UI should never advertise an unencrypted backup.');
+assert.match(accountPanel, /id="backup-password"[^>]*required/, 'Creating and restoring encrypted backups should use one required password field.');
+assert.match(accountPanel, /All new backups are compressed and encrypted locally/, 'Account should clearly state that every newly created backup is encrypted.');
+assert.match(accountPanel, /Existing legacy ChatPanel ZIP exports can still be restored/, 'Older plaintext exports should remain restorable for migration.');
+assert.doesNotMatch(js, /exportDataArchive/, 'Settings should not retain the old plaintext archive export path.');
+assert.doesNotMatch(store, /exportDataArchive/, 'The plaintext full-backup archive creator should be removed, not merely hidden.');
 assert.match(accountPanel, /value="drive"/, 'Automatic backup should support Drive-only with no local file.');
 assert.match(accountPanel, /value="both"/, 'Automatic backup should support local and Drive together.');
 assert.match(accountPanel, /id="drive-backup-restore"/, 'Settings should restore encrypted backups directly from Drive.');

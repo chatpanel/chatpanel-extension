@@ -16,7 +16,7 @@ globalThis.chrome = {
   },
 };
 
-const { buildTurnTools } = await import('../extension/js/turn-tools.js');
+const { buildTurnTools, buildRedaction } = await import('../extension/js/turn-tools.js');
 const { toolNeedFor } = await import('../extension/js/events/tool-need.js');
 
 // A provider the side panel would pass in — proof that even surface-supplied tools are
@@ -74,6 +74,15 @@ test('the gate is the shared rule, not a second copy of it', async () => {
   // watching is the one that goes wrong.
   assert.equal(toolNeedFor({ request: { text: 'hi' } }).tools, false);
   assert.equal(toolNeedFor({ request: { text: 'find the migration notes' } }).tools, true);
+});
+
+test('enabled redaction carries the current Pro entitlement without a runtime error', () => {
+  const redaction = buildRedaction({
+    settings: { ui: { piiRedaction: { mode: 'deterministic', tier: 'full' } } },
+    license: { plan: 'pro' },
+  });
+  assert.equal(redaction.isPro, true);
+  assert.equal(redaction.cfg.tier, 'full');
 });
 
 console.log('✓ turn tools: a greeting arms nothing, everything else stays armed');

@@ -1216,49 +1216,26 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
           <div class="card" id="backup-card">
             <h2>Back up &amp; restore your data <span class="pro-pill">Pro</span></h2>
             <p class="muted">
-              Export <strong>everything</strong> to a single file — your settings
+              Back up <strong>everything</strong> — your settings
               (API endpoints &amp; keys, agents, MCP servers, skills, preferences),
               endpoint sign-ins, all chat history and all captured meetings.
-              Restore it on a <strong>fresh install on another machine</strong>
-              to bring your whole setup across. Backups can stay local, go directly
-              to your own Google Drive, or use both. Your Pro license isn’t included.
+              All new backups are compressed and encrypted locally before they are
+              saved to Downloads or sent to your Google Drive. Your Pro license isn’t included.
             </p>
             <p class="muted">
-              With <strong>no password</strong> you get a browsable <code>.zip</code>
-              (the restorable backup plus readable Markdown copies of every chat and
-              meeting) — <strong>it contains your API keys, so keep it safe</strong>.
-              Set a <strong>password</strong> and you instead get a single encrypted
-              <code>.json</code> file (no Markdown — that’s the point); you’ll need the
-              same password to restore it.
+              Restore an encrypted file on a <strong>fresh install on another machine</strong>
+              to bring your whole setup across, or restore from Drive to merge chats, meetings,
+              and notes while keeping that device’s settings and sign-ins.
             </p>
-            <div class="row">
-              <button id="backup-export" class="btn">Export all data</button>
-              <button id="backup-import" class="btn">Restore from file…</button>
-              <input id="backup-file" type="file" accept="application/zip,.zip,application/json,.json" class="hidden" />
-            </div>
-            <div class="field">
-              <label for="backup-password">Password (optional)</label>
-              <input id="backup-password" type="password" autocomplete="off"
-                     placeholder="Encrypt the export — leave blank for none" />
-            </div>
-            <p class="muted">
-              Set a password to encrypt the export; you’ll need the <em>same</em> password to
-              restore it. There’s no recovery — if you forget it the data is gone. Leave blank
-              to export the plain browsable .zip. To restore an encrypted file, type its
-              password here first, then choose the file.
-            </p>
-            <label class="check"><input type="checkbox" id="backup-replace" /> Replace existing data on restore (default: merge)</label>
-            <div id="backup-msg" class="status"></div>
 
             <div class="endpoint-section">
-            <h3 class="priv-h">Automatic encrypted backups</h3>
+            <h3 class="priv-h">Encrypted backups</h3>
             <p class="muted">
               Keep a copy of all your data <strong>outside</strong> the extension so a
               reinstall cannot lose it. Choose local Downloads, your Google Drive, or both.
               ChatPanel compresses first, encrypts locally, and rotates seven weekday files per device.
               Google receives only ciphertext and never receives your backup password.
             </p>
-            <label class="check"><input type="checkbox" id="autobackup-enabled" /> Back up my encrypted data every day</label>
             <div class="field">
               <label for="autobackup-destination">Backup destination</label>
               <select id="autobackup-destination">
@@ -1274,18 +1251,13 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
               <p class="muted tiny">Give each browser profile a recognizable name. Every device gets its own seven rotating Drive slots, so one machine never overwrites another machine’s backups.</p>
             </div>
             <div class="field">
-              <label for="autobackup-hour">Run the daily backup</label>
-              <select id="autobackup-hour"></select>
-              <p class="muted tiny">Pick one local time. ChatPanel writes at most one completed automatic backup per calendar day. If Chrome was closed then, the next browser start catches up only after the selected hour and only when today’s backup has not already completed. “Back up now” is an explicit one-off.</p>
-            </div>
-            <div class="field">
-              <label for="autobackup-password">Backup encryption password (required)</label>
-              <input id="autobackup-password" type="password" autocomplete="off"
-                     placeholder="Required for encrypted daily backups" />
+              <label for="backup-password">Backup encryption password (required)</label>
+              <input id="backup-password" type="password" autocomplete="off" required
+                     placeholder="Required to create or restore encrypted backups" />
             </div>
             <p class="muted">
-              For unattended schedules, the password is encrypted with a device-local key and
-              stored only inside this browser profile. It is never synced or uploaded. Restore on
+              The password is encrypted with a device-local key and stored only inside this
+              browser profile so scheduled backups can run unattended. It is never synced or uploaded. Restore on
               another machine by connecting the same Drive account and entering the same password.
               There is no password recovery; anyone controlling this unlocked browser profile can
               run its configured backups.
@@ -1311,7 +1283,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                 <button id="drive-backup-restore" class="btn">Restore selected Drive backup</button>
                 <button id="drive-backup-restore-all" class="btn">Merge latest from all devices</button>
               </div>
-              <p class="muted tiny">Drive restore downloads ciphertext into memory and decrypts it with the automatic-backup password above. It always merges chats, meetings, and notes. API keys, OAuth sign-ins, gateway configuration, and other device settings stay local. No temporary backup file is saved.</p>
+              <p class="muted tiny">Drive restore downloads ciphertext into memory and decrypts it with the backup password above. It always merges chats, meetings, and notes. API keys, OAuth sign-ins, gateway configuration, and other device settings stay local. No temporary backup file is saved.</p>
             </div>
             <p id="local-download-help" class="muted">
               <strong>Browser download setting:</strong> for Chrome or Edge, open the browser's
@@ -1321,8 +1293,21 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
             </p>
             <div class="row">
               <button id="autobackup-now" class="btn">Back up now</button>
+              <button id="backup-import" class="btn">Restore from file…</button>
+              <input id="backup-file" type="file" accept="application/zip,.zip,application/json,.json" class="hidden" />
             </div>
+            <p class="muted tiny">“Back up now” always creates an encrypted backup using the destination and password above. Existing legacy ChatPanel ZIP exports can still be restored.</p>
+            <label class="check"><input type="checkbox" id="backup-replace" /> Replace existing data when restoring from a file (default: merge)</label>
+            <div id="backup-msg" class="status"></div>
             <div id="autobackup-status" class="status"></div>
+
+            <h3 class="priv-h">Automatic schedule</h3>
+            <label class="check"><input type="checkbox" id="autobackup-enabled" /> Back up my encrypted data every day</label>
+            <div class="field">
+              <label for="autobackup-hour">Run the daily backup</label>
+              <select id="autobackup-hour"></select>
+              <p class="muted tiny">Pick one local time. ChatPanel writes at most one completed automatic backup per calendar day. If Chrome was closed then, the next browser start catches up only after the selected hour and only when today’s backup has not already completed. “Back up now” is an explicit one-off.</p>
+            </div>
             </div>
           </div>
         </div>

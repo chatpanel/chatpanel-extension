@@ -8,11 +8,10 @@
 //
 // All functions are async and safe to call from the side panel or options page.
 
-import { exportMeetings, importMeetings, meetingToMarkdown } from './store-meetings.js';
-import { exportNotes, importNotes, noteToMarkdown } from './store-notes.js';
+import { exportMeetings, importMeetings } from './store-meetings.js';
+import { exportNotes, importNotes } from './store-notes.js';
 import { exportNotesConfig, importNotesConfig } from './notes-config.js';
 import { exportOAuthTokens, importOAuthTokens } from './oauth.js';
-import { makeZip } from './zip.js';
 import { sealJSON, openJSON } from './secret-crypto.js';
 
 const K_SETTINGS = 'chatpanel:settings';
@@ -923,52 +922,6 @@ export async function importAllData(data, {
     await importOAuthTokens(data.oauthTokens, { mode });
   }
   return { conversations, meetings, notes, settings };
-}
-
-// "Export all data" as a ZIP that is BOTH a restorable backup and a browsable
-// archive: chatpanel-data.json (what Restore reads) + human-readable Markdown for
-// every conversation and meeting. Returns { blob, count, meetingsCount }.
-const ARCHIVE_README =
-  'ChatPanel data export — full portable backup\n\n' +
-  '• chatpanel-data.json — the complete backup. Use Settings → Restore from file\n' +
-  '  to import it on this or a fresh install on another machine. It restores your\n' +
-  '  settings (API endpoints & keys, agents, MCP servers, skills, preferences),\n' +
-  '  all chat history, and all captured meetings. Keep this file safe.\n' +
-  '• settings.json — a readable copy of your configuration (NOT used by Restore).\n' +
-  '• conversations/*.md and meetings/*.md — human-readable copies for reading or\n' +
-  '  sharing. These are NOT used by Restore.\n\n' +
-  'SECURITY: chatpanel-data.json and settings.json contain your API keys and any\n' +
-  'MCP auth tokens. Treat this file like a password. Your ChatPanel Pro license is\n' +
-  'NOT included — it re-activates from your purchase email / Pro sync.\n\n' +
-  'Everything here stayed on your device — nothing was uploaded.\n';
-
-export async function exportDataArchive(precomputed) {
-  const data = precomputed || (await exportAllData());
-  const files = [
-    { name: 'chatpanel-data.json', data: JSON.stringify(data) },
-    { name: 'settings.json', data: JSON.stringify(data.settings, null, 2) },
-    { name: 'README.txt', data: ARCHIVE_README },
-  ];
-  const used = new Set();
-  const mdName = (dir, title, ts) => {
-    const date = new Date(ts || Date.now()).toISOString().slice(0, 10);
-    const safe = (title || 'untitled').replace(/[\/\\:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 70);
-    let name = `${dir}/${date} — ${safe}.md`;
-    for (let n = 2; used.has(name); n++) name = `${dir}/${date} — ${safe} (${n}).md`;
-    used.add(name);
-    return name;
-  };
-  for (const conv of data.conversations) {
-    files.push({ name: mdName('conversations', conv.title, conv.createdAt), data: conversationToMarkdown(conv) });
-  }
-  for (const m of data.meetings) {
-    const md = meetingToMarkdown(m.record) + (m.notes ? `\n\n## Summary\n\n${m.notes}\n` : '');
-    files.push({ name: mdName('meetings', m.record.title, m.record.startedAt), data: md });
-  }
-  for (const n of data.notes || []) {
-    files.push({ name: mdName('notes', n.title, n.updatedAt || n.createdAt), data: noteToMarkdown(n) });
-  }
-  return { blob: await makeZip(files), count: data.count, meetingsCount: data.meetingsCount };
 }
 
 function titleFrom(text) {

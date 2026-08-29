@@ -4,14 +4,14 @@
 //             model and optional system prompt/tuning. Chat with one directly.
 //   Agents  — the local bridge (CLI) agents: Claude Code, Codex, Antigravity CLI,
 //             plus the bridge connection itself.
-import { getSettings, saveSettings, uid, exportAllData, exportDataArchive, importAllData, resetSkillsToDefaults } from './js/store.js';
+import { getSettings, saveSettings, uid, importAllData, resetSkillsToDefaults } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
 // Small, pure and dependency-free — the seed list is needed synchronously when the panel
 // renders, and deferring one frozen array would cost a frame to save nothing.
 import { DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './js/events/sources.js';
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
 import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, setAutoBackupHour, setBackupGatewayIndex, setAutoBackupDestination, setBackupDeviceName, backupDestinationIncludes, destinationAfterDriveConnect, runAutoBackup } from './js/auto-backup.js';
-import { encryptBackup, decryptBackup, isEncryptedBackup } from './js/crypto-backup.js';
+import { decryptBackup, isEncryptedBackup } from './js/crypto-backup.js';
 import { googleDriveRedirectUri, connectGoogleDrive, disconnectGoogleDrive, getGoogleDriveConnection, listGoogleDriveBackups, downloadGoogleDriveBackup, googleDriveBackupDevice, latestGoogleDriveBackupsByDevice } from './js/drive-backup.js';
 import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, previewRedaction, traceFlow } from './js/providers.js';
 import { buildToolset } from './js/toolset.js';
@@ -51,7 +51,7 @@ import { WEBLLM_ALL_MODELS, WEBLLM_RECOMMENDED, DEFAULT_WEBLLM_MODEL, deleteMode
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth } from './js/storage-health.js';
-import { checkGateway, getGatewayConfig, getGatewayLogs, setGatewayConfig, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
+import { checkGateway, getGatewayConfig, getGatewayLogs, setGatewayConfig, ensureGatewayEntitlement, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
 import { createVault, redactText } from './js/pii-redact.js';
 import { detectEntities } from './js/pii-detect.js';
 import {
@@ -1630,7 +1630,29 @@ async function refreshGateway() {
   setGatewayToken(settings.gatewayToken || '');
   await handshakeGatewayToken(url);
   try {
-    fillGatewayForm(await getGatewayConfig(url));
+    let cfg = await getGatewayConfig(url);
+    // A gateway is a separate process, so merely connecting it does not inherit the
+    // extension's subscription. After the authenticated admin handshake, silently
+    // hand it this device's signed entitlement whenever the extension is Pro but the
+    // gateway is not. The explicit Activate button remains a visible retry path.
+    if (isPro(license) && !gatewayState.pro?.unlocked) {
+      const token = await getEntitlementToken();
+      if (token) {
+        try {
+          const synced = await ensureGatewayEntitlement(url, { localPro: true, token, unlocked: false });
+          if (synced.config) cfg = synced.config;
+          if (synced.status?.ok) gatewayState = synced.status;
+        } catch (e) {
+          const proStatus = $('gw-pro-status');
+          if (proStatus) {
+            proStatus.textContent = `Automatic Pro activation failed: ${e.message}. Click Activate to retry.`;
+            proStatus.className = 'status err';
+          }
+        }
+      }
+    }
+    status.innerHTML = `✓ Connected — v${gatewayState.version} · backend: <strong>${gatewayState.backend}</strong> · ${gatewayState.pro?.unlocked ? 'Pro' : 'Free'}`;
+    fillGatewayForm(cfg);
     $('gw-preview')?.classList.add('hidden'); // connected — the real config replaces the preview
     $('gw-config').classList.remove('hidden');
     $('gw-token-row')?.classList.add('hidden'); // authorized — hide the manual token fallback
@@ -2146,8 +2168,9 @@ async function activateGatewayPro() {
   }
   st.textContent = 'Activating…'; st.className = 'status';
   try {
-    fillGatewayForm(await setGatewayConfig(url, { pro: { entitlementToken: token } }));
-    gatewayState = await checkGateway(url);
+    const synced = await ensureGatewayEntitlement(url, { localPro: true, token, unlocked: false });
+    fillGatewayForm(synced.config);
+    gatewayState = synced.status;
     renderGatewayMonitor(gatewayState);
     const ok = gatewayState.ok && gatewayState.pro && gatewayState.pro.unlocked;
     st.textContent = ok ? '✓ Pro active on the gateway — full tier, unlimited.' : 'Saved, but not unlocked (token may be expired — reactivate Pro).';
@@ -4553,9 +4576,8 @@ function wire() {
   wireBackup();
 }
 
-// Back up & restore all data — conversations AND captured meetings (Pro). Pure
-// client-side: the export is a JSON file the user keeps; restore reads it back.
-// Gated like other Pro exports.
+// Restore full encrypted backups (and legacy ZIP exports) from disk. New backups
+// are created only by runAutoBackup(), which always compresses and encrypts them.
 function wireBackup() {
   const msg = $('backup-msg');
 
@@ -4590,52 +4612,6 @@ function wireBackup() {
       setStatus(status, `✓ Restored ${parts.join(' + ')}${skipped ? ` (${skipped} skipped)` : ''}.${scope} Reopen ChatPanel to see everything.`, 'ok');
     }
     return { conversations, meetings, notes, settingsRestored };
-  };
-
-  $('backup-export').onclick = async () => {
-    if (!can(license, 'exportChats')) {
-      return setStatus(msg, '✨ Backup & restore is a Pro feature — upgrade above.', 'err');
-    }
-    setStatus(msg, 'Exporting…');
-    try {
-      const pass = $('backup-password').value;
-      const stamp = new Date().toISOString().slice(0, 10);
-      let blob, name, count, meetingsCount, kind;
-      if (pass) {
-        // Encrypted export: a single envelope file. We can't ship the browsable
-        // Markdown archive here — that would defeat the encryption — so this is
-        // the JSON backup only, wrapped in AES-GCM.
-        const data = await exportAllData();
-        count = data.count;
-        meetingsCount = data.meetingsCount;
-        if (!count && !meetingsCount) return setStatus(msg, 'No data to export yet.', '');
-        const envelope = await encryptBackup(data, pass);
-        blob = new Blob([JSON.stringify(envelope)], { type: 'application/json' });
-        name = `chatpanel-data-${stamp}.encrypted.json`;
-        kind = 'encrypted';
-      } else {
-        const archive = await exportDataArchive();
-        count = archive.count;
-        meetingsCount = archive.meetingsCount;
-        if (!count && !meetingsCount) return setStatus(msg, 'No data to export yet.', '');
-        blob = archive.blob;
-        name = `chatpanel-data-${stamp}.zip`;
-        kind = 'zip';
-      }
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = name;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-      const parts = [`${count} conversation${count === 1 ? '' : 's'}`];
-      if (meetingsCount) parts.push(`${meetingsCount} meeting${meetingsCount === 1 ? '' : 's'}`);
-      parts.push('settings'); // always included — endpoints/keys, agents, MCP, skills, prefs
-      const tail = kind === 'encrypted' ? '🔒 password-protected — keep the password safe.' : '.zip — JSON backup + Markdown.';
-      setStatus(msg, `✓ Exported ${parts.join(' + ')} (${tail})`, 'ok');
-    } catch (e) {
-      setStatus(msg, '✕ ' + (e.message || e), 'err');
-    }
   };
 
   $('backup-import').onclick = () => {
@@ -4678,7 +4654,7 @@ function wireBackup() {
 function wireAutoBackup(restoreBackupData) {
   const toggle = $('autobackup-enabled');
   const status = $('autobackup-status');
-  const pw = $('autobackup-password');
+  const pw = $('backup-password');
   if (!toggle) return; // defensive — UI not present
 
   const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : 'never');
@@ -4703,7 +4679,7 @@ function wireAutoBackup(restoreBackupData) {
   const hourText = (st) => ` · daily at ${st.hour % 12 || 12}${st.hour < 12 ? 'am' : 'pm'}`;
   const destinationText = (value) => value === 'drive' ? 'Google Drive' : value === 'both' ? 'Downloads + Google Drive' : 'Downloads → ChatPanel Backups';
   const showState = (st) => {
-    if (!st.enabled) return setStatus(status, 'Off — your data is only inside the extension.', '');
+    if (!st.enabled) return setStatus(status, 'Daily schedule is off.', '');
     if (!st.passphrase) return setStatus(status, 'Paused — set the backup password again on this device.', 'err');
     if (st.lastError) return setStatus(status, '✕ ' + st.lastError, 'err');
     const gatewayWarning = st.lastGatewayError ? ` Gateway indexing warning: ${st.lastGatewayError}.` : '';
@@ -4793,7 +4769,7 @@ function wireAutoBackup(restoreBackupData) {
       await restoreBackupData(data, driveStatus, {
         historyOnly: true,
         modeOverride: 'merge',
-        password: pw?.value || $('backup-password').value,
+        password: pw?.value || '',
       });
     } catch (e) { setStatus(driveStatus, '✕ ' + (e.message || e), 'err'); }
   };
@@ -4807,7 +4783,7 @@ function wireAutoBackup(restoreBackupData) {
       let conversationCount = 0;
       let meetingCount = 0;
       let notesCount = 0;
-      const password = pw?.value || $('backup-password').value;
+      const password = pw?.value || '';
       for (let i = 0; i < latest.length; i++) {
         const file = latest[i];
         const device = googleDriveBackupDevice(file);
@@ -4884,6 +4860,7 @@ function wireAutoBackup(restoreBackupData) {
     }
     setStatus(status, 'Backing up…');
     await syncPass();
+    if (!pw?.value) return setStatus(status, '✕ Enter a backup encryption password first.', 'err');
     await saveDriveConfig();
     const res = await runAutoBackup({ force: true });
     if (res.ok) {
@@ -5219,6 +5196,9 @@ async function renderRoutingModels() {
 
   const saved = settings?.ui?.routing?.models || {};
   const { KNOWN_CAPABILITIES: CAPS } = await import('./js/model-router.js');
+  const CAP_SHORT_LABELS = {
+    reasoning: 'Reason', 'long-context': 'Long', coding: 'Code', json: 'JSON',
+  };
   // The effective order, so "auto" can show the position a model currently holds rather than
   // an opaque internal number. A ranking control that cannot tell you where something ranks
   // is not a ranking control.
@@ -5253,7 +5233,7 @@ async function renderRoutingModels() {
     for (const cap of CAPS) {
       const lbl = document.createElement('label');
       lbl.className = 'check tiny';
-      lbl.title = cap.hint;
+      lbl.title = `${cap.label}: ${cap.hint}`;
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = m.capabilities.includes(cap.id);
@@ -5262,7 +5242,7 @@ async function renderRoutingModels() {
         if (cb.checked) next.add(cap.id); else next.delete(cap.id);
         write(m.id, { capabilities: [...next] });
       };
-      lbl.append(cb, document.createTextNode(` ${cap.label}`));
+      lbl.append(cb, document.createTextNode(` ${CAP_SHORT_LABELS[cap.id] || cap.label}`));
       caps.append(lbl);
     }
 

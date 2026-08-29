@@ -2,6 +2,9 @@
   --bg: #f5f6f8; --card: #ffffff; --elev: #ffffff; --field: #f7f8fa;
   --border: #e4e7ec; --border-strong: #d3d8e0;
   --text: #181b20; --muted: #646b76; --faint: #8a909b;
+  /* Compatibility aliases for the activity/plugins components. Without these,
+     their fallback values are dark surfaces even while the rest of Settings is light. */
+  --panel-2: var(--field); --line: var(--border); --fg: var(--text); --muted-2: var(--muted);
   --accent: #5b5bf0; --accent-weak: rgba(91,91,240,.10); --accent-line: rgba(91,91,240,.32);
   --danger: #dc2626; --danger-weak: rgba(220,38,38,.10); --ok: #15a34a;
   --radius: 14px; --radius-sm: 9px; --radius-lg: 18px;
@@ -764,22 +767,32 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .replay-out b.ok { color: #3ecf8e; }
 .replay-out b.err { color: #f8737f; }
 
-/* Correcting what the router guessed about each model. */
-.routing-models { display: grid; gap: 4px; margin-top: 6px; }
-.routing-model {
-  display: grid; grid-template-columns: minmax(140px, 1fr) auto; gap: 6px 10px;
-  align-items: center; padding: 8px 10px;
-  border: 1px solid var(--line, #23283a); border-radius: 6px; background: var(--panel-2, #171b26);
+/* Correcting what the router guessed about each model. This is a dense facts table,
+   not a stack of editor cards: one model per line, with every control visible. */
+.routing-models {
+  display: grid; gap: 0; margin-top: 8px; overflow-x: auto;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--card);
 }
-/* The levers wrap onto their own row rather than squeezing the name — six controls in a
-   line is unreadable at panel width. */
-.routing-model > select { grid-column: 2; }
-.routing-caps { grid-column: 1 / -1; flex-wrap: wrap; }
+.routing-model {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.4fr) minmax(330px, 2.5fr) repeat(5, minmax(108px, .85fr));
+  gap: 6px; align-items: center; min-width: 1080px; padding: 7px 8px;
+  border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: var(--card);
+  transition: background .12s ease;
+}
+.routing-model:last-child { border-bottom: 0; }
+.routing-model:hover { background: var(--field); }
+.routing-model > select { grid-column: auto; }
 .routing-model-name { flex: 1; min-width: 0; }
-.routing-model-name b { display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.routing-model-name i { display: block; font-style: normal; font-size: 10px; color: var(--muted, #8b93a7); }
-.routing-caps { display: flex; gap: 8px; flex: none; }
-.routing-model select { max-width: 150px; }
+.routing-model-name b { display: block; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.routing-model-name i { display: block; font-style: normal; font-size: 10px; color: var(--muted); }
+.routing-caps { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+.routing-caps .check { gap: 3px; margin: 0; font-size: 10.5px; white-space: nowrap; }
+.routing-caps .check input { width: 13px; height: 13px; min-width: 13px; }
+.routing-model select {
+  width: 100%; max-width: none; padding: 6px 24px 6px 7px; border-radius: 7px;
+  font-size: 11px; background-position: right 7px center;
+}
 
 /* Internal sites. Each built-in address family is its OWN row, so any single one can be
    excluded — all-or-nothing would force someone testing against localhost to give up the

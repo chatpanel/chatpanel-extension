@@ -125,6 +125,22 @@ export async function setGatewayConfig(baseUrl, patch) {
   });
 }
 
+// Keep the standalone gateway on the same entitlement as this extension device.
+// Connection alone is not enough: the gateway is a separate process with its own
+// persisted config, so it needs the signed token before /status can report Pro.
+// No-op for Free, an already-unlocked gateway, or a device without a usable token.
+export async function ensureGatewayEntitlement(baseUrl, {
+  localPro = false,
+  token = '',
+  unlocked = false,
+} = {}) {
+  const signed = String(token || '').trim();
+  if (!localPro || unlocked || !signed) return { synced: false, config: null, status: null };
+  const config = await setGatewayConfig(baseUrl, { pro: { entitlementToken: signed } });
+  const status = await checkGateway(baseUrl);
+  return { synced: true, config, status };
+}
+
 // Parse the dictionary textarea (same syntax as the Privacy tab) into the
 // gateway's dictionary shape: { value|pattern, type, alias? }.
 //   John => PERSON          reversible redaction to [[PERSON_n]]
