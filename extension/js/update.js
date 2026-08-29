@@ -12,11 +12,13 @@ import { isGecko } from './browser-api.js';
 
 const REPO = 'chatpanel/chatpanel-extension';
 export const RELEASES_URL = `https://github.com/${REPO}/releases/latest`;
-// One release, two packages: Chromium browsers install the zip, Firefox installs the
-// signed .xpi built from the SAME source and tag. Hand each engine the artifact it can
-// actually install — offering a Chromium zip to a Firefox user is a dead end.
+// Hand each engine the artifact it can actually install — offering a Chromium zip to a
+// Firefox user is a dead end. Note the asymmetry: a Chromium browser will load an
+// unpacked zip, but Firefox installs ONLY add-ons signed by Mozilla, so the .xpi our CI
+// builds is not installable by a user. The listing is the install path there, and
+// dl.chatpanel.net/firefox.xpi redirects to its signed build.
 export const DOWNLOAD_URL = isGecko
-  ? 'https://dl.chatpanel.net/firefox.xpi'
+  ? 'https://addons.mozilla.org/en-US/firefox/addon/chatpanel-privacy-first-ai/'
   : 'https://dl.chatpanel.net/extension.zip';
 const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 

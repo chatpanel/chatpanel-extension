@@ -138,9 +138,15 @@ for (const rel of files) {
 }
 
 // ── 8. The update path points each engine at an artifact it can install ───
-const update = read('js/update.js');
-assert.match(update, /isGecko/, 'js/update.js must offer Firefox the .xpi, not the Chromium zip');
-assert.match(update, /firefox\.xpi/, 'the Firefox download URL must resolve to a signed .xpi');
+const update = code('js/update.js'); // comments stripped: the intent must be in the CODE
+assert.match(update, /isGecko/, 'js/update.js must branch on the engine, not offer one artifact to both');
+// Firefox installs ONLY Mozilla-signed add-ons, so the .xpi our CI builds is not
+// installable by a user — pointing them at it is a download that does nothing. The
+// listing is the install path there.
+assert.match(update, /addons\.mozilla\.org/,
+  'the Firefox download URL must point at the AMO listing; our own .xpi is unsigned and Firefox refuses it');
+assert.ok(!/['"`]https:\/\/dl\.chatpanel\.net\/firefox\.xpi['"`]/.test(update),
+  'js/update.js must not hand a Firefox user the unsigned .xpi directly');
 
 // ── 9. OAuth: the Firefox redirect list exists and is separate ─────────────
 // Firefox mints extensions.allizom.org URIs, not chromiumapp.org. One list for both
