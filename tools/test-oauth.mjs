@@ -207,3 +207,37 @@ assert.equal(
 );
 
 console.log('oauth helper tests passed');
+
+// ── the Firefox redirect URI must stay derivable from the add-on ID ────────
+// THE BUG THIS PREVENTS. Firefox does not let a store assign the redirect host: it
+// computes sha1(browser_specific_settings.gecko.id) in lowercase hex and uses that as
+// the subdomain (Gecko child/ext-identity.js computeHash). So the URI we register with
+// Hugging Face is a pure function of our add-on ID — and changing that ID would
+// silently invalidate every registration, with the only symptom being hosted sign-in
+// failing on Firefox for everyone.
+{
+  const { createHash } = await import('node:crypto');
+  const { readFileSync } = await import('node:fs');
+  const { GECKO_ID } = await import('./firefox-manifest.mjs');
+
+  const expected = `https://${createHash('sha1').update(GECKO_ID).digest('hex')}`
+    + '.extensions.allizom.org/oauth/huggingface';
+
+  const src = readFileSync(new URL('../extension/js/oauth.js', import.meta.url), 'utf8');
+  const block = /HUGGINGFACE_PRODUCTION_GECKO_REDIRECT_URIS\s*=\s*\[([\s\S]*?)\]/.exec(src);
+  assert.ok(block, 'the Firefox redirect allow-list is gone from js/oauth.js');
+  const listed = [...block[1].split('\n').filter((l) => !l.trimStart().startsWith('//')).join('\n').matchAll(/'(https:[^']+)'/g)].map((m) => m[1]);
+  assert.ok(
+    listed.includes(expected),
+    `js/oauth.js must list ${expected} — it is sha1("${GECKO_ID}") and cannot be chosen freely`,
+  );
+
+  // …and the hosted client document has to agree, or the provider rejects the callback.
+  const cimd = JSON.parse(readFileSync(new URL('../../chatpanel/site/.well-known/oauth-cimd', import.meta.url), 'utf8'));
+  assert.ok(
+    cimd.redirect_uris.includes(expected),
+    'the CIMD document at chatpanel.net/.well-known/oauth-cimd must list the same Firefox redirect URI',
+  );
+}
+
+console.log('✓ oauth: Firefox redirect URI matches sha1(gecko id) in both the allow-list and the CIMD doc');

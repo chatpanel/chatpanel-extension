@@ -156,7 +156,7 @@ if (geckoBlock) {
   // Strip line comments FIRST: the list ships with a commented-out example of the
   // shape to add, and counting that as registered would silently claim hosted HF
   // sign-in works on Firefox when it does not.
-  const body = geckoBlock[1].replace(/\/\/.*$/gm, '');
+  const body = geckoBlock[1].split('\n').filter((l) => !l.trimStart().startsWith('//')).join('\n');
   const uris = [...body.matchAll(/'(https:[^']+)'/g)].map((m) => m[1]);
   if (!uris.length) {
     warn(

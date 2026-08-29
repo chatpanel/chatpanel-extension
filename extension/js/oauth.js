@@ -34,7 +34,12 @@ const HUGGINGFACE_PRODUCTION_EXTENSION_IDS = [
 // Hugging Face with their own Client ID, exactly like an unpacked build.
 // tools/verify-firefox.mjs warns while this is empty.
 const HUGGINGFACE_PRODUCTION_GECKO_REDIRECT_URIS = [
-  // 'https://<subdomain>.extensions.allizom.org/oauth/huggingface', // addons.mozilla.org
+  // addons.mozilla.org. Unlike a Chromium extension ID, this is not assigned by a store:
+  // Firefox derives it as sha1(browser_specific_settings.gecko.id) in lowercase hex
+  // (Gecko's child/ext-identity.js computeHash), so it is fixed by our add-on ID alone
+  // and identical on every install. tools/test-oauth.mjs re-derives it, so changing the
+  // gecko id fails the build here rather than silently breaking hosted sign-in.
+  'https://1c26285aee992c6ff936cce00a1f742449074ca5.extensions.allizom.org/oauth/huggingface',
 ];
 const HUGGINGFACE_PRODUCTION_REDIRECT_URIS = [
   ...HUGGINGFACE_PRODUCTION_EXTENSION_IDS.map(
