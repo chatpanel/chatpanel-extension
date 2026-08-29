@@ -322,6 +322,30 @@ const ghostField = StateField.define({
   provide: (f) => EditorView.decorations.from(f),
 });
 
+// Find-in-note highlighting. The ranges are computed OUTSIDE this module (by the shared
+// text-search core, so the classic textarea gets the identical answer) — this only paints
+// them. Mapped through changes like the ghost mark, so a replace mid-search leaves the
+// remaining highlights on the right characters instead of drifting.
+const setFindRanges = StateEffect.define();
+const findField = StateField.define({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    deco = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (e.is(setFindRanges)) {
+        const { ranges = [], current = -1 } = e.value || {};
+        deco = ranges.length
+          ? Decoration.set(ranges.map((r, i) => Decoration
+            .mark({ class: i === current ? 'cm-find-current' : 'cm-find-match' })
+            .range(r.start, r.end)), true)
+          : Decoration.none;
+      }
+    }
+    return deco;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
 // ── Rendered blocks (tables + fenced code) ──────────────────────────────────────────
 // Block (line-break-spanning) decorations MUST come from a state field, not a view plugin —
 // CM needs them before it computes the viewport, so livePreview can't provide them. This field
@@ -366,6 +390,7 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
     syntaxHighlighting(HL),
     livePreview,
     ghostField, // tints an un-accepted AI draft so it never reads as committed text
+    findField,  // paints find-in-note matches (ranges come from the shared text-search core)
     blockField, // renders GFM tables + fenced code as blocks (block decorations must be field-provided)
     agentRegionsExtension(), // multi-agent regions: remap + region-scoped lock + working widget
     // Our gesture/autocomplete handler must beat the default keymap (Tab=indent, Enter=newline),
@@ -452,6 +477,10 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
       dispatchChange({ effects: setGhostRange.of(tt > f ? { from: f, to: tt } : null) });
     },
     clearGhost() { dispatchChange({ effects: setGhostRange.of(null) }); },
+    // Paint find matches. `current` indexes into `ranges` and is drawn in the stronger tint.
+    setFindMatches(ranges, current = -1) { dispatchChange({ effects: setFindRanges.of({ ranges: ranges || [], current }) }); },
+    // Bring a range into view without stealing focus from the find input.
+    revealRange(from, to = from) { dispatchChange({ effects: EditorView.scrollIntoView(from, { y: 'center' }) }); void to; },
     setReadOnly(b) { dispatchChange({ effects: editable.reconfigure(EditorView.editable.of(!b)) }); },
     scrollDocIntoView() { dispatchChange({ effects: EditorView.scrollIntoView(view.state.doc.length, { y: 'end' }) }); },
     destroy() { view.destroy(); },

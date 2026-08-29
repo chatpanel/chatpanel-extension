@@ -693,6 +693,9 @@ function onCmKey(e) {
     if (mention) { runAgentTask(mention); return true; }
     if (currentCommandLine()) { runNoteCommand(); return true; }
   }
+  // Smart lists run LAST of the Enter gestures: an "@[Agent] task" or "@research …" line
+  // that happens to sit inside a bullet must still dispatch, not just grow the list.
+  if ((e.key === 'Enter' || e.key === 'Tab') && !e.metaKey && !e.ctrlKey && listKey(e)) return true;
   return false;
 }
 // Push the model (textarea value + readonly) into CM when Live mode is active — for
@@ -711,8 +714,8 @@ function mirrorToCm(md = $('n-body').value) {
 // ── Assistant sidebar — Team activity / Research / Co-writer / History as tabs ───────
 // The panels used to stack at the bottom and eat the document's vertical space; now they
 // live in a collapsible right sidebar, one visible tab at a time, with count badges.
-const SIDE_TABS = ['activity', 'research', 'related', 'topics', 'graph', 'cowriter', 'history'];
-const SIDE_PANE = { activity: 'n-activity', research: 'n-research', related: 'n-related', topics: 'n-topics-pane', graph: 'n-graph-pane', cowriter: 'n-cowriter', history: 'n-history' };
+const SIDE_TABS = ['activity', 'research', 'related', 'topics', 'graph', 'cowriter', 'history', 'outline'];
+const SIDE_PANE = { activity: 'n-activity', research: 'n-research', related: 'n-related', topics: 'n-topics-pane', graph: 'n-graph-pane', cowriter: 'n-cowriter', history: 'n-history', outline: 'n-outline' };
 let activeSide = 'activity';
 let sideCollapsed = false;
 let railCollapsed = false;
@@ -735,8 +738,28 @@ function renderSide(t = activeSide) {
   else if (t === 'topics') renderNoteTopicsPane();
   else if (t === 'graph') renderNoteGraph();
   else if (t === 'cowriter') renderCowriter();   // repaint (also clears the .hidden park) so chips are live
+  else if (t === 'outline') renderOutline();
   else refreshSideTabs();
 }
+// A brand-new note is a blank page: the assistant panel has nothing to say about a note with
+// no words in it, and it costs the writer a third of the width at the exact moment they want
+// room to think. So new notes start with it collapsed — once. Opening the panel by hand
+// still works (⌘/), and a writer who always wants it can say so from the hint below, which is
+// then honoured forever after.
+const SIDE_ON_NEW_KEY = 'chatpanel.notes.sideOnNew';   // 'open' → never auto-collapse
+const SIDE_HINT_KEY = 'chatpanel.notes.sideOnNewHint'; // the hint is shown once, ever
+function collapseSideForNewNote() {
+  if (localStorage.getItem(SIDE_ON_NEW_KEY) === 'open') return;
+  if (sideCollapsed) return; // already out of the way — nothing to say
+  setSideCollapsed(true);
+  if (localStorage.getItem(SIDE_HINT_KEY) === '1') return;
+  localStorage.setItem(SIDE_HINT_KEY, '1');
+  toastAction('Assistant panel hidden for new notes — ⌘/ to show it.', 'Always open', () => {
+    localStorage.setItem(SIDE_ON_NEW_KEY, 'open');
+    setSideCollapsed(false);
+  }, 7000);
+}
+
 function setSideCollapsed(c) {
   sideCollapsed = !!c;
   localStorage.setItem('chatpanel.notes.sideCollapsed', sideCollapsed ? '1' : '0');
@@ -844,8 +867,19 @@ function autoGrow() {
   ta.style.height = `${ta.scrollHeight}px`;
 }
 function updateWordCount() {
-  const words = ($('n-body').value.trim().match(/\S+/g) || []).length;
-  $('n-words').textContent = words ? `${words} word${words === 1 ? '' : 's'}` : '';
+  const text = $('n-body').value;
+  const el = $('n-words');
+  if (_auth) {
+    const { start, end } = bodySel();
+    const st = _auth.selectionStats(text, start, end);
+    // Reading time only for the whole note — a per-selection estimate is noise.
+    const read = !st.selection && st.readingMinutes ? ` · ${st.readingMinutes} min read` : '';
+    el.textContent = st.words ? `${st.selection ? 'Selected: ' : ''}${st.words} word${st.words === 1 ? '' : 's'}${read}` : '';
+  } else {
+    const words = (text.trim().match(/\S+/g) || []).length;
+    el.textContent = words ? `${words} word${words === 1 ? '' : 's'}` : '';
+  }
+  scheduleOutline();
 }
 
 // ── Streaming render helpers — smooth + scroll-anchored (shared by every AI write) ──
@@ -1024,8 +1058,61 @@ function linePrefix(prefix) {
   bodyReplaceRange(prefix, lineStart, lineStart, s + prefix.length);
   bodyFocus();
 }
+// ── Authoring gestures — the shared markdown core, applied to whichever surface is live ──
+// The RULES (what ⌘B does to a selection, what Enter does in a list, what the outline is)
+// live in @chatpanel/events/markdown-authoring.js: pure, tested, and identical for the
+// textarea, CodeMirror, and whatever a mobile client uses. Here we only load them, ask them
+// for an edit, and apply it.
+//
+// Preloaded at idle rather than statically imported — it must not touch first paint — but it
+// has to be resolved BEFORE the user's first Enter, because a keydown handler cannot await a
+// module and still preventDefault. Until it lands the gestures simply fall through to the
+// surface's native behaviour, which is the correct degradation.
+let _auth = null;
+function preloadAuthoring() {
+  if (_auth) return Promise.resolve(_auth);
+  return import('./js/events/markdown-authoring.js').then((m) => { _auth = m; return m; });
+}
+
+// Set the selection on the active surface (bodyReplaceRange only places a caret).
+function setBodySel(start, end = start) {
+  if (cmActive && cm) return cm.setSelection(start, end);
+  const ta = $('n-body');
+  ta.setSelectionRange(start, end);
+}
+
+// Apply a whole-document result from a pure helper as a MINIMAL range edit.
+// Diffing to the changed span (rather than replacing the whole body) keeps the provenance
+// ledger honest — a full-document write would attribute every character to this keystroke —
+// and leaves CodeMirror's undo history granular.
+function applyDocEdit(edit) {
+  if (!edit) return false;
+  const cur = bodyText();
+  const next = edit.text;
+  if (next === cur) { setBodySel(edit.selStart, edit.selEnd); return true; }
+  const min = Math.min(cur.length, next.length);
+  let s = 0;
+  while (s < min && cur.charCodeAt(s) === next.charCodeAt(s)) s += 1;
+  let e = 0;
+  while (e < min - s && cur.charCodeAt(cur.length - 1 - e) === next.charCodeAt(next.length - 1 - e)) e += 1;
+  bodyReplaceRange(next.slice(s, next.length - e), s, cur.length - e, edit.selStart);
+  setBodySel(edit.selStart, edit.selEnd);
+  return true;
+}
+
 function applyFmt(fmt) {
-  switch (fmt) {
+  const { start, end } = bodySel();
+  const text = bodyText();
+  if (_auth) {
+    const WRAP = { bold: 'bold', italic: 'italic', code: 'code', strike: 'strike', highlight: 'highlight' };
+    const LINE = { ul: 'bullet', ol: 'number', task: 'task', quote: 'quote' };
+    if (WRAP[fmt]) { applyDocEdit(_auth.toggleWrap(text, start, end, WRAP[fmt])); return bodyFocus(); }
+    if (LINE[fmt]) { applyDocEdit(_auth.toggleLinePrefix(text, start, end, LINE[fmt])); return bodyFocus(); }
+    if (fmt === 'link') { applyDocEdit(_auth.toggleLink(text, start, end)); return bodyFocus(); }
+    if (fmt === 'h1') return applyHeading(1); // toggles; the old linePrefix stacked "# # "
+
+  }
+  switch (fmt) { // pre-idle fallback: the old non-toggling behaviour, never a dead key
     case 'bold': return surround('**');
     case 'italic': return surround('_');
     case 'code': return surround('`');
@@ -1034,13 +1121,287 @@ function applyFmt(fmt) {
     case 'task': return linePrefix('- [ ] ');
     case 'quote': return linePrefix('> ');
     case 'link': {
-      const { start: s, end: e } = bodySel();
-      const sel = bodyText().slice(s, e) || 'text';
-      bodyReplaceRange(`[${sel}](url)`, s, e);
+      const sel = text.slice(start, end) || 'text';
+      bodyReplaceRange(`[${sel}](url)`, start, end);
       return bodyFocus();
     }
     default: break;
   }
+}
+
+// Formatting shortcuts. Keyed by a normalised "modifier+letter" so the table stays readable
+// and the handler stays one lookup. ⌘K is link only while the body has focus — everywhere
+// else it is still omni search.
+const FMT_KEYS = {
+  b: 'bold', i: 'italic', k: 'link',
+  'shift+c': 'code', 'shift+x': 'strike', 'shift+h': 'highlight',
+  'shift+Digit8': 'ul', 'shift+Digit7': 'ol', 'shift+Digit9': 'task', 'shift+Period': 'quote',
+};
+// Letters come from e.key (so the binding follows the user's layout); digits and
+// punctuation come from e.code, because Shift rewrites e.key ('8' arrives as '*') and a
+// table keyed on the shifted glyph would never match.
+function fmtKey(e, k) {
+  const base = /^(Digit|Period|Comma|Slash)/.test(e.code || '') ? e.code : k;
+  return `${e.shiftKey ? 'shift+' : ''}${base}`;
+}
+// True when the caret is in the note body — either surface. The find/replace inputs are
+// deliberately excluded so ⌘B while typing a search term does not bold the note.
+function inBody() {
+  const el = document.activeElement;
+  if (el === $('n-body')) return true;
+  return !!(cmActive && cm && el && $('n-cm')?.contains(el));
+}
+
+// Heading level cycling: ⌘1..⌘6 set a level, and re-pressing the level you're on clears it.
+function applyHeading(level) {
+  const text = bodyText();
+  const { start } = bodySel();
+  const lineStart = text.lastIndexOf('\n', start - 1) + 1;
+  const nl = text.indexOf('\n', start);
+  const lineEnd = nl === -1 ? text.length : nl;
+  const line = text.slice(lineStart, lineEnd);
+  const cur = (line.match(/^(#{1,6})\s+/) || [, ''])[1].length;
+  const body = line.replace(/^#{1,6}\s+/, '');
+  const next = cur === level ? body : `${'#'.repeat(level)} ${body}`;
+  applyDocEdit({ text: text.slice(0, lineStart) + next + text.slice(lineEnd), selStart: lineStart + next.length, selEnd: lineStart + next.length });
+  bodyFocus();
+}
+
+// Enter / Tab inside a list. Returns true when the gesture consumed the key, so the caller
+// preventDefaults. Falls through (false) when the caret is not in a list, or before the
+// authoring module has finished loading.
+function listKey(e) {
+  if (!_auth) return false;
+  const { start, end } = bodySel();
+  if (e.key === 'Enter' && !e.shiftKey && start === end) {
+    const edit = _auth.continueList(bodyText(), start);
+    return edit ? applyDocEdit(edit) : false;
+  }
+  if (e.key === 'Tab') {
+    const text = bodyText();
+    // Tab only indents when it is unambiguous: inside a list, or over a multi-line
+    // selection. A bare Tab mid-paragraph stays a Tab.
+    const lineStart = text.lastIndexOf('\n', start - 1) + 1;
+    const inList = !!_auth.parseListItem(text.slice(lineStart, text.indexOf('\n', start) === -1 ? undefined : text.indexOf('\n', start)));
+    if (!inList && start === end) return false;
+    return applyDocEdit(_auth.indentSelection(text, start, end, e.shiftKey ? -1 : 1));
+  }
+  return false;
+}
+
+// Repainting the outline on every keystroke rebuilds a list that changes only when a
+// heading does — debounced, and skipped entirely unless the tab is actually visible.
+let _outlineTimer = 0;
+function scheduleOutline() {
+  if (activeSide !== 'outline' || sideCollapsed) return;
+  clearTimeout(_outlineTimer);
+  _outlineTimer = setTimeout(renderOutline, 180);
+}
+
+// ── Outline — the heading structure, as a jump list ──────────────────────────────
+function renderOutline() {
+  const host = $('n-outline');
+  if (!host) return;
+  if (!_auth) { preloadAuthoring().then(() => { if (activeSide === 'outline') renderOutline(); }); return; }
+  const text = bodyText();
+  const heads = _auth.outlineOf(text);
+  host.innerHTML = '';
+  if (!heads.length) {
+    const p = document.createElement('div');
+    p.className = 'outline-empty';
+    p.textContent = 'No headings yet. Start a line with # to add one.';
+    host.append(p);
+    return;
+  }
+  const caret = bodyCursor();
+  // "Current" = the last heading at or before the caret — the section you are writing in.
+  let currentIdx = -1;
+  heads.forEach((h, i) => { if (h.start <= caret) currentIdx = i; });
+  heads.forEach((h, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `outline-item${i === currentIdx ? ' current' : ''}`;
+    b.dataset.level = String(h.level);
+    b.textContent = h.text || '(untitled)';
+    b.title = h.text;
+    b.onclick = () => jumpTo(h.start, h.end);
+    host.append(b);
+  });
+}
+
+// Put a document range on screen and select it, in whichever surface is showing.
+function jumpTo(from, to = from, { focus = true } = {}) {
+  if (cmActive && cm) {
+    cm.setSelection(from, to);
+    cm.revealRange(from, to);
+    if (focus) cm.focus();
+    return;
+  }
+  const ta = $('n-body');
+  if (ta.classList.contains('hidden') || !ta.offsetParent) {
+    // Read mode: no textarea to scroll. Switch to the editor first so the jump lands.
+    setMode('live', false); // don't clobber the saved default mode for a one-off jump
+    setTimeout(() => jumpTo(from, to, { focus }), 0);
+    return;
+  }
+  if (focus) ta.focus();
+  ta.setSelectionRange(from, to);
+  // A textarea only scrolls to the caret on focus; nudge it by measuring the line.
+  const before = ta.value.slice(0, from).split('\n').length - 1;
+  const lh = parseFloat(getComputedStyle(ta).lineHeight) || 20;
+  const scroller = document.querySelector('.editor-scroll');
+  if (scroller) scroller.scrollTop = Math.max(0, ta.offsetTop + before * lh - scroller.clientHeight / 2);
+}
+
+// ── Find / replace ───────────────────────────────────────────────────────────────
+// Runs over bodyText() and writes through bodyReplaceRange, so it works identically in the
+// classic textarea and in Live mode. Matching itself is the shared text-search core — the
+// find bar never decides what "whole word" means.
+let _ts = null; // the text-search module
+const findState = { q: '', r: '', caseSensitive: false, wholeWord: false, regex: false, matches: [], idx: -1, replace: false };
+
+function findOpts() {
+  return { caseSensitive: findState.caseSensitive, wholeWord: findState.wholeWord, regex: findState.regex };
+}
+
+async function openFind({ replace = false } = {}) {
+  if (!current) return; // no note open — nothing to search
+  if (!_ts) _ts = await import('./js/events/text-search.js');
+  const bar = $('n-find');
+  bar.classList.remove('hidden');
+  if (replace) findState.replace = true;
+  applyReplaceVisibility();
+  // Seed from the selection — searching for the thing you just highlighted is the common case.
+  const { start, end } = bodySel();
+  const sel = bodyText().slice(start, end);
+  if (sel && !sel.includes('\n') && sel.length <= 200) { findState.q = sel; $('n-find-q').value = sel; }
+  runFind({ moveTo: false });
+  const q = $('n-find-q');
+  q.focus();
+  q.select();
+}
+
+function closeFind() {
+  $('n-find').classList.add('hidden');
+  findState.matches = [];
+  findState.idx = -1;
+  paintMatches();
+  bodyFocus();
+}
+
+function applyReplaceVisibility() {
+  $('n-find-replace-row').classList.toggle('hidden', !findState.replace);
+  $('n-find-toggle').setAttribute('aria-expanded', findState.replace ? 'true' : 'false');
+}
+
+// Recompute matches and repaint. `moveTo` jumps to the nearest match (typing in the box) —
+// suppressed when merely reopening the bar, so the view doesn't lurch before you type.
+function runFind({ moveTo = true } = {}) {
+  if (!_ts) return;
+  const input = $('n-find-q');
+  const count = $('n-find-count');
+  findState.q = input.value;
+  const compiled = _ts.compileQuery(findState.q, findOpts());
+  input.classList.toggle('invalid', !compiled.ok && compiled.error !== 'empty');
+  findState.matches = _ts.findMatches(bodyText(), findState.q, findOpts());
+  const n = findState.matches.length;
+  if (!findState.q) {
+    count.textContent = '';
+    count.classList.remove('none');
+    findState.idx = -1;
+  } else if (!n) {
+    count.textContent = compiled.ok ? 'No results' : 'Bad pattern';
+    count.classList.add('none');
+    findState.idx = -1;
+  } else {
+    count.classList.remove('none');
+    if (moveTo || findState.idx < 0 || findState.idx >= n) {
+      findState.idx = _ts.matchIndexFor(findState.matches, bodyCursor(), 1);
+    }
+    count.textContent = `${findState.idx + 1} of ${n === _ts.MAX_MATCHES ? `${n}+` : n}`;
+  }
+  const has = n > 0;
+  for (const id of ['n-find-one', 'n-find-all']) $(id).disabled = !has;
+  paintMatches();
+  if (moveTo && has) revealMatch();
+}
+
+// Highlight every match (Live mode can decorate; a textarea cannot) and select the current
+// one. Selecting is what makes the current match visible in the classic surface — and it is
+// also what makes ⌘F → type → Esc leave the caret on what you searched for.
+function paintMatches() {
+  if (cmActive && cm?.setFindMatches) cm.setFindMatches(findState.matches, findState.idx);
+}
+
+function revealMatch() {
+  const m = findState.matches[findState.idx];
+  if (!m) return;
+  jumpTo(m.start, m.end, { focus: false }); // keep focus in the find box so typing keeps filtering
+  paintMatches();
+}
+
+function stepFind(dir) {
+  if (!_ts || !findState.matches.length) return;
+  const cur = findState.matches[findState.idx];
+  // Step from the CURRENT match, not the caret: the caret sits inside it, and asking the
+  // shared core to move from there is exactly the ambiguity its end/start rule resolves.
+  const from = cur ? (dir >= 0 ? cur.end : cur.start) : bodyCursor();
+  findState.idx = _ts.matchIndexFor(findState.matches, from, dir);
+  $('n-find-count').textContent = `${findState.idx + 1} of ${findState.matches.length}`;
+  revealMatch();
+}
+
+function replaceCurrent() {
+  const m = findState.matches[findState.idx];
+  if (!m || !_ts) return;
+  const out = _ts.replaceMatch(bodyText(), m, $('n-find-r').value, { regex: findState.regex });
+  applyDocEdit({ text: out.text, selStart: out.cursor, selEnd: out.cursor });
+  // Re-scan: every offset after this one has shifted, and the match list is now stale.
+  const keep = findState.idx;
+  runFind({ moveTo: false });
+  findState.idx = Math.min(keep, findState.matches.length - 1);
+  if (findState.matches.length) { $('n-find-count').textContent = `${findState.idx + 1} of ${findState.matches.length}`; revealMatch(); }
+}
+
+function replaceAllMatches() {
+  if (!_ts || !findState.matches.length) return;
+  const n = findState.matches.length;
+  const { text } = _ts.replaceAll(bodyText(), findState.q, $('n-find-r').value, findOpts());
+  const caret = Math.min(bodyCursor(), text.length);
+  applyDocEdit({ text, selStart: caret, selEnd: caret });
+  toast(`Replaced ${n} ${n === 1 ? 'match' : 'matches'}`);
+  runFind({ moveTo: false });
+}
+
+function wireFind() {
+  const q = $('n-find-q');
+  q.addEventListener('input', () => runFind());
+  q.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); stepFind(e.shiftKey ? -1 : 1); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
+  });
+  $('n-find-r').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); e.shiftKey ? replaceAllMatches() : replaceCurrent(); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
+  });
+  const opt = (id, key) => $(id).addEventListener('click', () => {
+    findState[key] = !findState[key];
+    $(id).setAttribute('aria-pressed', findState[key] ? 'true' : 'false');
+    runFind({ moveTo: false });
+  });
+  opt('n-find-case', 'caseSensitive');
+  opt('n-find-word', 'wholeWord');
+  opt('n-find-re', 'regex');
+  $('n-find-next').onclick = () => stepFind(1);
+  $('n-find-prev').onclick = () => stepFind(-1);
+  $('n-find-close').onclick = closeFind;
+  $('n-find-one').onclick = replaceCurrent;
+  $('n-find-all').onclick = replaceAllMatches;
+  $('n-find-toggle').onclick = () => {
+    findState.replace = !findState.replace;
+    applyReplaceVisibility();
+    if (findState.replace) $('n-find-r').focus();
+  };
 }
 
 // ── Dictation — speech → text inserted live at the cursor ───────────────────────
@@ -1655,6 +2016,7 @@ async function newNote() {
   updateEntry(rec);
   await openNote(rec.id, rec);           // finish editor setup before we place the cursor
   setMode('live', false, { focus: false }); // a blank note opens in the live editor (don't change the saved default); don't let CM's async focus steal the title
+  collapseSideForNewNote();
   const title = $('n-title');
   title.focus();
   title.select(); // select-all the title so you can type over it immediately; Enter → body
@@ -4566,6 +4928,13 @@ function init() {
       runNoteCommand();
       return;
     }
+    // Smart lists, LAST of the Enter gestures so an "@[Agent] task" inside a bullet still
+    // dispatches. Enter continues the bullet/number/checkbox (an empty item ends the list);
+    // Tab/⇧Tab indents. Falls through when the caret is not in a list.
+    if ((e.key === 'Enter' || e.key === 'Tab') && !e.metaKey && !e.ctrlKey && !ac.open && listKey(e)) {
+      e.preventDefault(); // applyDocEdit → bodyReplaceRange already ran the input pipeline
+      return;
+    }
     // ↑ at the very start of the body hops back to the title.
     if (e.key === 'ArrowUp' && ta.selectionStart === 0 && ta.selectionEnd === 0) {
       e.preventDefault();
@@ -4694,8 +5063,14 @@ function init() {
     }
     if (k === 'n') { e.preventDefault(); newNote(); }
     else if (e.key === '/') { e.preventDefault(); setSideCollapsed(!sideCollapsed); }
-    else if (k === 'k') { e.preventDefault(); openOmni($('n-search').value || ''); }
-    else if (k === 'f' && !e.shiftKey) { e.preventDefault(); $('n-search').focus(); }
+    else if (k === 'k' && !inBody()) { e.preventDefault(); openOmni($('n-search').value || ''); }
+    // ⌘F is find-in-note (what it means in every editor); the notes-LIST filter moves to
+    // ⌘⇧F, and ⌘K omni still searches across notes, chats and meetings.
+    else if (k === 'f' && e.altKey) { e.preventDefault(); openFind({ replace: true }); }
+    else if (k === 'f' && e.shiftKey) { e.preventDefault(); $('n-search').focus(); }
+    else if (k === 'f') { e.preventDefault(); openFind(); }
+    else if (k === 'g' && findState.matches.length) { e.preventDefault(); stepFind(e.shiftKey ? -1 : 1); }
+    else if (k === 'o' && e.shiftKey) { e.preventDefault(); setSideTab('outline'); }
     else if (k === 's') { e.preventDefault(); flushSave(); toast('Saved'); }
     else if (e.key === '\\') { e.preventDefault(); collapseBtn.click(); }
     else if (e.key === '.') { e.preventDefault(); setBothCollapsed(!(railCollapsed && sideCollapsed)); }
@@ -4711,8 +5086,8 @@ function init() {
       r.selectNodeContents($('n-preview'));
       sel.addRange(r);
     }
-    else if (k === 'b' && document.activeElement === $('n-body')) { e.preventDefault(); applyFmt('bold'); }
-    else if (k === 'i' && document.activeElement === $('n-body')) { e.preventDefault(); applyFmt('italic'); }
+    else if (inBody() && FMT_KEYS[fmtKey(e, k)]) { e.preventDefault(); applyFmt(FMT_KEYS[fmtKey(e, k)]); }
+    else if (inBody() && e.altKey && /^Digit[1-6]$/.test(e.code || '')) { e.preventDefault(); applyHeading(Number(e.code.slice(5))); }
   });
   window.addEventListener('beforeunload', flushSave);
 
@@ -4741,6 +5116,10 @@ function init() {
   setSideTab(localStorage.getItem('chatpanel.notes.sideTab') || 'activity', { open: false });
   setSideCollapsed(localStorage.getItem('chatpanel.notes.sideCollapsed') === '1');
   initResizers();
+  wireFind();
+  // The authoring gestures must be resolved before the first Enter (a keydown handler can't
+  // await), but they are far too late-mattering to sit on first paint — so: idle preload.
+  (window.requestIdleCallback || ((f) => setTimeout(f, 400)))(() => preloadAuthoring().then(updateWordCount));
 
   // Mirror the Notes UI + co-writer config (localStorage: swarm role→model overrides,
   // gear, source filter, layout) into chrome.storage so the service-worker auto-backup

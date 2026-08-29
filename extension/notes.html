@@ -134,6 +134,31 @@
             </div>
           </div>
 
+          <!-- Find / replace (⌘F, ⌘⌥F). Hidden until summoned; the whole strip is inert
+               when closed so Tab order never lands in it. -->
+          <div id="n-find" class="findbar hidden" role="search" aria-label="Find in note">
+            <div class="find-row">
+              <span class="find-ico" data-icon="search" aria-hidden="true"></span>
+              <input id="n-find-q" class="find-input" type="text" placeholder="Find" spellcheck="false" aria-label="Find" />
+              <span id="n-find-count" class="find-count" aria-live="polite"></span>
+              <span class="find-opts" role="group" aria-label="Match options">
+                <button id="n-find-case" class="find-opt" type="button" title="Match case" aria-label="Match case" aria-pressed="false">Aa</button>
+                <button id="n-find-word" class="find-opt" type="button" title="Whole word" aria-label="Whole word" aria-pressed="false">ab</button>
+                <button id="n-find-re" class="find-opt" type="button" title="Regular expression" aria-label="Regular expression" aria-pressed="false">.*</button>
+              </span>
+              <button id="n-find-prev" class="find-btn" type="button" title="Previous match (⌘⇧G)" aria-label="Previous match" data-icon="chevron-left"></button>
+              <button id="n-find-next" class="find-btn" type="button" title="Next match (⌘G)" aria-label="Next match" data-icon="chevron-right"></button>
+              <button id="n-find-toggle" class="find-btn" type="button" title="Toggle replace (⌘⌥F)" aria-label="Toggle replace" aria-expanded="false" data-icon="chevron-down"></button>
+              <button id="n-find-close" class="find-btn" type="button" title="Close (Esc)" aria-label="Close find" data-icon="close"></button>
+            </div>
+            <div id="n-find-replace-row" class="find-row find-replace hidden">
+              <span class="find-ico" data-icon="pilcrow" aria-hidden="true"></span>
+              <input id="n-find-r" class="find-input" type="text" placeholder="Replace with" spellcheck="false" aria-label="Replace with" />
+              <button id="n-find-one" class="find-text-btn" type="button" title="Replace this match (↵)">Replace</button>
+              <button id="n-find-all" class="find-text-btn" type="button" title="Replace every match">All</button>
+            </div>
+          </div>
+
           <div class="editor-body">
             <div class="editor-scroll">
               <input id="n-title" class="title-input" placeholder="Untitled note" spellcheck="false" />
@@ -154,6 +179,7 @@
                 <button class="side-tab active" data-side="activity" role="tab" title="Team activity" aria-label="Team activity" data-icon="tools"><span class="side-badge hidden" id="n-side-badge-activity"></span></button>
                 <button class="side-tab" data-side="research" role="tab" title="Research — search your workspace &amp; the web" aria-label="Research" data-icon="research"><span class="side-badge hidden" id="n-side-badge-research"></span></button>
                 <button class="side-tab" data-side="cowriter" role="tab" title="Co-writer" aria-label="Co-writer" data-icon="cowriter"><span class="side-badge hidden" id="n-side-badge-cowriter"></span></button>
+                <button class="side-tab" data-side="outline" role="tab" title="Outline — jump between headings (⌘⇧O)" aria-label="Outline" data-icon="heading"></button>
                 <button class="side-tab" data-side="history" role="tab" title="History" aria-label="History" data-icon="history-clock"></button>
                 <!-- Knowledge / connection views (right of the authoring tools). -->
                 <button class="side-tab views-start" data-side="related" role="tab" title="Related notes, chats &amp; meetings" aria-label="Related" data-icon="link"><span class="side-badge hidden" id="n-side-badge-related"></span></button>
@@ -199,6 +225,7 @@
                   <div id="n-activity-cards" class="activity-cards"></div>
                 </div>
                 <div id="n-cowriter" class="cowriter side-pane"></div>
+                <div id="n-outline" class="outline side-pane rv-pad" role="tabpanel" aria-label="Outline"></div>
                 <div id="n-history" class="history side-pane" role="tabpanel" aria-label="Version history and authorship">
                   <div class="history-head">
                     <span class="history-name" data-icon="history-clock">History</span>

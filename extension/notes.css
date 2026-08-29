@@ -683,3 +683,64 @@ svg .gedge.hfade { opacity: .06; }
    the editor + dashboard tabs, so scope the wide treatment to the list search). */
 .nlist-search .seg { display: flex; margin-top: 8px; border: 1px solid var(--border); }
 .nlist-search .seg button { flex: 1; text-align: center; padding: 6px 8px; font-weight: 550; }
+
+/* ── Find / replace ─────────────────────────────────────────────────────────────
+   A strip under the toolbar rather than a floating overlay: the editor column is
+   already narrow at small widths, and an overlay would cover the first line of the
+   note — exactly the text you are usually searching for. */
+.findbar { border-bottom: 1px solid var(--border); background: var(--card); padding: 6px 22px; display: flex; flex-direction: column; gap: 6px; }
+.findbar.hidden { display: none; }
+.find-row { display: flex; align-items: center; gap: 6px; }
+.find-row.hidden { display: none; }
+.find-ico { display: inline-flex; color: var(--muted); flex: 0 0 auto; }
+.find-ico .ico { width: 14px; height: 14px; }
+.find-input {
+  flex: 1 1 auto; min-width: 0; font: inherit; font-size: 13px; padding: 5px 9px;
+  border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--field); color: var(--text);
+}
+.find-input:focus { outline: none; border-color: var(--accent); background: var(--card); }
+.find-input.invalid { border-color: var(--danger); }
+.find-count { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; flex: 0 0 auto; min-width: 62px; text-align: right; }
+.find-count.none { color: var(--danger); }
+.find-opts { display: inline-flex; gap: 2px; flex: 0 0 auto; }
+.find-opt {
+  font: inherit; font-size: 11px; line-height: 1; min-width: 24px; height: 24px; padding: 0 5px;
+  border-radius: var(--radius-sm); border: 1px solid transparent; background: transparent; color: var(--muted); cursor: pointer;
+}
+.find-opt:hover { background: var(--field); color: var(--text); }
+.find-opt[aria-pressed="true"] { background: var(--accent-weak); border-color: var(--accent); color: var(--accent); }
+.find-btn {
+  display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex: 0 0 auto;
+  border-radius: var(--radius-sm); border: 1px solid transparent; background: transparent; color: var(--muted); cursor: pointer;
+}
+.find-btn:hover { background: var(--field); color: var(--text); }
+.find-btn .ico { width: 14px; height: 14px; }
+.find-btn[aria-expanded="true"] { color: var(--accent); }
+.find-text-btn {
+  font: inherit; font-size: 11.5px; height: 24px; padding: 0 9px; flex: 0 0 auto;
+  border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--card); color: var(--text); cursor: pointer;
+}
+.find-text-btn:hover { border-color: var(--accent); color: var(--accent); }
+.find-text-btn[disabled] { opacity: .45; cursor: default; border-color: var(--border); color: var(--muted); }
+
+/* Match painting. The textarea cannot be decorated, so the classic surface shows the
+   CURRENT match through the native selection and the count carries the rest; Live mode
+   gets real per-match decorations from CodeMirror. */
+.cm-find-match { background: rgba(250, 204, 21, .30); border-radius: 2px; }
+.cm-find-current { background: rgba(249, 115, 22, .45); border-radius: 2px; }
+
+/* ── Outline ────────────────────────────────────────────────────────────────────
+   Indented by heading level so the shape of the document is visible at a glance. */
+.outline { display: flex; flex-direction: column; gap: 1px; }
+.outline-empty { color: var(--muted); font-size: 12px; padding: 10px 2px; }
+.outline-item {
+  display: block; width: 100%; text-align: left; font: inherit; font-size: 12.5px; line-height: 1.35;
+  padding: 4px 8px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text);
+  cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.outline-item:hover { background: var(--field); }
+.outline-item.current { background: var(--accent-weak); color: var(--accent); }
+.outline-item[data-level="1"] { font-weight: 600; padding-left: 8px; }
+.outline-item[data-level="2"] { padding-left: 20px; }
+.outline-item[data-level="3"] { padding-left: 32px; color: var(--muted); }
+.outline-item[data-level="4"], .outline-item[data-level="5"], .outline-item[data-level="6"] { padding-left: 44px; color: var(--muted); font-size: 12px; }
