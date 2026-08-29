@@ -8,6 +8,8 @@
 //   dist/chatpanel-firefox.xpi            same bytes, the name Firefox expects from a
 //                                         direct download (dl.chatpanel.net/firefox.xpi)
 //   dist/chatpanel-firefox-sources.zip    AMO source-code submission (see below)
+//   dist/chatpanel-firefox-sources-v<version>.zip
+//                                         versioned copy of the same archive
 //
 // There is no separate Firefox source tree and there must never be one: everything
 // here is derived from extension/ + tools/firefox-manifest.mjs, so a feature lands in
@@ -108,7 +110,12 @@ const stable = path.join(distDir, 'chatpanel-firefox.zip');
 const versioned = path.join(distDir, `chatpanel-firefox-v${version}.zip`);
 const xpi = path.join(distDir, 'chatpanel-firefox.xpi');
 const sources = path.join(distDir, 'chatpanel-firefox-sources.zip');
-for (const f of [stable, versioned, xpi, sources]) if (existsSync(f)) rmSync(f);
+// The sources archive gets a versioned name too, for the same reason the package does.
+// AMO asks for the package and the source SEPARATELY, and a submission is rejected if
+// they disagree about the version — so which sources belong to which upload has to be
+// readable off the filename, not inferred from a timestamp.
+const sourcesVersioned = path.join(distDir, `chatpanel-firefox-sources-v${version}.zip`);
+for (const f of [stable, versioned, xpi, sources, sourcesVersioned]) if (existsSync(f)) rmSync(f);
 
 execFileSync('zip', ['-r', '-X', '-q', stable, '.', '-x', '*.DS_Store', '-x', '__MACOSX*'], {
   cwd: stageDir,
@@ -182,7 +189,10 @@ const notesPath = path.join(distDir, 'BUILD-INSTRUCTIONS.txt');
 writeFileSync(notesPath, buildNotes);
 execFileSync('zip', ['-X', '-q', '-j', sources, notesPath], { cwd: ROOT, stdio: 'inherit' });
 rmSync(notesPath);
+copyFileSync(sources, sourcesVersioned);
 
 const kb = (p) => `${Math.round(readFileSync(p).length / 1024)} KB`;
 console.log(`\n✓ Packaged Firefox add-on v${version}  (id ${manifest.browser_specific_settings.gecko.id}, Firefox ${manifest.browser_specific_settings.gecko.strict_min_version}+)`);
-for (const f of [stable, versioned, xpi, sources]) console.log(`  ${path.relative(ROOT, f).padEnd(40)} ${kb(f)}`);
+for (const f of [stable, versioned, xpi]) console.log(`  ${path.relative(ROOT, f).padEnd(44)} ${kb(f)}`);
+console.log('\n  Upload the package above to AMO, and THIS as the source code:');
+for (const f of [sources, sourcesVersioned]) console.log(`  ${path.relative(ROOT, f).padEnd(44)} ${kb(f)}`);
