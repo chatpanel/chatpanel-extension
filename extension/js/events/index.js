@@ -50,3 +50,5 @@ export { explainMcpError, packageFromArgs } from './mcp-errors.js';
 export { createManifest, ManifestError, SOURCES } from './manifest.js';
 export { createKernel, meetDecisions, KernelError, REQUIRED_PLUGINS, ALLOW_ALL } from './kernel.js';
 export { replay, formatReport, parseJsonl, toJsonl } from './harness.js';
+export { compileQuery, findMatches, matchIndexFor, expandReplacement, replaceMatch, replaceAll, replaceAllInRange, MAX_MATCHES } from './text-search.js';
+export { outlineOf, parseListItem, continueList, indentSelection, toggleWrap, toggleLinePrefix, toggleTask, toggleLink, docStats, selectionStats } from './markdown-authoring.js';
