@@ -72,6 +72,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish to Chrome Web Store
+        continue-on-error: true
         # Decoupled from tagging: ONLY a manual workflow_dispatch with
         # publish_chrome=true submits to the store. A tag push builds + releases
         # but never publishes.
@@ -84,12 +85,28 @@ jobs:
         run: |
           set -euo pipefail
           echo "Requesting access token…"
-          TOKEN=$(curl -sf -X POST https://oauth2.googleapis.com/token \
+          # NOT `curl -sf`: -f exits 22 with the body discarded, so an expired or revoked
+          # grant showed up in CI as a bare exit code and nothing else. Google says exactly
+          # what is wrong in the response body — print it.
+          TOK_RES=$(curl -s -w '\n%{http_code}' -X POST https://oauth2.googleapis.com/token \
             -d "client_id=$CLIENT_ID" \
             -d "client_secret=$CLIENT_SECRET" \
             -d "refresh_token=$REFRESH_TOKEN" \
-            -d "grant_type=refresh_token" | jq -r .access_token)
-          [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ] || { echo "Could not get access token"; exit 1; }
+            -d "grant_type=refresh_token")
+          TOK_CODE=$(printf '%s' "$TOK_RES" | tail -n1)
+          TOK_BODY=$(printf '%s' "$TOK_RES" | sed '$d')
+          if [ "$TOK_CODE" -ge 400 ]; then
+            ERR=$(printf '%s' "$TOK_BODY" | jq -r '.error // "unknown"')
+            DESC=$(printf '%s' "$TOK_BODY" | jq -r '.error_description // ""')
+            echo "::error::OAuth token request failed (HTTP $TOK_CODE): $ERR — $DESC"
+            case "$ERR" in
+              invalid_grant)  echo "::notice::The refresh token is expired or revoked. Mint a new one and update CHROME_REFRESH_TOKEN." ;;
+              invalid_client) echo "::notice::CHROME_CLIENT_ID / CHROME_CLIENT_SECRET do not match the OAuth client." ;;
+            esac
+            exit 1
+          fi
+          TOKEN=$(printf '%s' "$TOK_BODY" | jq -r .access_token)
+          [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ] || { echo "::error::No access_token in the response"; exit 1; }
 
           echo "Uploading package…"
           UPLOAD=$(curl -sf -X PUT -T dist/chatpanel-extension.zip \
@@ -123,6 +140,7 @@ jobs:
           echo "Submitted for review."
 
       - name: Publish to Microsoft Edge Add-ons
+        continue-on-error: true
         # Same decoupling as Chrome: ONLY a manual workflow_dispatch with
         # publish_edge=true submits. Uploads the SAME dist/chatpanel-extension.zip
         # via the Edge Add-ons Update REST API v1.1 (tools/publish-edge.mjs).
