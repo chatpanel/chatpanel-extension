@@ -28,3 +28,6 @@ extension/assets/*.png.bak
 
 # graphify knowledge-graph output (local artifact; embeds absolute $HOME paths)
 graphify-out/
+
+# Minted CWS refresh token (tools/get-chrome-token.mjs) — never commit
+chrome-refresh-token.txt
