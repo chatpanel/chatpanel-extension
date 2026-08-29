@@ -15,7 +15,7 @@ const HUGGINGFACE_CIMD_CLIENT_ID = 'https://chatpanel.net/.well-known/oauth-cimd
 // Hugging Face CIMD client (the redirect_uris in
 // https://chatpanel.net/.well-known/oauth-cimd). Every store assigns its own extension
 // ID, so hosted HF sign-in works only from a build whose redirect URI appears in BOTH
-// this list AND that CIMD document. To enable a new store (e.g. Microsoft Edge):
+// this list AND that CIMD document. To enable a new Chromium store (e.g. Microsoft Edge):
 //   1. Install the published build, open the browser's extensions page with Developer
 //      mode on, and copy the 32-char extension ID. This is NOT the Partner Center
 //      Product ID or Store ID — it is the id shown next to the extension at runtime.
@@ -24,9 +24,24 @@ const HUGGINGFACE_PRODUCTION_EXTENSION_IDS = [
   'icemacffhbgnfoofclgdbcdmnlkkklem', // Chrome Web Store
   'jkmmbleapaognlonbnllpaoeibmfkjmp', // Microsoft Edge Add-ons
 ];
-const HUGGINGFACE_PRODUCTION_REDIRECT_URIS = HUGGINGFACE_PRODUCTION_EXTENSION_IDS.map(
-  (id) => `https://${id}.chromiumapp.org/oauth/huggingface`,
-);
+// Firefox does NOT use chromiumapp.org: identity.getRedirectURL() there returns
+// https://<hash-of-gecko-id>.extensions.allizom.org/…, derived from
+// browser_specific_settings.gecko.id — so it is stable for a signed build but is a
+// completely different URI that must be registered separately. It is not knowable
+// until the first signed build exists, hence the empty list rather than a guess:
+// add the exact string that Settings → the endpoint's "Redirect URI" field shows on
+// Firefox, and add it to the CIMD document too. Until then, Firefox users sign in to
+// Hugging Face with their own Client ID, exactly like an unpacked build.
+// tools/verify-firefox.mjs warns while this is empty.
+const HUGGINGFACE_PRODUCTION_GECKO_REDIRECT_URIS = [
+  // 'https://<subdomain>.extensions.allizom.org/oauth/huggingface', // addons.mozilla.org
+];
+const HUGGINGFACE_PRODUCTION_REDIRECT_URIS = [
+  ...HUGGINGFACE_PRODUCTION_EXTENSION_IDS.map(
+    (id) => `https://${id}.chromiumapp.org/oauth/huggingface`,
+  ),
+  ...HUGGINGFACE_PRODUCTION_GECKO_REDIRECT_URIS,
+];
 
 const PROVIDERS = {
   openrouter: {
@@ -141,9 +156,13 @@ export async function createOAuthState({ crypto: cryptoImpl = globalThis.crypto,
   };
 }
 
+// The browser-issued callback URL for hosted sign-in. Both engines implement
+// identity.getRedirectURL(), but they mint different domains — chromiumapp.org on
+// Chromium, extensions.allizom.org on Firefox — so this value is read from the
+// browser and shown to the user rather than ever being constructed here.
 export function oauthRedirectUri(providerId) {
   if (!globalThis.chrome?.identity?.getRedirectURL) {
-    throw new Error('Chrome identity API is not available.');
+    throw new Error('This browser does not expose the extension identity API.');
   }
   return chrome.identity.getRedirectURL(`oauth/${providerId || 'provider'}`);
 }
@@ -162,7 +181,7 @@ export function oauthSetupHelp(endpointOrMode) {
     return 'No client ID required. If OpenRouter returns HTTP 402 about credits or max tokens, lower Max tokens below the number in the error, or add credits in OpenRouter.';
   }
   if (mode === 'huggingface') {
-    return `No Hugging Face setup needed for a published ChatPanel build whose redirect URI is registered — it uses ${HUGGINGFACE_CIMD_CLIENT_ID} with PKCE and inference-api scope. For a local unpacked extension (or a new store build whose redirect URI isn't registered yet, such as a first Edge release), create a public HF OAuth app with the shown Redirect URI and paste its Client ID here.`;
+    return `No Hugging Face setup needed for a published ChatPanel build whose redirect URI is registered — it uses ${HUGGINGFACE_CIMD_CLIENT_ID} with PKCE and inference-api scope. For a local unpacked extension (or a store build whose redirect URI isn't registered yet — a first Edge or Firefox release), create a public HF OAuth app with the shown Redirect URI and paste its Client ID here.`;
   }
   if (mode === 'gemini') {
     return 'Create a Google Cloud OAuth client, add this Redirect URI, enable the Gemini API, paste the Client ID, and enter the quota project ID.';
@@ -269,7 +288,7 @@ export function oauthRedirectPreflightMessage(endpoint, redirectUri) {
     withPreset.oauth?.clientId === HUGGINGFACE_CIMD_CLIENT_ID &&
     !HUGGINGFACE_PRODUCTION_REDIRECT_URIS.includes(redirectUri)
   ) {
-    return `Hosted Hugging Face sign-in only works from a published build whose redirect URI is registered with the ChatPanel client. This build is using ${redirectUri}, which isn't registered, so the provider would reject sign-in. This happens on a local unpacked build, or on a new store build (such as the first Edge release) before its redirect URI is added. To sign in here, create a Hugging Face public OAuth app with this exact Redirect URI and paste its Client ID above.`;
+    return `Hosted Hugging Face sign-in only works from a published build whose redirect URI is registered with the ChatPanel client. This build is using ${redirectUri}, which isn't registered, so the provider would reject sign-in. This happens on a local unpacked build, or on a store build (a first Edge or Firefox release) before its redirect URI is added — Firefox issues an extensions.allizom.org URI rather than a chromiumapp.org one, so it needs its own registration. To sign in here, create a Hugging Face public OAuth app with this exact Redirect URI and paste its Client ID above.`;
   }
   return '';
 }

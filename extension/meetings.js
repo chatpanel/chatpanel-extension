@@ -9,6 +9,7 @@ import {
   deleteMeeting, clearAllMeetings, meetingToMarkdown, meetingToText, persistMeeting, PLATFORMS, getMeetingTopics, saveMeetingTopics,
 } from './js/store-meetings.js';
 import { getSettings, getTarget } from './js/store.js';
+import { openSidePanel } from './js/side-panel.js';
 import { getLicense, can, subscribe, FREE_LIMITS } from './js/license.js';
 import { streamChat } from './js/providers.js';
 import { buildIndex, bm25Search, buildGraph, tokenize } from './js/meeting-index.js';
@@ -699,15 +700,18 @@ async function removeMeeting() {
 // Open the ChatPanel side panel (fresh) from the header — no meeting attached.
 async function openPanel() {
   try {
-    if (winId != null) await chrome.sidePanel.open({ windowId: winId });
-    else await chrome.sidePanel.open({ windowId: (await chrome.windows.getCurrent()).id });
+    await openSidePanel({ windowId: winId ?? undefined });
   } catch { toast('Open the ChatPanel side panel from the toolbar'); }
 }
 async function askAboutMeeting() {
   if (!current) return;
   const id = current.entry.id;
+  // Started before the awaits so Firefox still sees the click's user gesture; the
+  // catch is attached HERE, not at the await below, so a rejection in between is never
+  // reported as an unhandled promise rejection.
+  const opening = openSidePanel({ windowId: winId ?? undefined }).catch(() => { /* may already be open */ });
   await chrome.storage.local.set({ 'chatpanel:attachMeetingId': id }).catch(() => {});
-  try { if (winId != null) await chrome.sidePanel.open({ windowId: winId }); } catch { /* may already be open */ }
+  await opening;
   chrome.runtime.sendMessage({ type: 'attach-meeting', id }).catch(() => {});
   toast('Meeting transcript attached — ask in ChatPanel');
 }

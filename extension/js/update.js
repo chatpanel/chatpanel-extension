@@ -8,9 +8,16 @@
 // This whole module no-ops once ChatPanel is installed from the Web Store
 // (installType 'normal'), since that build auto-updates.
 
+import { isGecko } from './browser-api.js';
+
 const REPO = 'chatpanel/chatpanel-extension';
 export const RELEASES_URL = `https://github.com/${REPO}/releases/latest`;
-export const DOWNLOAD_URL = 'https://dl.chatpanel.net/extension.zip';
+// One release, two packages: Chromium browsers install the zip, Firefox installs the
+// signed .xpi built from the SAME source and tag. Hand each engine the artifact it can
+// actually install — offering a Chromium zip to a Firefox user is a dead end.
+export const DOWNLOAD_URL = isGecko
+  ? 'https://dl.chatpanel.net/firefox.xpi'
+  : 'https://dl.chatpanel.net/extension.zip';
 const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 
 const K_CHECK = 'chatpanel:updateCheck'; // { checkedAt, latest }
@@ -19,9 +26,11 @@ const CHECK_EVERY_MS = 12 * 60 * 60 * 1000; // twice a day is plenty
 
 export const currentVersion = () => chrome.runtime.getManifest().version;
 
-// Was this build installed from the Web Store? getSelf() needs no permission.
-// 'normal' = store (auto-updates); 'development' = unpacked (manual). On any
-// error we assume unpacked, which is the safe default for showing the notice.
+// Was this build installed from a store? getSelf() needs no permission.
+// 'normal' = store (Chrome Web Store / Edge Add-ons / AMO — all auto-update);
+// 'development' = unpacked or temporarily loaded (manual). On any error we assume
+// unpacked, which is the safe default for showing the notice. Firefox reports
+// installType from 128 (our floor), so this is not a Chromium-only path.
 export async function isWebStoreInstall() {
   try {
     const info = await chrome.management.getSelf();

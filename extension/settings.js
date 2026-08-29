@@ -6,6 +6,7 @@
 //             plus the bridge connection itself.
 import { getSettings, saveSettings, uid, importAllData, resetSkillsToDefaults } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
+import { hasDebugger } from './js/browser-api.js';
 // Small, pure and dependency-free — the seed list is needed synchronously when the panel
 // renders, and deferring one frozen array would cost a frame to save nothing.
 import { DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './js/events/sources.js';
@@ -48,6 +49,7 @@ import { agentBrand, applyProviderPreset, orderedProviderPresets, providerBrand,
 import { anyExpanded, forgetCard, setAllExpanded, setExpanded, wireCollapsible } from './js/collapse-cards.js';
 import { filterComboboxOptions, normalizeComboboxOptions } from './js/combobox.js';
 import { WEBLLM_ALL_MODELS, WEBLLM_RECOMMENDED, DEFAULT_WEBLLM_MODEL, deleteModel as deleteWebllmModel } from './js/webllm.js';
+import { webgpuSupport } from './js/webgpu-support.js';
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth } from './js/storage-health.js';
@@ -589,6 +591,15 @@ function applyWebllmEndpointUi(node, q, ep) {
     const note = document.createElement('p');
     note.className = 'muted tiny';
     note.textContent = 'Runs 100% in your browser on WebGPU — no API key, no server, works offline after a one-time download. Bigger models give better answers.';
+    // …unless this browser's WebGPU can't actually load it. Say so HERE, next to the
+    // model picker, rather than letting the user choose a model and discover it at send
+    // time (or after a ~700 MB download). Async + best-effort: the generic copy above
+    // stands until the probe answers.
+    webgpuSupport().then((gpu) => {
+      if (gpu.ok || !note.isConnected) return;
+      note.textContent = `⚠ ${gpu.message}`;
+      note.classList.add('warn');
+    }).catch(() => { /* no verdict — leave the generic copy */ });
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'btn ghost ep-webllm-remove';
@@ -3605,9 +3616,16 @@ function renderPrefs() {
   $('pref-autocomplete-row').classList.toggle('locked', !pro);
   $('pref-pageact-mode').value = migratePageActions(settings.ui.pageActions);
   renderPageSites();
-  $('pref-pageact-cdp').checked = settings.ui.pageActionsCdp !== false; // default ON
+  // High-reliability page control is CDP/trusted events, which only Chromium exposes
+  // (Firefox has no extension debugger protocol — bug 1316741). Where it can't work,
+  // hide the toggle and the developer-JS switch it gates rather than offering a control
+  // that silently does nothing; page control still works via the synthetic path.
+  $('pref-pageact-cdp').checked = hasDebugger && settings.ui.pageActionsCdp !== false; // default ON
+  $('pref-pageact-cdp-row').closest('.pref-item').hidden = !hasDebugger;
+  $('pref-pageact-cdp-note').hidden = !hasDebugger;
+  $('pref-pageact-devjs-row').closest('.pref-item').hidden = !hasDebugger;
   $('pref-pageact-confirm').checked = settings.ui.pageActionConfirm !== false; // default ON
-  $('pref-pageact-devjs').checked = !!settings.ui.pageActionsDevJs; // default OFF
+  $('pref-pageact-devjs').checked = hasDebugger && !!settings.ui.pageActionsDevJs; // default OFF
   // Meetings tab — live scribe behavior.
   $('pref-live-notes').value = String(settings.ui.liveNotesIntervalMin ?? 2);
   $('pref-meeting-window').value = String(settings.ui.meetingWindowMin ?? 0);

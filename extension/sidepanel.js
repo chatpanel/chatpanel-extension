@@ -71,6 +71,17 @@ import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpoi
 import { createVault } from './js/pii-redact.js';
 import { setPiiEntitlement, redactOnce, restore as restorePii, redactionFromSettings } from './js/pii-pipeline.js';
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
+import { cachedWebgpuSupport, webgpuSupport } from './js/webgpu-support.js';
+import { TAB_SURFACE_QUERY } from './js/side-panel.js';
+
+// On mobile there is no side panel, so the same page opens as a full TAB (see
+// js/side-panel.js). Mark that on <html> BEFORE first paint — the panel's layout is
+// built for a ~360px dock and would otherwise stretch edge-to-edge on a phone in
+// landscape or a tablet. Done at module scope, not in init(), so there is no flash of
+// the wrong layout.
+if (new URLSearchParams(location.search).has(TAB_SURFACE_QUERY.split('=')[0])) {
+  document.documentElement.classList.add('surface-tab');
+}
 import { assistPrompt } from './js/assist.js';
 // NB: page-tools.js + canvas-adapters.js (and their page-actions / draw.io / tldraw
 // transitive graph, ~130KB) are heavy and only needed when "Act on page" actually
@@ -950,6 +961,11 @@ async function init() {
   // Opt-in sync starts after first paint/idle. Requests are chunked and preserve
   // records that now exist only in encrypted backups.
   maybeWarmSync({ immediate: true });
+  // Can this browser actually run the in-browser model? Asking costs a GPU adapter
+  // request, so it happens at idle and never on first paint — but it has to happen
+  // BEFORE the user sends, or a fresh install on Firefox spends a ~700 MB download to
+  // find out. Only worth asking when something here is actually pointed at WebLLM.
+  probeWebgpuIfNeeded();
   if (state.settings.ui?.railCollapsed) {
     document.body.classList.add('rail-collapsed');
     const t = $('rail-toggle');
@@ -1147,9 +1163,16 @@ function agentAvailability(target) {
   }
   // Endpoint or model agent — usable once it resolves to an endpoint + a model.
   const eff = resolveTarget(target, state.settings);
-  // In-browser (WebLLM) needs no baseUrl/key — it runs on WebGPU. Always "available"
-  // here; a missing-WebGPU machine surfaces a clear error at send time instead.
-  if ((eff?.kind || target.kind) === 'webllm') return { ok: true };
+  // In-browser (WebLLM) needs no baseUrl/key — it runs on WebGPU. But "has WebGPU" is
+  // not the same as "can run it": the runtime needs limits Firefox does not expose, so
+  // consult the probe. Null = not probed yet, and we keep the optimistic answer rather
+  // than flashing "unsupported" during boot; the send path re-checks with the real
+  // verdict either way.
+  if ((eff?.kind || target.kind) === 'webllm') {
+    const gpu = cachedWebgpuSupport();
+    if (gpu && !gpu.ok) return { ok: false, reason: gpu.clamped ? 'WebGPU limits hidden' : 'No WebGPU support' };
+    return { ok: true };
+  }
   if (!eff?.baseUrl) return { ok: false, reason: 'No endpoint' };
   if (!eff.model) return { ok: false, reason: 'Pick a model' };
   return { ok: true };
@@ -1837,7 +1860,21 @@ function renderSuggestions() {
   // Zero-setup hint: only when the active target is the in-browser model (hidden once
   // the user switches to a configured API/bridge, so it isn't misleading).
   const hint = $('empty-webllm-hint');
-  if (hint) hint.hidden = getTarget(state.settings, state.settings.activeAgentId)?.kind !== 'webllm';
+  if (hint) {
+    hint.hidden = getTarget(state.settings, state.settings.activeAgentId)?.kind !== 'webllm';
+    // "Just start typing" is a lie on a browser whose WebGPU can't load the model.
+    // Say what's wrong and where to go instead — the probe may still be pending, in
+    // which case the original invitation stands.
+    if (hint.dataset.default === undefined) hint.dataset.default = hint.textContent;
+    const gpu = cachedWebgpuSupport();
+    if (!hint.hidden && gpu && !gpu.ok) {
+      hint.textContent = `⚠ ${gpu.message}`;
+      hint.classList.add('warn');
+    } else if (!hint.hidden) {
+      hint.textContent = hint.dataset.default;
+      hint.classList.remove('warn');
+    }
+  }
   // Universal fallbacks paint instantly — no model call, works offline.
   paintSuggestions(box, FALLBACK_SUGGESTIONS);
   // Opt-in: replace with page-specific ideas from a small model (metadata only).
@@ -1885,6 +1922,20 @@ let _warmSyncTimer = null;
 function warmSearchConfig() {
   const ws = state.settings?.ui?.warmSearch;
   return ws?.enabled && ws.url ? { url: ws.url } : null;
+}
+
+// The in-browser model needs specific WebGPU limits, not just navigator.gpu (see
+// js/webgpu-support.js). Probe once, at idle, and repaint the empty state so a browser
+// that cannot run it says so instead of inviting a download that will fail.
+function probeWebgpuIfNeeded() {
+  const s = state.settings;
+  const usesWebllm = (s?.endpoints || []).some((e) => e.kind === 'webllm' && e.enabled !== false);
+  if (!usesWebllm) return;
+  const run = () => webgpuSupport()
+    .then((r) => { if (!r.ok) renderSuggestions(); })
+    .catch(() => { /* a verdict we can't get is the same as "assume it works" */ });
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 8000 });
+  else setTimeout(run, 1200);
 }
 
 function maybeWarmSync({ immediate = false } = {}) {

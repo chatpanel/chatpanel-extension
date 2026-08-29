@@ -11,6 +11,7 @@ import {
   NoteLimitError,
 } from './js/store-notes.js';
 import { renderMarkdown } from './js/markdown.js';
+import { openSidePanel } from './js/side-panel.js';
 import {
   relTime, escapeHtml, highlight, escapeMdText, tagify, snippetOf,
   KIND_ICON, sourceKind, researchSnippet,
@@ -2104,8 +2105,7 @@ function renderNoteLinks(note) {
 // Open the ChatPanel side panel (fresh) from the header — no note attached.
 async function openPanel() {
   try {
-    const win = await chrome.windows.getCurrent();
-    await chrome.sidePanel.open({ windowId: win.id });
+    await openSidePanel();
   } catch { toast('Open the ChatPanel side panel from the toolbar'); }
 }
 
@@ -2113,14 +2113,19 @@ async function openPanel() {
 // same handoff meetings use ("Ask about this meeting").
 async function askAboutNote() {
   if (!current) return;
+  // START the open inside the click's synchronous turn — Firefox only accepts
+  // sidebarAction.open() while the user gesture is live, and every await below
+  // (flushSave, storage) would spend it. Chromium is unaffected by the reorder.
+  // Settled to a boolean HERE rather than awaited later: attaching the handler at
+  // creation is what stops a rejection between the two points being reported as an
+  // unhandled promise rejection.
+  const opened = openSidePanel().then(() => true, () => false);
   await flushSave();
   await chrome.storage.local.set({ 'chatpanel:attachNoteId': current.id });
-  try {
-    const win = await chrome.windows.getCurrent();
-    await chrome.sidePanel.open({ windowId: win.id });
+  if (await opened) {
     chrome.runtime.sendMessage({ type: 'attach-note', id: current.id }).catch(() => {}); // if already open
     toast('Opened ChatPanel — ask away');
-  } catch {
+  } else {
     toast('Open the ChatPanel side panel to continue');
   }
 }

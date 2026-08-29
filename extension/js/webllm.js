@@ -17,6 +17,7 @@
 // settings can browse it without loading the 6 MB runtime.
 export { WEBLLM_ALL_MODELS } from './webllm-models.js';
 import { WEBLLM_ALL_MODELS } from './webllm-models.js';
+import { webgpuSupport } from './webgpu-support.js';
 
 // Default model: Llama-3.2-1B (q4f16) — the best zero-setup balance. It needs the least
 // VRAM of the small models (~879 MB, so it runs on more GPUs), follows instructions
@@ -38,8 +39,11 @@ export function webllmPromptBudget(modelId) {
   return Math.max(1500, Math.round((ctxTokens - 1000) * 3.5));
 }
 
-// WebGPU is required. A headless / older / locked-down Chrome may lack it — callers
-// use this to fall back to a "configure an API key" path with a clear message.
+// Cheap synchronous presence check. NOT sufficient to decide the model can run: the
+// runtime also needs specific WebGPU *limits*, and a browser can expose navigator.gpu
+// while reporting less than WebLLM requires (Firefox does). Use webgpuSupport() from
+// js/webgpu-support.js for the real verdict; this stays for the fast "is there a GPU API
+// at all" path.
 export function webgpuAvailable() {
   return typeof navigator !== 'undefined' && !!navigator.gpu;
 }
@@ -49,8 +53,24 @@ let _engine = null;              // the live MLCEngine
 let _loadedModel = null;         // id currently loaded into _engine
 let _loadPromise = null;         // in-flight (re)load, so concurrent sends share it
 
+// Load the vendored runtime on demand. The bundle is 6.3 MB and is NOT shipped in every
+// build: the Firefox package leaves it out, because its runtime can never initialize
+// there (see js/webgpu-support.js) and its size exceeds AMO's 5 MB parse limit. Callers
+// reach this only after the WebGPU probe says yes, so a missing bundle means the two
+// have drifted — say that plainly instead of surfacing a bare module-resolution error.
 async function lib() {
-  if (!_lib) _lib = await import('./vendor/web-llm.js');
+  if (_lib) return _lib;
+  try {
+    _lib = await import('./vendor/web-llm.js');
+  } catch (cause) {
+    const e = new Error(
+      'The in-browser model runtime is not included in this build, so it can’t run here. '
+      + 'Pick an API endpoint (a free provider key) or a local app like Ollama in Settings.',
+    );
+    e.code = 'WEBLLM_NOT_BUNDLED';
+    e.cause = cause;
+    throw e;
+  }
   return _lib;
 }
 
@@ -75,9 +95,15 @@ function appConfigWith(mlc, customModels) {
 }
 
 export async function ensureEngine(modelId = DEFAULT_WEBLLM_MODEL, onProgress, customModels = []) {
-  if (!webgpuAvailable()) {
-    const e = new Error('This browser has no WebGPU, so the in-browser model can’t run. Add an API endpoint (a free provider key or local Ollama) in Settings, or try a Chromium browser with GPU enabled.');
-    e.code = 'WEBGPU_UNAVAILABLE';
+  // Check the LIMITS, not just navigator.gpu. The runtime throws its own raw internal
+  // string ("requested maxStorageBuffersPerShaderStage exceeds limit…") that names no
+  // product and no way forward — and on a fresh install it would do so only after
+  // starting a ~700 MB download. Fail here instead, with a reason and an alternative.
+  const support = await webgpuSupport();
+  if (!support.ok) {
+    const e = new Error(support.message);
+    e.code = support.code;
+    e.gaps = support.gaps;
     throw e;
   }
   if (_engine && _loadedModel === modelId) return _engine;

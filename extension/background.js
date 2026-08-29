@@ -8,6 +8,7 @@
 // re-validating a paid license daily so a lapsed subscription downgrades itself.
 
 import { revalidate } from './js/license.js';
+import { openSidePanel, setPanelOpensOnActionClick, wireActionToPanel } from './js/side-panel.js';
 import { meetingMatches } from './js/meeting-platforms.js';
 import { persistMeeting, getLatestSessionRecord, markMeetingEnded, getMeetingIndex, meetingPlatform } from './js/store-meetings.js';
 import { captureToInbox } from './js/store-notes.js';
@@ -180,6 +181,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 });
 
 // Let the toolbar icon toggle the side panel open. (Requires Chrome 116+.)
+//
+// Firefox has no "open the panel when the action is clicked" switch, so the same
+// behavior is a listener — and an event page only wakes for listeners registered at
+// TOP LEVEL, not inside onInstalled. No-op on Chromium.
+wireActionToPanel();
+
 // Keyboard shortcut: the manifest binds Cmd+I (mac) / Ctrl+I to the reserved
 // `_execute_action` command — Chrome's "Activate the extension" — which activates the
 // toolbar action. Because setPanelBehavior({ openPanelOnActionClick: true }) is set
@@ -187,9 +194,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 // _execute_action drives the action directly. If the combo is taken, Chrome drops the
 // suggestion and the user can rebind it at chrome://extensions/shortcuts.
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.sidePanel
-    .setPanelBehavior({ openPanelOnActionClick: true })
-    .catch((e) => console.warn('[chatpanel] setPanelBehavior', e));
+  setPanelOpensOnActionClick().catch((e) => console.warn('[chatpanel] setPanelBehavior', e));
 
   // This same event is what orphaned the content scripts in any open meeting tab —
   // flag those tabs so recording can't die quietly (see warnOrphanedMeetingTabs).
@@ -197,7 +202,12 @@ chrome.runtime.onInstalled.addListener(() => {
 
   // onInstalled fires on install AND on every update/reload; the context menu
   // persists across those, so create() would throw "duplicate id". Clear first.
-  chrome.contextMenus.removeAll(() => {
+  //
+  // The whole block is optional: Firefox for Android implements no menus API at all.
+  // A right-click menu is meaningless on a phone anyway, so its absence is a no-op,
+  // not an error — but an unguarded call here would abort the REST of onInstalled
+  // (alarms, the license re-check, the backup schedule).
+  if (chrome.contextMenus) chrome.contextMenus.removeAll(() => {
     void chrome.runtime.lastError; // ignore "nothing to remove" on first install
     chrome.contextMenus.create(
       {
@@ -246,6 +256,9 @@ chrome.alarms.onAlarm.addListener((a) => {
 // Brief toolbar-badge confirmation (no notifications permission needed).
 function flashBadge(text, color = '#5b5bf0') {
   try {
+    // Not every mobile build exposes the badge; a missing confirmation flash is a
+    // cosmetic loss, never a reason to fail the capture that just succeeded.
+    if (!chrome.action?.setBadgeText) return;
     chrome.action.setBadgeBackgroundColor({ color });
     chrome.action.setBadgeText({ text });
     setTimeout(() => chrome.action.setBadgeText({ text: '' }).catch(() => {}), 1500);
@@ -254,7 +267,7 @@ function flashBadge(text, color = '#5b5bf0') {
   }
 }
 
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+chrome.contextMenus?.onClicked.addListener(async (info, tab) => {
   // Highlight → Inbox note. Captures the quote + a scroll-to-text source link.
   if (info.menuItemId === 'chatpanel-clip') {
     try {
@@ -268,9 +281,9 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   }
   if (info.menuItemId !== 'chatpanel-ask') return;
   try {
-    if (tab?.windowId != null) await chrome.sidePanel.open({ windowId: tab.windowId });
+    if (tab?.windowId != null) await openSidePanel({ windowId: tab.windowId });
   } catch (e) {
-    console.warn('[chatpanel] sidePanel.open', e);
+    console.warn('[chatpanel] openSidePanel', e);
   }
   // The panel may still be booting; a tiny delay then broadcast. The panel also
   // re-requests any pending seed on load, so this is best-effort.

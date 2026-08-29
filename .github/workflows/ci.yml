@@ -19,4 +19,10 @@ jobs:
       # preflight fails the build if the manifest grows a Chrome-only key that
       # would break Edge certification (update_url, oauth2, …).
       - run: npm run verify:edge
+      # Same idea for Firefox, but the manifest there is DERIVED rather than shared:
+      # this fails the build if the transform would emit something Gecko rejects, or if
+      # shared code has grown a call into a Chromium-only API.
+      - run: npm run verify:firefox
+      # Builds BOTH store packages (Chromium zip + Firefox xpi/sources) from one tree,
+      # so a change can never be Chrome-shippable and Firefox-broken.
       - run: npm run package

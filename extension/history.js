@@ -8,6 +8,7 @@ import {
 } from './js/store.js';
 import { buildIndex, bm25Search, buildGraph, tokenize } from './js/meeting-index.js';
 import { drawGraph } from './js/graph-view.js';
+import { openSidePanel } from './js/side-panel.js';
 import { createDashboard, renderStats, renderRelated as renderRelatedCards } from './js/corpus-dashboard.js';
 import { initialHistoryView } from './js/history-state.js';
 import { renderMarkdown } from './js/markdown.js';
@@ -479,10 +480,14 @@ async function removeChat() {
 async function openInPanel() {
   if (!current) return;
   const id = current.entry.id;
+  // Open the panel (no-op if already open) within the click gesture — STARTED before
+  // the storage write, because Firefox's gesture check only survives a synchronous call.
+  // The catch is attached HERE, not at the await below, so a rejection in between is
+  // never reported as an unhandled promise rejection.
+  const opening = openSidePanel({ windowId: winId ?? undefined }).catch(() => { /* may already be open */ });
   // Fresh-open path: the side panel's init() reads this flag when it boots.
   await chrome.storage.local.set({ 'chatpanel:openConversationId': id }).catch(() => {});
-  // Open the panel (no-op if already open) within the click gesture.
-  try { if (winId != null) await chrome.sidePanel.open({ windowId: winId }); } catch { /* may already be open */ }
+  await opening;
   // Already-open path: nudge the live panel to switch to this chat.
   chrome.runtime.sendMessage({ type: 'open-conversation', id }).catch(() => {});
   toast('Opening this chat in the side panel…');
@@ -491,8 +496,7 @@ async function openInPanel() {
 // Open the ChatPanel side panel (fresh) from the header — no item attached.
 async function openPanel() {
   try {
-    if (winId != null) await chrome.sidePanel.open({ windowId: winId });
-    else await chrome.sidePanel.open({ windowId: (await chrome.windows.getCurrent()).id });
+    await openSidePanel({ windowId: winId ?? undefined });
   } catch { toast('Open the ChatPanel side panel from the toolbar'); }
 }
 
