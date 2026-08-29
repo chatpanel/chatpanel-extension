@@ -75,7 +75,13 @@ class WorkingWidget extends WidgetType {
     const el = document.createElement('span');
     el.className = 'cm-agent-working';
     el.setAttribute('aria-live', 'polite');
-    el.innerHTML = `<span class="cm-agent-spin"></span>${(this.label || 'Agent')} working…`;
+    // Built as DOM, not innerHTML: `label` is an agent or MODEL name, and a model name
+    // can come from a provider's /models response — i.e. from a remote server. Through
+    // innerHTML that is an injection path into the note editor; as a text node it is
+    // inert whatever it contains.
+    const spin = document.createElement('span');
+    spin.className = 'cm-agent-spin';
+    el.append(spin, document.createTextNode(`${this.label || 'Agent'} working…`));
     return el;
   }
   ignoreEvent() { return true; }

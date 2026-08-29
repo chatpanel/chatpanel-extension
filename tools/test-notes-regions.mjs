@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 // jsdom-optional (CI runs `npm test` with no node_modules). Regions need a real EditorView to
 // exercise transactions/decorations, so this test SKIPS cleanly when jsdom is absent — the
@@ -96,3 +97,22 @@ if (hasDom) {
 }
 
 console.log('notes-regions tests passed');
+
+// ── the "working" chip must never build itself from a string ───────────────
+// THE BUG THIS PREVENTS. That chip's label is an agent OR MODEL name, and a model name
+// can arrive from a provider's /models response — i.e. from a remote server we do not
+// control. Rendered through innerHTML that is an injection path straight into the note
+// editor; as a text node it is inert whatever it contains. (It was also one of the
+// ~190 innerHTML findings in AMO's linter, and the only one that was not already
+// passing its interpolation through an escaper.)
+{
+  const src = readFileSync(new URL('../extension/js/notes-regions.js', import.meta.url), 'utf8');
+  const widget = src.slice(src.indexOf('class WorkingWidget'), src.indexOf('ignoreEvent'))
+    .split('\n').filter((l) => !l.trimStart().startsWith('//')).join('\n'); // the comment says "innerHTML" too
+  assert.ok(widget.length > 0, 'WorkingWidget not found — did notes-regions.js get restructured?');
+  assert.ok(!/innerHTML/.test(widget),
+    'WorkingWidget must build its DOM with createElement/createTextNode: its label can come from a remote model list');
+  assert.match(widget, /createTextNode/, 'the label belongs in a text node');
+}
+
+console.log('✓ notes regions: agent-write guard holds, working chip renders label as text (not markup)');
