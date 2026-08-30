@@ -2825,7 +2825,7 @@ function renderMcpServers() {
     setCardIndex(node, i, list.length, 'Server'); // "N of M" — one card, one unit
     root.appendChild(node);
   });
-  wireExpandAll('toggle-mcp', list.map(mcpKey), renderMcpServers);
+  wireExpandAll('toggle-mcp', list.map(mcpCardKey), renderMcpServers);
   renderMcpCatalog(); // keep "Added" state in sync
   renderGateBadges(); // add/import lock depends on the current server count
 }
@@ -2875,7 +2875,9 @@ function renderMcpToolStatus(status, tools) {
   }
 }
 
-const mcpKey = (s) => `mcp:${s.id || s.name || ''}`;
+// Namespaced, and NOT the same thing as the existing `mcpKey` further down — that one is
+// an identity for catalog matching, this one keys the card's open/closed state.
+const mcpCardKey = (s) => `mcp:${s.id || s.name || ''}`;
 
 // Transport is the one thing that changes what an MCP card even means — a remote URL or a
 // local process — so it picks the colour. Everything else about the server is detail.
@@ -2903,7 +2905,7 @@ function mcpServerCard(server, index = 0) {
   // Collapsed by default, like every other configuration list. An MCP card is a long form
   // — transport, URL, auth, or command + args + env + a paragraph of registry advice — and
   // a page of them was the same wall the endpoint cards used to be.
-  const card = wireCollapsible(node, mcpKey(server));
+  const card = wireCollapsible(node, mcpCardKey(server));
   const syncMcpSummary = () => {
     const t = q('.mcp-transport').value;
     const bits = [t === 'stdio' ? 'Local' : 'Remote'];
