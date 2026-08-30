@@ -12,6 +12,7 @@ import { trustOf } from '../extension/js/events/skill-manifest.js';
 const settingsJs = readFileSync(new URL('../extension/settings.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../extension/settings.html', import.meta.url), 'utf8');
 const providers = readFileSync(new URL('../extension/js/providers.js', import.meta.url), 'utf8');
+const skillOriginLabelSrc = readFileSync(new URL('../extension/js/skill-source-bridge.js', import.meta.url), 'utf8');
 
 // A bridge that answers, standing in for the real one.
 function fakeBridge({ skills = [], fail = null } = {}) {
@@ -128,5 +129,29 @@ const mark = settingsJs.match(/function markMatch\([\s\S]*?\n\}/)?.[0] || '';
 assert.ok(mark, 'markMatch should exist');
 assert.doesNotMatch(mark, /innerHTML/, 'a skill description must never be set as HTML');
 assert.match(mark, /createElement\('mark'\)/);
+
+// --- which agent folder a local skill came from -----------------------------------
+// The same skill is commonly copied into several agents' folders, so naming WHICH one is
+// the difference between provenance and a label. But only a LOCAL source may name a
+// folder on this machine: a remote hub is labelled by its own registration whatever its
+// payload claims, so no fetched record can present itself as coming from a trusted dir.
+{
+  const { r } = reg();
+  const [section] = await r.search({});
+  assert.equal(section.items[0].foundIn, 'local', 'the agent folder survives the origin stamp');
+  assert.equal(section.items[1].foundIn, 'agents-dir');
+}
+{
+  // A payload claiming its own foundIn must be overwritten by what the bridge reported.
+  const { r } = reg({ skills: [{ id: 'x', name: 'X', foundIn: 'claude', origin: { source: 'agents-dir', id: 'x' } }] });
+  const [section] = await r.search({});
+  assert.equal(section.items[0].foundIn, 'agents-dir', 'a record cannot choose its own folder');
+}
+assert.match(
+  settingsJs,
+  /section\.trust === 'local' \? skillOriginLabel\(skill\.foundIn\) : ''/,
+  'only a local source may name a folder on this machine',
+);
+assert.match(skillOriginLabelSrc, /SOURCE_LABELS\[src\] \|\| src/, 'an unknown source id is shown as itself, not hidden');
 
 console.log('skill source tests passed');

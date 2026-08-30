@@ -13,6 +13,29 @@
 
 import { defineSkillSource } from './events/skill-sources.js';
 
+// Which agent's folder a skill was found in. The bridge sends an id; the label lives
+// HERE rather than travelling with the record, because a label that arrived with the data
+// would be a string a future remote source could set to anything reassuring.
+const SOURCE_LABELS = {
+  local: 'ChatPanel',
+  'agents-dir': 'Shared ~/.agents',
+  claude: 'Claude Code',
+  codex: 'Codex',
+  copilot: 'GitHub Copilot',
+  gemini: 'Antigravity / Gemini',
+  opencode: 'OpenCode',
+  kiro: 'Kiro',
+  pi: 'Pi',
+  hermes: 'Hermes',
+  external: 'Custom folder',
+};
+
+/** Human name for an agent-folder id; an unknown one is shown as itself, not hidden. */
+export function skillOriginLabel(foundIn) {
+  const src = String(foundIn || '');
+  return SOURCE_LABELS[src] || src || '';
+}
+
 const base = (bridgeUrl) => (bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
 
 async function get(bridgeUrl, path) {
@@ -47,9 +70,15 @@ export function bridgeSkillSource({ bridgeUrl, supported }) {
       // Filtering happens here rather than over the wire: the bridge serves a bounded
       // local list, so a query parameter would be a second thing to keep in step for no
       // latency saved.
-      const items = !q ? skills : skills.filter((s) => (
+      const hits = !q ? skills : skills.filter((s) => (
         `${s.name} ${s.id} ${s.description || ''}`.toLowerCase().includes(q)
       ));
+      // `foundIn` is which agent's folder held it — the registry stamps origin.source with
+      // the SOURCE id ('bridge'), which is correct for provenance but loses the detail the
+      // user cares about when the same skill sits in four agents' folders. Set here from
+      // the bridge's own answer, and overwritten unconditionally so a payload cannot
+      // supply its own.
+      const items = hits.map((s) => ({ ...s, foundIn: s.origin?.source || '' }));
       return { items };
     },
     read: async (id) => (await get(url(), `/skills/${encodeURIComponent(id)}`)).skill,

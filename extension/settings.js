@@ -3598,13 +3598,17 @@ async function addSkill() {
 // demand — the Skills tab is not the settings page's first paint, and a source that
 // cannot answer right now is simply absent.
 let skillSourceReg = null;
+// Bound when the sources load; the row renderer runs only after that.
+let skillOriginLabel = () => '';
 
 async function skillSources() {
   if (skillSourceReg) return skillSourceReg;
-  const [{ createSkillSourceRegistry }, { bridgeSkillSource }] = await Promise.all([
+  const [{ createSkillSourceRegistry }, bridgeMod] = await Promise.all([
     import('./js/events/skill-sources.js'),
     import('./js/skill-source-bridge.js'),
   ]);
+  const { bridgeSkillSource } = bridgeMod;
+  skillOriginLabel = bridgeMod.skillOriginLabel;
   skillSourceReg = createSkillSourceRegistry();
   skillSourceReg.add(bridgeSkillSource({
     // Read at call time: changing the Bridge URL in Settings takes effect without
@@ -3693,12 +3697,17 @@ function sourceSkillRow(skill, section, query = '') {
   main.append(name, desc);
 
   // Provenance is not decoration here: these files were written by something else, and
-  // "which of these did a stranger write" has to be answerable at a glance.
+  // "which of these did a stranger write" has to be answerable at a glance. The same skill
+  // is commonly copied into several agents' folders, so naming WHICH one is the difference
+  // between provenance and a label.
   const from = document.createElement('span');
   from.className = 'src-skill-from';
-  from.textContent = skill.origin?.source === 'bridge' && skill.origin?.id
-    ? `${section.label} · ${skill.origin.id}`
-    : section.label;
+  // Only a LOCAL source may name a folder on this machine. A remote hub is labelled by
+  // its own registration whatever its payload claims, so no fetched record can present
+  // itself as having come from a trusted directory.
+  const found = section.trust === 'local' ? skillOriginLabel(skill.foundIn) : '';
+  from.textContent = found || section.label;
+  from.title = skill.origin?.id ? `${from.textContent} · ${skill.origin.id}` : from.textContent;
 
   const files = Object.entries(skill.files || {});
   if (files.length) {
