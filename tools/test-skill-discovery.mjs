@@ -73,7 +73,7 @@ assert.equal(skillCatalogSystem([], {}), '');
 // --- wiring: discovery is skipped when a skill was explicitly invoked ------------
 const turn = readFileSync(new URL('../extension/js/turn-tools.js', import.meta.url), 'utf8');
 assert.match(turn, /if \(!skillRun\) \{[\s\S]*skillDiscoveryProvider/, 'discovery only when no skill was invoked');
-assert.match(turn, /listBridgeSkills\(bridgeUrl\)/, 'the installed skills are pulled from the bridge');
+assert.match(turn, /listBridgeSkills\(bridgeUrl, skillDirs\)/, 'the installed skills are pulled from the bridge, with custom folders');
 assert.match(turn, /!seen\.has\(e\.command\)/, "the user's added copy wins a handle clash");
 assert.match(turn, /!skillRun && toolset && catalogEntries\.length \? skillCatalogSystem/, 'the catalog rides the system prompt only in discovery mode');
 

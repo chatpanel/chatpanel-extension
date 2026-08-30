@@ -38,8 +38,15 @@ export function skillOriginLabel(foundIn) {
 
 const base = (bridgeUrl) => (bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
 
-async function get(bridgeUrl, path) {
-  const res = await fetch(`${base(bridgeUrl)}${path}`, { headers: { Accept: 'application/json' } });
+// The user's custom skill folders, appended to every skill request so the bridge scans and
+// serves them. A blank config sends nothing — the built-in harness folders are always read.
+function dirQuery(dirs) {
+  const list = (Array.isArray(dirs) ? dirs : []).map((d) => String(d || '').trim()).filter(Boolean);
+  return list.length ? `?${list.map((d) => `dir=${encodeURIComponent(d)}`).join('&')}` : '';
+}
+
+async function get(bridgeUrl, path, dirs) {
+  const res = await fetch(`${base(bridgeUrl)}${path}${dirQuery(dirs)}`, { headers: { Accept: 'application/json' } });
   if (!res.ok) throw new Error(`bridge HTTP ${res.status}`);
   const json = await res.json();
   if (json.ok === false) throw new Error(json.error || 'bridge refused');
@@ -53,8 +60,9 @@ async function get(bridgeUrl, path) {
  *                    omits it, and asking it for /skills would 404; a source that cannot
  *                    answer is ABSENT rather than an error the user must interpret.
  */
-export function bridgeSkillSource({ bridgeUrl, supported }) {
+export function bridgeSkillSource({ bridgeUrl, supported, dirs }) {
   const url = () => (typeof bridgeUrl === 'function' ? bridgeUrl() : bridgeUrl);
+  const cfgDirs = () => (typeof dirs === 'function' ? dirs() : dirs) || [];
   return defineSkillSource({
     id: 'bridge',
     label: 'Your machine (bridge)',
@@ -65,7 +73,7 @@ export function bridgeSkillSource({ bridgeUrl, supported }) {
     reads: ['files'],
     available: () => (typeof supported === 'function' ? !!supported() : !!supported),
     list: async ({ query = '' } = {}) => {
-      const { skills = [] } = await get(url(), '/skills');
+      const { skills = [] } = await get(url(), '/skills', cfgDirs());
       const q = query.trim().toLowerCase();
       // Filtering happens here rather than over the wire: the bridge serves a bounded
       // local list, so a query parameter would be a second thing to keep in step for no
@@ -81,10 +89,11 @@ export function bridgeSkillSource({ bridgeUrl, supported }) {
       const items = hits.map((s) => ({ ...s, foundIn: s.origin?.source || '' }));
       return { items };
     },
-    read: async (id) => (await get(url(), `/skills/${encodeURIComponent(id)}`)).skill,
+    read: async (id) => (await get(url(), `/skills/${encodeURIComponent(id)}`, cfgDirs())).skill,
     readFile: async (id, path) => get(
       url(),
       `/skills/${encodeURIComponent(id)}/file/${String(path).split('/').map(encodeURIComponent).join('/')}`,
+      cfgDirs(),
     ),
   });
 }
@@ -99,26 +108,27 @@ export function bridgeSkillSource({ bridgeUrl, supported }) {
  * `origin.id` is the bridge's own path for the skill (`.system/imagegen`), which is what
  * its routes expect — not the local id the user may have renamed.
  */
-export async function readSkillFile({ bridgeUrl, origin, path }) {
+export async function readSkillFile({ bridgeUrl, origin, path, dirs }) {
   const skillId = String(origin?.id || '').split('/').pop();
   if (!skillId) throw new Error('this skill has no package on disk');
   return get(
     bridgeUrl,
     `/skills/${encodeURIComponent(skillId)}/file/${String(path).split('/').map(encodeURIComponent).join('/')}`,
+    dirs,
   );
 }
 
 /** The installed skills the bridge sees, as lightweight records (no bodies). For the
  *  discovery catalog — the model uses any of these without the user adding them first. */
-export async function listBridgeSkills(bridgeUrl) {
-  const { skills = [] } = await get(bridgeUrl, '/skills');
+export async function listBridgeSkills(bridgeUrl, dirs) {
+  const { skills = [] } = await get(bridgeUrl, '/skills', dirs);
   return skills;
 }
 
 /** One installed skill's full body, fetched only when the model opens it. */
-export async function readBridgeSkill(bridgeUrl, id) {
+export async function readBridgeSkill(bridgeUrl, id, dirs) {
   const skillId = String(id || '').split('/').pop();
   if (!skillId) return null;
-  const { skill } = await get(bridgeUrl, `/skills/${encodeURIComponent(skillId)}`);
+  const { skill } = await get(bridgeUrl, `/skills/${encodeURIComponent(skillId)}`, dirs);
   return skill || null;
 }

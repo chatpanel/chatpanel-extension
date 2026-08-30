@@ -3708,6 +3708,7 @@ async function skillSources() {
     // re-registering, and `supported` is the /health capability flag.
     bridgeUrl: () => settings.bridgeUrl,
     supported: () => !!(bridgeState?.ok && bridgeState.skills),
+    dirs: () => (Array.isArray(settings.ui?.skillDirs) ? settings.ui.skillDirs : []),
   }));
   return skillSourceReg;
 }
@@ -3719,6 +3720,18 @@ let skillSourceQuery = '';
 let skillSourceSeq = 0;
 const SKILL_SOURCE_PAGE = 8;
 let skillSourceLimit = SKILL_SOURCE_PAGE;
+
+// Persist the custom skill folders — one absolute path per line, cleaned. Kept in
+// settings.ui so it rides the normal backup like every other preference.
+async function saveSkillDirs() {
+  const el = $('skill-dirs');
+  if (!el) return;
+  const dirs = el.value.split(/\n+/).map((d) => d.trim()).filter(Boolean);
+  const prev = settings.ui?.skillDirs || [];
+  if (JSON.stringify(dirs) === JSON.stringify(prev)) return;
+  settings.ui = { ...(settings.ui || {}), skillDirs: dirs };
+  settings = await saveSettings(settings);
+}
 
 async function renderSkillSources() {
   const card = $('skill-sources-card');
@@ -3738,6 +3751,10 @@ async function renderSkillSources() {
   if (rootsEl) {
     const roots = bridgeState?.skills?.roots || [];
     rootsEl.textContent = roots.length ? `Scanned: ${roots.join('  ·  ')}` : '';
+  }
+  const dirsEl = $('skill-dirs');
+  if (dirsEl && document.activeElement !== dirsEl) {
+    dirsEl.value = (settings.ui?.skillDirs || []).join('\n');
   }
   // Nothing to offer and nothing wrong → the section does not exist. An empty box that
   // says "no skills" is noise on a machine that was never going to have any. But once a
@@ -5048,12 +5065,17 @@ function wire() {
   $('skill-sources-refresh').onclick = async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true;
+    // Persist the custom folders before rescanning, so the scan uses what's in the box now.
+    await saveSkillDirs();
     // Re-check /health first: the usual reason nothing shows is that the bridge was
     // started after this page was opened.
     bridgeState = await checkBridge(settings.bridgeUrl);
     await renderSkillSources();
     btn.disabled = false;
   };
+  // Save the custom folders on blur — a rescan also saves first, but leaving the field
+  // shouldn't silently discard what was typed.
+  $('skill-dirs').onchange = () => saveSkillDirs();
   $('reset-skills').onclick = resetSkills;
   $('mcp-registry-search-btn').onclick = () => loadMcpRegistry();
   $('mcp-registry-more').onclick = () => loadMcpRegistry({ append: true });

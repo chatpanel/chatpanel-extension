@@ -131,10 +131,11 @@ export async function buildTurnTools({
     // Added skills carry their body inline; installed ones are name+description now and are
     // fetched on open. The bridge list is a cheap local call, and its failure (bridge down)
     // just means the catalog is the added skills — never an error the turn has to handle.
+    const skillDirs = Array.isArray(settings.ui?.skillDirs) ? settings.ui.skillDirs : [];
     const added = enabledSkills(settings.skills).map((s) => skillEntry(s));
     let installed = [];
     if (bridgeAvailable) {
-      installed = (await listBridgeSkills(bridgeUrl).catch(() => []))
+      installed = (await listBridgeSkills(bridgeUrl, skillDirs).catch(() => []))
         .map((s) => skillEntry(s, { prompt: null }));
     }
     // The user's own version wins a handle clash — an added skill they edited beats the
@@ -144,8 +145,8 @@ export async function buildTurnTools({
 
     const disc = skillDiscoveryProvider({
       entries: catalogEntries,
-      loadPrompt: async (e) => (e.prompt != null ? e.prompt : (await readBridgeSkill(bridgeUrl, e.origin?.id))?.prompt || ''),
-      read: (origin, path) => readSkillFile({ bridgeUrl, origin, path }),
+      loadPrompt: async (e) => (e.prompt != null ? e.prompt : (await readBridgeSkill(bridgeUrl, e.origin?.id, skillDirs))?.prompt || ''),
+      read: (origin, path) => readSkillFile({ bridgeUrl, origin, path, dirs: skillDirs }),
     });
     if (disc) providers.push(disc);
   }
