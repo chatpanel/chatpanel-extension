@@ -5699,14 +5699,14 @@ const KIND_TITLE = {
   kernel: 'Kernel', 'tool-group': 'Tool groups', adapter: 'App adapters',
   source: 'Sources', 'meeting-analysis': 'Meeting analysis', meeting: 'Meeting platforms',
   'route-strategy': 'Routing strategies', 'route-step': 'Routing steps',
-  engine: 'Search engines', server: 'MCP servers', agent: 'Agents',
+  engine: 'Search engines', server: 'MCP servers', agent: 'Agents', skill: 'Skills',
 };
 // Ordered by how central each is to a turn, not alphabetically — the kernel first because
 // it is the part that cannot be switched off, then what the model is given, then where the
 // data comes from.
 const KIND_ORDER = {
   kernel: 0, 'route-strategy': 1, 'route-step': 2, 'tool-group': 3, adapter: 4, source: 5,
-  'meeting-analysis': 6, meeting: 7, engine: 8, server: 9, agent: 10,
+  'meeting-analysis': 6, meeting: 7, engine: 8, server: 9, agent: 10, skill: 11,
 };
 
 /**
@@ -5752,7 +5752,40 @@ function externalPlugins() {
       configAnchor: 'mcp-list',
     });
   }
+  // Skills, with their DECLARED ACCESS — F3.5's honest gallery. A skill is a plugin that
+  // carries guidance plus capabilities, and the reach it can have (page, history, MCP,
+  // scripts) is computable from its record before it runs. That is the whole argument for
+  // showing it here: a user approves a set they can see, rather than discovering it in use.
+  for (const sk of (settings?.skills || [])) {
+    out.push({
+      id: `skill:${sk.id}`, kind: 'skill', label: sk.name || sk.command || 'Skill',
+      description: skillAccessLine(sk),
+      state: isSkillEnabled(sk) ? '' : 'off',
+      configTab: 'skills',
+      configAnchor: 'skills',
+    });
+  }
   return out;
+}
+
+// A one-line reach statement, derived from the record — never read from a field the record
+// could set. "what can this thing touch" answered the same way for every skill.
+function skillAccessLine(skill) {
+  const bits = [];
+  const provenance = skill.origin?.source ? 'from another tool' : (skill.builtin ? 'built-in' : 'yours');
+  bits.push(provenance);
+  const ctx = skill.context && skill.context !== 'none' ? 'reads the page' : '';
+  if (ctx) bits.push(ctx);
+  const h = skill.historyContext;
+  if (h === 'chats' || h === 'all') bits.push('reads chats');
+  if (h === 'meetings' || h === 'all') bits.push('reads meetings');
+  if (skill.mcpMode === 'default') bits.push('all MCP tools');
+  else if (skill.mcpMode === 'selected') bits.push('selected MCP tools');
+  if ((skill.files?.scripts || []).length) bits.push('runs code');
+  if ((skill.files?.references || []).length) bits.push('has reference files');
+  const scan = skill.origin?.scanned?.verdict;
+  if (scan === 'suspicious') bits.push('flagged for review');
+  return bits.join(' · ');
 }
 
 /**
