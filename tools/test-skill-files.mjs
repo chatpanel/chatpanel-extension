@@ -50,22 +50,24 @@ const make = (over = {}) => {
   const { p, calls } = make();
   assert.equal(p.specs.length, 1, 'ONE tool, not one per file — a tool per document would multiply the per-turn schema cost by package size');
   assert.equal(p.specs[0].name, SKILL_FILE_TOOL);
-  // The enum is what the model sees; it should not have to guess a path.
-  assert.deepEqual(p.specs[0].input_schema.properties.path.enum, ['references/auth.md', 'references/setup.md', 'assets/logo.png']);
+  // Path is a free string — the SKILL.md names the paths, which may be a deep tree the
+  // declared list would not cover. No enum to guess against.
+  assert.equal(p.specs[0].input_schema.properties.path.enum, undefined);
   assert.equal(await p.execute(SKILL_FILE_TOOL, { path: 'references/auth.md' }), 'body of references/auth.md');
   assert.deepEqual(calls, [['.system/foundry', 'references/auth.md']], 'the bridge path is used, not the local id');
 }
 
 {
-  // The enum is a hint to the model, never a guarantee about what arrives — so the
-  // allowlist is re-checked. A prompt cannot talk the model into requesting a path the
-  // skill never declared.
+  // Scripts are refused as a text read (tier-3), and the bridge is the authority on
+  // containment for everything else — a traversal path is caught there, not by a client
+  // allowlist that a rich skill's real tree would not match anyway.
   const { p, calls } = make();
-  for (const evil of ['../../.ssh/id_rsa', 'scripts/run.py', 'references/../../secret', '/etc/hosts', '']) {
-    const out = await p.execute(SKILL_FILE_TOOL, { path: evil });
-    assert.match(out, /^Not available/, `should refuse ${JSON.stringify(evil)}`);
-  }
-  assert.deepEqual(calls, [], 'a refused path never reaches the bridge');
+  const script = await p.execute(SKILL_FILE_TOOL, { path: 'scripts/run.py' });
+  assert.match(script, /is a script/, 'scripts are never read as text');
+  assert.deepEqual(calls, [], 'and never reach the bridge');
+  // a legitimate nested reference IS forwarded (the bridge enforces containment)
+  const nested = await p.execute(SKILL_FILE_TOOL, { path: 'foundry-agent/deploy/deploy.md' });
+  assert.equal(nested, 'body of foundry-agent/deploy/deploy.md', 'a nested path is forwarded, not refused');
 }
 
 {

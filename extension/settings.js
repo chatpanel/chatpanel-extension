@@ -3724,7 +3724,7 @@ let skillSourceLimit = SKILL_SOURCE_PAGE;
 // Persist the custom skill folders — one absolute path per line, cleaned. Kept in
 // settings.ui so it rides the normal backup like every other preference.
 async function saveSkillDirs() {
-  const el = $('skill-dirs');
+  const el = $('skill-dirs-input');
   if (!el) return;
   const dirs = el.value.split(/\n+/).map((d) => d.trim()).filter(Boolean);
   const prev = settings.ui?.skillDirs || [];
@@ -3752,7 +3752,7 @@ async function renderSkillSources() {
     const roots = bridgeState?.skills?.roots || [];
     rootsEl.textContent = roots.length ? `Scanned: ${roots.join('  ·  ')}` : '';
   }
-  const dirsEl = $('skill-dirs');
+  const dirsEl = $('skill-dirs-input');
   if (dirsEl && document.activeElement !== dirsEl) {
     dirsEl.value = (settings.ui?.skillDirs || []).join('\n');
   }
@@ -5076,7 +5076,7 @@ function wire() {
   };
   // Save the custom folders on blur — a rescan also saves first, but leaving the field
   // shouldn't silently discard what was typed.
-  $('skill-dirs').onchange = () => saveSkillDirs();
+  $('skill-dirs-input').onchange = () => saveSkillDirs();
   $('reset-skills').onclick = resetSkills;
   $('mcp-registry-search-btn').onclick = () => loadMcpRegistry();
   $('mcp-registry-more').onclick = () => loadMcpRegistry({ append: true });

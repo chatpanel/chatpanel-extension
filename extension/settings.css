@@ -434,6 +434,13 @@ select {
 .var-chips .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .prompt-tools .btn.assist { align-self: center; }
 
+/* Custom skill folders — a clean vertical block, NOT the flex .row (which wrapped the
+   label full-width and then let the textarea and help text fight for the same line). */
+.skill-dirs { display: flex; flex-direction: column; gap: 6px; margin: 14px 0 4px; }
+.skill-dirs > label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.skill-dirs > textarea { width: 100%; font-family: var(--mono); font-size: 12.5px; resize: vertical; min-height: 52px; }
+.skill-dirs > .muted.tiny { margin: 0; }
+
 /* Skills discovered on this machine. A row, not an entity card — these are not yours to
    edit until you Add one, and giving them the same card would say otherwise. */
 #skill-sources { display: flex; flex-direction: column; gap: 8px; }

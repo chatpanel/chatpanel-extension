@@ -257,10 +257,10 @@ npx @chatpanel/bridge</code></pre>
             list above. These files aren't written by ChatPanel, so each row says where it came from.
           </p>
           <p class="muted tiny" id="skill-source-roots"></p>
-          <div class="row skill-dirs-row">
-            <label for="skill-dirs">Custom skill folders</label>
-            <textarea id="skill-dirs" rows="2" placeholder="One absolute path per line — e.g. /Users/you/work/skills or ~/.hermes/skills. The bridge scans these too."></textarea>
-            <p class="muted tiny">Keep skills somewhere else? Add the folder here and the bridge serves it alongside the built-in agent locations. Takes effect on the next Rescan.</p>
+          <div class="skill-dirs">
+            <label for="skill-dirs-input">Custom skill folders</label>
+            <textarea id="skill-dirs-input" rows="2" placeholder="One absolute path per line — e.g. /Users/you/work/skills or ~/.hermes/skills"></textarea>
+            <p class="muted tiny">Keep skills somewhere else? Add the folder and the bridge serves it alongside the built-in agent locations. Applied on the next Rescan.</p>
           </div>
           <div class="list-filter">
             <input id="skill-source-search" type="search" placeholder="Search skills by name or what they do" aria-label="Search available skills" />

@@ -47,8 +47,7 @@ export function skillFileProvider({ skillRun, read }) {
         properties: {
           path: {
             type: 'string',
-            description: 'Exact path from the skill\'s file list, e.g. references/auth.md',
-            enum: allowed.slice(0, 40), // the schema IS the allowlist the model sees
+            description: 'A reference path this skill\'s instructions point at, e.g. references/auth.md or foundry-agent/deploy/deploy.md',
           },
         },
         required: ['path'],
@@ -57,10 +56,10 @@ export function skillFileProvider({ skillRun, read }) {
     async execute(name, args) {
       if (name !== SKILL_FILE_TOOL) return null;
       const path = String(args?.path || '').trim();
-      // Checked against the declared index rather than trusted from the arguments: the
-      // enum is a hint to the model, never a guarantee about what arrives.
-      if (!allowed.includes(path)) {
-        return `Not available. This skill ships: ${allowed.join(', ')}`;
+      // Any file inside the skill's own folder is readable — its SKILL.md is the map and the
+      // bridge enforces containment. Scripts stay off-limits (tier-3 execution).
+      if (path.split('/')[0] === 'scripts') {
+        return `${path} is a script — it runs, it is not read as text.`;
       }
       try {
         const out = await read(skillRun.origin, path);
@@ -153,17 +152,20 @@ export function skillDiscoveryProvider({ entries = [], loadPrompt, read }) {
         let prompt = '';
         try { prompt = (await loadPrompt(e)) || ''; } catch (err) { return `Could not load ${e.name}: ${err?.message || err}`; }
         let out = prompt.trim() || '(this skill has no extra instructions — just apply it.)';
-        if (e.files?.length) {
-          out += `\n\nThis skill ships reference files: ${e.files.join(', ')}. `
-            + `Call skill_file with skill="${e.command}" and one of those paths to read one, only if the task needs it.`;
-        }
+        // The instructions above may point at reference files (any path inside the skill's
+        // folder). Read one with skill_file only when the task needs it.
+        out += `\n\nTo read a reference file this skill points at, call skill_file with skill="${e.command}" `
+          + 'and the path exactly as written in the instructions above.';
         return out;
       }
       if (name === 'skill_file') {
         const e = opened.get(String(args?.skill || '').trim().toLowerCase());
         if (!e) return 'Open the skill first with skill_open, then read its files.';
         const path = String(args?.path || '').trim();
-        if (!e.files?.includes(path)) return `Not available. ${e.name} ships: ${(e.files || []).join(', ')}`;
+        // The readable set is any file inside the skill's own folder — its SKILL.md names
+        // the paths, and the bridge enforces folder containment. Scripts stay off-limits
+        // (tier-3 execution), and the bridge is the final authority on the rest.
+        if (path.split('/')[0] === 'scripts') return `${path} is a script — it runs, it is not read as text.`;
         if (!e.origin?.source) return `${e.name} has no package files on disk.`;
         try {
           const out = await read(e.origin, path);

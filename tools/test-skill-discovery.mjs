@@ -51,7 +51,7 @@ const SKILLS = [
   // open a bridge-only skill → its body is fetched now
   const opened = await p.execute('skill_open', { name: 'microsoft-foundry' });
   assert.match(opened, /FULL FOUNDRY INSTRUCTIONS/);
-  assert.match(opened, /ships reference files: references\/auth\.md/, 'and points at its references');
+  assert.match(opened, /call skill_file/, 'and tells the model how to read a reference the instructions point at');
 
   // references are readable only AFTER opening
   const beforeOpen = await skillDiscoveryProvider({ entries, loadPrompt: async () => 'x', read: async () => ({ text: 'y' }) })
@@ -62,8 +62,9 @@ const SKILLS = [
   assert.equal(ref, 'REF references/auth.md');
   assert.deepEqual(reads, [['.system/foundry', 'references/auth.md']], 'read against the bridge origin');
 
-  // a path the skill did not declare is refused
-  assert.match(await p.execute('skill_file', { skill: 'microsoft-foundry', path: '../../etc/passwd' }), /Not available/);
+  // scripts are never read as text; a nested doc path is forwarded to the bridge (which
+  // enforces containment — the mock read stands in for it here).
+  assert.match(await p.execute('skill_file', { skill: 'microsoft-foundry', path: 'scripts/run.py' }), /is a script/);
 }
 
 // --- no skills, no provider -------------------------------------------------------
