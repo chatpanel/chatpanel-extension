@@ -135,3 +135,83 @@ export function skillToolSystem(skillRun, allServers = []) {
   }
   return lines.join('\n');
 }
+
+
+// --------------------------------------------------------------------------
+// Skill DISCOVERY — level 0 of progressive disclosure for the whole skill set.
+//
+// A skill used to be invisible until you typed its /command. That is fine when you know
+// the skill exists, and useless when you do not — the model answering a question a skill
+// was built for had no idea the skill was there. Discovery gives the model a compact
+// CATALOG (name + one line each) and one tool, skill_open, to load the full instructions
+// of whichever skill fits. The full prompt is paid for only on a match; the catalog itself
+// is a line per skill, and it is added ONLY on turns that already arm tools — so a
+// greeting or a simple question carries none of it.
+// --------------------------------------------------------------------------
+
+// How a skill is addressed in the catalog and to skill_open — its slash command if it has
+// one (what a user would type), else its name.
+export function skillHandle(skill) {
+  return String(skill?.command || skill?.name || '').trim().toLowerCase();
+}
+
+const CATALOG_CAP = 14;
+
+// Cheap keyword overlap with the request, so the most likely skills lead a capped list.
+// Not a ranker to be proud of — deliberately: it costs nothing, runs on every armed turn,
+// and only has to float the obvious match to the top of a short list the model then reads.
+function scoreSkill(skill, words) {
+  if (!words.size) return 0;
+  const hay = `${skill.name} ${skill.command} ${skill.description || ''}`.toLowerCase();
+  const keys = new Set(hay.split(/\W+/).filter((w) => w.length > 3));
+  let score = 0;
+  for (const w of words) if (keys.has(w)) score += 1;
+  return score;
+}
+
+export function rankSkills(skills, userText = '') {
+  const list = enabledSkills(skills);
+  const words = new Set(String(userText || '').toLowerCase().split(/\W+/).filter((w) => w.length > 3));
+  // Stable: a relevance tie keeps original order, so the list does not reshuffle between
+  // turns of the same conversation for no reason the user can see.
+  return list
+    .map((s, i) => ({ s, i, score: scoreSkill(s, words) }))
+    .sort((a, b) => (b.score - a.score) || (a.i - b.i))
+    .map((x) => x.s);
+}
+
+const trunc = (t, n) => (t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t);
+
+/**
+ * The catalog block for the system prompt, or '' when there is nothing to advertise.
+ * Relevance-ranked and capped; a `skillRun` (an explicitly invoked skill) means the user
+ * already chose, so the caller passes no catalog then.
+ */
+export function skillCatalogSystem(skills, { userText = '', cap = CATALOG_CAP } = {}) {
+  const ranked = rankSkills(skills, userText);
+  if (!ranked.length) return '';
+  let shown = ranked.slice(0, cap);
+  // If the request NAMES a skill by its handle or name, that skill must be in the catalog
+  // even past the cap — "use the foundry skill" should never fail because foundry ranked
+  // 15th. rankSkills already floats keyword matches up, so this only rescues an exact name
+  // mention in a very long list.
+  const q = String(userText || '').toLowerCase();
+  if (q) {
+    const named = ranked.filter((s) => {
+      const h = skillHandle(s);
+      const n = String(s.name || '').toLowerCase();
+      return (h && q.includes(h)) || (n.length > 2 && q.includes(n));
+    });
+    for (const s of named) if (!shown.includes(s)) shown = [s, ...shown].slice(0, cap);
+  }
+  const line = (s) => `- ${skillHandle(s) || s.name}: ${trunc(String(s.description || s.name), 90)}`;
+  const more = ranked.length > shown.length
+    ? `\n(+${ranked.length - shown.length} more — the user can type /command to run any skill directly.)`
+    : '';
+  return [
+    'SKILLS AVAILABLE — reusable procedures the user has set up. If the request clearly '
+    + 'matches one, call skill_open with its name to load its full instructions, then follow '
+    + 'them. For a simple or unrelated request, answer directly and do not open a skill.',
+    shown.map(line).join('\n') + more,
+  ].join('\n');
+}

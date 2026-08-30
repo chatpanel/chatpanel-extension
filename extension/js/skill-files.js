@@ -18,6 +18,8 @@
 //     index, so a prompt cannot talk the model into requesting ../../.ssh/id_rsa. The
 //     bridge refuses that too — this is the near side of the same boundary.
 
+import { enabledSkills, skillHandle, skillPackageFiles } from './skill-runtime.js';
+
 const MAX_CHARS = 24_000; // one reference document, not a corpus dumped into the context
 
 export const SKILL_FILE_TOOL = 'skill_file';
@@ -72,6 +74,109 @@ export function skillFileProvider({ skillRun, read }) {
         // SKILL.md, and saying so is more useful than an exception the user has to decode.
         return `Could not read ${path}: ${e?.message || e}`;
       }
+    },
+  };
+}
+
+
+// ── Discovery: use any INSTALLED skill without adding it first ─────────────────────────
+//
+// The counterpart to the level-0 catalog (skillCatalogSystem). The model sees a catalog of
+// every skill the machine has — the user's own added ones AND everything installed under
+// any known agent harness (Claude Code, Codex, Copilot, Gemini, Hermes, ~/.agents, and any
+// custom folder) — and calls skill_open(name) to load the one that fits. The full prompt is
+// fetched only on that open, so nothing but a line per skill is paid up front.
+//
+// This is what makes Add optional: you do not add a skill to USE it, only to pin it as a
+// /command or edit its prompt. An entry carries its body inline (added skills) or fetches it
+// on open (installed skills), so the catalog stays cheap either way.
+//
+// Reference files are gated behind the open: a skill's references become fetchable only
+// after the model has decided to use that skill, never before.
+
+/** A catalog entry the discovery provider works on. `prompt` may be null (loaded on open). */
+export function skillEntry(skill, { prompt = skill?.prompt ?? null } = {}) {
+  return {
+    command: skillHandle(skill),
+    name: skill?.name || skillHandle(skill),
+    description: skill?.description || '',
+    files: skillPackageFiles(skill),
+    origin: skill?.origin?.source ? { source: skill.origin.source, id: skill.origin.id || '' } : null,
+    prompt,
+  };
+}
+
+/**
+ * @param entries    merged catalog: [{ command, name, description, files, origin, prompt }]
+ * @param loadPrompt async (entry) -> the skill's full instructions (entry.prompt, or fetched)
+ * @param read       async (origin, path) -> { text } for a reference file
+ */
+export function skillDiscoveryProvider({ entries = [], loadPrompt, read }) {
+  const list = entries.filter((e) => e && e.command);
+  if (!list.length) return null;
+  const byHandle = new Map(list.map((e) => [e.command, e]));
+  const opened = new Map(); // handle -> entry; a reference is fetchable only after its open
+
+  const specs = [{
+    name: 'skill_open',
+    description:
+      'Load a skill from the SKILLS AVAILABLE list to get its full instructions. Open one '
+      + 'only when the request clearly matches it, then follow what it returns.',
+    input_schema: {
+      type: 'object',
+      properties: { name: { type: 'string', enum: [...byHandle.keys()].slice(0, 60) } },
+      required: ['name'],
+    },
+  }];
+
+  const anyFiles = typeof read === 'function' && list.some((e) => e.files?.length);
+  if (anyFiles) {
+    specs.push({
+      name: 'skill_file',
+      description: 'Read one reference file from a skill you have opened with skill_open.',
+      input_schema: {
+        type: 'object',
+        properties: { skill: { type: 'string' }, path: { type: 'string' } },
+        required: ['skill', 'path'],
+      },
+    });
+  }
+
+  return {
+    id: 'skill-discovery',
+    specs,
+    async execute(name, args) {
+      if (name === 'skill_open') {
+        const e = byHandle.get(String(args?.name || '').trim().toLowerCase());
+        if (!e) return `No such skill. Available: ${[...byHandle.keys()].join(', ')}`;
+        opened.set(e.command, e);
+        let prompt = '';
+        try { prompt = (await loadPrompt(e)) || ''; } catch (err) { return `Could not load ${e.name}: ${err?.message || err}`; }
+        let out = prompt.trim() || '(this skill has no extra instructions — just apply it.)';
+        if (e.files?.length) {
+          out += `\n\nThis skill ships reference files: ${e.files.join(', ')}. `
+            + `Call skill_file with skill="${e.command}" and one of those paths to read one, only if the task needs it.`;
+        }
+        return out;
+      }
+      if (name === 'skill_file') {
+        const e = opened.get(String(args?.skill || '').trim().toLowerCase());
+        if (!e) return 'Open the skill first with skill_open, then read its files.';
+        const path = String(args?.path || '').trim();
+        if (!e.files?.includes(path)) return `Not available. ${e.name} ships: ${(e.files || []).join(', ')}`;
+        if (!e.origin?.source) return `${e.name} has no package files on disk.`;
+        try {
+          const out = await read(e.origin, path);
+          const text = String(out?.text ?? '');
+          if (!text.trim()) return `${path} is empty.`;
+          return text.length > MAX_CHARS
+            ? `${text.slice(0, MAX_CHARS)}\n\n…[truncated — ${text.length - MAX_CHARS} more characters]`
+            : text;
+        } catch (err) {
+          return `Could not read ${path}: ${err?.message || err}`;
+        }
+      }
+      return null;
     },
   };
 }

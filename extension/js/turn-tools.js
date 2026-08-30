@@ -20,7 +20,7 @@ import { narrowToolset, isLocalToolSpec } from './tool-select.js';
 import { buildToolGroups } from './tool-groups/index.js';
 import { usableServers } from './tool-groups/mcp.js';
 import { MCP_TURN_MODES, DEFAULT_AUTO_TOOL_CAP, normalizeMcpTurnMode } from './tool-policy.js';
-import { skillToolSystem } from './skill-runtime.js';
+import { skillCatalogSystem, skillToolSystem } from './skill-runtime.js';
 import { redactionEnabled } from './pii-pipeline.js';
 import { createVault } from './pii-redact.js';
 import { isPro } from './license.js';
@@ -115,6 +115,41 @@ export async function buildTurnTools({
     if (p) providers.push(p);
   }
 
+  // SKILL DISCOVERY. When the user did not invoke a skill explicitly (no /command, no menu
+  // pick), let the model SEE every skill on the machine and pull one in on demand — the
+  // user's own added skills AND everything installed under any agent harness the bridge can
+  // read. This is what makes Add optional: you add a skill to pin or edit it, not to use it.
+  // Only reached because need.tools was true above, so a greeting carries none of it. An
+  // invoked skill (skillRun) already has its prompt inlined and its own skill_file, so this
+  // whole block is skipped then, and the two skill_file tools never collide.
+  let catalogEntries = [];
+  if (!skillRun) {
+    const { skillEntry, skillDiscoveryProvider } = await import('./skill-files.js');
+    const { readSkillFile, listBridgeSkills, readBridgeSkill } = await import('./skill-source-bridge.js');
+    const { enabledSkills } = await import('./skill-runtime.js');
+
+    // Added skills carry their body inline; installed ones are name+description now and are
+    // fetched on open. The bridge list is a cheap local call, and its failure (bridge down)
+    // just means the catalog is the added skills — never an error the turn has to handle.
+    const added = enabledSkills(settings.skills).map((s) => skillEntry(s));
+    let installed = [];
+    if (bridgeAvailable) {
+      installed = (await listBridgeSkills(bridgeUrl).catch(() => []))
+        .map((s) => skillEntry(s, { prompt: null }));
+    }
+    // The user's own version wins a handle clash — an added skill they edited beats the
+    // installed copy it came from.
+    const seen = new Set(added.map((e) => e.command));
+    catalogEntries = [...added, ...installed.filter((e) => e.command && !seen.has(e.command))];
+
+    const disc = skillDiscoveryProvider({
+      entries: catalogEntries,
+      loadPrompt: async (e) => (e.prompt != null ? e.prompt : (await readBridgeSkill(bridgeUrl, e.origin?.id))?.prompt || ''),
+      read: (origin, path) => readSkillFile({ bridgeUrl, origin, path }),
+    });
+    if (disc) providers.push(disc);
+  }
+
   const turnMcpMode = normalizeMcpTurnMode(mcpMode);
   const userCap = Number(settings?.ui?.maxToolsPerTurn) || 0;
   const cap = userCap || (turnMcpMode === MCP_TURN_MODES.AUTO ? DEFAULT_AUTO_TOOL_CAP : 0);
@@ -132,8 +167,13 @@ export async function buildTurnTools({
   // it can be asked twice without costing anything.
   const { usable } = usableServers({ settings, license, skillRun, mcpMode, userText, attachments, includeMcp });
   const skillSystem = skillToolSystem(systemSkillRun, usable);
+  // The level-0 catalog rides along ONLY when discovery is active (no invoked skill) and
+  // the model got a toolset it can call skill_open with. Ranked and capped in the helper.
+  const catalogSystem = !skillRun && toolset && catalogEntries.length ? skillCatalogSystem(catalogEntries, { userText }) : '';
   if (!toolset && skillSystem) return { specs: [], execute: async () => '', system: skillSystem };
-  if (toolset && skillSystem) toolset.system = [skillSystem, toolset.system].filter(Boolean).join('\n\n');
+  if (toolset) {
+    toolset.system = [skillSystem, catalogSystem, toolset.system].filter(Boolean).join('\n\n');
+  }
   // WHAT THE AGENT MAY STILL DO ON ITS OWN. Everything this harness says about the relayed
   // tools is a restriction — each written to stop a specific substitution — and read together
   // by an agent that also carries its own connectors they add up to "do not use your own

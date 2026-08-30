@@ -107,3 +107,18 @@ export async function readSkillFile({ bridgeUrl, origin, path }) {
     `/skills/${encodeURIComponent(skillId)}/file/${String(path).split('/').map(encodeURIComponent).join('/')}`,
   );
 }
+
+/** The installed skills the bridge sees, as lightweight records (no bodies). For the
+ *  discovery catalog — the model uses any of these without the user adding them first. */
+export async function listBridgeSkills(bridgeUrl) {
+  const { skills = [] } = await get(bridgeUrl, '/skills');
+  return skills;
+}
+
+/** One installed skill's full body, fetched only when the model opens it. */
+export async function readBridgeSkill(bridgeUrl, id) {
+  const skillId = String(id || '').split('/').pop();
+  if (!skillId) return null;
+  const { skill } = await get(bridgeUrl, `/skills/${encodeURIComponent(skillId)}`);
+  return skill || null;
+}
