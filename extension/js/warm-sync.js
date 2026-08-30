@@ -7,6 +7,16 @@
 // of IndexedDB while remaining in an encrypted backup.
 
 import { loadHistorySources } from './history-rag.js';
+import { isLoopbackHost } from './net.js';
+
+// Decrypted history may ONLY be POSTed to a loopback gateway. This is the hard
+// privacy boundary of warm sync: the corpus is plaintext in flight, so a
+// misconfigured or tampered `warmSearch.url` pointing at a remote host must fail
+// closed, not exfiltrate. Reuse the one loopback definition (net.js) rather than
+// re-deriving "is this local" here.
+export function isLoopbackGateway(gatewayUrl) {
+  try { return isLoopbackHost(new URL(gatewayUrl).hostname); } catch { return false; }
+}
 
 let syncing = false;
 const MAX_BATCH_BYTES = 4 * 1024 * 1024;
@@ -35,6 +45,9 @@ export async function syncHistoryToGateway(gatewayUrl, {
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (!gatewayUrl || syncing || typeof fetchImpl !== 'function') return { ok: false, skipped: true };
+  // Fail closed: never send the decrypted corpus off-box. A non-loopback URL here
+  // is a configuration error (or worse), not something to "try anyway".
+  if (!isLoopbackGateway(gatewayUrl)) return { ok: false, skipped: true, error: 'gateway url is not loopback — refusing to send history off-box' };
   syncing = true;
   try {
     const sources = await loadSources({ includeChats: true, includeMeetings: true, includeNotes: true });

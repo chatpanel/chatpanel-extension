@@ -13,8 +13,10 @@ import { meetingMatches } from './js/meeting-platforms.js';
 import { persistMeeting, getLatestSessionRecord, markMeetingEnded, getMeetingIndex, meetingPlatform } from './js/store-meetings.js';
 import { captureToInbox } from './js/store-notes.js';
 import { runScheduledBackupIfDue, syncBackupAlarm, BACKUP_ALARM } from './js/auto-backup.js';
+import { getSettings } from './js/store.js';
 
 const REVALIDATE_ALARM = 'chatpanel-revalidate-license';
+const WARM_SYNC_ALARM = 'chatpanel-warm-sync';   // coalesced background push of history → local gateway
 const MEETING_HB_ALARM = 'chatpanel-meeting-hb'; // un-throttled heartbeat that keeps backgrounded meeting tabs flushing
 const LIVE_TABS_KEY = 'cpLiveMeetingTabs';       // session-scoped map: tabId → { meetingId, platform }
 
@@ -237,11 +239,44 @@ chrome.runtime.onInstalled.addListener(() => {
   syncBackupAlarm().then(() => runScheduledBackupIfDue()).catch(() => {});
 });
 
+// --------------------------------------------------------------------------
+// Background warm sync (SW-owned). The side panel already pushes history to the
+// local gateway while it's OPEN — but a meeting captured, or a note written, with
+// the panel CLOSED never reached the gateway, so an agent (Codex/Claude Code) that
+// queries the gateway got a stale index and confidently denied a real record. The
+// SW closes that gap: it owns storage change events with no page open, decrypt
+// (chrome.storage.local key) and fetch, so it can sync unattended.
+//
+// Debounced through a single coalescing alarm: a burst of writes (a live meeting
+// transcript lands row by row) schedules ONE sync ~30s later, not one per row. The
+// alarm also survives the ephemeral SW being torn down mid-burst. warm-sync itself
+// is opt-in (off unless the user enabled the gateway) and fails closed on a
+// non-loopback URL, so this never sends anything off-box.
+async function runWarmSyncIfEnabled() {
+  let ws;
+  try { ws = (await getSettings())?.ui?.warmSearch; } catch { return; }
+  if (!ws?.enabled || !ws.url) return; // gateway off — nothing to do
+  try {
+    const { syncHistoryToGateway } = await import('./js/warm-sync.js');
+    await syncHistoryToGateway(ws.url);
+  } catch (e) { console.debug('[chatpanel] bg warm sync', e?.message || e); }
+}
+
+// A history write with no panel open still needs to reach the gateway. Coalesce
+// via the alarm (min granularity ~30s) so a transcript burst is one sync, not N.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (Object.keys(changes).some((k) => /^chatpanel:(conv|chat|meeting|note)/i.test(k))) {
+    chrome.alarms.create(WARM_SYNC_ALARM, { delayInMinutes: 0.5 });
+  }
+});
+
 // Re-check on browser start and on the alarm. revalidate() self-throttles and
 // fails open, so calling it liberally is safe.
 chrome.runtime.onStartup.addListener(() => {
   revalidate().catch(() => {});
   syncBackupAlarm().then(() => runScheduledBackupIfDue()).catch(() => {});
+  runWarmSyncIfEnabled().catch(() => {}); // catch up anything written while the browser was closed
 });
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === REVALIDATE_ALARM) revalidate().catch(() => {});
@@ -249,6 +284,7 @@ chrome.alarms.onAlarm.addListener((a) => {
     runScheduledBackupIfDue().finally(() => syncBackupAlarm()).catch(() => {});
   }
   else if (a.name === MEETING_HB_ALARM) meetingHeartbeat().catch(() => {});
+  else if (a.name === WARM_SYNC_ALARM) runWarmSyncIfEnabled().catch(() => {});
 });
 
 // Open the panel and hand it the click target. The panel listens for
