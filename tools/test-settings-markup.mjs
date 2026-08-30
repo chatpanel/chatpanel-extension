@@ -108,4 +108,17 @@ assert.match(
   'Locking the Skills tab on Free should still let cards be expanded and read.',
 );
 
+// The long Workspace preference groups are collapsible <details>, so a person can fold
+// away Meetings or History rather than scroll past them. Each stays a navigation target:
+// a link into a collapsed section opens it first, and the collapse state is remembered
+// per viewer without throwing in a private window.
+const workspace = html.match(/data-panel="workspace">([\s\S]*?)<section class="panel/)?.[1] || '';
+assert.equal((workspace.match(/<details class="ws-section"/g) || []).length, 3, 'Notes, Meetings and History are collapsible sections');
+assert.equal((workspace.match(/<summary class="ws-heading"/g) || []).length, 3, 'each section heading is its summary');
+assert.equal((workspace.match(/<details/g) || []).length, (workspace.match(/<\/details>/g) || []).length, 'section details are balanced');
+assert.match(js, /el\.open = true; el\.scrollIntoView/, 'navigating to a section opens it first');
+assert.match(js, /cp:settings:ws-collapsed/, 'collapse state is remembered');
+assert.match(js, /catch \{ \/\* private window/, 'and a blocked localStorage does not throw');
+assert.match(css, /details\.ws-section\[open\] > summary\.ws-heading::after/, 'the chevron reflects open/closed');
+
 console.log('settings markup tests passed');

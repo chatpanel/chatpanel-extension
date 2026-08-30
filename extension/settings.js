@@ -150,10 +150,31 @@ function wireTabs() {
   // and any stored last-tab) working by resolving them to the workspace tab and
   // scrolling to the matching section.
   const WS_ALIAS = { notes: 'ws-notes', meetings: 'ws-meetings', history: 'ws-history' };
+
+  // Remember which Workspace sections a person collapsed. A per-viewer convenience, so
+  // localStorage is the right home — every read and write guarded, because a private window
+  // or blocked site data throws rather than returning empty.
+  function wireWorkspaceSections() {
+    const KEY = 'cp:settings:ws-collapsed';
+    let collapsed = new Set();
+    try { collapsed = new Set(JSON.parse(localStorage.getItem(KEY) || '[]')); } catch { /* no store */ }
+    for (const el of document.querySelectorAll('details.ws-section')) {
+      if (collapsed.has(el.id)) el.open = false;
+      el.addEventListener('toggle', () => {
+        try {
+          const set = new Set(JSON.parse(localStorage.getItem(KEY) || '[]'));
+          if (el.open) set.delete(el.id); else set.add(el.id);
+          localStorage.setItem(KEY, JSON.stringify([...set]));
+        } catch { /* private window — the section still toggles, it just won't be remembered */ }
+      });
+    }
+  }
   const showAlias = (name) => {
     show('workspace');
     const el = document.getElementById(WS_ALIAS[name]);
-    if (el) el.scrollIntoView({ block: 'start' });
+    // A collapsed section is not a scroll target — open it first, or the link lands on a
+    // closed summary and the thing the user asked for is still hidden.
+    if (el) { el.open = true; el.scrollIntoView({ block: 'start' }); }
   };
   const select = (name) => {
     show(name);
@@ -169,6 +190,7 @@ function wireTabs() {
     select(t.dataset.tab);
     window.scrollTo({ top: 0 });
   }));
+  wireWorkspaceSections();
   // Priority: an explicit #hash (e.g. the Pro chip opens #license), else the
   // last-opened tab, else the default (API).
   const fromHash = (location.hash || '').replace('#', '');

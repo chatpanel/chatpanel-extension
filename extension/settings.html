@@ -268,8 +268,8 @@ npx @chatpanel/bridge</code></pre>
       <section class="panel hidden" data-panel="workspace">
 
         <!-- NOTES -->
-        <div class="ws-section" id="ws-notes">
-        <h3 class="ws-heading"><span class="inline-ico" data-icon="notes"></span> Notes</h3>
+        <details class="ws-section" id="ws-notes" open>
+        <summary class="ws-heading"><span class="inline-ico" data-icon="notes"></span> Notes</summary>
         <div class="card">
           <div class="card-head">
             <h2>Notes <span class="sub">— your private, on-device writing workspace</span></h2>
@@ -347,11 +347,11 @@ npx @chatpanel/bridge</code></pre>
             <button id="notes-open-backup" class="btn" type="button">Backup &amp; data <span class="inline-ico" data-icon="external-link"></span></button>
           </div>
         </div>
-        </div>
+        </details>
 
         <!-- MEETINGS -->
-        <div class="ws-section" id="ws-meetings">
-        <h3 class="ws-heading"><span class="inline-ico" data-icon="calendar"></span> Meetings</h3>
+        <details class="ws-section" id="ws-meetings" open>
+        <summary class="ws-heading"><span class="inline-ico" data-icon="calendar"></span> Meetings</summary>
         <div class="card">
           <div class="card-head">
             <h2>Meetings <span class="sub">— live scribe for Zoom, Meet, Teams &amp; Webex</span></h2>
@@ -424,11 +424,11 @@ npx @chatpanel/bridge</code></pre>
           </p>
           <p id="meeting-storage-health" class="muted tiny storage-health">Checking local storage…</p>
         </div>
-        </div><!-- /#ws-meetings -->
+        </details><!-- /#ws-meetings -->
 
         <!-- HISTORY -->
-        <div class="ws-section" id="ws-history">
-        <h3 class="ws-heading"><span class="inline-ico" data-icon="history-clock"></span> History</h3>
+        <details class="ws-section" id="ws-history" open>
+        <summary class="ws-heading"><span class="inline-ico" data-icon="history-clock"></span> History</summary>
         <div class="card">
           <div class="card-head">
             <h2>Chat history <span class="sub">— search every conversation</span></h2>
@@ -441,7 +441,7 @@ npx @chatpanel/bridge</code></pre>
             device.
           </p>
         </div>
-        </div><!-- /#ws-history -->
+        </details><!-- /#ws-history -->
 
       </section>
 

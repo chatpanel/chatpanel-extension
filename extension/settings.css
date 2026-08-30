@@ -64,6 +64,16 @@ body {
    #meetings, #history) land the section below the sticky tab bar. */
 .ws-section { scroll-margin-top: 64px; }
 .ws-section + .ws-section { margin-top: 8px; }
+/* Collapsible section. The heading is the summary; a chevron on the right rotates open. */
+details.ws-section > summary.ws-heading { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; }
+details.ws-section > summary.ws-heading::-webkit-details-marker { display: none; }
+details.ws-section > summary.ws-heading::after {
+  content: ""; margin-left: auto; width: 9px; height: 9px; border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted); transform: rotate(45deg); transition: transform .15s ease; opacity: .7;
+}
+details.ws-section[open] > summary.ws-heading::after { transform: rotate(-135deg); }
+details.ws-section > summary.ws-heading:hover::after { opacity: 1; border-color: var(--accent); }
+details.ws-section:not([open]) { padding-bottom: 4px; }
 .ws-heading {
   display: flex; align-items: center; gap: 8px; margin: 4px 0 12px;
   font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
