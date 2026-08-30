@@ -250,10 +250,11 @@ npx @chatpanel/bridge</code></pre>
             </div>
           </div>
           <p class="muted">
-            Skill folders belonging to the agent CLIs on this machine — Claude Code, Codex, Copilot,
-            Antigravity and the shared <code>~/.agents/skills</code> — so a skill you wrote in one tool shows
-            up here with no export step. <strong>Add</strong> copies one into your skills above, where you can
-            edit it. These files are not written by ChatPanel, so each row says where it came from.
+            Every skill installed on this machine — Claude Code, Codex, Copilot, Antigravity, Hermes and the
+            shared <code>~/.agents/skills</code>. <strong>You don't need to add these to use them:</strong> the
+            model can already discover and open any of them when a request calls for it. <strong>Add</strong> is
+            only for pinning one as a <code>/command</code> or editing its prompt — it copies the skill into your
+            list above. These files aren't written by ChatPanel, so each row says where it came from.
           </p>
           <p class="muted tiny" id="skill-source-roots"></p>
           <div class="row skill-dirs-row">

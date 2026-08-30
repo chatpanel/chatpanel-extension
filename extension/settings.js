@@ -3898,8 +3898,9 @@ function sourceSkillRow(skill, section, query = '') {
 
   const add = document.createElement('button');
   add.type = 'button';
-  add.className = 'btn primary';
-  add.textContent = 'Add';
+  add.className = 'btn';
+  add.textContent = 'Pin & edit';
+  add.title = 'Copy this skill into your own list to give it a /command or change its prompt. You do not need to do this to use it.';
   add.onclick = () => addSkillFromSource(section, skill, add);
 
   const actions = document.createElement('div');
