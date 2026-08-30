@@ -263,7 +263,7 @@ console.log('oauth helper tests passed');
 // failing on Firefox for everyone.
 {
   const { createHash } = await import('node:crypto');
-  const { readFileSync } = await import('node:fs');
+  const { readFileSync, existsSync } = await import('node:fs');
   const { GECKO_ID } = await import('./firefox-manifest.mjs');
 
   const expected = `https://${createHash('sha1').update(GECKO_ID).digest('hex')}`
@@ -279,11 +279,23 @@ console.log('oauth helper tests passed');
   );
 
   // …and the hosted client document has to agree, or the provider rejects the callback.
-  const cimd = JSON.parse(readFileSync(new URL('../../chatpanel/site/.well-known/oauth-cimd', import.meta.url), 'utf8'));
-  assert.ok(
-    cimd.redirect_uris.includes(expected),
-    'the CIMD document at chatpanel.net/.well-known/oauth-cimd must list the same Firefox redirect URI',
-  );
+  //
+  // THAT DOCUMENT LIVES IN THE PRIVATE REPO, and this one is public. Reading it
+  // unconditionally turned every CI run on chatpanel-extension red with an ENOENT for a
+  // sibling checkout that only exists on a maintainer's machine — a test that cannot pass
+  // where it runs is not a guard, it is a broken signal that hides the real ones behind it.
+  // Same shape as the vendored-contracts drift check: assert where the file exists, skip
+  // loudly where it cannot.
+  const cimdPath = new URL('../../chatpanel/site/.well-known/oauth-cimd', import.meta.url);
+  if (!existsSync(cimdPath)) {
+    console.log('  (skipped the CIMD cross-check — the private site repo is not checked out here)');
+  } else {
+    const cimd = JSON.parse(readFileSync(cimdPath, 'utf8'));
+    assert.ok(
+      cimd.redirect_uris.includes(expected),
+      'the CIMD document at chatpanel.net/.well-known/oauth-cimd must list the same Firefox redirect URI',
+    );
+  }
 }
 
 console.log('✓ oauth: Firefox redirect URI matches sha1(gecko id) in both the allow-list and the CIMD doc');
