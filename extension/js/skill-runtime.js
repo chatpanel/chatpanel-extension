@@ -19,6 +19,19 @@ function enabledServers(servers) {
   return (servers || []).filter((s) => s && s.enabled !== false && (s.url || s.command || s.tools?.length));
 }
 
+// A skill can be switched OFF in settings instead of deleted — it then disappears
+// from the skills menu, /commands, #mentions and meeting monitors, but keeps its
+// prompt. Skills saved before this flag existed have no `enabled`, so absence
+// means enabled; every surface must go through these two so "off" means off
+// everywhere rather than in whichever list remembered to check.
+export function isSkillEnabled(skill) {
+  return !!skill && skill.enabled !== false;
+}
+
+export function enabledSkills(skills) {
+  return (Array.isArray(skills) ? skills : []).filter(isSkillEnabled);
+}
+
 export function skillRunFromSkill(skill = {}, { includeMeetings = false } = {}) {
   const requested = normalizeHistoryContext(skill.historyContext);
   let history = null;

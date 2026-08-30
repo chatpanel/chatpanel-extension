@@ -44,6 +44,8 @@ import { argsToText, parseArgsInput, parseMcpConfig } from './js/mcp-config-impo
 import { fetchMcpRegistryPage } from './js/mcp-registry.js';
 import { searchModels, formatDownloads } from './js/model-registry.js';
 import { assistPrompt } from './js/assist.js';
+import { isSkillEnabled } from './js/skill-runtime.js';
+import { lintSkillPrompt } from './js/events/skill-vars.js';
 import { checkForUpdate, currentVersion, DOWNLOAD_URL } from './js/update.js';
 import { agentBrand, applyProviderPreset, orderedProviderPresets, providerBrand, providerPresetById, providerPresetForEndpoint } from './js/provider-presets.js';
 import { anyExpanded, forgetCard, setAllExpanded, setExpanded, wireCollapsible } from './js/collapse-cards.js';
@@ -3186,18 +3188,55 @@ async function loadMcpRegistry({ append = false, reset = false } = {}) {
 // --------------------------------------------------------------------------
 // Skills
 // --------------------------------------------------------------------------
+const skillKey = (skill) => `skill:${skill.id || skill.command || skill.name || ''}`;
+
+// Typing in the filter must NOT re-render (that would rebuild every card and steal
+// focus mid-keystroke), so filtering only toggles visibility on the live cards and
+// reads their CURRENT field values — a renamed-but-unsaved skill still matches.
+let skillFilter = '';
+
 function renderSkills() {
   const root = $('skills');
   root.innerHTML = '';
   // Skills are a Pro feature — Free sees them locked, behind an upsell banner.
   const locked = !can(license, 'customSkills');
   if (locked) root.appendChild(skillsBanner());
-  for (const skill of settings.skills) {
+  const list = settings.skills || [];
+  list.forEach((skill, i) => {
     const card = skillCard(skill);
+    setCardIndex(card, i, list.length, 'Skill'); // "N of M" — one card, one unit
     if (locked) lockCard(card);
     root.appendChild(card);
-  }
+  });
+  wireExpandAll('toggle-skills', list.map(skillKey), renderSkills);
+  // The filter only earns its space once the list is long enough to scan badly.
+  $('skill-filter-bar')?.classList.toggle('hidden', list.length < 6);
+  applySkillFilter();
   renderGateBadges();
+}
+
+// Show only the cards matching the filter box, and say how many that is.
+function applySkillFilter() {
+  const root = $('skills');
+  if (!root) return;
+  const q = skillFilter.trim().toLowerCase().replace(/^\//, '');
+  const cards = [...root.querySelectorAll('.s-entity')];
+  let shown = 0;
+  for (const card of cards) {
+    const hay = ['.s-name', '.s-cmd', '.s-desc']
+      .map((sel) => card.querySelector(sel)?.value || '')
+      .join(' ')
+      .toLowerCase();
+    const hit = !q || hay.includes(q);
+    card.classList.toggle('hidden', !hit);
+    if (hit) shown += 1;
+  }
+  const count = $('skill-count');
+  if (count) {
+    count.textContent = !cards.length ? ''
+      : q ? `${shown} of ${cards.length} skills`
+      : `${cards.length} skills`;
+  }
 }
 
 // A full-width "Skills are Pro" notice with an Upgrade button.
@@ -3215,15 +3254,17 @@ function skillsBanner() {
 }
 
 // Deactivate every control in a card (used to lock the whole Skills tab on Free).
+// The collapse chevron is deliberately spared: a locked card you can't open is a
+// card whose prompt you can't even read before deciding to upgrade.
 function lockCard(node) {
   node.classList.add('locked-card');
   node.querySelectorAll('input, select, textarea, button').forEach((el) => {
+    if (el.classList.contains('card-toggle')) return;
     el.disabled = true;
     el.classList.add('locked');
   });
 }
 
-// Chat targets a skill can be pinned to run on: any endpoint or bridge agent.
 function skillTargets() {
   return [
     ...(settings.endpoints || []).map((e) => ({ id: e.id, name: e.name })),
@@ -3235,9 +3276,31 @@ function enabledMcpServersForSkills() {
   return (settings.mcpServers || []).filter((s) => s && s.enabled !== false && (s.url || s.command));
 }
 
+// Skills have no vendor to borrow a colour from, so the card's brand rail comes
+// from the skill's own identity: a stable hash of its id picks one of a fixed
+// palette, and the chip shows the skill's emoji (falling back to its initial).
+// Same { mark, color, logo } shape as providerBrand — one applyCardBrand for all.
+const SKILL_COLORS = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#14b8a6', '#ef4444'];
+
+function skillBrand(skill, icon = skill.icon) {
+  const seed = String(skill.id || skill.command || skill.name || '');
+  let h = 0;
+  for (let i = 0; i < seed.length; i += 1) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  const mark = (icon || '').trim() || (skill.name || '?').trim().charAt(0).toUpperCase() || '?';
+  return { mark, color: SKILL_COLORS[h % SKILL_COLORS.length], logo: null };
+}
+
+// Offered under the icon field so picking one is a click, not a hunt through the
+// system emoji picker. Typing any other emoji still works.
+const SKILL_ICON_SUGGESTIONS = ['📝', '💡', '📊', '🔍', '🧭', '🧪', '✅', '🐛', '⚡', '🎯', '📌', '🧠', '✉️', '🗓️', '🎓', '🛠️'];
+
+const SKILL_CONTEXT_LABEL = {
+  auto: 'Auto context', page: 'This page', selection: 'Selection', tabs: 'All tabs', none: 'No page context',
+};
+
 function skillCard(skill) {
   const node = $('skill-tpl').content.firstElementChild.cloneNode(true);
-  hydrate(node);
+  hydrate(node); // the collapse chevron and Improve icon are data-icons
   const q = (sel) => node.querySelector(sel);
   q('.s-icon').value = skill.icon || '';
   q('.s-name').value = skill.name || '';
@@ -3248,7 +3311,11 @@ function skillCard(skill) {
   q('.s-history').value = skill.historyContext || 'none';
   q('.s-mcp-mode').value = skill.mcpMode || 'none';
   q('.s-meeting').checked = !!skill.meeting;
-  if (skill.builtin) q('.s-del').classList.add('hidden');
+  q('.s-enabled').checked = isSkillEnabled(skill);
+  if (skill.builtin) {
+    q('.s-del').classList.add('hidden');
+    q('.s-builtin').classList.remove('hidden');
+  }
 
   // "Run on" — Default (the agent picked in the panel) + every endpoint/agent.
   const agentSel = q('.s-agent');
@@ -3260,6 +3327,122 @@ function skillCard(skill) {
     if (t.id === skill.agentId) o.selected = true;
     agentSel.appendChild(o);
   }
+
+  // Collapsed by default (addSkill opens the one it just created); the summary is
+  // what you read at rest, so it has to say what this skill actually does.
+  const card = wireCollapsible(node, skillKey(skill));
+  const paintBrand = () => applyCardBrand(
+    node, skillBrand(skill, q('.s-icon').value), q('.s-name').value, 'Untitled skill',
+  );
+  const syncCardSummary = () => {
+    const cmd = q('.s-cmd').value.trim().replace(/^\//, '');
+    const target = agentSel.selectedOptions[0];
+    const bits = [
+      cmd ? `/${cmd}` : '',
+      q('.s-desc').value.trim() || SKILL_CONTEXT_LABEL[q('.s-context').value] || '',
+      target?.value ? `→ ${target.textContent}` : '',
+      q('.s-meeting').checked ? 'Meeting monitor' : '',
+      q('.s-enabled').checked ? '' : 'disabled',
+    ];
+    card.setSummary(bits.filter(Boolean).join(' · '));
+  };
+  // The head fields feed the chip, the collapsed line, the foot marker AND the
+  // filter, so every one of them repaints as you type.
+  for (const sel of ['.s-name', '.s-cmd', '.s-desc']) {
+    q(sel).addEventListener('input', () => { paintBrand(); syncCardSummary(); applySkillFilter(); });
+  }
+  q('.s-icon').addEventListener('input', paintBrand);
+  q('.s-context').addEventListener('change', syncCardSummary);
+  q('.s-meeting').addEventListener('change', syncCardSummary);
+  agentSel.addEventListener('change', syncCardSummary);
+  paintBrand();
+  syncCardSummary();
+
+  // Suggested icons — click to fill the field (and repaint the chip).
+  const picks = q('.s-icon-picks');
+  for (const emoji of SKILL_ICON_SUGGESTIONS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'icon-pick';
+    b.textContent = emoji;
+    b.title = `Use ${emoji}`;
+    b.setAttribute('aria-label', `Use icon ${emoji}`);
+    b.onclick = () => { q('.s-icon').value = emoji; paintBrand(); };
+    picks.appendChild(b);
+  }
+
+  // Variable chips — insert at the caret instead of leaving {{input}} & friends
+  // to be discovered in a placeholder that vanishes the moment you type.
+  for (const chip of node.querySelectorAll('.s-var')) {
+    chip.onclick = () => {
+      const ta = q('.s-prompt');
+      const token = chip.dataset.var;
+      const at = ta.selectionStart ?? ta.value.length;
+      const to = ta.selectionEnd ?? at;
+      ta.value = ta.value.slice(0, at) + token + ta.value.slice(to);
+      ta.focus();
+      ta.setSelectionRange(at + token.length, at + token.length);
+      syncLint();
+    };
+  }
+
+  // Placeholder lint. An invented {{content}} used to be authored, saved and run
+  // with nothing anywhere saying it would never be filled — the prompt just reached
+  // the model with the literal characters in it. This is where that becomes visible,
+  // at the moment it is written rather than three chats later.
+  const syncLint = () => {
+    const box = q('.s-lint');
+    const prompt = q('.s-prompt').value;
+    const { known, unknown, hasInput } = lintSkillPrompt(prompt);
+    box.replaceChildren();
+    box.classList.toggle('err', unknown.length > 0);
+    if (!prompt.trim()) return;
+    for (const bad of unknown) {
+      const line = document.createElement('div');
+      line.className = 's-lint-row';
+      const msg = document.createElement('span');
+      msg.textContent = `${bad.raw} isn't a ChatPanel variable — it reaches the model as literal text.`;
+      line.appendChild(msg);
+      if (bad.suggestion) {
+        const fix = document.createElement('button');
+        fix.type = 'button';
+        fix.className = 'btn ghost s-lint-fix';
+        fix.textContent = `Use {{${bad.suggestion}}}`;
+        fix.onclick = () => {
+          const ta = q('.s-prompt');
+          ta.value = ta.value.split(bad.raw).join(`{{${bad.suggestion}}}`);
+          syncLint();
+          setStatus(q('.s-status'), '✓ Replaced — Save to keep it', 'ok');
+        };
+        line.appendChild(fix);
+      }
+      box.appendChild(line);
+    }
+    if (unknown.length) return;
+    // Clean: state which slots are live, and — the part people get wrong — what
+    // happens to the user's own text when there is no {{input}} slot to put it in.
+    const line = document.createElement('div');
+    line.className = 's-lint-row ok';
+    line.textContent = known.length
+      ? `Fills at run time: ${known.map((n) => `{{${n}}}`).join(', ')}`
+      : 'No variables — whatever the user types is appended after this prompt.';
+    if (known.length && !hasInput) {
+      line.textContent += ' · no {{input}} slot, so the user\u2019s text is appended at the end.';
+    }
+    box.appendChild(line);
+  };
+  q('.s-prompt').addEventListener('input', syncLint);
+  syncLint();
+
+  // Toggling a skill off hides it everywhere (menu, /commands, #mentions) without
+  // deleting it — save immediately, like the endpoint/agent Enabled boxes.
+  q('.s-enabled').onchange = async () => {
+    skill.enabled = q('.s-enabled').checked;
+    node.classList.toggle('is-off', !skill.enabled);
+    syncCardSummary();
+    settings = await saveSettings(settings);
+  };
+  node.classList.toggle('is-off', !isSkillEnabled(skill));
 
   let draftMcpServerIds = Array.isArray(skill.mcpServerIds) ? [...skill.mcpServerIds] : [];
   const currentDraftMcpServerIds = () => [
@@ -3334,6 +3517,7 @@ function skillCard(skill) {
     let streamed = false;
     try {
       await assistPrompt({ draft: before, settings, onDelta: (full) => { streamed = true; ta.value = full; } });
+      syncLint(); // the model just rewrote the prompt — re-check what it put in it
       setStatus(q('.s-status'), '✓ Improved — review & Save', 'ok');
     } catch (e) {
       // Only roll back if nothing came through — never discard a good result
@@ -3366,8 +3550,11 @@ function skillCard(skill) {
         ? currentDraftMcpServerIds()
         : [],
       agentId: q('.s-agent').value,
+      enabled: q('.s-enabled').checked,
     });
     settings = await saveSettings(settings);
+    syncCardSummary(); // the collapsed line must reflect what was just saved
+    paintBrand();
     setStatus(q('.s-status'), '✓ Saved', 'ok');
   };
   q('.s-del').onclick = async () => {
@@ -3378,20 +3565,28 @@ function skillCard(skill) {
       body: 'This removes the skill and its prompt. This can\'t be undone.',
     }))) return;
     settings.skills = settings.skills.filter((s) => s !== skill);
+    forgetCard(skillKey(skill));
     await saveSettings(settings);
     renderSkills();
   };
   return node;
 }
 
-function addSkill() {
+async function addSkill() {
   if (!can(license, 'customSkills')) {
     return upsell('Creating custom skills is Pro. You can edit the built-ins on any plan.');
   }
-  settings.skills.push({ id: uid(), name: 'New skill', command: 'mycmd', icon: '🎓', prompt: '', historyContext: 'none', mcpMode: 'none', mcpServerIds: [] });
-  saveSettings(settings);
+  const skill = { id: uid(), name: 'New skill', command: 'mycmd', icon: '🎓', prompt: '', historyContext: 'none', mcpMode: 'none', mcpServerIds: [], enabled: true };
+  settings.skills.push(skill);
+  setExpanded(skillKey(skill), true); // you added it to configure it — open it
+  skillFilter = ''; // never add a skill straight into a filtered-out gap
+  const box = $('skill-filter');
+  if (box) box.value = '';
+  await saveSettings(settings);
   renderSkills();
-  $('skills').lastElementChild?.scrollIntoView({ behavior: 'smooth' });
+  const node = $('skills').lastElementChild;
+  node?.scrollIntoView({ behavior: 'smooth' });
+  node?.querySelector('.s-name')?.focus();
 }
 
 async function resetSkills() {
@@ -4389,7 +4584,7 @@ function mcpAddLocked() {
 }
 
 function renderGateBadges() {
-  badgeButton($('add-skill'), !can(license, 'customSkills'));
+  ['add-skill', 'add-skill-bottom'].forEach((id) => badgeButton($(id), !can(license, 'customSkills')));
   // Agents: free uses the built-in CLIs (one active) — adding more is Pro.
   const proLocked = !isPro(license);
   ['add-agent', 'add-agent-bottom'].forEach((id) => {
@@ -4461,6 +4656,8 @@ function wire() {
   $('mcp-import-cancel').onclick = () => toggleMcpImport(false);
   $('mcp-import-apply').onclick = importMcpConfig;
   $('add-skill').onclick = addSkill;
+  $('add-skill-bottom').onclick = addSkill;
+  $('skill-filter').oninput = (e) => { skillFilter = e.target.value; applySkillFilter(); };
   $('reset-skills').onclick = resetSkills;
   $('mcp-registry-search-btn').onclick = () => loadMcpRegistry();
   $('mcp-registry-more').onclick = () => loadMcpRegistry({ append: true });

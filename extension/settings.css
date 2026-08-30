@@ -359,10 +359,85 @@ select {
 }
 .btn.add-row:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-weak); }
 
-/* Skill card header: small icon swatch · name · command pill */
-.entity-head .s-icon { flex: 0 0 48px; width: 48px; text-align: center; font-size: 19px; padding: 8px 4px; }
-.entity-head .s-cmd { flex: 0 0 150px; font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
-.entity-head .s-name { flex: 1 1 150px; }
+/* Skills ------------------------------------------------------------------
+   Skill cards are the same branded, collapsible cards as endpoints and agents
+   (see .brand-card above) — one visual language for every configuration list.
+   What differs is where the brand colour comes from: a skill has no vendor, so
+   settings.js hashes its id into a fixed palette and puts the skill's emoji in
+   the chip. */
+#skills { display: flex; flex-direction: column; gap: 12px; }
+/* First section sits right under the head band — its dashed rule would double
+   up with the band's border. */
+.endpoint-section.first { margin-top: 0; padding-top: 0; border-top: none; }
+
+/* Filter bar — only rendered once the list is long enough to be worth scanning. */
+.list-filter { display: flex; align-items: center; gap: 12px; margin: 4px 0 14px; }
+.list-filter input { flex: 1 1 auto; }
+.list-filter .tiny { flex: 0 0 auto; white-space: nowrap; }
+
+/* "Built-in" marker — a label, not a control, so it must not read as clickable. */
+.entity-head .tag {
+  flex: 0 0 auto; font-size: 10.5px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 999px; color: var(--muted);
+  background: rgba(127, 127, 127, .13); border: 1px solid var(--border);
+}
+/* A switched-off skill still shows its settings; it just reads as inactive. */
+/* The chip carries an emoji, not a 2-letter monogram — it needs the room. */
+.s-entity .brand-chip { font-size: 15px; font-weight: 400; }
+.s-entity.is-off { opacity: .72; }
+.s-entity.is-off .brand-chip { filter: grayscale(1); }
+
+/* Identity: icon · /command · description, on one line that wraps on narrow windows. */
+.skill-identity-grid { display: grid; grid-template-columns: 84px minmax(0, 200px) minmax(0, 1fr); gap: 13px 16px; margin: 13px 0 10px; }
+.skill-identity-grid .s-icon { text-align: center; font-size: 19px; padding: 8px 4px; }
+/* The leading "/" belongs to the command, not to what you type — show it, don't
+   make it typed (settings.js strips a pasted one either way). */
+.prefix-field { display: flex; align-items: stretch; }
+.prefix-field .prefix-mark {
+  display: inline-grid; place-items: center; padding: 0 9px; font-family: var(--mono); font-size: 13px;
+  color: var(--muted); background: rgba(127, 127, 127, .1);
+  border: 1px solid var(--border); border-right: none; border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+.prefix-field input { flex: 1 1 auto; min-width: 0; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; font-family: var(--mono); }
+
+/* Suggested icons — one click instead of a hunt through the system emoji picker. */
+.icon-picks { display: flex; flex-wrap: wrap; gap: 6px; }
+.icon-pick {
+  width: 30px; height: 30px; padding: 0; font-size: 15px; line-height: 1; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--field);
+}
+.icon-pick:hover { border-color: var(--accent); background: var(--accent-weak); transform: translateY(-1px); }
+.icon-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Prompt tools: variable chips on the left, ✨ Improve on the right. */
+.prompt-tools { flex: 1 1 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 2px; }
+.var-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.var-chips-label { font-size: 11.5px; font-weight: 600; color: var(--faint); }
+.var-chips .chip {
+  padding: 3px 8px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); cursor: pointer;
+  background: var(--field); border: 1px solid var(--border); border-radius: 999px;
+}
+.var-chips .chip:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-weak); }
+.var-chips .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.prompt-tools .btn.assist { align-self: center; }
+
+/* Placeholder lint. An invented {{content}} used to reach the model as literal text
+   with nothing saying so; this is where it becomes visible, at authoring time. */
+.s-lint { flex: 1 1 100%; display: grid; gap: 5px; margin-top: 8px; font-size: 12px; }
+.s-lint:empty { display: none; }
+.s-lint-row {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  padding: 7px 10px; border-radius: 8px; color: var(--muted);
+  background: rgba(127, 127, 127, .08); border: 1px solid var(--border);
+}
+.s-lint-row.ok { background: transparent; border-color: transparent; padding: 0 2px; color: var(--faint); }
+.s-lint.err .s-lint-row {
+  color: #b45309; border-color: color-mix(in srgb, #b45309 32%, var(--border));
+  background: color-mix(in srgb, #b45309 8%, transparent);
+}
+.btn.s-lint-fix { flex: 0 0 auto; padding: 3px 10px; font-size: 12px; }
+
+@media (max-width: 760px) { .skill-identity-grid { grid-template-columns: 84px minmax(0, 1fr); } }
 
 .status { font-size: 12px; color: var(--muted); }
 .status.ok { color: var(--ok); } .status.err { color: var(--danger); }

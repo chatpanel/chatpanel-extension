@@ -86,4 +86,26 @@ assert.match(
   'Controls inside vertical .field layouts should keep natural height instead of stretching to the combobox flex basis.',
 );
 
+// Skills use the SAME branded collapsible card as endpoints and agents — one
+// visual language for every configuration list, and a long list you can scan.
+const skillTpl = html.match(/<template id="skill-tpl">([\s\S]*?)<\/template>/)?.[1] || '';
+assert.ok(skillTpl, 'skill template should exist');
+for (const cls of ['brand-card', 'card-toggle', 'card-index', 'card-brand', 'card-summary', 'entity-foot', 'card-foot-name']) {
+  assert.ok(skillTpl.includes(cls), `Skill cards should carry .${cls}, like endpoint and agent cards.`);
+}
+assert.match(skillTpl, /class="s-enabled"/, 'A skill should be switchable off without being deleted.');
+assert.match(html, /id="toggle-skills"/, 'The Skills list should have an Expand all / Collapse all button.');
+assert.match(html, /id="add-skill-bottom"/, 'The Skills list should repeat Add skill under the list.');
+assert.match(js, /wireCollapsible\(node, skillKey\(skill\)\)/, 'Skill cards should be collapsible.');
+assert.match(js, /wireExpandAll\('toggle-skills'/, 'Expand all should be wired for skills.');
+assert.match(js, /setCardIndex\(card, i, list\.length, 'Skill'\)/, 'Skill cards should be numbered "N of M".');
+assert.match(js, /forgetCard\(skillKey\(skill\)\)/, 'Deleting a skill should drop its remembered open/closed state.');
+// A locked card you cannot open is a prompt a Free user cannot read before
+// deciding to upgrade — the chevron is deliberately spared by lockCard.
+assert.match(
+  js,
+  /if \(el\.classList\.contains\('card-toggle'\)\) return;/,
+  'Locking the Skills tab on Free should still let cards be expanded and read.',
+);
+
 console.log('settings markup tests passed');

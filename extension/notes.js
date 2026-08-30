@@ -2203,6 +2203,7 @@ async function agentDeps() {
     getLicense: l.getLicense, canUseAgent: l.canUseAgent, can: l.can,
     buildTurnTools: t.buildTurnTools, buildRedaction: t.buildRedaction,
     skillRunFromSkill: sk.skillRunFromSkill,
+    enabledSkills: sk.enabledSkills,
   };
   return _agentDeps;
 }
@@ -3336,7 +3337,8 @@ async function runAgentTask(mention) {
 function resolveSkillMention(instruction, settings, license, deps) {
   const { name, text } = parseSkillMention(instruction);
   if (!name) return { instruction: text, skillRun: null, skillLabel: '' };
-  const skill = findSkillByName(settings.skills, name);
+  // A skill switched off in settings is not offered by '#', so it must not resolve here either.
+  const skill = findSkillByName(deps.enabledSkills(settings.skills), name);
   if (!skill) return { instruction: text, skillRun: null, skillLabel: '' };
   const skillRun = deps.skillRunFromSkill(skill, { includeMeetings: !!deps.can?.(license, 'liveMeetings') });
   return { instruction: mergeSkillPrompt(skill.prompt, text), skillRun, skillLabel: skill.name || skill.title || name };
@@ -4159,7 +4161,10 @@ async function loadMentionTargets() {
       if (name && !seen.has(name.toLowerCase())) { seen.add(name.toLowerCase()); out.push({ name }); }
     }
     mentionTargets = out;
-    mentionSkills = (s.skills || []).filter((sk) => sk && (sk.name || sk.title)).map((sk) => ({ name: sk.name || sk.title }));
+    // Dynamic: the predicate is shared with the panel & settings, but skill-runtime
+    // must not join this page's STATIC first-paint graph.
+    const { enabledSkills } = await import('./js/skill-runtime.js');
+    mentionSkills = enabledSkills(s.skills).filter((sk) => sk.name || sk.title).map((sk) => ({ name: sk.name || sk.title }));
   } catch { mentionTargets = []; mentionSkills = []; }
 }
 

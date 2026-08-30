@@ -585,6 +585,8 @@ function normalizeSkillMcpDefaults(skill, { legacyBuiltins = false } = {}) {
 export function normalizeSkillForSave(skill) {
   if (!skill || typeof skill !== 'object') return skill;
   const out = { ...skill };
+  // Skills predate the enabled flag — absence means enabled (see isSkillEnabled).
+  out.enabled = out.enabled !== false;
   const mode = String(out.mcpMode || 'none').toLowerCase();
   out.mcpMode = mode === 'selected' || mode === 'default' ? mode : 'none';
   const ids = Array.isArray(out.mcpServerIds) ? out.mcpServerIds : [];

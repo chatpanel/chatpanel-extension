@@ -5,13 +5,22 @@
 import { streamChat } from './providers.js';
 import { getTarget, resolveTarget } from './store.js';
 
-const SYSTEM =
-  'You are a prompt engineer helping a user write a better prompt for an AI ' +
-  'assistant. Rewrite their draft into a single, clear, self-contained prompt: ' +
-  'state the role/goal, the steps or criteria, and the desired output format. ' +
-  'Preserve any {{placeholders}} verbatim. Do NOT answer the prompt or add ' +
-  'commentary — output ONLY the improved prompt text, with no code fences, ' +
-  'quotes, or preamble.';
+// "Preserve any {{placeholders}} verbatim" without naming them is how models came to
+// invent {{content}} and then dutifully guard it — a slot nothing fills. The list is
+// generated from the shared declaration, so a variable added there reaches this
+// prompt without anyone remembering to edit a string.
+// Dynamic: this module is on the side panel's STATIC graph, and the variable
+// declaration is only needed once a user actually presses Improve.
+async function system() {
+  const { skillVarGuidance } = await import('./events/skill-vars.js');
+  return 'You are a prompt engineer helping a user write a better prompt for an AI '
+    + 'assistant. Rewrite their draft into a single, clear, self-contained prompt: '
+    + 'state the role/goal, the steps or criteria, and the desired output format. '
+    + skillVarGuidance()
+    + ' Do NOT answer the prompt or add '
+    + 'commentary — output ONLY the improved prompt text, with no code fences, '
+    + 'quotes, or preamble.';
+}
 
 // Resolve the model prompt-assist should run on (the active chat target), or an
 // actionable error if nothing usable is configured.
@@ -35,7 +44,7 @@ export async function assistPrompt({ draft, settings, onDelta, signal }) {
     : 'Write a useful, well-structured starter prompt for an AI assistant that works over web-page context.';
   let out = '';
   await streamChat({
-    agent: { ...agent, systemPrompt: SYSTEM, temperature: 0.4 },
+    agent: { ...agent, systemPrompt: await system(), temperature: 0.4 },
     messages: [{ role: 'user', content: instruction }],
     settings,
     signal,

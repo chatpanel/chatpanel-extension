@@ -91,7 +91,7 @@ import { assistPrompt } from './js/assist.js';
 // needed when a turn actually runs — dynamic-imported at the send/toolset sites below.
 import { upsertMeetingChatAttachment } from './js/meeting-chat-context.js';
 // history-rag.js (+ its meeting/search subgraph) is dynamic-imported inside send().
-import { skillRunFromSkill } from './js/skill-runtime.js';
+import { enabledSkills, skillRunFromSkill } from './js/skill-runtime.js';
 import { slashCommandInsert, slashCommandItems } from './js/slash-commands.js';
 import {
   HISTORY_CONTEXT_MODES,
@@ -1078,7 +1078,7 @@ function isActiveStreaming() {
 function matchSlashSkill(text) {
   const m = /^\/([a-z0-9_-]+)\s*([\s\S]*)$/i.exec(text);
   if (!m) return null;
-  const skill = state.settings.skills.find(
+  const skill = enabledSkills(state.settings.skills).find(
     (s) => (s.command || '').toLowerCase() === m[1].toLowerCase(),
   );
   return skill ? { skill, args: m[2].trim() } : null;
@@ -2007,7 +2007,11 @@ async function send() {
     } else if (sk) {
       await applySkillPrep(sk.skill);
       skillRun = skillRunFromSkill(sk.skill, { includeMeetings: can(state.license, 'liveMeetings') });
-      text = await substituteVars(sk.skill.prompt + (sk.args ? `\n\n${sk.args}` : ''), { args: sk.args });
+      // Append the typed args ONLY when the prompt has no {{input}} slot to put
+      // them in — otherwise "/fix this sentence" landed in the prompt twice.
+      const inline = (await skillVars()).lintSkillPrompt(sk.skill.prompt).hasInput;
+      const body = sk.skill.prompt + (!inline && sk.args ? `\n\n${sk.args}` : '');
+      text = await substituteVars(body, { args: sk.args });
     }
 
     // /search <query>: render each enabled engine's SERP + top results in
@@ -3135,7 +3139,7 @@ async function suggestMeetingQuestions() {
 
 // Skills the user has flagged for meetings (Unit 2 sets the flag; [] until then).
 function meetingSkills() {
-  return (state.settings?.skills || []).filter((s) => s && s.meeting && s.prompt);
+  return enabledSkills(state.settings?.skills).filter((s) => s.meeting && s.prompt);
 }
 
 function activeMonitors() {
@@ -5694,7 +5698,7 @@ function renderSkillsMenu() {
   const menu = $('skills-menu');
   menu.innerHTML = '';
   menu.appendChild(sectionLabel('Skills'));
-  for (const skill of state.settings.skills) {
+  for (const skill of enabledSkills(state.settings.skills)) {
     const item = document.createElement('button');
     item.className = 'menu-item';
     item.innerHTML = `<span>${iconForEmoji(skill.icon) || (skill.icon ? escapeAttr(skill.icon) : icon('skills'))}</span><span>${escapeAttr(skill.name)}</span><span class="mi-sub">/${escapeAttr(
@@ -5719,10 +5723,20 @@ async function applySkill(skill) {
   const input = $('input');
   await applySkillPrep(skill);
   state.pendingSkillRun = skillRunFromSkill(skill, { includeMeetings: can(state.license, 'liveMeetings') });
-  const text = await substituteVars(skill.prompt, { args: '' });
-  input.value = text + (input.value ? '\n\n' + input.value : '');
+  // Anything already in the composer is what the user wants this skill applied
+  // TO, so it fills {{input}} rather than being appended after the prompt. With
+  // an empty composer the slot collapses — but the caret is parked exactly where
+  // it was, so you just keep typing instead of hunting for the gap.
+  const typed = input.value.trim();
+  const CARET = '\u0000'; // sentinel: survives substitution, can't occur in a prompt
+  const text = await substituteVars(skill.prompt, { args: typed || CARET });
+  const at = text.indexOf(CARET);
+  const filled = at >= 0 ? text.replace(CARET, '') : text;
+  const inline = (await skillVars()).lintSkillPrompt(skill.prompt).hasInput;
+  input.value = inline ? filled : filled + (typed ? '\n\n' + typed : '');
   autoGrow();
   input.focus();
+  if (at >= 0) input.setSelectionRange(at, at);
 }
 
 // Per-skill agent + context: switch the conversation's agent and attach the
@@ -5757,23 +5771,40 @@ async function applySkillPrep(skill) {
 // Fill {{placeholders}} in a skill prompt. {{input}} (and {{input:label}}) take
 // the text typed after the command; {{url}}/{{title}}/{{date}} are sync; only
 // {{selection}} costs a tab read, and only when present.
+// Which variables exist, how they are matched and what an unknown one means all live
+// in @chatpanel/events (js/events/skill-vars.js) — the panel only supplies the four
+// PLATFORM values, because "the active tab's URL" is a chrome.tabs question the
+// gateway and a mobile client answer differently. The regex chain that used to live
+// here is exactly why {{content}} could be authored, saved and run without any
+// surface noticing it would never be filled.
+// Action-only, so it stays off the first-paint graph; resolution is cached after
+// the first skill run.
+let _skillVars = null;
+const skillVars = () => (_skillVars ||= import('./js/events/skill-vars.js'));
+
+const skillVarResolvers = () => ({
+  url: () => (state.activeTab || state.ownPageTab)?.url || '',
+  title: () => (state.activeTab || state.ownPageTab)?.title || '',
+  date: () => new Date().toLocaleDateString(),
+  // Only called when {{selection}} is actually present, so a prompt without it
+  // never pays for the tab read.
+  selection: async () => (await captureSelection()).text || '',
+});
+
 async function substituteVars(text, { args = '' } = {}) {
-  if (!text.includes('{{')) return text;
-  let out = text
-    .replace(/\{\{\s*input(?::[^}]*)?\s*\}\}/gi, args || '')
-    .replace(/\{\{\s*url\s*\}\}/gi, (state.activeTab || state.ownPageTab)?.url || '')
-    .replace(/\{\{\s*title\s*\}\}/gi, (state.activeTab || state.ownPageTab)?.title || '')
-    .replace(/\{\{\s*date\s*\}\}/gi, new Date().toLocaleDateString());
-  if (/\{\{\s*selection\s*\}\}/i.test(out)) {
-    let sel = '';
-    try {
-      sel = (await captureSelection()).text || '';
-    } catch {
-      /* nothing selected */
-    }
-    out = out.replace(/\{\{\s*selection\s*\}\}/gi, sel);
+  const { substituteSkillVars } = await skillVars();
+  const out = await substituteSkillVars(text, { args, resolvers: skillVarResolvers() });
+  // A slot that came back empty, or one that was never a real variable, leaves a
+  // prompt reading "…rewrite:" with nothing after it. Both used to be silent.
+  if (out.empty.includes('selection')) {
+    toast('This skill uses {{selection}} — nothing is selected on the page');
   }
-  return out;
+  const bad = out.unknown[0];
+  if (bad) {
+    const hint = bad.suggestion ? ` — did you mean {{${bad.suggestion}}}?` : ' — it is sent as literal text';
+    toast(`“${bad.raw}” isn't a ChatPanel variable${hint}`, 3600);
+  }
+  return out.text;
 }
 
 // ✨ Improve the composer's draft with the user's configured model, streamed in.
@@ -5947,7 +5978,7 @@ function suggestSkill(text) {
   const words = new Set(t.split(/\W+/).filter((w) => w.length > 3));
   let best = null;
   let bestScore = 0;
-  for (const skill of state.settings.skills || []) {
+  for (const skill of enabledSkills(state.settings.skills)) {
     const hay = `${skill.name} ${skill.command} ${skill.description || ''}`.toLowerCase();
     const keys = hay.split(/\W+/).filter((w) => w.length > 3);
     let score = 0;
@@ -6003,7 +6034,7 @@ function renderSlashMenu() {
   if (!m) { hideSlashMenu(); return false; }
   const prefix = m[1].toLowerCase();
   const matches = slashCommandItems({
-    skills: state.settings.skills || [],
+    skills: enabledSkills(state.settings.skills),
     prefix,
     skillsAllowed: skillsAllowed(),
     canMeetings: can(state.license, 'liveMeetings'),

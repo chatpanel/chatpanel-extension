@@ -216,17 +216,25 @@ npx @chatpanel/bridge</code></pre>
       <section class="panel hidden" data-panel="skills">
         <div class="card">
           <div class="card-head">
-            <h2>Skills</h2>
+            <h2>Skills <span class="sub">— reusable prompts &amp; slash-commands</span></h2>
             <div class="card-actions">
+              <button id="toggle-skills" class="btn ghost" type="button">Expand all</button>
               <button id="reset-skills" class="btn" type="button">Reset defaults</button>
               <button id="add-skill" class="btn primary">+ Add skill</button>
             </div>
           </div>
           <p class="muted">
-            Reusable prompts you drop into any chat with the <span class="inline-ico" data-icon="skills"></span> button. Editing the
-            built-ins is free; <strong>creating your own is Pro</strong>.
+            Reusable prompts you drop into any chat with the <span class="inline-ico" data-icon="skills"></span> button, by typing
+            <code>/command</code>, or with <code>#Skill</code> in Notes. Editing the built-ins is free;
+            <strong>creating your own is Pro</strong>.
           </p>
+          <div id="skill-filter-bar" class="list-filter hidden">
+            <input id="skill-filter" type="search" placeholder="Filter by name, /command or description" aria-label="Filter skills" />
+            <span id="skill-count" class="muted tiny"></span>
+          </div>
           <div id="skills"></div>
+          <!-- Second add button: with a skill open, the header one has scrolled away. -->
+          <button id="add-skill-bottom" class="btn add-row" type="button">+ Add skill</button>
         </div>
       </section>
 
@@ -1523,51 +1531,96 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
 
     <!-- Skill editor template -->
     <template id="skill-tpl">
-      <div class="entity">
+      <div class="entity s-entity brand-card">
         <div class="entity-head">
-          <input class="s-icon" placeholder="🎓" />
+          <button class="card-toggle" type="button" aria-expanded="false" title="Expand"><span class="inline-ico" data-icon="chevron-down"></span></button>
+          <span class="card-index" aria-hidden="true"></span>
+          <span class="brand-chip card-brand" aria-hidden="true"></span>
           <input class="s-name" placeholder="Skill name" />
-          <input class="s-cmd" placeholder="command" />
+          <span class="card-summary"></span>
+          <span class="tag s-builtin hidden" title="Ships with ChatPanel. Edit it freely — “Reset defaults” restores the original.">Built-in</span>
+          <label class="enabled-lbl" title="Uncheck to hide this skill from the skills menu, slash-commands and #mentions without deleting it"><input type="checkbox" class="s-enabled" checked /> Enabled</label>
           <button class="btn danger s-del">Delete</button>
         </div>
-        <div class="row"><label>When to use</label><input class="s-desc" placeholder="Short description — lets ChatPanel suggest this skill" /></div>
-        <div class="row prompt-row">
-          <label>Prompt</label>
-          <textarea class="s-prompt" rows="3" placeholder="What this skill asks the agent to do. Use {{input}}, {{url}}, {{title}}, {{selection}}."></textarea>
-          <button class="btn assist s-assist" title="Expand / improve with your model"><span class="inline-ico" data-icon="assist"></span> Improve</button>
+
+        <div class="endpoint-section first">
+          <div class="section-title">Identity</div>
+          <div class="skill-identity-grid">
+            <div class="field">
+              <label>Icon</label>
+              <input class="s-icon" placeholder="🎓" maxlength="8" aria-label="Skill icon" />
+            </div>
+            <div class="field">
+              <label>Slash command</label>
+              <div class="prefix-field"><span class="prefix-mark">/</span><input class="s-cmd" placeholder="mycmd" spellcheck="false" /></div>
+            </div>
+            <div class="field">
+              <label>When to use</label>
+              <input class="s-desc" placeholder="Short description — lets ChatPanel suggest this skill" />
+            </div>
+          </div>
+          <div class="icon-picks s-icon-picks" role="group" aria-label="Suggested icons"></div>
         </div>
-        <div class="row half">
-          <div><label>Run on</label><select class="s-agent"></select></div>
-          <div><label>Context</label>
-            <select class="s-context">
-              <option value="auto">Auto</option>
-              <option value="page">This page</option>
-              <option value="selection">Selection</option>
-              <option value="tabs">All tabs</option>
-              <option value="none">None</option>
-            </select>
+
+        <div class="endpoint-section">
+          <div class="section-title">Prompt</div>
+          <div class="row prompt-row">
+            <textarea class="s-prompt" rows="6" placeholder="What this skill asks the agent to do."></textarea>
+            <div class="prompt-tools">
+              <div class="var-chips" role="group" aria-label="Insert a variable">
+                <span class="var-chips-label">Insert</span>
+                <button class="chip s-var" type="button" data-var="{{input}}" title="What you type after /command — or whatever is already in the composer when you pick this skill from the ☰ Skills menu. Without this slot, your text is appended after the prompt instead.">{{input}}</button>
+                <button class="chip s-var" type="button" data-var="{{selection}}" title="Text selected on the page right now. Nothing selected = an empty slot, and the panel says so.">{{selection}}</button>
+                <button class="chip s-var" type="button" data-var="{{url}}" title="The active tab's URL">{{url}}</button>
+                <button class="chip s-var" type="button" data-var="{{title}}" title="The active tab's title">{{title}}</button>
+                <button class="chip s-var" type="button" data-var="{{date}}" title="Today's date">{{date}}</button>
+              </div>
+              <button class="btn assist s-assist" type="button" title="Expand / improve with your model"><span class="inline-ico" data-icon="assist"></span> Improve</button>
+            </div>
+            <div class="s-lint" role="status" aria-live="polite"></div>
           </div>
         </div>
-        <div class="row half">
-          <div><label>History context</label>
-            <select class="s-history">
-              <option value="none">None</option>
-              <option value="chats">Chat history</option>
-              <option value="meetings">Meeting history</option>
-              <option value="all">Chats + meetings</option>
-            </select>
+
+        <div class="endpoint-section">
+          <div class="section-title">Context &amp; tools</div>
+          <div class="row half">
+            <div><label>Run on</label><select class="s-agent"></select></div>
+            <div><label>Page context</label>
+              <select class="s-context">
+                <option value="auto">Auto</option>
+                <option value="page">This page</option>
+                <option value="selection">Selection</option>
+                <option value="tabs">All tabs</option>
+                <option value="none">None</option>
+              </select>
+            </div>
           </div>
-          <div><label>MCP tools</label>
-            <select class="s-mcp-mode">
-              <option value="default">All enabled MCP tools</option>
-              <option value="selected">Selected MCP servers</option>
-              <option value="none">No MCP tools</option>
-            </select>
+          <div class="row half">
+            <div><label>History context</label>
+              <select class="s-history">
+                <option value="none">None</option>
+                <option value="chats">Chat history</option>
+                <option value="meetings">Meeting history</option>
+                <option value="all">Chats + meetings</option>
+              </select>
+            </div>
+            <div><label>MCP tools</label>
+              <select class="s-mcp-mode">
+                <option value="default">All enabled MCP tools</option>
+                <option value="selected">Selected MCP servers</option>
+                <option value="none">No MCP tools</option>
+              </select>
+            </div>
           </div>
+          <div class="row s-mcp-picks hidden"></div>
         </div>
-        <div class="row s-mcp-picks hidden"></div>
-        <label class="check" title="Show this skill as a one-tap button in the Live monitors panel during a meeting — it re-answers from the transcript as the meeting progresses."><input type="checkbox" class="s-meeting" /> Use as a live-meeting monitor</label>
-        <div class="entity-foot"><span class="s-status status"></span><button class="btn primary s-save">Save</button></div>
+
+        <div class="endpoint-section">
+          <div class="section-title">Where it appears</div>
+          <label class="check" title="Show this skill as a one-tap button in the Live monitors panel during a meeting — it re-answers from the transcript as the meeting progresses."><input type="checkbox" class="s-meeting" /> Use as a live-meeting monitor</label>
+        </div>
+
+        <div class="entity-foot"><span class="card-foot-name"></span><span class="s-status status"></span><button class="btn primary s-save">Save</button></div>
       </div>
     </template>
 
