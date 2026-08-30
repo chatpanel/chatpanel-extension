@@ -2820,7 +2820,12 @@ function renderMcpServers() {
   if (!root) return;
   root.innerHTML = '';
   const list = settings.mcpServers || [];
-  list.forEach((s, i) => root.appendChild(mcpServerCard(s, i)));
+  list.forEach((s, i) => {
+    const node = mcpServerCard(s, i);
+    setCardIndex(node, i, list.length, 'Server'); // "N of M" — one card, one unit
+    root.appendChild(node);
+  });
+  wireExpandAll('toggle-mcp', list.map(mcpKey), renderMcpServers);
   renderMcpCatalog(); // keep "Added" state in sync
   renderGateBadges(); // add/import lock depends on the current server count
 }
@@ -2870,8 +2875,18 @@ function renderMcpToolStatus(status, tools) {
   }
 }
 
+const mcpKey = (s) => `mcp:${s.id || s.name || ''}`;
+
+// Transport is the one thing that changes what an MCP card even means — a remote URL or a
+// local process — so it picks the colour. Everything else about the server is detail.
+const MCP_BRANDS = {
+  http: { mark: 'HTTP', color: '#0ea5e9' },
+  stdio: { mark: 'CLI', color: '#8b5cf6' },
+};
+
 function mcpServerCard(server, index = 0) {
   const node = $('mcp-server-tpl').content.firstElementChild.cloneNode(true);
+  hydrate(node); // the collapse chevron is a data-icon
   const q = (sel) => node.querySelector(sel);
   const transport = server.command ? 'stdio' : server.transport || 'http';
   q('.mcp-name').value = server.name || '';
@@ -2885,12 +2900,41 @@ function mcpServerCard(server, index = 0) {
   q('.mcp-enabled').checked = server.enabled !== false;
   const status = q('.mcp-status');
 
+  // Collapsed by default, like every other configuration list. An MCP card is a long form
+  // — transport, URL, auth, or command + args + env + a paragraph of registry advice — and
+  // a page of them was the same wall the endpoint cards used to be.
+  const card = wireCollapsible(node, mcpKey(server));
+  const syncMcpSummary = () => {
+    const t = q('.mcp-transport').value;
+    const bits = [t === 'stdio' ? 'Local' : 'Remote'];
+    if (t === 'stdio') {
+      const cmd = q('.mcp-command').value.trim();
+      if (cmd) bits.push(cmd.split(/\s+/)[0]);
+    } else if (q('.mcp-url').value.trim()) {
+      bits.push(hostLabel(q('.mcp-url').value.trim()));
+    }
+    const tools = (server.tools || []).length;
+    if (tools) bits.push(`${tools} tool${tools === 1 ? '' : 's'}`);
+    if (!q('.mcp-enabled').checked) bits.push('disabled');
+    card.setSummary(bits.filter(Boolean).join(' · '));
+  };
+  const paintMcpBrand = () => {
+    const t = q('.mcp-transport').value;
+    applyCardBrand(node, { ...(MCP_BRANDS[t] || MCP_BRANDS.http), logo: null }, q('.mcp-name').value, 'Untitled server');
+  };
+
   const syncTransport = () => {
     const t = q('.mcp-transport').value;
     q('.mcp-http').classList.toggle('hidden', t !== 'http');
     q('.mcp-stdio').classList.toggle('hidden', t !== 'stdio');
+    paintMcpBrand();
+    syncMcpSummary();
   };
   syncTransport();
+  for (const sel of ['.mcp-name', '.mcp-url', '.mcp-command']) {
+    q(sel).addEventListener('input', () => { paintMcpBrand(); syncMcpSummary(); });
+  }
+  q('.mcp-enabled').addEventListener('change', syncMcpSummary);
 
   // Free uses up to FREE_LIMITS.mcpServers; servers past that are visible but
   // locked behind a Pro upsell (the runtime cap in toolsetFor matches this).
@@ -3649,6 +3693,8 @@ async function skillSources() {
 // filters a bounded list. One call shape covers both, which is the point of the contract.
 let skillSourceQuery = '';
 let skillSourceSeq = 0;
+const SKILL_SOURCE_PAGE = 8;
+let skillSourceLimit = SKILL_SOURCE_PAGE;
 
 async function renderSkillSources() {
   const card = $('skill-sources-card');
@@ -3662,6 +3708,13 @@ async function renderSkillSources() {
   if (seq !== skillSourceSeq) return;
 
   const live = sections.filter((s) => !s.absent);
+  // The folders actually scanned, straight from the bridge. Hardcoded copy naming two
+  // paths was wrong within a day of the bridge learning to read eight.
+  const rootsEl = $('skill-source-roots');
+  if (rootsEl) {
+    const roots = bridgeState?.skills?.roots || [];
+    rootsEl.textContent = roots.length ? `Scanned: ${roots.join('  ·  ')}` : '';
+  }
   // Nothing to offer and nothing wrong → the section does not exist. An empty box that
   // says "no skills" is noise on a machine that was never going to have any. But once a
   // SEARCH is running, keep it visible: "no matches" is an answer, and a section that
@@ -3697,13 +3750,31 @@ async function renderSkillSources() {
       root.appendChild(empty);
       continue;
     }
-    for (const skill of section.items) {
+    // Paged, because this grows with every agent CLI installed — one machine already
+    // reaches 18 across four folders, and a hub source would put a catalogue behind the
+    // same list. A cap with a visible remainder beats a scroll that never ends; searching
+    // narrows first, so the page limit is a floor on browsing, not a lid on finding.
+    const page = section.items.slice(0, skillSourceLimit);
+    for (const skill of page) {
       root.appendChild(sourceSkillRow(skill, section, skillSourceQuery));
       shown += 1;
     }
+    const rest = section.items.length - page.length;
+    if (rest > 0) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'btn add-row src-more';
+      more.textContent = `Show ${rest} more from ${section.label}`;
+      more.onclick = () => { skillSourceLimit += SKILL_SOURCE_PAGE; renderSkillSources(); };
+      root.appendChild(more);
+    }
   }
   const count = $('skill-source-count');
-  if (count) count.textContent = shown ? `${shown} skill${shown === 1 ? '' : 's'}` : '';
+  if (count) {
+    count.textContent = total
+      ? (shown < total ? `${shown} of ${total} skills` : `${total} skill${total === 1 ? '' : 's'}`)
+      : '';
+  }
   return { shown, total };
 }
 
@@ -4894,6 +4965,7 @@ function wire() {
   let skillSearchTimer = null;
   $('skill-source-search').oninput = (e) => {
     skillSourceQuery = e.target.value;
+    skillSourceLimit = SKILL_SOURCE_PAGE; // a new search starts at page one
     clearTimeout(skillSearchTimer);
     skillSearchTimer = setTimeout(() => renderSkillSources(), 180);
   };

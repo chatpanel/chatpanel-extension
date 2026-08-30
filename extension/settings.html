@@ -172,6 +172,7 @@ npx @chatpanel/bridge</code></pre>
           <div class="card-head">
             <h2>MCP tool servers <span class="sub">— external tools for your agents</span></h2>
             <div class="card-actions">
+              <button id="toggle-mcp" class="btn ghost" type="button">Expand all</button>
               <button id="import-mcp" class="btn" type="button">Import config</button>
               <button id="add-mcp" class="btn primary">+ Add server</button>
             </div>
@@ -191,6 +192,8 @@ npx @chatpanel/bridge</code></pre>
             </div>
           </div>
           <div id="mcp-list"></div>
+          <!-- Repeated under the list: with a server open the header button is far away. -->
+          <button id="add-mcp-bottom" class="btn add-row" type="button">+ Add server</button>
         </div>
 
         <div class="card">
@@ -247,11 +250,12 @@ npx @chatpanel/bridge</code></pre>
             </div>
           </div>
           <p class="muted">
-            Skill folders in <code>~/.chatpanel/skills</code> and <code>~/.agents/skills</code> — the shared
-            location other agent CLIs use, so a skill you wrote elsewhere shows up here with no export step.
-            <strong>Add</strong> copies one into your skills above, where you can edit it. These files are not
-            written by ChatPanel, so they are shown with where they came from.
+            Skill folders belonging to the agent CLIs on this machine — Claude Code, Codex, Copilot,
+            Antigravity and the shared <code>~/.agents/skills</code> — so a skill you wrote in one tool shows
+            up here with no export step. <strong>Add</strong> copies one into your skills above, where you can
+            edit it. These files are not written by ChatPanel, so each row says where it came from.
           </p>
+          <p class="muted tiny" id="skill-source-roots"></p>
           <div class="list-filter">
             <input id="skill-source-search" type="search" placeholder="Search skills by name or what they do" aria-label="Search available skills" />
             <span id="skill-source-count" class="muted tiny"></span>
@@ -1451,20 +1455,20 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
 
     <!-- MCP server row template -->
     <template id="mcp-server-tpl">
-      <div class="entity mcp-entity">
+      <div class="entity mcp-entity brand-card">
         <div class="entity-head">
-          <div class="mcp-head-fields">
-            <input class="mcp-name" placeholder="Name (e.g. Filesystem)" />
-            <select class="mcp-transport">
-              <option value="http">Remote (HTTP)</option>
-              <option value="stdio">Local (command)</option>
-            </select>
-            <label class="mcp-enabled-lbl"><input type="checkbox" class="mcp-enabled" checked /> Enabled</label>
-          </div>
-          <div class="mcp-actions">
-            <button class="btn mcp-test" type="button">Test</button>
-            <button class="btn danger mcp-del" type="button">Delete</button>
-          </div>
+          <button class="card-toggle" type="button" aria-expanded="false" title="Expand"><span class="inline-ico" data-icon="chevron-down"></span></button>
+          <span class="card-index" aria-hidden="true"></span>
+          <span class="brand-chip card-brand" aria-hidden="true"></span>
+          <input class="mcp-name" placeholder="Name (e.g. Filesystem)" />
+          <span class="card-summary"></span>
+          <select class="mcp-transport">
+            <option value="http">Remote (HTTP)</option>
+            <option value="stdio">Local (command)</option>
+          </select>
+          <label class="enabled-lbl mcp-enabled-lbl"><input type="checkbox" class="mcp-enabled" checked /> Enabled</label>
+          <button class="btn mcp-test" type="button">Test</button>
+          <button class="btn danger mcp-del" type="button">Delete</button>
         </div>
         <div class="mcp-status-line"><span class="mcp-status status"></span></div>
         <div class="mcp-http">
@@ -1483,6 +1487,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
           <div class="row"><label>Env vars</label><input class="mcp-env" placeholder="KEY=VALUE, comma/newline separated — tokens, proxy vars, or tool-specific env" /></div>
           <p class="muted mcp-stdio-note">Runs on your machine via the bridge (it can spawn processes; the extension can’t) — same as configuring a stdio MCP server in Claude Code / Codex. Needs the bridge running. Servers added from the registry use <code>npx</code> (Node) or <code>uvx</code> (Python), and npm ones include <code>npm_config_registry=https://registry.npmjs.org</code> in Env vars by default so they work even when your machine points npm at a private/corporate registry — remove it to use your own. <strong>If a server fails with a registry/network error</strong> (e.g. <code>FailedToOpenSocket</code>, or it times out before starting), your default package registry is unreachable — pin the public one: for <code>npx</code> add <code>--registry https://registry.npmjs.org</code> before the package name; for <code>uvx</code> add <code>--default-index &lt;pypi-simple-url&gt;</code> (Artifactory-style URLs end with <code>/api/pypi/&lt;repo&gt;/simple</code>). Use Env vars for tokens, proxy settings, or tools that explicitly read env configuration.</p>
         </div>
+        <div class="entity-foot"><span class="card-foot-name"></span><span class="mcp-foot-status status"></span></div>
       </div>
     </template>
 
