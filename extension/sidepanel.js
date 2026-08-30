@@ -1714,7 +1714,12 @@ function renderSteps(m) {
       return `${stepHeader(s, badge, stepControls(s))}${stepArgs(s)}${shot}${result}`;
     })
     .join('');
-  return `<details class="agent-steps"${open}><summary>${icon('tools')} Actions (${m.steps.length})</summary><div class="steps-body">${items}</div></details>`;
+  // Only while pending: a finished run showing "Working… 41s" would be a lie that never
+  // resolves, and the elapsed total belongs to the run summary, not to the step list.
+  const live = m.pending
+    ? '<div class="steps-live"><span class="spinner"></span><span class="steps-live-txt">Working…</span></div>'
+    : '';
+  return `<details class="agent-steps"${open}><summary>${icon('tools')} Actions (${m.steps.length})</summary><div class="steps-body">${items}${live}</div></details>`;
 }
 
 function wireStepControls(root) {
@@ -2913,9 +2918,21 @@ function renderActivity() {
 function updatePendingBubble(s, secs) {
   const conv = state.conv;
   const m = conv?.messages?.[conv.messages.length - 1];
-  if (!m || m.role !== 'assistant' || !m.pending || m.content || m.thinking || m.steps?.length) return;
-  const txt = state.bubbles.get(m.id)?.querySelector('.working-txt');
-  if (txt) txt.textContent = `${s.lastEvent || 'Working'}… ${secs}s`;
+  if (!m || m.role !== 'assistant' || !m.pending) return;
+  const bubble = state.bubbles.get(m.id);
+  if (!bubble) return;
+  const txt = bubble.querySelector('.working-txt');
+  if (txt && !m.content && !m.thinking && !m.steps?.length) {
+    txt.textContent = `${s.lastEvent || 'Working'}… ${secs}s`;
+    return;
+  }
+  // Once the first step or token lands the empty-state spinner is gone, and a long tool
+  // call — a folder scan, a build, a subagent — then looked identical to a hung run. The
+  // strip at the top is easy to miss when you are reading the steps, so the liveness
+  // indicator follows the work: it sits under the last step, where the eye already is.
+  if (!m.steps?.length) return;
+  const foot = bubble.querySelector('.steps-live-txt');
+  if (foot) foot.textContent = `${s.lastEvent || 'Working'}… ${secs}s`;
 }
 
 let activityInterval = null;
@@ -3313,12 +3330,44 @@ function renderMonitors() {
     if (editingMonitorId === m.id) card.appendChild(monitorEditor(m));
     const body = document.createElement('div');
     body.className = 'mon-card-b bubble';
-    body.innerHTML = m.answer ? renderMarkdown(m.answer) : `<span class="muted">${m.pending ? 'Answering…' : 'Waiting for the meeting…'}</span>`;
+    body.innerHTML = monitorBodyHtml(m);
     if (m.answer && !m.pending) enhanceCode(body);
     card.appendChild(body);
     list.appendChild(card);
   }
 }
+
+// A monitor accumulates findings as the meeting runs, so the card shows the NEWEST one
+// open and folds the rest away. Showing them all expanded turns a long meeting into a wall
+// nobody reads; showing only the newest hides the thread of how an answer developed.
+function monitorBodyHtml(m) {
+  const found = Array.isArray(m.findings) ? m.findings : [];
+  if (!found.length) {
+    if (m.answer) return renderMarkdown(m.answer); // pre-findings monitor, or a TL;DR
+    const waiting = m.pending ? 'Answering…' : 'Waiting for the meeting…';
+    return `<span class="muted">${waiting}</span>`;
+  }
+  const latest = found[found.length - 1];
+  const earlier = found.slice(0, -1);
+  const stamp = (f) => `<span class="mon-when">${escapeAttr(clockTime(f.t))}</span>`;
+  let html = `<div class="mon-finding">${stamp(latest)}${renderMarkdown(latest.text)}</div>`;
+  if (earlier.length) {
+    const items = earlier
+      .slice()
+      .reverse()
+      .map((f) => `<div class="mon-finding older">${stamp(f)}${renderMarkdown(f.text)}</div>`)
+      .join('');
+    html += `<details class="mon-earlier"><summary>Earlier findings (${earlier.length})</summary>${items}</details>`;
+  }
+  // "Checked, nothing new" is information: it distinguishes a monitor that is still
+  // watching from one that has stopped.
+  if (m.lastChecked && m.lastChecked > (latest.t || 0)) {
+    html += `<div class="mon-checked">No new information as of ${escapeAttr(clockTime(m.lastChecked))}</div>`;
+  }
+  return html;
+}
+
+const clockTime = (t) => new Date(t || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 // Preset per-question refresh cadences. everyMin 0 = every scribe update ("Live");
 // N = at most every N minutes (when new transcript is available); paused = never auto.
@@ -3545,7 +3594,42 @@ async function refreshMonitorsNow() {
   }
 }
 
-function monitorPrompt(m, summary, transcript) {
+// A monitor that re-answers from scratch every tick throws away everything it found
+// earlier and says the same things again — which is what a meeting attendee experiences as
+// "it keeps refreshing". Everything already reported is handed back to the model, and it is
+// asked for the DELTA only. TL;DR is the deliberate exception: a running summary that
+// accumulated would stop being a summary.
+const NOTHING_NEW = 'NOTHING NEW';
+
+// Models rarely answer with a bare sentinel — they wrap it, punctuate it, or bold it. A
+// strict equality check would treat every one of those as a finding and append a card that
+// says "NOTHING NEW", which is precisely the noise the sentinel exists to prevent.
+function isNothingNew(text) {
+  const t = String(text || '').replace(/[*_`#>\s.!]/g, ' ').trim().toUpperCase();
+  return !t || t === NOTHING_NEW || /^(NOTHING NEW|NO NEW|NONE)\b/.test(t);
+}
+const ACCUMULATES = (m) => m?.kind !== 'tldr';
+
+// Only the last few, and trimmed: this rides along on every tick, so the whole history
+// would grow the prompt without bound as the meeting runs long.
+function priorFindingsText(m) {
+  const found = (m.findings || []).slice(-8);
+  if (!found.length) return '';
+  return found
+    .map((f, i) => `${i + 1}. ${String(f.text || '').slice(0, 700)}`)
+    .join('\n');
+}
+
+function deltaInstruction(prior) {
+  if (!prior) return '';
+  return [
+    'ALREADY REPORTED — do not repeat any of this:',
+    prior,
+    `Report ONLY what is genuinely new since the above: new facts, decisions, numbers, names, corrections, or answers to parts that were previously unknown. Do not restate, re-summarize or rephrase what is listed. If a point above is now WRONG, say what changed. If the meeting has added nothing relevant since then, reply with exactly ${NOTHING_NEW} and nothing else.`,
+  ].join('\n\n');
+}
+
+function monitorPrompt(m, summary, transcript, prior = '') {
   if (m.kind === 'tldr') {
     return [
       'You are maintaining a SHORT running TL;DR of a LIVE meeting'
@@ -3559,13 +3643,15 @@ function monitorPrompt(m, summary, transcript) {
     return [
       sk?.prompt || 'Summarize the relevant part of this meeting.',
       'Apply the instruction above to the LIVE meeting. The running summary + recent transcript below are your PRIMARY source; you MAY use available tools (web search, history, MCP, etc.) to verify or add context, citing outside sources. Be concise and grounded; say plainly if still unknown; never invent.',
+      deltaInstruction(prior),
       summary && `RUNNING SUMMARY:\n${summary}`,
       `RECENT TRANSCRIPT:\n${transcript}`,
     ].filter(Boolean).join('\n\n');
   }
   return [
-    'You are keeping a SINGLE concise answer to the user’s question up to date as a LIVE meeting progresses. The meeting transcript + running summary below are your PRIMARY source — ground the answer in them and prioritize what was actually said. You MAY use available tools (web search, history, MCP, etc.) to verify or fact-check claims from the meeting and add missing context, citing any outside sources. State what is known so far, flag if still unknown, and never invent.',
+    'You are tracking the user’s question as a LIVE meeting progresses, adding findings as they emerge. The meeting transcript + running summary below are your PRIMARY source — ground everything in them and prioritize what was actually said. You MAY use available tools (web search, history, MCP, etc.) to verify or fact-check claims from the meeting and add missing context, citing any outside sources. Be concise, flag what is still unknown, and never invent.',
     `QUESTION: ${m.prompt}`,
+    deltaInstruction(prior),
     summary && `RUNNING SUMMARY:\n${summary}`,
     `RECENT TRANSCRIPT:\n${transcript}`,
   ].filter(Boolean).join('\n\n');
@@ -3583,6 +3669,12 @@ async function runMonitor(m, { force = false } = {}) {
     return { skipped: true };
   }
   m.pending = true; renderMonitors();
+  // Monitors saved before findings existed carry only their last answer; treat it as the
+  // first finding so accumulation starts from what the user can already see rather than
+  // silently dropping it.
+  if (!Array.isArray(m.findings)) m.findings = m.answer && !m.answer.startsWith('⚠') ? [{ t: m.ts || Date.now(), text: m.answer }] : [];
+  const accumulate = ACCUMULATES(m);
+  const prior = accumulate ? priorFindingsText(m) : '';
   const controller = new AbortController();
   try {
     const transcript = rec ? meetingToText(rec, { sinceTs: Date.now() - 15 * 60_000 }) : '';
@@ -3604,17 +3696,32 @@ async function runMonitor(m, { force = false } = {}) {
     let out = '';
     await streamChat({
       agent: { ...resolved, systemPrompt },
-      messages: [{ role: 'user', content: monitorPrompt(m, summary, transcript) }],
+      messages: [{ role: 'user', content: monitorPrompt(m, summary, transcript, prior) }],
       settings: state.settings,
       signal: controller.signal,
       tools,
       redaction,
       onDelta: (d) => { out += d; },
     });
-    m.answer = out.trim();
+    const text = out.trim();
+    m.error = '';
+    if (!accumulate) {
+      m.answer = text; // a running TL;DR is meant to be replaced
+    } else if (!text || isNothingNew(text)) {
+      // The meeting moved on but said nothing relevant. Keep what we have, advance the
+      // watermark, and record that we checked — an unchanged card with a fresh timestamp
+      // reads as "still watching", where a blanked one reads as broken.
+      m.lastChecked = Date.now();
+    } else {
+      m.findings.push({ t: Date.now(), text });
+      if (m.findings.length > 40) m.findings = m.findings.slice(-40);
+      m.answer = m.findings.map((f) => f.text).join('\n\n');
+    }
     m.lastTranscriptTs = latestTs; // watermark: only re-run when the transcript grows past this
   } catch (e) {
-    m.answer = `⚠ ${e.message || 'failed'}`;
+    // A failure must not erase findings the meeting already produced.
+    m.error = e.message || 'failed';
+    if (!m.findings?.length) m.answer = `⚠ ${m.error}`;
   } finally {
     m.pending = false;
     m.ts = Date.now();

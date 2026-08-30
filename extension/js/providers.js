@@ -2219,6 +2219,7 @@ export async function checkBridge(bridgeUrl) {
     return {
       ok: true, agents: json.agents || [], version: json.version, update: json.update || null,
       skills: json.skills || null,
+      workspace: json.workspace || '',
     };
   } catch (e) {
     return { ok: false, reason: e.message };

@@ -359,6 +359,9 @@ select {
 }
 .btn.add-row:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-weak); }
 
+.ba-workdir-hint { margin: -6px 0 10px; }
+.ba-workdir-hint:empty { display: none; }
+
 /* Skills ------------------------------------------------------------------
    Skill cards are the same branded, collapsible cards as endpoints and agents
    (see .brand-card above) — one visual language for every configuration list.

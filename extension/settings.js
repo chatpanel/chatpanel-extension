@@ -2550,6 +2550,10 @@ function bridgeAgentCard(agent) {
   q('.ba-enabled').checked = agent.enabled !== false;
   q('.ba-kind').value = agent.bridgeAgent || 'claude';
   q('.ba-workdir').value = agent.workingDir || '';
+  // A blank field used to mean "wherever the bridge happened to be" — the filesystem root
+  // under launchd — which is why files went missing. Say what blank resolves to, and say
+  // it here rather than leaving it to be discovered from where the files did not appear.
+  syncWorkdirHint(q);
   q('.ba-extraargs').value = agent.extraArgs || '';
   q('.ba-model').value = agent.model || '';
   q('.ba-acmodel').value = agent.autocompleteModel || '';
@@ -2581,6 +2585,9 @@ function bridgeAgentCard(agent) {
     if (q('.ba-enabled')?.checked === false) bits.push('disabled');
     card.setSummary(bits.filter(Boolean).join(' · '));
   };
+  q('.ba-workdir').addEventListener('input', () => syncWorkdirHint(q));
+  q('.ba-perm').addEventListener('change', () => syncWorkdirHint(q));
+  q('.ba-kind').addEventListener('change', () => syncWorkdirHint(q));
   q('.ba-name').oninput = () => {
     const foot = q('.card-foot-name');
     if (foot) foot.textContent = q('.ba-name').value.trim() || 'Untitled agent';
@@ -2748,6 +2755,24 @@ function bridgeAgentCard(agent) {
   };
 
   return node;
+}
+
+// What a Working directory field actually means right now: where files will land, and —
+// for Codex — that the sandbox boundary IS that directory. The reported confusion was a
+// colleague with "auto-edit files" on who still could not write: the setting was right and
+// the folder was wrong, and nothing said so.
+function syncWorkdirHint(q) {
+  const hint = q('.ba-workdir-hint');
+  if (!hint) return;
+  const typed = q('.ba-workdir')?.value.trim();
+  const dir = typed || bridgeState?.workspace || '';
+  const parts = [];
+  if (!dir) parts.push('Files go wherever the bridge is running — start the bridge to see where.');
+  else parts.push(typed ? `Files are created in ${dir}` : `Blank — files are created in ${dir}`);
+  if (q('.ba-kind')?.value === 'codex' && q('.ba-perm')?.value === 'acceptEdits' && dir) {
+    parts.push(`Codex can only edit files inside this folder — point it at a project to work on one.`);
+  }
+  hint.textContent = parts.join(' · ');
 }
 
 // Ask the bridge whether a custom agent's command resolves (PATH / full path /
