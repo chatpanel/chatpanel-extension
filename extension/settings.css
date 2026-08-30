@@ -434,6 +434,27 @@ select {
 .var-chips .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .prompt-tools .btn.assist { align-self: center; }
 
+/* "ChatPanel local" runtime status — the bridge (agents+skills) and the gateway (optional
+   upgrade). Two calm rows; a running one gets a green dot, an off one a neutral dot, and the
+   gateway-off state reads as optional, never as an error. */
+.local-runtime-card #local-runtime { display: flex; flex-direction: column; gap: 10px; }
+.runtime-row {
+  border: 1px solid var(--border); border-radius: 11px; padding: 13px 15px; background: var(--field);
+  border-left: 3px solid var(--border-strong);
+}
+.runtime-row.on { border-left-color: var(--ok, #0f9d63); background: color-mix(in srgb, var(--ok, #0f9d63) 4%, var(--field)); }
+.runtime-row.rt-gateway.on { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 4%, var(--field)); }
+.runtime-head { display: flex; align-items: center; gap: 9px; }
+.runtime-head b { font-size: 14px; }
+.runtime-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border-strong); flex: 0 0 auto; }
+.runtime-row.on .runtime-dot { background: var(--ok, #0f9d63); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok, #0f9d63) 22%, transparent); }
+.runtime-status { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.runtime-row.on .runtime-status { color: var(--ok, #0f9d63); }
+.runtime-detail { margin-top: 6px; font-size: 13px; color: var(--muted); line-height: 1.45; }
+.runtime-cta { margin-top: 8px; }
+.runtime-link { font-size: 12.5px; font-weight: 600; }
+.runtime-note { margin: 4px 2px 0; }
+
 /* Custom skill folders — a clean vertical block, NOT the flex .row (which wrapped the
    label full-width and then let the textarea and help text fight for the same line). */
 .skill-dirs { display: flex; flex-direction: column; gap: 6px; margin: 14px 0 4px; }

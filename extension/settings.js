@@ -1271,6 +1271,69 @@ async function addEndpoint() {
 function renderBridge() {
   $('bridge-url').value = settings.bridgeUrl || '';
   renderBridgeAgents();
+  renderLocalRuntime(); // the unified "ChatPanel local" status atop this tab
+}
+
+// The one place a person can see what ChatPanel is running locally: the bridge (your
+// agents + skills) and the gateway (an optional upgrade — redaction, routing, voice).
+// The framing is the point — bridge up + gateway absent is COMPLETE, not a warning.
+async function renderLocalRuntime({ recheck = false } = {}) {
+  const root = $('local-runtime');
+  if (!root) return;
+  if (recheck) {
+    bridgeState = await checkBridge(settings.bridgeUrl);
+    gatewayState = await checkGateway(settings.gatewayUrl || 'http://127.0.0.1:4320');
+  }
+  // Cheap localhost checks; run them if we have no reading yet so opening the tab shows truth.
+  if (!recheck) {
+    if (!bridgeState?.version && bridgeState?.ok !== true) bridgeState = await checkBridge(settings.bridgeUrl);
+    if (gatewayState?.ok === undefined) gatewayState = await checkGateway(settings.gatewayUrl || 'http://127.0.0.1:4320');
+  }
+
+  const bridgeOn = !!bridgeState?.ok;
+  const gwOn = !!gatewayState?.ok;
+  const agentCount = (bridgeState?.agents || []).filter((a) => a.available).length;
+  const skillCount = bridgeState?.skills?.count;
+
+  const row = ({ cls, name, on, statusText, detail, cta }) => {
+    const el = document.createElement('div');
+    el.className = `runtime-row ${cls}${on ? ' on' : ''}`;
+    const dot = `<span class="runtime-dot"></span>`;
+    const head = `<div class="runtime-head">${dot}<b>${name}</b><span class="runtime-status">${statusText}</span></div>`;
+    el.innerHTML = `${head}<div class="runtime-detail">${detail}</div>${cta ? `<div class="runtime-cta">${cta}</div>` : ''}`;
+    return el;
+  };
+
+  root.replaceChildren();
+  // Bridge — the common case, the thing that runs agents + skills.
+  root.appendChild(row({
+    cls: 'rt-bridge', name: 'Bridge', on: bridgeOn,
+    statusText: bridgeOn
+      ? `Running · v${bridgeState.version}`
+      : 'Not running',
+    detail: bridgeOn
+      ? `Your local coding agents and skills.${Number.isFinite(agentCount) ? ` ${agentCount} agent${agentCount === 1 ? '' : 's'} ready` : ''}${Number.isFinite(skillCount) ? ` · ${skillCount} skill${skillCount === 1 ? '' : 's'} discoverable` : ''}.`
+      : 'Runs your local coding agents (Claude Code, Codex, …) and makes your skills discoverable. Install it with the commands below.',
+  }));
+  // Gateway — the optional upgrade. Absent is normal.
+  root.appendChild(row({
+    cls: 'rt-gateway', name: 'Gateway', on: gwOn,
+    statusText: gwOn ? `Running · v${gatewayState.version}` : 'Optional',
+    detail: gwOn
+      ? 'The privacy upgrade: PII redaction, model routing, and voice — in front of everything above.'
+      : 'An optional upgrade that adds PII redaction, model routing and voice. You don\'t need it for local agents and skills.',
+    cta: gwOn ? '' : '<a href="#gateway" class="runtime-link">What the gateway adds →</a>',
+  }));
+
+  // The honest summary line, so "gateway not running" never reads as broken.
+  const note = document.createElement('p');
+  note.className = 'muted tiny runtime-note';
+  note.textContent = bridgeOn && gwOn
+    ? 'Both running — local traffic is routed through the gateway\'s privacy layer.'
+    : bridgeOn
+      ? 'You\'re set for local agents and skills. The gateway is an optional upgrade.'
+      : 'Start the bridge to use your local agents and skills.';
+  root.appendChild(note);
 }
 
 // --------------------------------------------------------------------------
@@ -5039,6 +5102,14 @@ function applyFreeSlot(node, item, kind) {
 function wire() {
   $('add-endpoint').onclick = addEndpoint;
   $('add-agent').onclick = addBridgeAgent;
+  $('local-recheck').onclick = () => renderLocalRuntime({ recheck: true });
+  // The "what the gateway adds" link jumps to the Gateway tab, it doesn't navigate away.
+  $('local-runtime').addEventListener('click', (e) => {
+    const a = e.target.closest('a.runtime-link');
+    if (!a) return;
+    e.preventDefault();
+    document.querySelector('.tab[data-tab="gateway"]')?.click();
+  });
   // Duplicated under each list so "add another" is in reach after scrolling past
   // the cards above it.
   $('add-endpoint-bottom').onclick = addEndpoint;

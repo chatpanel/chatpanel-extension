@@ -75,6 +75,16 @@
 
       <!-- AGENTS (local bridge / CLI) -->
       <section class="panel hidden" data-panel="agents">
+        <!-- One "ChatPanel local" picture: the bridge (agents + skills) and the gateway
+             (optional privacy/routing/voice upgrade). Bridge on + gateway off is the normal,
+             complete state — framed that way, never as a warning. -->
+        <div class="card local-runtime-card">
+          <div class="card-head">
+            <h2>ChatPanel local <span class="sub">— what's running on your machine</span></h2>
+            <button id="local-recheck" class="btn ghost" type="button"><span class="inline-ico" data-icon="refresh"></span> Recheck</button>
+          </div>
+          <div id="local-runtime"></div>
+        </div>
         <div class="card">
           <div class="card-head">
             <h2>Agents <span class="sub">— Claude Code, Codex, Antigravity CLI</span></h2>
