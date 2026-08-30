@@ -1780,7 +1780,7 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call,
       }
 
       const [router, store] = await Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)]);
-      const next = await router.routeForTurn(settings, store?.resolveTarget, {
+      const next = await router.routeForTurn(settings, (t) => store?.resolveTarget?.(t, settings), {
         capabilities: (tools?.specs || []).length ? ['tools'] : [],
         force: true,
         exclude: tried,
@@ -2019,7 +2019,7 @@ async function pickRoutedAgent(agent, settings, tools, turn, messages, sources =
       // was handed — see requirementsFor.
       background,
     };
-    const routed = await router.routeForTurn(settings, store?.resolveTarget, need);
+    const routed = await router.routeForTurn(settings, (t) => store?.resolveTarget?.(t, settings), need);
     if (!routed?.target) {
       // Auto with nothing routable is a dead end the caller cannot recover from, unlike a
       // specific model that simply answers. Say so rather than failing obscurely.
@@ -2088,7 +2088,11 @@ function recordRouteDecision(turn, agent, settings, tools, messages, background 
         sources: sourceUrlsOf(messages),
         background,
       });
-      const preview = await router.previewRoute(settings, store?.resolveTarget, need);
+      // BOUND TO THESE SETTINGS. resolveTarget(target, settings) needs both; passing the bare
+      // function meant an endpoint-backed agent resolved against `undefined` and threw, and
+      // previewRoute's catch turned that into `chosen: null` — the router silently recording
+      // no opinion on every turn, for anyone whose agent points at an endpoint.
+      const preview = await router.previewRoute(settings, (t) => store?.resolveTarget?.(t, settings), need);
       const used = agent?.id || agent?.name || agent?.model || null;
       turn.emit('policy.changed', {
         dial: 'route.observed',

@@ -11,6 +11,22 @@ const EXPIRY_SKEW_MS = 60_000;
 const OAUTH_MODES = new Set(['openrouter', 'huggingface', 'gemini']);
 const HUGGINGFACE_CIMD_CLIENT_ID = 'https://chatpanel.net/.well-known/oauth-cimd';
 
+// SIGN IN WITH YOUR OWN ACCOUNT, WITHOUT REGISTERING AN APP.
+//
+// Hugging Face refuses any redirect_uri not registered on the OAuth app, and an extension's
+// redirect URI is not ours to choose: every store assigns a different extension id, and an
+// unpacked build's id changes with the folder it was loaded from. Asking each user to create
+// their own HF OAuth app put a developer task between them and their first message — and it
+// broke again the next time the id moved, reported by the browser as the useless
+// "Authorization page could not be loaded."
+//
+// The broker holds the confidential client and registers ONE callback with HF, exactly as the
+// Google Drive broker already does. What the user sees is an ordinary Hugging Face sign-in
+// page; what they connect is their own account. A pasted Client ID still wins over this, for
+// anyone who wants their own app.
+const HUGGINGFACE_BROKER = 'https://api.chatpanel.net/oauth/huggingface';
+const BROKER_TRANSPORT = 'broker-v1';
+
 // Extension IDs whose chromiumapp.org redirect URI is registered with the hosted
 // Hugging Face CIMD client (the redirect_uris in
 // https://chatpanel.net/.well-known/oauth-cimd). Every store assigns its own extension
@@ -60,7 +76,11 @@ const PROVIDERS = {
     baseUrl: 'https://router.huggingface.co/v1',
     authorizationUrl: 'https://huggingface.co/oauth/authorize',
     tokenUrl: 'https://huggingface.co/oauth/token',
-    defaultClientId: HUGGINGFACE_CIMD_CLIENT_ID,
+    // NO defaultClientId. It used to be the hosted CIMD client, which only works from a build
+    // whose redirect URI is registered — so the default silently failed on every unpacked
+    // build and every store whose id had not been added yet. An empty client id now means
+    // "use the broker", which works from all of them.
+    broker: HUGGINGFACE_BROKER,
     scope: 'inference-api',
   },
   gemini: {
@@ -186,7 +206,7 @@ export function oauthSetupHelp(endpointOrMode) {
     return 'No client ID required. If OpenRouter returns HTTP 402 about credits or max tokens, lower Max tokens below the number in the error, or add credits in OpenRouter.';
   }
   if (mode === 'huggingface') {
-    return `No Hugging Face setup needed for a published ChatPanel build whose redirect URI is registered — it uses ${HUGGINGFACE_CIMD_CLIENT_ID} with PKCE and inference-api scope. For a local unpacked extension (or a store build whose redirect URI isn't registered yet — a first Edge or Firefox release), create a public HF OAuth app with the shown Redirect URI and paste its Client ID here.`;
+    return 'Click Connect and sign in with your Hugging Face account — nothing to register, on any build. ChatPanel asks only for inference-api scope, which can call the router and read nothing else; your account, repos and billing stay out of reach. Prefer your own OAuth app? Paste its Client ID above and it is used instead of ours.';
   }
   if (mode === 'gemini') {
     return 'Create a Google Cloud OAuth client, add this Redirect URI, enable the Gemini API, paste the Client ID, and enter the quota project ID.';
@@ -264,7 +284,18 @@ export function hasOAuthConfig(endpoint) {
   const withPreset = applyOAuthPreset(endpoint);
   const oauth = withPreset?.oauth || {};
   if (endpoint.authMode === 'gemini' && !oauth.projectId) return false;
+  // A broker supplies the client, so there is nothing left for the user to configure — which
+  // is the whole point of it. Requiring a client id here would keep the Connect button
+  // disabled for exactly the people the broker exists to serve.
+  if (usesBroker(withPreset)) return true;
   return !!(oauth.authorizationUrl && oauth.tokenUrl && oauth.clientId);
+}
+
+/** Sign-in goes through ChatPanel's broker unless the user brought their own OAuth app. */
+export function usesBroker(endpoint) {
+  const provider = oauthProvider(endpoint);
+  if (!provider?.broker) return false;
+  return !(endpoint?.oauth?.clientId || '').trim();
 }
 
 export function oauthConfigMessage(endpoint) {
@@ -272,9 +303,9 @@ export function oauthConfigMessage(endpoint) {
   if (endpoint.authMode === 'openrouter') return '';
   const withPreset = applyOAuthPreset(endpoint);
   const oauth = withPreset?.oauth || {};
-  if (endpoint.authMode === 'huggingface' && !oauth.clientId) {
-    return 'Paste the Hugging Face Client ID first. Create a public OAuth app with no secret, add the Redirect URI above, and request inference-api scope.';
-  }
+  // Nothing to say for Hugging Face any more: with no client id it uses the broker, and with
+  // one it uses that. The old message told every user to go and create an OAuth app.
+
   if (endpoint.authMode === 'gemini') {
     const missing = [];
     if (!oauth.clientId) missing.push('Google OAuth Client ID');
@@ -288,6 +319,9 @@ export function oauthConfigMessage(endpoint) {
 
 export function oauthRedirectPreflightMessage(endpoint, redirectUri) {
   const withPreset = applyOAuthPreset(endpoint);
+  // Only for someone who has deliberately pasted the hosted CIMD client id back in. It is no
+  // longer the default — the broker is — so this is now an escape hatch's guard rather than
+  // the wall every unpacked build hit.
   if (
     withPreset?.authMode === 'huggingface' &&
     withPreset.oauth?.clientId === HUGGINGFACE_CIMD_CLIENT_ID &&
@@ -370,11 +404,108 @@ export async function exchangeOpenRouterCode({ code, codeVerifier, fetchImpl = f
   };
 }
 
+/**
+ * Turn the browser's opaque auth-flow failure into something the user can act on.
+ *
+ * chrome.identity.launchWebAuthFlow reports ANY non-2xx from the authorization endpoint as
+ * the single sentence "Authorization page could not be loaded." — and a 4xx HTML page is
+ * exactly how an OAuth provider answers the two mistakes people actually make: a redirect
+ * URI that is not registered on the app, and a client ID that does not exist. So the most
+ * likely failure arrives with its cause stripped off, and the field reads as "the provider
+ * is down" when the provider is answering precisely.
+ *
+ * Hugging Face, asked with an unregistered callback, returns 400 with
+ * `x-error-message: Invalid redirect_uri, must be one of the registered redirect_uris for
+ * this client_id`. The browser never surfaces that header, so this says what it would have
+ * said — and names the exact string to paste, because the redirect URI moves on its own:
+ * an unpacked build's extension ID is derived from where it was loaded from, so reloading it
+ * from another folder silently invalidates a registration that was correct yesterday.
+ */
+export function oauthLaunchFailureMessage(error, { providerLabel, redirectUri, clientId, brokered } = {}) {
+  const raw = String(error?.message || error || '');
+  if (!/could not be loaded|Authorization page/i.test(raw)) return raw;
+  const who = providerLabel || 'The provider';
+  // NOTHING FOR THE USER TO FIX ON A BROKERED FLOW. Telling them to go and register a
+  // redirect URI would send them after a setting they do not own — the whole reason the
+  // broker exists is that this build's identity is ours to handle, not theirs.
+  if (brokered) {
+    return `${who} sign-in could not be opened ("${raw}"). This build's callback (${redirectUri || 'unknown'})`
+      + ' may not be registered with the ChatPanel sign-in service yet, or the network blocked'
+      + ' api.chatpanel.net. Check the connection and try again; if it persists, use an API key'
+      + ' on this endpoint instead — it needs no sign-in.';
+  }
+  return `${who} refused to show its sign-in page, which almost always means one of two things.`
+    + ` (1) This build's Redirect URI is not registered on the OAuth app — it must be listed`
+    + ` there character for character as: ${redirectUri || '(unknown)'}.`
+    + ` An unpacked extension's ID changes when it is loaded from a different folder, so a URI`
+    + ` that worked before can stop matching without anything being edited.`
+    + ` (2) The Client ID ${clientId ? `(${clientId}) ` : ''}does not exist, or the app was deleted.`
+    + ` The browser reports both as "${raw}" and hides the provider's own explanation.`;
+}
+
+/** The broker's authorize leg: our client, the caller's callback, the caller's PKCE. */
+export function buildBrokerAuthorizationUrl(broker, { redirectUri, state, codeChallenge }) {
+  return withQuery(`${broker}/authorize`, {
+    return_uri: redirectUri, state, code_challenge: codeChallenge,
+  });
+}
+
+/**
+ * Spend a broker ticket, or refresh against one.
+ *
+ * The ticket is opaque and useless without the PKCE verifier that never left this extension,
+ * so intercepting the callback URL buys nothing. Deliberately the same shape as the Drive
+ * transport — one broker protocol, not one per provider.
+ */
+async function exchangeBroker(broker, path, body, fetchImpl = fetch) {
+  const res = await fetchImpl(`${broker}/${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let payload = {};
+  try { payload = text ? JSON.parse(text) : {}; } catch { /* raw text in the error below */ }
+  if (!res.ok) {
+    throw new Error(`Sign-in failed: HTTP ${res.status}${payload.error ? ` — ${payload.error}` : ` — ${text.slice(0, 200)}`}`);
+  }
+  const token = normalizeTokenResponse(payload);
+  if (!token.access_token) throw new Error('Sign-in did not return an access token.');
+  return { ...token, transport: BROKER_TRANSPORT };
+}
+
+async function connectViaBroker(endpoint, provider, redirectUri) {
+  const pkce = await createOAuthState();
+  const url = buildBrokerAuthorizationUrl(provider.broker, {
+    redirectUri, state: pkce.state, codeChallenge: pkce.challenge,
+  });
+  let redirected;
+  try {
+    redirected = await chrome.identity.launchWebAuthFlow({ url, interactive: true });
+  } catch (e) {
+    throw new Error(oauthLaunchFailureMessage(e, { providerLabel: provider.label, redirectUri, brokered: true }));
+  }
+  const result = new URL(redirected);
+  if (result.searchParams.get('state') !== pkce.state) throw new Error(`${provider.label} sign-in state mismatch. Try again.`);
+  if (result.searchParams.get('error')) throw new Error(`${provider.label} sign-in was cancelled or denied.`);
+  const ticket = result.searchParams.get('broker_ticket');
+  if (!ticket) throw new Error(`${provider.label} sign-in did not return a secure exchange ticket.`);
+  return exchangeBroker(provider.broker, 'token', { ticket, code_verifier: pkce.verifier });
+}
+
 export async function connectOAuthEndpoint(endpoint) {
   endpoint = applyOAuthPreset(endpoint);
   if (!hasOAuthConfig(endpoint)) throw new Error('Fill OAuth client settings first.');
   if (!globalThis.chrome?.identity?.launchWebAuthFlow) {
     throw new Error('Chrome identity API is not available.');
+  }
+  if (usesBroker(endpoint)) {
+    const provider = oauthProvider(endpoint);
+    const token = await connectViaBroker(endpoint, provider, oauthRedirectUri(oauthProviderId(endpoint)));
+    const store = await loadTokenStore();
+    store[tokenStoreKey(endpoint)] = token;
+    await saveTokenStore(store);
+    return token;
   }
   const oauth = endpoint.oauth || {};
   const providerId = oauthProviderId(endpoint);
@@ -395,7 +526,16 @@ export async function connectOAuthEndpoint(endpoint) {
           ...(endpoint.authMode === 'gemini' ? { access_type: 'offline', prompt: 'consent' } : {}),
         },
       });
-  const redirectUrl = await chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true });
+  let redirectUrl;
+  try {
+    redirectUrl = await chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true });
+  } catch (e) {
+    throw new Error(oauthLaunchFailureMessage(e, {
+      providerLabel: PROVIDERS[endpoint.authMode]?.label || 'The provider',
+      redirectUri,
+      clientId: oauth.clientId,
+    }));
+  }
   const { code } = extractAuthorizationResult(redirectUrl, pkce.state);
   const token = endpoint.authMode === 'openrouter'
     ? await exchangeOpenRouterCode({ code, codeVerifier: pkce.verifier })
@@ -433,10 +573,15 @@ export async function getOAuthAccessToken(endpoint) {
   if (!token.refresh_token) {
     throw new Error(`${endpoint.name || 'Endpoint'} OAuth token expired. Open Settings and connect again.`);
   }
-  const refreshed = await exchangeToken(endpoint, {
-    grant_type: 'refresh_token',
-    refresh_token: token.refresh_token,
-  });
+  // REFRESH THE WAY IT WAS ISSUED. A brokered token was minted by a confidential client whose
+  // secret this extension does not have, so refreshing it directly against the provider would
+  // fail with an auth error that reads like a revoked login.
+  const refreshed = token.transport === BROKER_TRANSPORT
+    ? await exchangeBroker(oauthProvider(endpoint).broker, 'refresh', { refresh_token: token.refresh_token })
+    : await exchangeToken(endpoint, {
+      grant_type: 'refresh_token',
+      refresh_token: token.refresh_token,
+    });
   token = { ...token, ...refreshed, refresh_token: refreshed.refresh_token || token.refresh_token };
   const tokens = await loadTokenStore();
   tokens[tokenStoreKey(endpoint)] = token;

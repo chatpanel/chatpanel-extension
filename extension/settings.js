@@ -969,7 +969,7 @@ function endpointCard(ep) {
     q('.ep-oauth-clientid').placeholder = mode === 'gemini'
       ? 'Google OAuth client id'
       : mode === 'huggingface'
-        ? 'optional override; blank uses ChatPanel hosted client'
+        ? 'optional — leave blank to sign in with ChatPanel'
         : 'Public OAuth app client id';
     q('.ep-oauth-note').textContent = oauth ? oauthSetupHelp(mode) : '';
     const maxTokensNote = mode === 'openrouter'
@@ -3697,11 +3697,19 @@ function renderPrefs() {
         // means every internal page is refused rather than protected, and the person needs
         // to know that BEFORE they hit it mid-turn.
         try {
-          const { candidatesFrom, reachOf } = await import('./js/model-router.js');
+          const [{ candidatesFrom }, store] = await Promise.all([
+            import('./js/model-router.js'), import('./js/store.js'),
+          ]);
           const allowed = ceil.value === 'trusted' ? ['device', 'trusted'] : ['device'];
-          const usable = candidatesFrom(settings).filter((m) => allowed.includes(reachOf(
-            [...(settings.endpoints || []), ...(settings.agents || [])].find((t) => (t.id || t.name || t.model) === m.id) || {},
-          )));
+          // THE CANDIDATE'S OWN REACH, not a second lookup of it. Re-deriving it from the raw
+          // target found by id got two things wrong at once: an agent that points at an
+          // endpoint carries no baseUrl of its own, so it read as 'any' and was dropped from
+          // the list of models that could answer an internal page — and a reach the user had
+          // corrected was ignored, because the correction is applied by candidatesFrom and
+          // this was reading past it. Resolving the target is also what stops those agents
+          // being dropped before they are counted.
+          const usable = candidatesFrom(settings, (t) => store.resolveTarget(t, settings))
+            .filter((m) => allowed.includes(m.reach));
           note.replaceChildren();
           note.classList.toggle('warn', guard.checked && !usable.length);
           if (!guard.checked) {
@@ -5196,11 +5204,21 @@ async function renderRoutingModels() {
   if (!box) return;
   box.textContent = '';
   let candidates = [];
+  // WHAT WE GUESSED, KEPT BESIDE WHAT THE USER SAID.
+  //
+  // A control rendered only from the effective value cannot offer the way back: once an
+  // override is saved it becomes the thing the options are derived from, and the option that
+  // would undo it is the first one to stop being offered. That is exactly how "third party"
+  // became a door with no handle on the other side. Every control below therefore chooses
+  // its options from the GUESS and shows the saved value as the selection.
+  let guessed = new Map();
   try {
     const [{ candidatesFrom }, store] = await Promise.all([
       import('./js/model-router.js'), import('./js/store.js'),
     ]);
-    candidates = candidatesFrom(settings, (t) => store.resolveTarget(t, settings));
+    const resolve = (t) => store.resolveTarget(t, settings);
+    candidates = candidatesFrom(settings, resolve);
+    guessed = new Map(candidatesFrom(settings, resolve, { ignoreOverrides: true }).map((c) => [c.id, c]));
   } catch (e) {
     // Say what went wrong. A silent return turned a thrown error into "the section
     // disappeared", which is the hardest kind of bug to report and the easiest to prevent.
@@ -5213,7 +5231,7 @@ async function renderRoutingModels() {
   }
 
   const saved = settings?.ui?.routing?.models || {};
-  const { KNOWN_CAPABILITIES: CAPS } = await import('./js/model-router.js');
+  const { KNOWN_CAPABILITIES: CAPS, reachChoicesFor } = await import('./js/model-router.js');
   const CAP_SHORT_LABELS = {
     reasoning: 'Reason', 'long-context': 'Long', coding: 'Code', json: 'JSON',
   };
@@ -5229,6 +5247,20 @@ async function renderRoutingModels() {
     settings.ui.routing.models = { ...(settings.ui.routing.models || {}), [id]: { ...(saved[id] || {}), ...patch } };
     saveSettings(settings).then(() => { renderRouting(); renderRoutingModels(); }).catch(() => {});
   };
+  // Back to the guess, for the whole row at once.
+  //
+  // Each select carries its own "default" option, but the capability checkboxes are a set
+  // with no such option: touching one pins the entire array, and there is then no way to ask
+  // what we would have detected. Deleting the row's entry — rather than writing nulls over
+  // it — is also what keeps a stale correction from re-applying if the endpoint's URL later
+  // changes what we detect.
+  const clear = (id) => {
+    const models = { ...(settings?.ui?.routing?.models || {}) };
+    delete models[id];
+    settings.ui = settings.ui || {};
+    settings.ui.routing = { ...(settings.ui.routing || {}), models };
+    saveSettings(settings).then(() => { renderRouting(); renderRoutingModels(); }).catch(() => {});
+  };
 
   for (const m of candidates) {
     const row = document.createElement('div');
@@ -5236,8 +5268,13 @@ async function renderRoutingModels() {
 
     const name = document.createElement('b');
     name.textContent = m.label;
+    // Anything actually stored for this model. `null` is what a cleared control writes, so
+    // it does not count — a row read as "corrected" for a correction the user took back
+    // would leave a Reset button that resets nothing.
+    const override = saved[m.id] || {};
+    const corrected = Object.keys(override).some((k) => override[k] != null);
     const meta = document.createElement('i');
-    meta.textContent = `class ${m.classUsed}${m.available === false ? ' · unavailable' : ''}${m.rateLimited ? ' · rate limited' : ''}`;
+    meta.textContent = `class ${m.classUsed}${m.available === false ? ' · unavailable' : ''}${m.rateLimited ? ' · rate limited' : ''}${corrected ? ' · corrected' : ''}`;
 
     const quality = document.createElement('select');
     for (const [v, t] of [['', 'Quality: unrated'], ['0.9', 'Quality: high'], ['0.5', 'Quality: medium'], ['0.2', 'Quality: low']]) {
@@ -5255,10 +5292,18 @@ async function renderRoutingModels() {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = m.capabilities.includes(cap.id);
+      const wasDetected = (guessed.get(m.id)?.capabilities || []).includes(cap.id);
+      if (Array.isArray(override.capabilities) && cb.checked !== wasDetected) {
+        lbl.title += `\n(You set this. ChatPanel detected: ${wasDetected ? 'yes' : 'no'}.)`;
+      }
       cb.onchange = () => {
         const next = new Set(m.capabilities);
         if (cb.checked) next.add(cap.id); else next.delete(cap.id);
-        write(m.id, { capabilities: [...next] });
+        // Back to exactly what we detected → drop the override rather than storing a copy of
+        // the guess, so a later re-detection is still free to change its mind.
+        const detected = guessed.get(m.id)?.capabilities || [];
+        const same = next.size === detected.length && detected.every((c) => next.has(c));
+        write(m.id, { capabilities: same ? null : [...next] });
       };
       lbl.append(cb, document.createTextNode(` ${CAP_SHORT_LABELS[cap.id] || cap.label}`));
       caps.append(lbl);
@@ -5307,24 +5352,52 @@ async function renderRoutingModels() {
     prefer.onchange = () => write(m.id, { providerRank: prefer.value === '' ? null : Number(prefer.value) });
 
     const reach = document.createElement('select');
-    reach.title = 'How far a request travels to reach it. You can declare it further out, never closer in.';
-    // Named REACH_STEPS, not `order`: a local `const order` here shadowed the provider
-    // ordering computed above and put it in the temporal dead zone, so the first row threw
-    // and the whole list rendered empty. A silent catch turned that into "the section
-    // disappeared" rather than an error anyone could see.
-    const REACH_STEPS = ['device', 'trusted', 'any'];
-    for (const r of REACH_STEPS.slice(REACH_STEPS.indexOf(m.reach))) {
+    reach.title = 'How far a request travels to reach it. You can declare it further out than ChatPanel detected, never closer in — and you can always come back to what was detected.';
+    // The steps come from the router (reachChoicesFor), never from a list kept here — a
+    // second copy of the rule is what made this a one-way door in the first place. It also
+    // ends the shadowing hazard that once put the provider ordering computed above into the
+    // temporal dead zone and rendered the whole list empty.
+    const REACH_LABEL = { device: 'On this device', trusted: 'My machine/network', any: 'Third party' };
+    // OFFERED FROM WHAT WE DETECTED — NOT FROM WHAT IS SAVED.
+    //
+    // Reach still only ever moves outward; that is the privacy rule and applyOverride is what
+    // enforces it. But slicing from the CURRENT value made every step permanent: saving
+    // 'Third party' left 'Third party' as the only option, so a mis-click could not be taken
+    // back and the control looked broken while enforcing the rule perfectly. Slicing from the
+    // DETECTED reach keeps the rule — nothing closer in than we detected is ever offered —
+    // and returns the handle, because the detected step is always on the list.
+    const detectedReach = guessed.get(m.id)?.reach || m.reach;
+    const steps = reachChoicesFor(detectedReach);
+    for (const r of steps) {
       const o = document.createElement('option'); o.value = r;
-      o.textContent = { device: 'On this device', trusted: 'My machine/network', any: 'Third party' }[r];
+      // Say which one is ours. Without it, "the way back" is a guess about which entry was
+      // the original — and the user is picking among values that all look equally chosen.
+      o.textContent = r === detectedReach ? `${REACH_LABEL[r]} (detected)` : REACH_LABEL[r];
       reach.append(o);
     }
-    reach.value = m.reach;
-    reach.onchange = () => write(m.id, { reach: reach.value });
+    reach.value = steps.includes(m.reach) ? m.reach : detectedReach;
+    // Choosing the detected step CLEARS the override instead of storing a no-op copy of it:
+    // a stored 'trusted' would silently start overriding if the endpoint's URL later made us
+    // detect 'device'.
+    reach.onchange = () => write(m.id, { reach: reach.value === detectedReach ? null : reach.value });
+
+    // One way back for the whole row. The selects each have a "default" entry, but the
+    // capability checkboxes do not, and a row with several corrections is tedious to undo one
+    // control at a time.
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'btn sm routing-reset';
+    reset.textContent = 'Reset';
+    reset.disabled = !corrected;
+    reset.title = corrected
+      ? 'Forget every correction for this model and go back to what ChatPanel detects.'
+      : 'Nothing corrected — this row is what ChatPanel detected.';
+    reset.onclick = () => clear(m.id);
 
     const text = document.createElement('span');
     text.className = 'routing-model-name';
     text.append(name, meta);
-    row.append(text, caps, quality, speed, price, prefer, reach);
+    row.append(text, caps, quality, speed, price, prefer, reach, reset);
     box.append(row);
   }
 }

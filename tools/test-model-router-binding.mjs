@@ -13,7 +13,7 @@ globalThis.chrome = {
   },
 };
 
-import { candidatesFrom, previewRoute, redactionStep } from '../extension/js/model-router.js';
+import { candidatesFrom, previewRoute, redactionStep, needForTurn } from '../extension/js/model-router.js';
 
 // The settings shape this actually reads: endpoints and agents as a user configures them.
 const settings = {
@@ -167,7 +167,41 @@ const raw = candidatesFrom({ ...settings, ui: { routing: { models: { 'mqk41ucyhm
 const inferredQuality = raw.find((m) => m.id === 'mqk41ucyhmz1au').quality;
 assert.ok(Number.isFinite(inferredQuality) && inferredQuality !== 0.9, 'the inferred default was the override, or missing');
 
-console.log('✓ overrides: the user corrects the guesses, but can never widen reach');
+// A CORRECTION MUST BE TAKEABLE BACK. Outward-only is a privacy rule about where a request
+// may GO; it was also, by accident, a rule about what the settings page would still OFFER,
+// because the options were sliced from the model's CURRENT reach rather than its detected
+// one. Saving 'Third party' left 'Third party' as the only option and the row became a door
+// with no handle on the other side.
+{
+  const { reachChoicesFor } = await import('../extension/js/model-router.js');
+  // The detected value is always on the list — coming back to it drops the override rather
+  // than moving reach inward.
+  assert.deepEqual(reachChoicesFor('trusted'), ['trusted', 'any']);
+  assert.deepEqual(reachChoicesFor('device'), ['device', 'trusted', 'any']);
+  assert.deepEqual(reachChoicesFor('any'), ['any']);
+  assert.deepEqual(reachChoicesFor('nonsense'), ['device', 'trusted', 'any'], 'an unknown reach hid every choice');
+
+  // The round trip the user could not make: LAN endpoint detected 'trusted', declared 'any',
+  // then put back. Options are derived from the DETECTION, so 'trusted' is still offered, and
+  // clearing the override restores it.
+  const declared = { ...settings, ui: { routing: { models: { lan: { reach: 'any' } } } } };
+  assert.equal(candidatesFrom(declared).find((m) => m.id === 'lan').reach, 'any');
+  const detected = candidatesFrom(declared, undefined, { ignoreOverrides: true }).find((m) => m.id === 'lan').reach;
+  assert.equal(detected, 'trusted', 'the detected reach was reported as the overridden one');
+  assert.ok(reachChoicesFor(detected).includes('trusted'), 'the way back was not offered');
+  // What picking the detected step writes: null, not a stored copy of the guess — so a URL
+  // change that makes us detect 'device' later is not silently overridden by a stale
+  // 'trusted'.
+  const cleared = { ...settings, ui: { routing: { models: { lan: { reach: null } } } } };
+  assert.equal(candidatesFrom(cleared).find((m) => m.id === 'lan').reach, 'trusted');
+  // Same for the capability set, which has no "default" control of its own.
+  const noCaps = { ...settings, ui: { routing: { models: { lan: { capabilities: null } } } } };
+  const lanCaps = candidatesFrom(noCaps).find((m) => m.id === 'lan').capabilities;
+  assert.deepEqual(lanCaps, candidatesFrom(settings).find((m) => m.id === 'lan').capabilities,
+    'clearing the capability override did not restore what we detect');
+}
+
+console.log('✓ overrides: the user corrects the guesses, can never widen reach, and can always take it back');
 
 // PERSISTENCE. A rating survived being written and was then deleted by the next dial
 // change, because the preview re-renders after saving and re-assigned the whole routing
@@ -442,7 +476,86 @@ console.log('✓ an explicit "use <model>" is honoured, and a question about one
   assert.equal(ranked.at(-1).id, 'tiny', 'the smallest model was not ranked last');
 }
 
-console.log('✓ quality: sizes read as numbers, tiers named, and a frontier model is not replaced by an 8B');
+// A CLI HARNESS IS NOT THE WEAKEST THING CONFIGURED.
+//
+// Claude Code and Codex carry no `model` — the CLI picks that — and their NAMES match none of
+// the tiers, so every coding agent scored 0.5, the "genuinely unknown" default. That sits
+// UNDER the 0.55 quality floor requirementsFor puts on complex, code and structured turns, so
+// a CLI coding agent was eliminated from precisely the tasks it exists for: rejected as
+// "below the quality this task needs" while the work went to an API model.
+{
+  const agents = [
+    { id: 'cc', name: 'Claude Code', kind: 'bridge', bridgeAgent: 'claude' },
+    { id: 'cx', name: 'Codex', kind: 'bridge', bridgeAgent: 'codex' },
+    { id: 'named', name: 'Local harness', kind: 'bridge', bridgeAgent: 'x', model: 'llama-3.1-8b-instant' },
+  ];
+  const byId = Object.fromEntries(candidatesFrom({ agents }).map((m) => [m.id, m]));
+  assert.ok(byId.cc.quality > 0.55, 'a CLI coding agent stayed under the quality floor');
+  assert.equal(byId.cc.quality, byId.cx.quality);
+  // A DECLARED MODEL STILL WINS. The default is a fallback for a harness that names nothing;
+  // overriding a declared model would make `opus` indistinguishable from a bare harness, which
+  // is exactly the distance failover ranks by.
+  assert.equal(byId.named.quality, 0.3, 'the harness default overrode the model it declared');
+
+  // End to end: a coding turn now reaches the coding agent instead of being told it is not
+  // good enough for one.
+  const cfg = {
+    endpoints: [{ id: 'oai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' }],
+    agents: [agents[0]],
+  };
+  const need = needForTurn(cfg, { capabilities: ['tools'], request: { text: 'Fix this:\n```js\nfunction f(){}\n```' } });
+  const r = await previewRoute(cfg, undefined, need);
+  assert.equal(r.chosen, 'Claude Code', `a coding turn went to ${r.chosen}`);
+}
+
+console.log('✓ quality: sizes read as numbers, tiers named, a CLI harness clears the floor, and a frontier model is not replaced by an 8B');
+
+// THE CAPABILITY SWITCH HAS TO BE ABLE TO MOVE SOMETHING.
+//
+// `coding` was required only when the message CONTAINED code, so turning Coding off for one
+// agent changed nothing for "write a function that debounces this" — nothing asked for the
+// capability, and the agent kept being chosen. A lever the user cannot see working is one they
+// conclude is broken.
+{
+  const cfg = {
+    endpoints: [{ id: 'oai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' }],
+    agents: [
+      { id: 'cc', name: 'Claude Code', kind: 'bridge', bridgeAgent: 'claude' },
+      { id: 'cx', name: 'Codex', kind: 'bridge', bridgeAgent: 'codex' },
+    ],
+    // What the user did on the Plugins page: Coding on for one agent, off for the other.
+    ui: { routing: { models: { cx: { capabilities: ['tools', 'reasoning'] } } } },
+  };
+  const need = needForTurn(cfg, { capabilities: ['tools'], request: { text: 'refactor this component to use hooks' } });
+  assert.ok(need.capabilities.includes('coding'), 'a coding request did not ask for the coding capability');
+  const r = await previewRoute(cfg, undefined, need);
+  assert.equal(r.chosen, 'Claude Code');
+  assert.ok(r.rejected.some((x) => x.id === 'Codex' && /coding/.test(x.why)),
+    'the agent with Coding switched off was still eligible');
+}
+
+console.log('✓ capabilities: switching Coding off for one agent actually keeps it off coding work');
+
+// A RESOLVER IS A LOOKUP, and a failed lookup returns what it was given.
+//
+// `resolveTarget(target, settings)` threw when a caller forgot the second argument, and the
+// caller that forgot was the router's own observation path — so for anyone whose agent points
+// at an endpoint, previewRoute's catch reported `chosen: null` on every turn. The router
+// looked like it had no opinion; it was crashing.
+{
+  const { resolveTarget } = await import('../extension/js/store.js');
+  const cfg = {
+    endpoints: [{ id: 'oai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' }],
+    agents: [{ id: 'a1', name: 'My assistant', kind: 'model', endpointId: 'oai', model: 'gpt-4o' }],
+  };
+  assert.doesNotThrow(() => resolveTarget(cfg.agents[0]), 'an unbound resolver threw instead of degrading');
+  const bound = (t) => resolveTarget(t, cfg);
+  assert.deepEqual(candidatesFrom(cfg, bound).map((m) => m.id), ['oai', 'My assistant']);
+  const r = await previewRoute(cfg, bound, needForTurn(cfg, { capabilities: ['tools'], request: { text: 'summarise this page' } }));
+  assert.ok(r.chosen, `the router recorded no decision: ${r.error || 'no reason given'}`);
+}
+
+console.log('✓ resolution: an endpoint-backed agent is a candidate, and a missing settings arg degrades rather than throws');
 
 // PROVIDER PREFERENCE. The same model is often available from several places, and ties were
 // breaking alphabetically — not a preference, but the absence of one, which is how every

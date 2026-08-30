@@ -699,7 +699,12 @@ export function resolveTarget(target, settings) {
   if (!target) return null;
   if (target.kind === 'bridge') return target;
   if (!target.endpointId) return target; // an endpoint, used directly
-  const ep = (settings.endpoints || []).find((e) => e.id === target.endpointId) || {};
+  // `settings?` because a caller that forgot to pass it threw here rather than degrading, and
+  // the one caller that forgot was the router's observation path — so every turn recorded
+  // "no model chosen" for anyone with an endpoint-backed agent, which reads as the router
+  // having no opinion rather than as a crash. A resolver is a lookup; a failed lookup returns
+  // what it was given.
+  const ep = (settings?.endpoints || []).find((e) => e.id === target.endpointId) || {};
   return {
     name: target.name,
     kind: ep.kind || 'openai',

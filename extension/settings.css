@@ -775,8 +775,8 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 }
 .routing-model {
   display: grid;
-  grid-template-columns: minmax(170px, 1.4fr) minmax(330px, 2.5fr) repeat(5, minmax(108px, .85fr));
-  gap: 6px; align-items: center; min-width: 1080px; padding: 7px 8px;
+  grid-template-columns: minmax(170px, 1.4fr) minmax(330px, 2.5fr) repeat(5, minmax(108px, .85fr)) minmax(58px, auto);
+  gap: 6px; align-items: center; min-width: 1140px; padding: 7px 8px;
   border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: var(--card);
   transition: background .12s ease;
 }
@@ -793,6 +793,10 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
   width: 100%; max-width: none; padding: 6px 24px 6px 7px; border-radius: 7px;
   font-size: 11px; background-position: right 7px center;
 }
+/* The way back, per row. Quiet until there is something to undo — a live-looking button on
+   an untouched row suggests a correction that was never made. */
+.routing-model .routing-reset { width: 100%; padding: 5px 6px; font-size: 10.5px; border-radius: 7px; }
+.routing-model .routing-reset[disabled] { opacity: .35; cursor: default; border-color: var(--border); background: none; }
 
 /* Internal sites. Each built-in address family is its OWN row, so any single one can be
    excluded — all-or-nothing would force someone testing against localhost to give up the

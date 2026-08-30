@@ -985,7 +985,9 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
             models; the rules above decide which one a turn needs. Both feed every decision.
             ChatPanel guesses each model&rsquo;s cost, speed and abilities from its name and URL.
             Those guesses are often right and sometimes wrong &mdash; correct them here and routing
-            follows what you say. <strong>Reach can only be moved outward</strong>: you can tell us a
+            follows what you say. Nothing here is a one-way door: every control keeps its
+            <em>detected</em> value on the list, and <strong>Reset</strong> puts a whole row back.
+            <strong>Reach can only be moved outward</strong> of what was detected: you can tell us a
             local-looking endpoint really goes out, but not that a cloud one is on your device.
           </p>
           <div id="routing-models" class="routing-models"></div>

@@ -152,6 +152,12 @@ const TIE_BAND = 0.10;
 // worth a few seconds, which is the same reasoning the provider order already encodes.
 const SECONDS_PER_UNIT_COST = 5;
 
+// How much closer-to-home is worth in the balanced score. Lower is better, so a model on the
+// user's own machine gets a discount and a third party pays full price. Deliberately gentle:
+// a 30% edge decides between comparable candidates and loses to any real difference in speed,
+// cost or quality — privacy that ELIMINATES is the reach ceiling, and it lives in route().
+const REACH_WEIGHT = Object.freeze({ device: 0.7, trusted: 0.85, any: 1 });
+
 /**
  * The model name stripped of provider prefix and tag, so the SAME model matches across hosts:
  * `deepseek-ai/DeepSeek-V4-Flash` and `deepseek/deepseek-v4-flash` are one model reached two
@@ -190,8 +196,21 @@ export function signalsFrom(request = {}) {
     // short. The keyword heuristics are not, so those need enough surrounding text to be
     // describing code rather than mentioning it: prose can say "import" or end a line with a
     // semicolon without being a programming task.
+    // ASKING FOR CODE IS A CODING REQUEST, not only pasting some.
+    //
+    // This read the MATERIAL and nothing else, so "write a function that debounces this" —
+    // no fence, too short for the token heuristic — required no coding capability at all.
+    // That made the per-model Coding checkbox unreachable for most real coding requests:
+    // turning it off for one agent changed nothing, because nothing ever asked for it, and
+    // the agent kept being chosen. A lever that only moves on pasted code is a lever the
+    // user cannot see working.
+    //
+    // Deliberately a VERB NEXT TO A CODE NOUN rather than either alone: 'test' and 'api'
+    // appear in ordinary prose constantly, and a signal that fires on prose would put a
+    // quality floor on every message.
     code: /```/.test(text)
-      || (chars > 80 && /\bfunction\b|\bclass\b|=>|;\s*$|\bdef\b|\bimport\b|\bconst\b/m.test(text)),
+      || (chars > 80 && /\bfunction\b|\bclass\b|=>|;\s*$|\bdef\b|\bimport\b|\bconst\b/m.test(text))
+      || /\b(write|fix|debug|refactor|implement|optimi[sz]e|review|explain|generate|add|update|port|migrate)\b[^.?!]{0,60}\b(code|function|method|class|script|bug|regex|query|unit ?test|module|component|endpoint|snippet|compiler?|stack ?trace|typescript|javascript|python|rust|golang|sql|css|html)\b/i.test(text),
     complexity: (chars > 4000 || /```/.test(text)
       || (chars >= 200 && /\bstep by step\b|\bplan\b|\brefactor\b|\bmigrate\b|\banalyse|\banalyze/i.test(text)))
       ? 'high'
@@ -211,8 +230,20 @@ export function signalsFrom(request = {}) {
     // bare, they demanded a word boundary immediately after the prefix, so "summarize this
     // document" matched nothing and was classified as SMALL TALK. A prefix that can never
     // fire is worse than an absent one — it reads as covered.
+    // ASKING A QUESTION ABOUT SOMETHING IS WORK. The list below was a list of things you DO,
+    // so a request to UNDERSTAND — "can you explain what this does", "why is this failing",
+    // "how does routing pick a model" — matched nothing and came back as small talk. That is
+    // not a cosmetic misfile: small talk is what makes preferenceFor ask for LATENCY, and the
+    // latency axis reads nothing but milliseconds, so a genuine question was routed for speed
+    // and went past a free local model to a third party. The verbs of explanation and of
+    // changing code belong here for the same reason 'summarise' does.
     smalltalk: chars < 100 && !/```/.test(text)
-      && !/\b(draw|click|open|fill|read|find|search|edit|write|create|update|delete|run|fix|change|add|remove|select|scroll|extract|summar\w*|analy\w*|check|review|list|show|go to|navigate|my|mine|this page|here|it|that)\b/i.test(text),
+      && !/\b(draw|click|open|fill|read|find|search|edit|write|create|update|delete|run|fix|change|add|remove|select|scroll|extract|summar\w*|analy\w*|check|review|list|show|go to|navigate|my|mine|this page|here|it|that)\b/i.test(text)
+      && !/\b(explain|describe|define|compare|translate|why|debug|refactor|implement|improve|optimi[sz]e|convert|calculate|generate|draft|rename|build|test|install|deploy|design|plan)\b/i.test(text)
+      // 'how' only when it opens a question about something — bare "how are you" is the
+      // pleasantry this whole test exists to catch, and putting it in the word list would
+      // have reclassified the one case everybody agrees on.
+      && !/\bhow\s+(do|does|did|can|could|should|would|to|much|many|long)\b/i.test(text),
     chars,
   };
 }
@@ -600,10 +631,26 @@ export function createModelRouter({ models = [], middleware = [], strategies = [
         // zero — burying every model we have not benchmarked would make the router
         // permanently prefer whatever it happened to measure first.
         const q = Number.isFinite(m.quality) ? Math.max(0.1, m.quality) : 0.5;
-        if (prefer === 'latency') return m.latencyMs * busy;
-        if (prefer === 'cost') return m.costPer1k * busy;
+        // NEARER IS WORTH SOMETHING, and the trade-making axes are where it can be said.
+        //
+        // The provider order already claims it — "the user's own machine: no quota, no
+        // outage, no third party" is its first rung — but providerRank only arranges a
+        // near-tie, and a local model and a hosted one are almost never within the tie band.
+        // So every preference weighed time and money and ignored where the request goes, and
+        // a free model on the user's own machine lost to a third party over a latency figure
+        // that is itself a guess.
+        //
+        // A multiplier, not a term, and a small one: it shifts a close call and cannot rescue
+        // a model that is genuinely slower AND worse. Applied to 'latency', 'cost' and
+        // 'balanced' — all of which trade one number against another — and NOT to 'quality',
+        // because a nearer model is not a better one and saying so would invert that axis the
+        // way dividing by quality once inverted these. Reach remains a ceiling in route():
+        // this only orders survivors, it never admits a candidate the ceiling excluded.
+        const near = REACH_WEIGHT[m.reach] ?? 1;
+        if (prefer === 'latency') return m.latencyMs * busy * near;
+        if (prefer === 'cost') return m.costPer1k * busy * near;
         if (prefer === 'quality') return busy / q;
-        return ((m.latencyMs / 1000) + m.costPer1k * SECONDS_PER_UNIT_COST) * busy / q;
+        return ((m.latencyMs / 1000) + m.costPer1k * SECONDS_PER_UNIT_COST) * busy * near / q;
       };
       // ORDER IS A SETTING, NOT A TIE-BREAK THAT NEVER FIRES.
       //

@@ -142,6 +142,21 @@ function qualityOf(target) {
   if (/instant|mini|nano|tiny|lite|-small\b|haiku/.test(m)) return 0.3;
   if (/opus|gpt-5|o1|o3|\bpro\b|ultra|deepseek-r|thinking/.test(m)) return 0.9;
   if (/sonnet|gpt-4|flash|gemini|deepseek|qwen|mistral|codestral/.test(m)) return 0.6;
+  // A CLI HARNESS IS NOT AN UNKNOWN MODEL, and the harness's NAME is not its model's name.
+  //
+  // Claude Code, Codex and the rest usually carry no `model` string — the CLI picks that
+  // itself — and 'Claude Code' matches none of the tiers above, so every coding agent landed
+  // on the "genuinely unknown" 0.5 below. requirementsFor puts a 0.55 quality floor on
+  // complex, code and structured turns, so 0.5 meant a CLI coding agent was ELIMINATED from
+  // precisely the tasks it exists for — rejected as "below the quality this task needs" while
+  // the work went to an API model. A harness running a frontier model behind its own loop is
+  // not the weakest thing configured.
+  //
+  // LAST, not first: an agent that names its model has told us something better than this
+  // default, and overriding it would make a declared `opus` indistinguishable from a bare
+  // harness — which is exactly the distance failover ranks by.
+  if (target.kind === 'bridge') return 0.8;
+
   return 0.5;   // genuinely unknown: mid-table, so it is neither buried nor promoted
 }
 
@@ -244,6 +259,27 @@ export function applyOverride(inferred, override = {}) {
 }
 
 const REACH_RANK = { device: 0, trusted: 1, any: 2 };
+const REACH_STEPS = ['device', 'trusted', 'any'];
+
+/**
+ * The reach values a user may declare for a model we detected as `detected`.
+ *
+ * The rule and the CONTROL that offers it have to come from one place. They did not: the
+ * settings page built its options by slicing from the model's CURRENT reach, which is the
+ * value after the override has been applied — so saving 'any' left 'any' as the only option
+ * and the correction could never be taken back. Enforcing outward-only in applyOverride while
+ * a second copy of the rule decided what to offer is what turned a safety rule into a
+ * one-way door.
+ *
+ * Always includes `detected` itself: coming back to what we detected is not moving inward, it
+ * is dropping the override. Anything closer in than the detection is never offered, because
+ * applyOverride would refuse it and a control that silently discards half its own values is
+ * worse than no control.
+ */
+export function reachChoicesFor(detected) {
+  const i = REACH_STEPS.indexOf(detected);
+  return i < 0 ? [...REACH_STEPS] : REACH_STEPS.slice(i);
+}
 
 /** Build candidates from the user's own configuration. */
 export function candidatesFrom(settings = {}, resolveTarget = (x) => x, { ignoreOverrides = false } = {}) {
