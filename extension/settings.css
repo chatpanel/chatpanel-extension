@@ -436,6 +436,12 @@ select {
 .src-skill-from { font-family: var(--mono); font-size: 11.5px; color: var(--faint); white-space: nowrap; }
 .src-skill-files { font-family: var(--mono); text-transform: none; letter-spacing: 0; }
 .src-skill-actions { display: flex; gap: 7px; }
+/* Which source a run of rows came from — only rendered once there is more than one. */
+.src-group {
+  margin: 6px 0 -2px; font-size: 11.5px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--faint);
+}
+.src-skill mark { background: var(--accent-weak); color: inherit; border-radius: 3px; padding: 0 1px; }
 .src-skill-body {
   grid-column: 1 / -1; margin: 4px 0 0; max-height: 340px; overflow: auto;
   padding: 11px 13px; border-radius: 8px; background: rgba(127, 127, 127, .1);

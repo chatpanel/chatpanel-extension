@@ -3615,19 +3615,33 @@ async function skillSources() {
   return skillSourceReg;
 }
 
+// The query goes TO the source, not to a filter over what a source already returned: a
+// hub searches server-side over a catalogue it never sends in full, and the local bridge
+// filters a bounded list. One call shape covers both, which is the point of the contract.
+let skillSourceQuery = '';
+let skillSourceSeq = 0;
+
 async function renderSkillSources() {
   const card = $('skill-sources-card');
   const root = $('skill-sources');
   if (!card || !root) return;
+  // Searching is async and per-keystroke; only the newest result may paint, or a slow
+  // source answering late would overwrite a newer query's results.
+  const seq = ++skillSourceSeq;
   const reg = await skillSources();
-  const sections = await reg.search({});
+  const sections = await reg.search({ query: skillSourceQuery });
+  if (seq !== skillSourceSeq) return;
+
   const live = sections.filter((s) => !s.absent);
   // Nothing to offer and nothing wrong → the section does not exist. An empty box that
-  // says "no skills" is noise on a machine that was never going to have any.
-  card.classList.toggle('hidden', !live.length);
-  if (!live.length) return;
-
+  // says "no skills" is noise on a machine that was never going to have any. But once a
+  // SEARCH is running, keep it visible: "no matches" is an answer, and a section that
+  // vanished as you typed would read as a bug.
+  card.classList.toggle('hidden', !live.length && !skillSourceQuery.trim());
   root.replaceChildren();
+
+  let shown = 0;
+  let total = 0;
   for (const section of live) {
     if (section.error) {
       const err = document.createElement('p');
@@ -3636,18 +3650,35 @@ async function renderSkillSources() {
       root.appendChild(err);
       continue;
     }
+    total += section.items.length;
+    // A header only once there is more than one place to come from — with a single
+    // source it repeats what the card title already said.
+    if (live.length > 1) {
+      const head = document.createElement('div');
+      head.className = 'src-group';
+      head.textContent = section.label;
+      root.appendChild(head);
+    }
     if (!section.items.length) {
       const empty = document.createElement('p');
       empty.className = 'muted tiny';
-      empty.textContent = `No skill folders found yet. Create one at ~/.chatpanel/skills/<name>/SKILL.md`;
+      empty.textContent = skillSourceQuery.trim()
+        ? `No matches in ${section.label}.`
+        : 'No skill folders found yet. Create one at ~/.chatpanel/skills/<name>/SKILL.md';
       root.appendChild(empty);
       continue;
     }
-    for (const skill of section.items) root.appendChild(sourceSkillRow(skill, section));
+    for (const skill of section.items) {
+      root.appendChild(sourceSkillRow(skill, section, skillSourceQuery));
+      shown += 1;
+    }
   }
+  const count = $('skill-source-count');
+  if (count) count.textContent = shown ? `${shown} skill${shown === 1 ? '' : 's'}` : '';
+  return { shown, total };
 }
 
-function sourceSkillRow(skill, section) {
+function sourceSkillRow(skill, section, query = '') {
   const row = document.createElement('div');
   row.className = 'src-skill';
 
@@ -3655,10 +3686,10 @@ function sourceSkillRow(skill, section) {
   main.className = 'src-skill-main';
   const name = document.createElement('span');
   name.className = 'src-skill-name';
-  name.textContent = skill.name || skill.id;
+  markMatch(name, skill.name || skill.id, query);
   const desc = document.createElement('span');
   desc.className = 'src-skill-desc';
-  desc.textContent = skill.description || 'No description';
+  markMatch(desc, skill.description || 'No description', query);
   main.append(name, desc);
 
   // Provenance is not decoration here: these files were written by something else, and
@@ -3710,6 +3741,18 @@ function sourceSkillRow(skill, section) {
   actions.append(view, add);
   row.append(main, from, actions, body);
   return row;
+}
+
+// Highlight the matched span. Built from text nodes and a <mark> element rather than
+// innerHTML: this string is a description written by whoever authored the skill, and a
+// settings page is the last place to start interpreting a stranger's markup.
+function markMatch(el, text, query) {
+  const q = String(query || '').trim().toLowerCase();
+  const at = q ? String(text).toLowerCase().indexOf(q) : -1;
+  if (at === -1) { el.textContent = text; return; }
+  const hit = document.createElement('mark');
+  hit.textContent = text.slice(at, at + q.length);
+  el.append(text.slice(0, at), hit, text.slice(at + q.length));
 }
 
 // Copy a discovered skill into the user's own list. The BODY is fetched now — the list
@@ -4812,6 +4855,14 @@ function wire() {
   $('add-skill').onclick = addSkill;
   $('add-skill-bottom').onclick = addSkill;
   $('skill-filter').oninput = (e) => { skillFilter = e.target.value; applySkillFilter(); };
+  // Debounced: a keystroke can reach a remote hub, and one request per character is
+  // both slow and rude to whoever is hosting it.
+  let skillSearchTimer = null;
+  $('skill-source-search').oninput = (e) => {
+    skillSourceQuery = e.target.value;
+    clearTimeout(skillSearchTimer);
+    skillSearchTimer = setTimeout(() => renderSkillSources(), 180);
+  };
   $('skill-sources-refresh').onclick = async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true;

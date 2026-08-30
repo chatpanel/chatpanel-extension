@@ -118,4 +118,15 @@ assert.match(addFn, /\.\.\.full, id: uid\(\)/, 'the copy keeps the fetched recor
 assert.match(addFn, /while \(taken\.has\(command\)\)/, 'a clashing slash-command must not silently shadow an existing skill');
 assert.match(addFn, /can\(license, 'customSkills'\)/, 'adding a skill is still gated like adding one by hand');
 
+// --- search reaches the SOURCE, and the result cannot be interpreted as markup ---------
+assert.match(settingsJs, /reg\.search\(\{ query: skillSourceQuery \}\)/, 'the query must go to the source, not filter what it already returned');
+assert.match(settingsJs, /seq !== skillSourceSeq/, 'a slow source answering late must not overwrite a newer query');
+assert.match(settingsJs, /setTimeout\(\(\) => renderSkillSources\(\), 180\)/, 'searching should be debounced — a keystroke can reach a remote hub');
+// A description is written by whoever authored the skill. The highlighter builds text
+// nodes and a <mark>; the settings page is the last place to interpret a stranger's markup.
+const mark = settingsJs.match(/function markMatch\([\s\S]*?\n\}/)?.[0] || '';
+assert.ok(mark, 'markMatch should exist');
+assert.doesNotMatch(mark, /innerHTML/, 'a skill description must never be set as HTML');
+assert.match(mark, /createElement\('mark'\)/);
+
 console.log('skill source tests passed');
