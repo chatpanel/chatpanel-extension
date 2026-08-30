@@ -88,3 +88,22 @@ export function bridgeSkillSource({ bridgeUrl, supported }) {
     ),
   });
 }
+
+/**
+ * Read one file from a skill package, for the `skill_file` tool.
+ *
+ * Separate from the source registry on purpose: a TURN needs one file from a skill the user
+ * already added, not a registry of places to browse. Building the registry to fetch one
+ * document would drag the browse path onto every turn that uses a packaged skill.
+ *
+ * `origin.id` is the bridge's own path for the skill (`.system/imagegen`), which is what
+ * its routes expect — not the local id the user may have renamed.
+ */
+export async function readSkillFile({ bridgeUrl, origin, path }) {
+  const skillId = String(origin?.id || '').split('/').pop();
+  if (!skillId) throw new Error('this skill has no package on disk');
+  return get(
+    bridgeUrl,
+    `/skills/${encodeURIComponent(skillId)}/file/${String(path).split('/').map(encodeURIComponent).join('/')}`,
+  );
+}

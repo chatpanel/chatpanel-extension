@@ -100,6 +100,21 @@ export async function buildTurnTools({
   });
   for (const g of groups) providers.push(g.provider);
 
+  // Level 2 of the skill's progressive disclosure. Dynamic, and only when the running
+  // skill actually ships files: an unused tool spec is per-turn token cost on every turn
+  // that does not need it.
+  if (skillRun?.files?.length && skillRun.origin?.source) {
+    const [{ skillFileProvider }, { readSkillFile }] = await Promise.all([
+      import('./skill-files.js'),
+      import('./skill-source-bridge.js'),
+    ]);
+    const p = skillFileProvider({
+      skillRun,
+      read: (origin, path) => readSkillFile({ bridgeUrl, origin, path }),
+    });
+    if (p) providers.push(p);
+  }
+
   const turnMcpMode = normalizeMcpTurnMode(mcpMode);
   const userCap = Number(settings?.ui?.maxToolsPerTurn) || 0;
   const cap = userCap || (turnMcpMode === MCP_TURN_MODES.AUTO ? DEFAULT_AUTO_TOOL_CAP : 0);

@@ -54,7 +54,32 @@ export function skillRunFromSkill(skill = {}, { includeMeetings = false } = {}) 
       mode: normalizeMcpMode(skill.mcpMode),
       serverIds: Array.isArray(skill.mcpServerIds) ? skill.mcpServerIds.filter(Boolean) : [],
     },
+    // A package skill carries reference documents it deliberately does NOT inline — that
+    // is what progressive disclosure means in this format. Without carrying the index the
+    // prompt arrives referring to files the model has no way to open, which reads to the
+    // user as the skill being broken rather than starved.
+    files: skillPackageFiles(skill),
+    origin: skill.origin && skill.origin.source ? { source: skill.origin.source, id: skill.origin.id || '' } : null,
   };
+}
+
+/**
+ * The readable, non-executable files a skill ships, as `<kind>/<name>` paths.
+ *
+ * `scripts` is deliberately excluded. It is tier-3 code that runs in the bridge behind the
+ * scanner, not text for a model to read — and handing a script's SOURCE to the model would
+ * be the worst of both: the injection surface of running it with none of the usefulness.
+ */
+export function skillPackageFiles(skill) {
+  const files = skill?.files;
+  if (!files || typeof files !== 'object') return [];
+  const out = [];
+  for (const kind of ['references', 'assets', 'templates', 'examples']) {
+    for (const name of Array.isArray(files[kind]) ? files[kind] : []) {
+      if (typeof name === 'string' && name) out.push(`${kind}/${name}`);
+    }
+  }
+  return out.slice(0, 60); // an index, not a manifest dump
 }
 
 export function filterMcpServersForSkill(servers, skillRun) {
@@ -85,6 +110,15 @@ export function skillToolSystem(skillRun, allServers = []) {
   }
   if (skillRun.history?.blocked === 'meetings') {
     lines.push('Meeting history was requested for this skill, but it is not available for the current plan.');
+  }
+  // Level 0 of progressive disclosure: the model is told what exists and how to open it,
+  // and pays for CONTENT only when it decides a file is worth reading.
+  if (skillRun.files?.length) {
+    lines.push(
+      `This skill ships reference files: ${skillRun.files.join(', ')}. `
+      + 'Their contents are NOT included above. Call skill_file with one of those exact paths to read one, '
+      + 'and only when the task needs it — read the smallest set that answers the question.',
+    );
   }
   if (skillRun.mcp?.mode === 'none') {
     lines.push('MCP tools are disabled for this skill.');
