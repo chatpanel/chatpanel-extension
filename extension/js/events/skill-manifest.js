@@ -33,7 +33,7 @@
 // default, and the upcast chain exists from the start so adding v3 does not mean
 // rewriting every reader.
 
-import { DATA_SCOPES } from './capability.js';
+import { DATA_SCOPES } from './scopes.js';
 
 export class SkillManifestError extends Error {
   constructor(code, message) { super(message); this.name = 'SkillManifestError'; this.code = code; }

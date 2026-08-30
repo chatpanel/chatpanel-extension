@@ -23,7 +23,7 @@ import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FILES = [
-  'index.js', 'event.js', 'ref.js', 'order.js', 'upcast.js',
+  'index.js', 'event.js', 'scopes.js', 'ref.js', 'order.js', 'upcast.js',
   'capability.js', 'invariants.js', 'store.js', 'registry.js', 'harness.js',
   'kernel.js', 'loop.js', 'trajectory.js', 'citations.js', 'adapters.js', 'tool-groups.js', 'search-engines.js', 'manifest.js', 'mcp-errors.js', 'meeting-analyzers.js', 'rules.js', 'router.js', 'tool-need.js', 'route-graph.js', 'sources.js', 'sources-retrieval.js', 'text-search.js', 'markdown-authoring.js', 'skill-vars.js', 'skill-manifest.js',
 ];

@@ -19,8 +19,9 @@
 // failure mode this exists to prevent.
 
 import { CLASSES, EFFECTS, EGRESS, ACTOR_KINDS, SCOPE_KINDS, EventError } from './event.js';
+import { DATA_SCOPES } from './scopes.js';
 
-export const DATA_SCOPES = Object.freeze(['notes', 'meetings', 'chats', 'page', 'files', 'net']);
+export { DATA_SCOPES } from './scopes.js';
 
 const str = (v) => typeof v === 'string' && v.length > 0;
 const strs = (v, allowed = null) => Array.isArray(v) && v.every((x) => str(x) && (!allowed || allowed.includes(x)));
