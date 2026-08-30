@@ -3815,6 +3815,26 @@ function sourceSkillRow(skill, section, query = '') {
     tag.title = files.map(([kind, list]) => `${kind}/: ${list.join(', ')}`).join('\n');
     main.appendChild(tag);
   }
+  // The scanner already ran on the bridge (a dangerous skill never reached this list — it
+  // was quarantined). What can still appear is `suspicious`, and a skill you are about to
+  // run with page tools attached earns a visible marker before you add it.
+  const scanned = skill.origin?.scanned;
+  if (scanned && scanned.verdict === 'suspicious') {
+    const warn = document.createElement('span');
+    warn.className = 'tag src-skill-warn';
+    warn.textContent = 'Review';
+    warn.title = `The security scan flagged this skill for review (${scanned.findings || 0} finding${scanned.findings === 1 ? '' : 's'}). It installs, but read it first.`;
+    main.appendChild(warn);
+  }
+  // Scripts run on your machine, not in the browser. Say so on the row, not only in a
+  // tooltip: it is the one property of a skill that changes what adding it can do.
+  if ((skill.files?.scripts || []).length) {
+    const sc = document.createElement('span');
+    sc.className = 'tag src-skill-scripts';
+    sc.textContent = 'Runs code';
+    sc.title = `Ships ${skill.files.scripts.length} script(s) that run on your machine via the bridge. These are not executed automatically.`;
+    main.appendChild(sc);
+  }
 
   const view = document.createElement('button');
   view.type = 'button';
@@ -3862,6 +3882,15 @@ function markMatch(el, text, query) {
   el.append(text.slice(0, at), hit, text.slice(at + q.length));
 }
 
+// The scanner wants flat `<kind>/<name>` paths; the record carries them grouped by kind.
+function skillPackageFilesList(skill) {
+  const out = [];
+  for (const [kind, list] of Object.entries(skill?.files || {})) {
+    for (const name of Array.isArray(list) ? list : []) out.push(`${kind}/${name}`);
+  }
+  return out;
+}
+
 // Copy a discovered skill into the user's own list. The BODY is fetched now — the list
 // level deliberately carries no prompts — and the record keeps its origin, so the card
 // above can say where it came from and an update check has something to compare.
@@ -3875,10 +3904,33 @@ async function addSkillFromSource(section, skill, btn) {
   try {
     const full = await (await skillSources()).read(section.source, skill.id);
     if (!full) throw new Error('could not read it back');
+    // Re-scan the FETCHED body here, rather than trusting the verdict the source reported.
+    // The bridge already quarantines dangerous local skills, but a remote hub is not the
+    // bridge, and defence in depth means the client that will run the prompt checks the
+    // prompt it actually received — not a summary of it.
+    const { scanSkill, scanSummary } = await import('./js/events/skill-scan.js');
+    const scan = scanSkill({ name: full.name, prompt: full.prompt, files: skillPackageFilesList(full) });
+    if (scan.verdict === 'dangerous') {
+      // Not a choice: a dangerous skill is simply not added. Say why and stop.
+      toast(`✕ Not added — the scan flagged “${full.name}”: ${scanSummary(scan)}`, 5000);
+      return;
+    }
+    if (scan.verdict === 'suspicious') {
+      const { confirmDelete } = await import('./js/confirm-modal.js');
+      const ok = await confirmDelete({
+        title: `Add “${full.name}”?`,
+        body: `The security scan flagged this for review: ${scanSummary(scan)}. It runs with your page tools and any MCP servers attached. Add it anyway?`,
+        confirmLabel: 'Add anyway',
+      });
+      if (!ok) return;
+    }
     const taken = new Set((settings.skills || []).map((s) => (s.command || '').toLowerCase()));
     let command = (full.command || full.id || 'skill').toLowerCase();
     while (taken.has(command)) command = `${command}-2`;
-    const added = { ...full, id: uid(), command, enabled: true };
+    const added = {
+      ...full, id: uid(), command, enabled: true,
+      origin: full.origin ? { ...full.origin, scanned: { verdict: scan.verdict, scanner: scan.scanner, findings: scan.findings.length } } : full.origin,
+    };
     settings.skills.push(added);
     setExpanded(skillKey(added), true);
     settings = await saveSettings(settings);

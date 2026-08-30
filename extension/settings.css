@@ -444,6 +444,8 @@ select {
   margin: 6px 0 -2px; font-size: 11.5px; font-weight: 700; letter-spacing: .04em;
   text-transform: uppercase; color: var(--faint);
 }
+.src-skill-warn { background: color-mix(in srgb, #b45309 14%, transparent); color: #b45309; border-color: color-mix(in srgb, #b45309 34%, var(--border)); }
+.src-skill-scripts { background: color-mix(in srgb, #8b5cf6 14%, transparent); color: #8b5cf6; border-color: color-mix(in srgb, #8b5cf6 34%, var(--border)); }
 .btn.add-row.src-more { margin-top: 4px; padding: 9px; font-size: 12.5px; }
 .src-skill mark { background: var(--accent-weak); color: inherit; border-radius: 3px; padding: 0 1px; }
 .src-skill-body {
