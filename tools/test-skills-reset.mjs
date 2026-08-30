@@ -24,17 +24,17 @@ const {
 } = await import('../extension/js/store.js');
 
 assert.deepEqual(
-  normalizeSkillForSave({ id: 'x', mcpMode: 'none', mcpServerIds: ['jira'] }).mcpServerIds,
+  (await normalizeSkillForSave({ id: 'x', mcpMode: 'none', mcpServerIds: ['jira'] })).mcpServerIds,
   [],
   'No MCP tools should clear stale selected server ids when saved.',
 );
 assert.deepEqual(
-  normalizeSkillForSave({ id: 'x', mcpMode: 'default', mcpServerIds: ['jira'] }).mcpServerIds,
+  (await normalizeSkillForSave({ id: 'x', mcpMode: 'default', mcpServerIds: ['jira'] })).mcpServerIds,
   [],
   'All enabled MCP tools should not retain a stale selected-server subset.',
 );
 assert.deepEqual(
-  normalizeSkillForSave({ id: 'x', mcpMode: 'selected', mcpServerIds: ['jira', '', 'jira', 'github'] }).mcpServerIds,
+  (await normalizeSkillForSave({ id: 'x', mcpMode: 'selected', mcpServerIds: ['jira', '', 'jira', 'github'] })).mcpServerIds,
   ['jira', 'github'],
   'Selected MCP servers should persist a unique non-empty ordered list.',
 );

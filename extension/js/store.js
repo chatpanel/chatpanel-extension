@@ -575,26 +575,27 @@ function mergeSettings(base, stored) {
   return out;
 }
 
+// READ path — runs inside getSettings on every entry point, so it stays a cheap legacy
+// migration and nothing more. The canonical shape is applied on WRITE (see saveSettings):
+// every consumer already reads a missing field as its default, which is what makes it
+// safe to normalize on the way in rather than on the way out.
 function normalizeSkillMcpDefaults(skill, { legacyBuiltins = false } = {}) {
   if (!skill || typeof skill !== 'object') return skill;
   const out = { ...skill };
   if (!out.mcpMode || (legacyBuiltins && out.builtin && out.mcpMode === 'default')) out.mcpMode = 'none';
-  return normalizeSkillForSave(out);
+  return out;
 }
 
-export function normalizeSkillForSave(skill) {
-  if (!skill || typeof skill !== 'object') return skill;
-  const out = { ...skill };
-  // Skills predate the enabled flag — absence means enabled (see isSkillEnabled).
-  out.enabled = out.enabled !== false;
-  const mode = String(out.mcpMode || 'none').toLowerCase();
-  out.mcpMode = mode === 'selected' || mode === 'default' ? mode : 'none';
-  const ids = Array.isArray(out.mcpServerIds) ? out.mcpServerIds : [];
-  out.mcpServerIds =
-    out.mcpMode === 'selected'
-      ? [...new Set(ids.map((id) => String(id || '').trim()).filter(Boolean))]
-      : [];
-  return out;
+// What a skill IS lives in @chatpanel/events — the shape, its version, and the two
+// coercions no client may be trusted to remember: a record cannot assert its own trust,
+// and `builtin` cannot survive an origin. Those matter the moment a skill can arrive
+// from a hub rather than being typed here (F6).
+//
+// Dynamic, and only on the write path: the module pulls the capability contract behind
+// it, and store.js is on the boot path of every entry point.
+export async function normalizeSkillForSave(skill) {
+  const { normalizeSkill } = await import('./events/skill-manifest.js');
+  return normalizeSkill(skill);
 }
 
 // Collapse every non-bridge "thing you can chat with" into an endpoint, merging
@@ -652,7 +653,8 @@ function migrateToEndpoints(out) {
 
 export async function saveSettings(settings) {
   if (Array.isArray(settings?.skills)) {
-    settings.skills = settings.skills.map(normalizeSkillForSave);
+    const { normalizeSkill } = await import('./events/skill-manifest.js');
+    settings.skills = settings.skills.map(normalizeSkill);
   }
   if (settings && typeof settings === 'object') settings.version = defaultSettings().version;
   _settingsCache = settings;
@@ -662,7 +664,8 @@ export async function saveSettings(settings) {
 
 export async function resetSkillsToDefaults() {
   const settings = await getSettings();
-  settings.skills = defaultSkills().map(normalizeSkillForSave);
+  const { normalizeSkill } = await import('./events/skill-manifest.js');
+  settings.skills = defaultSkills().map(normalizeSkill);
   return saveSettings(settings);
 }
 
