@@ -421,6 +421,31 @@ select {
 .var-chips .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .prompt-tools .btn.assist { align-self: center; }
 
+/* Skills discovered on this machine. A row, not an entity card — these are not yours to
+   edit until you Add one, and giving them the same card would say otherwise. */
+#skill-sources { display: flex; flex-direction: column; gap: 8px; }
+.src-skill {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px 14px; align-items: center;
+  padding: 11px 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--field);
+}
+.src-skill:hover { border-color: var(--border-strong); }
+.src-skill-main { min-width: 0; display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.src-skill-name { font-weight: 650; }
+.src-skill-desc { min-width: 0; color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Where it came from, always visible — these files were written by something else. */
+.src-skill-from { font-family: var(--mono); font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+.src-skill-files { font-family: var(--mono); text-transform: none; letter-spacing: 0; }
+.src-skill-actions { display: flex; gap: 7px; }
+.src-skill-body {
+  grid-column: 1 / -1; margin: 4px 0 0; max-height: 340px; overflow: auto;
+  padding: 11px 13px; border-radius: 8px; background: rgba(127, 127, 127, .1);
+  font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap;
+}
+@media (max-width: 760px) {
+  .src-skill { grid-template-columns: 1fr; }
+  .src-skill-from { white-space: normal; }
+}
+
 /* Placeholder lint. An invented {{content}} used to reach the model as literal text
    with nothing saying so; this is where it becomes visible, at authoring time. */
 .s-lint { flex: 1 1 100%; display: grid; gap: 5px; margin-top: 8px; font-size: 12px; }

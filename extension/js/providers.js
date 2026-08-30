@@ -2214,7 +2214,12 @@ export async function checkBridge(bridgeUrl) {
     const res = await fetch(`${base}/health`, { method: 'GET' });
     if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
     const json = await res.json();
-    return { ok: true, agents: json.agents || [], version: json.version, update: json.update || null };
+    // `skills` is additive — an older bridge omits it entirely, which is exactly how a
+    // newer client learns not to call endpoints that are not there (no lockstep).
+    return {
+      ok: true, agents: json.agents || [], version: json.version, update: json.update || null,
+      skills: json.skills || null,
+    };
   } catch (e) {
     return { ok: false, reason: e.message };
   }

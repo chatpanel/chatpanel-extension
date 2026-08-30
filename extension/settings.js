@@ -3209,6 +3209,7 @@ function renderSkills() {
     root.appendChild(card);
   });
   wireExpandAll('toggle-skills', list.map(skillKey), renderSkills);
+  renderSkillSources(); // fire and forget: a slow or absent bridge must not block the list
   // The filter only earns its space once the list is long enough to scan badly.
   $('skill-filter-bar')?.classList.toggle('hidden', list.length < 6);
   applySkillFilter();
@@ -3587,6 +3588,159 @@ async function addSkill() {
   const node = $('skills').lastElementChild;
   node?.scrollIntoView({ behavior: 'smooth' });
   node?.querySelector('.s-name')?.focus();
+}
+
+// --------------------------------------------------------------------------
+// Skill sources — what other places on this machine can offer (F6 S3)
+// --------------------------------------------------------------------------
+// A registry, not a panel that knows one API: the bridge is the first registration and a
+// hub is the same three functions with a different fetch. Everything here is loaded on
+// demand — the Skills tab is not the settings page's first paint, and a source that
+// cannot answer right now is simply absent.
+let skillSourceReg = null;
+
+async function skillSources() {
+  if (skillSourceReg) return skillSourceReg;
+  const [{ createSkillSourceRegistry }, { bridgeSkillSource }] = await Promise.all([
+    import('./js/events/skill-sources.js'),
+    import('./js/skill-source-bridge.js'),
+  ]);
+  skillSourceReg = createSkillSourceRegistry();
+  skillSourceReg.add(bridgeSkillSource({
+    // Read at call time: changing the Bridge URL in Settings takes effect without
+    // re-registering, and `supported` is the /health capability flag.
+    bridgeUrl: () => settings.bridgeUrl,
+    supported: () => !!(bridgeState?.ok && bridgeState.skills),
+  }));
+  return skillSourceReg;
+}
+
+async function renderSkillSources() {
+  const card = $('skill-sources-card');
+  const root = $('skill-sources');
+  if (!card || !root) return;
+  const reg = await skillSources();
+  const sections = await reg.search({});
+  const live = sections.filter((s) => !s.absent);
+  // Nothing to offer and nothing wrong → the section does not exist. An empty box that
+  // says "no skills" is noise on a machine that was never going to have any.
+  card.classList.toggle('hidden', !live.length);
+  if (!live.length) return;
+
+  root.replaceChildren();
+  for (const section of live) {
+    if (section.error) {
+      const err = document.createElement('p');
+      err.className = 'status err';
+      err.textContent = `✕ ${section.label}: ${section.error}`;
+      root.appendChild(err);
+      continue;
+    }
+    if (!section.items.length) {
+      const empty = document.createElement('p');
+      empty.className = 'muted tiny';
+      empty.textContent = `No skill folders found yet. Create one at ~/.chatpanel/skills/<name>/SKILL.md`;
+      root.appendChild(empty);
+      continue;
+    }
+    for (const skill of section.items) root.appendChild(sourceSkillRow(skill, section));
+  }
+}
+
+function sourceSkillRow(skill, section) {
+  const row = document.createElement('div');
+  row.className = 'src-skill';
+
+  const main = document.createElement('div');
+  main.className = 'src-skill-main';
+  const name = document.createElement('span');
+  name.className = 'src-skill-name';
+  name.textContent = skill.name || skill.id;
+  const desc = document.createElement('span');
+  desc.className = 'src-skill-desc';
+  desc.textContent = skill.description || 'No description';
+  main.append(name, desc);
+
+  // Provenance is not decoration here: these files were written by something else, and
+  // "which of these did a stranger write" has to be answerable at a glance.
+  const from = document.createElement('span');
+  from.className = 'src-skill-from';
+  from.textContent = skill.origin?.source === 'bridge' && skill.origin?.id
+    ? `${section.label} · ${skill.origin.id}`
+    : section.label;
+
+  const files = Object.entries(skill.files || {});
+  if (files.length) {
+    const tag = document.createElement('span');
+    tag.className = 'tag src-skill-files';
+    tag.textContent = files.map(([kind, list]) => `${list.length} ${kind}`).join(' · ');
+    tag.title = files.map(([kind, list]) => `${kind}/: ${list.join(', ')}`).join('\n');
+    main.appendChild(tag);
+  }
+
+  const view = document.createElement('button');
+  view.type = 'button';
+  view.className = 'btn ghost';
+  view.textContent = 'View';
+  const body = document.createElement('pre');
+  body.className = 'src-skill-body hidden';
+  view.onclick = async () => {
+    if (!body.classList.contains('hidden')) return body.classList.add('hidden');
+    view.disabled = true;
+    try {
+      const full = await (await skillSources()).read(section.source, skill.id);
+      body.textContent = full?.prompt || '(empty)';
+      body.classList.remove('hidden');
+    } catch (e) {
+      body.textContent = `✕ ${e.message}`;
+      body.classList.remove('hidden');
+    } finally {
+      view.disabled = false;
+    }
+  };
+
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'btn primary';
+  add.textContent = 'Add';
+  add.onclick = () => addSkillFromSource(section, skill, add);
+
+  const actions = document.createElement('div');
+  actions.className = 'src-skill-actions';
+  actions.append(view, add);
+  row.append(main, from, actions, body);
+  return row;
+}
+
+// Copy a discovered skill into the user's own list. The BODY is fetched now — the list
+// level deliberately carries no prompts — and the record keeps its origin, so the card
+// above can say where it came from and an update check has something to compare.
+async function addSkillFromSource(section, skill, btn) {
+  if (!can(license, 'customSkills')) {
+    return upsell('Adding skills is Pro. You can edit the built-ins on any plan.');
+  }
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Adding…';
+  try {
+    const full = await (await skillSources()).read(section.source, skill.id);
+    if (!full) throw new Error('could not read it back');
+    const taken = new Set((settings.skills || []).map((s) => (s.command || '').toLowerCase()));
+    let command = (full.command || full.id || 'skill').toLowerCase();
+    while (taken.has(command)) command = `${command}-2`;
+    const added = { ...full, id: uid(), command, enabled: true };
+    settings.skills.push(added);
+    setExpanded(skillKey(added), true);
+    settings = await saveSettings(settings);
+    renderSkills();
+    toast(`Added “${added.name}” — edit it above`);
+    $('skills').lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } catch (e) {
+    toast(`✕ ${e.message}`, 3200);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 }
 
 async function resetSkills() {
@@ -4658,6 +4812,15 @@ function wire() {
   $('add-skill').onclick = addSkill;
   $('add-skill-bottom').onclick = addSkill;
   $('skill-filter').oninput = (e) => { skillFilter = e.target.value; applySkillFilter(); };
+  $('skill-sources-refresh').onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    // Re-check /health first: the usual reason nothing shows is that the bridge was
+    // started after this page was opened.
+    bridgeState = await checkBridge(settings.bridgeUrl);
+    await renderSkillSources();
+    btn.disabled = false;
+  };
   $('reset-skills').onclick = resetSkills;
   $('mcp-registry-search-btn').onclick = () => loadMcpRegistry();
   $('mcp-registry-more').onclick = () => loadMcpRegistry({ append: true });

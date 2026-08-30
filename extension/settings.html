@@ -236,6 +236,24 @@ npx @chatpanel/bridge</code></pre>
           <!-- Second add button: with a skill open, the header one has scrolled away. -->
           <button id="add-skill-bottom" class="btn add-row" type="button">+ Add skill</button>
         </div>
+
+        <!-- Skills the bridge found on this machine. Hidden entirely unless a bridge
+             that supports them is running — an absent source is not an error. -->
+        <div class="card hidden" id="skill-sources-card">
+          <div class="card-head">
+            <h2>Available on this machine <span class="sub">— found by the bridge</span></h2>
+            <div class="card-actions">
+              <button id="skill-sources-refresh" class="btn ghost" type="button"><span class="inline-ico" data-icon="refresh"></span> Rescan</button>
+            </div>
+          </div>
+          <p class="muted">
+            Skill folders in <code>~/.chatpanel/skills</code> and <code>~/.agents/skills</code> — the shared
+            location other agent CLIs use, so a skill you wrote elsewhere shows up here with no export step.
+            <strong>Add</strong> copies one into your skills above, where you can edit it. These files are not
+            written by ChatPanel, so they are shown with where they came from.
+          </p>
+          <div id="skill-sources"></div>
+        </div>
       </section>
 
       <!-- MEETINGS (live scribe preferences) -->
