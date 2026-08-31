@@ -323,6 +323,11 @@ export function candidatesFrom(settings = {}, resolveTarget = (x) => x, { ignore
     // and cannot answer; routing to it because its config still looks good is what a user
     // experiences as "it keeps picking the broken one".
     const configured = applyOverride(inferred, overrides[id]);
+    // AN EXPLICIT DISABLE OUTRANKS A TUNING OVERRIDE. `enabled: false` is the user saying,
+    // right now, "don't use this"; a routing override is a hint saved earlier. A stale
+    // `available: true` in that hint was winning, so an agent switched off in Settings still
+    // showed as a live routing candidate with no sign it was off. Re-assert it last.
+    if (t.enabled === false) configured.available = false;
     // A CORRECTED QUALITY CORRECTS THE SPEED DERIVED FROM IT. Latency is inferred from size
     // (see latencyOf), so a user who tells us a model is stronger than we guessed was leaving
     // behind a latency computed from the guess — the two numbers described different models.

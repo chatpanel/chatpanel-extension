@@ -5985,6 +5985,10 @@ async function renderRoutingModels() {
   for (const m of candidates) {
     const row = document.createElement('div');
     row.className = 'routing-model';
+    // A disabled model is still LISTED — hiding it would silently strip the tuning saved
+    // against it — but it must not read as an active candidate. The class dims the row so
+    // "switched off" is visible at a glance, not just a grey word in the meta line.
+    if (m.available === false) row.classList.add('is-off');
 
     const name = document.createElement('b');
     name.textContent = m.label;

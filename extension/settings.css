@@ -1101,3 +1101,13 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 }
 .redaction-chip b { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--accent, #5b5bf0); }
 .redaction-chip span { color: var(--muted, #646b76); }
+
+/* A routing candidate the user switched off: still listed (its tuning is kept) but plainly
+   inactive, so it can't be mistaken for a model the router might choose. */
+.routing-model.is-off { opacity: .55; }
+.routing-model.is-off b::after {
+  content: 'off'; margin-left: 6px; padding: 1px 6px; border-radius: 999px;
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+  background: var(--field, #f7f8fa); color: var(--muted, #646b76);
+  border: 1px solid var(--border, #e4e7ec);
+}
