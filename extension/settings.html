@@ -915,6 +915,23 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
 
       <!-- USAGE -->
       <section class="panel hidden" data-panel="activity">
+        <div class="card" id="obs-card">
+          <div class="card-head">
+            <h2>Storage &amp; agent access <span class="sub">— where your data lives, and which agents read it</span></h2>
+            <button id="obs-refresh" class="btn" type="button">Refresh</button>
+          </div>
+          <p class="muted tiny">
+            Your chats, meetings and notes live in the browser (<b>hot</b>) and are mirrored to
+            the local gateway (<b>warm</b>) so any connected CLI agent can search them. Everything
+            stays on this machine. This is your monitoring view: storage per tier, and a log of
+            which agent read what, when — the query text itself is never recorded.
+          </p>
+          <div id="obs-storage" class="obs-tiers">Loading…</div>
+          <div class="card-head" style="margin-top:16px">
+            <h3 style="margin:0">Agent access <span class="sub">— via the gateway&rsquo;s MCP server (Codex, Claude Code, OpenCode…)</span></h3>
+          </div>
+          <div id="obs-access" class="obs-access">Loading…</div>
+        </div>
         <div class="card">
           <div class="card-head">
             <h2>Totals <span class="sub">— every model call, including ones older than the runs below</span></h2>

@@ -36,6 +36,10 @@ export { createRegistry, REGISTRY_STATES } from './registry.js';
 export { defineSearchEngine, reconcileEngines, attemptOrder, ENGINE_KINDS, SearchEngineError } from './search-engines.js';
 export { defineToolGroup, createToolGroupRegistry, ToolGroupError } from './tool-groups.js';
 export { toolNeedFor } from './tool-need.js';
+export {
+  ACCESS_LOG_VERSION, ACCESS_LOG_MAX, redactAccessArgs, makeAccessEvent,
+  createAccessLog, makeStorageTier, formatBytes,
+} from './observability.js';
 export { routeGraph, projectChain } from './route-graph.js';
 export { defineAdapter, createAdapterRegistry, AdapterError } from './adapters.js';
 export { linkifyCitations, sourcesFromToolText } from './citations.js';

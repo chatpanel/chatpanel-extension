@@ -141,7 +141,7 @@ function wireTabs() {
 
     // Same lazy rule as usage: the log module and the analysis load only when this tab is
     // actually shown, so a user who never opens Activity never pays for it.
-    if (name === 'activity') { renderUsage(); renderActivity(); }
+    if (name === 'activity') { renderObservability(); renderUsage(); renderActivity(); }
     if (name === 'plugins') { renderPlugins(); loadRoutingForm(); renderRouting(); renderRoutingModels(); }
   };
   const exists = (name) => !!document.querySelector(`.tab[data-tab="${name}"]`);
@@ -6209,6 +6209,99 @@ const KIND_LABEL = {
   watch: 'Watch', suggestion: 'Suggestion', other: 'Other',
 };
 
+// Observability dashboard — storage per tier + which agents read your data. Everything
+// here loads lazily (only when the Activity tab is opened) so it never touches first paint.
+function obsAgo(ts) {
+  if (!ts) return '';
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60); if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60); if (h < 48) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+function obsTierCard(fmt, { tier, label, present, records, bytes, newest, note }) {
+  const state = present ? 'on' : 'off';
+  const dot = `<span class="obs-dot ${state}"></span>`;
+  const metric = present && records != null
+    ? `<div class="obs-metric">${records.toLocaleString()}<span>records</span></div>`
+    : `<div class="obs-metric muted">—</div>`;
+  const sub = [];
+  if (present && bytes != null) sub.push(fmt(bytes));
+  if (present && newest) sub.push(`fresh to ${obsAgo(newest)}`);
+  return `<div class="obs-tier ${state}">
+    <div class="obs-tier-head">${dot}<b>${tier}</b><span class="sub">${escapeHtml(label)}</span></div>
+    ${metric}
+    <div class="obs-tier-sub sub">${escapeHtml(sub.join(' · ') || note || '')}</div>
+    ${present && sub.length && note ? `<div class="obs-tier-note tiny muted">${escapeHtml(note)}</div>` : (!present ? `<div class="obs-tier-note tiny muted">${escapeHtml(note || '')}</div>` : '')}
+  </div>`;
+}
+async function renderObservability() {
+  const storageEl = $('obs-storage');
+  const accessEl = $('obs-access');
+  if (!storageEl || !accessEl) return;
+
+  // Lazy: pull formatting + the store indexes only now (Activity tab is open).
+  const [{ formatBytes }, store, meetings, notes] = await Promise.all([
+    import('./js/events/observability.js'),
+    import('./js/store.js'),
+    import('./js/store-meetings.js'),
+    import('./js/store-notes.js'),
+  ]);
+
+  // HOT — the browser stores on this device.
+  let est = {}; try { est = (await navigator.storage?.estimate?.()) || {}; } catch { /* not exposed */ }
+  const [convs, mtgs, nts] = await Promise.all([
+    store.getIndex?.().catch(() => []) || [],
+    meetings.getMeetingIndex?.().catch(() => []) || [],
+    notes.getNoteIndex?.().catch(() => []) || [],
+  ]);
+  const hot = {
+    tier: 'Hot', label: 'Browser · this device', present: true,
+    records: (convs?.length || 0) + (mtgs?.length || 0) + (nts?.length || 0),
+    bytes: est.usage ?? null, newest: null,
+    note: `${convs?.length || 0} chats · ${mtgs?.length || 0} meetings · ${nts?.length || 0} notes`,
+  };
+
+  // WARM — the local gateway mirror. The settings page is a chrome-extension:// origin, so
+  // this fetch carries the Origin the gateway needs to authorize the read.
+  const gwUrl = String(settings.gatewayUrl || 'http://127.0.0.1:4320').replace(/\/+$/, '');
+  let obs = null;
+  try {
+    const r = await fetch(`${gwUrl}/v1/observability`, { signal: AbortSignal.timeout(2500) });
+    if (r.ok) obs = await r.json();
+  } catch { /* gateway not running — framed as optional below, not an error */ }
+
+  const warm = obs
+    ? { tier: 'Warm', label: 'Local gateway', present: true, records: obs.storage?.warm?.records ?? 0, bytes: obs.storage?.warm?.bytes ?? null, newest: obs.storage?.warm?.newest ?? null, note: 'Searchable by any connected CLI agent' }
+    : { tier: 'Warm', label: 'Local gateway', present: false, records: null, bytes: null, newest: null, note: 'Not running — start the gateway to mirror + search from CLI agents' };
+  const cold = { tier: 'Cold', label: 'Encrypted cloud', present: false, records: null, bytes: null, newest: null, note: 'Not configured · planned: zero-knowledge cloud + Teams shared store' };
+
+  storageEl.innerHTML = [hot, warm, cold].map((t) => obsTierCard(formatBytes, t)).join('');
+
+  // AGENT ACCESS — the cross-agent read log from the gateway.
+  if (!obs) {
+    accessEl.innerHTML = `<p class="muted tiny">The gateway isn't running, so there's no cross-agent access to show. Start it to let Codex, Claude Code and other CLIs search your history — and to see every read here. <a href="#" id="obs-gw-jump">Set up the gateway →</a></p>`;
+    $('obs-gw-jump')?.addEventListener('click', (e) => { e.preventDefault(); document.querySelector('.tab[data-tab="gateway"]')?.click(); });
+    return;
+  }
+  const access = obs.access || [];
+  if (!access.length) {
+    accessEl.innerHTML = `<p class="muted tiny">No agent has read your data through the gateway yet. Connect one from the <a href="#" id="obs-gw-jump">Gateway tab</a> and every read appears here — which agent, which tool, when.</p>`;
+    $('obs-gw-jump')?.addEventListener('click', (e) => { e.preventDefault(); document.querySelector('.tab[data-tab="gateway"]')?.click(); });
+    return;
+  }
+  const rows = access.map((e) => `<tr class="${e.ok ? '' : 'obs-err'}">
+    <td class="obs-when" title="${new Date(e.ts).toLocaleString()}">${obsAgo(e.ts)}</td>
+    <td class="obs-client">${escapeHtml(e.client || 'unknown')}</td>
+    <td><code class="obs-tool">${escapeHtml(e.tool || '')}</code></td>
+    <td class="obs-note sub">${escapeHtml(e.note || (e.ok ? '' : (e.error || 'failed')))}</td>
+  </tr>`).join('');
+  accessEl.innerHTML = `<div class="obs-table-wrap"><table class="obs-table">
+    <thead><tr><th>When</th><th>Agent</th><th>Tool</th><th>Detail</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>
+    <p class="tiny muted" style="margin-top:6px">Newest first · ${access.length} recent read(s) · the query text is never logged.</p>`;
+}
+
 async function renderActivity() {
   const statsBox = $('activity-stats');
   const runsBox = $('activity-runs');
@@ -6692,6 +6785,7 @@ async function verifyReplay() {
 }
 
 $('activity-replay')?.addEventListener('click', verifyReplay);
+$('obs-refresh')?.addEventListener('click', renderObservability);
 $('activity-refresh')?.addEventListener('click', renderActivity);
 $('activity-kind')?.addEventListener('change', renderActivity);
 $('activity-background')?.addEventListener('change', renderActivity);
