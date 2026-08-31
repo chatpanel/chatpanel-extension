@@ -24,7 +24,7 @@ import { sanitizeUnicode } from './sanitize.js';
 import { makeSourceStore, manifestText, readSource, approxTokens } from './events/sources-retrieval.js';
 import { extractUrls } from './events/sources.js';
 import { detectEntities, normalizeEntities, EXTRACT_SYS, parseJsonLoose, withTimeout } from './pii-detect.js';
-import { createVault, redactText, restoreText } from './pii-redact.js';
+import { createVault, redactText, restoreText, redactionSummary } from './pii-redact.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
 import { getTarget, resolveTarget } from './store.js';
 import { authHeadersForEndpoint } from './oauth.js';
@@ -1660,6 +1660,23 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
     remoteTools: tools?.remoteTools, // explicit remote set (L3), not the name heuristic
   });
   const red = redactOutbound({ messages, system: agent.systemPrompt, vault, cfg: activeCfg, isPro: effIsPro, entities: activeEntities });
+  // WHAT THE PRIVACY LAYER ACTUALLY CAUGHT. The promise ("PII never leaves the device") is
+  // invisible without this — the Activity log could say redaction ran, but not what it
+  // found. Counts by entity type only: safe to persist, and it never records a real value.
+  // (The values live in the in-memory vault; a live before/after view reads them there.)
+  try {
+    if (vault) {
+      const summary = redactionSummary(vault);
+      // The schema's shape: { counts: { TYPE: n } } — counts only, never values. It was
+      // declared from the start ("a log of what was redacted must not itself contain the
+      // redacted data"); nothing had ever emitted it.
+      if (summary.total) {
+        const counts = {};
+        for (const t of summary.types) counts[t.type] = t.count;
+        turn.emit('privacy.redacted', { counts });
+      }
+    }
+  } catch { /* telemetry must never break a turn */ }
   // When tools are armed, tell the model placeholders are auto-restored for tools —
   // so privacy-aware models (Codex/Claude) USE them instead of refusing the lookup.
   // Appended AFTER redaction so it isn't itself redacted.

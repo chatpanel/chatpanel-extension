@@ -1090,3 +1090,14 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .obs-auto.on { color: var(--ok); }
 .obs-auto.off { color: var(--muted); }
 .obs-autosync .btn { padding: 5px 10px; }
+
+/* Redaction breakdown (Activity tab) — counts by entity type; never values. */
+.activity-redaction { margin: 8px 0 4px; }
+.redaction-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.redaction-chip {
+  display: inline-flex; align-items: baseline; gap: 5px; padding: 4px 10px;
+  border-radius: 999px; border: 1px solid var(--accent-line, rgba(91,91,240,.32));
+  background: var(--accent-weak, rgba(91,91,240,.10)); font-size: 12px;
+}
+.redaction-chip b { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--accent, #5b5bf0); }
+.redaction-chip span { color: var(--muted, #646b76); }

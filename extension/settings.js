@@ -6388,6 +6388,44 @@ async function renderActivity() {
     statsBox.append(span);
   }
 
+  // WHAT THE PRIVACY LAYER CAUGHT, over the same window. Redaction is ChatPanel's core
+  // promise and it was invisible — the log could say a turn was redacted, but not what it
+  // found. privacy.redacted carries counts per entity type and NEVER the values, so this
+  // whole view is safe to show and safe to have been persisted.
+  try {
+    const counts = new Map();
+    for (const e of events) {
+      if (e?.type !== 'privacy.redacted') continue;
+      for (const [type, n] of Object.entries(e.payload?.counts || {})) {
+        counts.set(type, (counts.get(type) || 0) + (Number(n) || 0));
+      }
+    }
+    const box = $('activity-redaction');
+    if (box) {
+      box.textContent = '';
+      if (!counts.size) {
+        box.innerHTML = '<p class="muted tiny">No PII redacted in this window — either nothing sensitive was sent, or redaction is off (Privacy tab).</p>';
+      } else {
+        const total = [...counts.values()].reduce((a, b) => a + b, 0);
+        const rows = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+        const head = document.createElement('p');
+        head.className = 'tiny muted';
+        head.textContent = `${total.toLocaleString()} value(s) replaced with placeholders before leaving this device — counts only; the values themselves are never logged.`;
+        const chips = document.createElement('div');
+        chips.className = 'redaction-chips';
+        for (const [type, n] of rows) {
+          const chip = document.createElement('span');
+          chip.className = 'redaction-chip';
+          chip.innerHTML = '<b></b><span></span>';
+          chip.querySelector('b').textContent = String(n);
+          chip.querySelector('span').textContent = type.toLowerCase().replace(/_/g, ' ');
+          chips.append(chip);
+        }
+        box.append(chips, head);
+      }
+    }
+  } catch { /* the rest of Activity still renders */ }
+
   const { runs: allRuns } = rd.groupRuns(events);
   // Price the runs here rather than inside run-details: the rate table is data on its own
   // release schedule, and a pure analysis module that must be edited when a price moves is

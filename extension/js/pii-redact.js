@@ -345,3 +345,47 @@ export function hasToken(text) {
   TOKEN_RE.lastIndex = 0;
   return TOKEN_RE.test(String(text || ''));
 }
+
+// ── What was redacted, for the user's own eyes ──────────────────────────────────────────
+//
+// The privacy promise is invisible unless you can SEE it: which entity types were caught,
+// how many of each, and (on request) the actual before → after pairs. All of that already
+// exists in the vault — this just summarises it, so every client renders the same shape
+// instead of each one re-deriving it.
+//
+// PRIVACY OF THE SUMMARY ITSELF: `types` carries counts only, never values, so it is safe
+// to render, log or persist. Real values live behind `pairs`, which a caller must ask for
+// explicitly (`includeValues: true`) — they are the user's own data, shown on their own
+// device, and must never be written anywhere durable.
+
+/** Entity type + count for everything this vault redacted, most-frequent first. */
+export function redactionSummary(vault, { includeValues = false, maxPairs = 200 } = {}) {
+  const byType = new Map();
+  const pairs = [];
+  for (const [token, value] of vault?.byToken || new Map()) {
+    const m = /^\[\[([A-Z][A-Z0-9]*)_(\d+)\]\]$/.exec(token);
+    const type = m ? m[1] : 'OTHER';
+    byType.set(type, (byType.get(type) || 0) + 1);
+    if (includeValues && pairs.length < maxPairs) pairs.push({ token, value, type });
+  }
+  const types = [...byType.entries()]
+    .map(([type, count]) => ({ type, count }))
+    .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type));
+  return {
+    total: types.reduce((n, t) => n + t.count, 0),
+    types,
+    ...(includeValues ? { pairs } : {}),
+  };
+}
+
+/** Merge several vault summaries (e.g. every conversation) into one. Counts only. */
+export function mergeRedactionSummaries(summaries) {
+  const byType = new Map();
+  for (const s of summaries || []) {
+    for (const t of s?.types || []) byType.set(t.type, (byType.get(t.type) || 0) + t.count);
+  }
+  const types = [...byType.entries()]
+    .map(([type, count]) => ({ type, count }))
+    .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type));
+  return { total: types.reduce((n, t) => n + t.count, 0), types };
+}
