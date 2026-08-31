@@ -18,9 +18,14 @@
   'use strict';
   var frame = document.getElementById('frame');
   var currentId = null;
+  var fill = false; // top-level ("Open ↗") → fill the viewport instead of hugging content
+
+  // Who is driving this page? Embedded in the panel it is the parent frame; opened as a tab
+  // it is the opener. Only that window may hand us an artifact.
+  var host = (window.parent && window.parent !== window) ? window.parent : window.opener;
 
   function post(msg) {
-    try { parent.postMessage(msg, '*'); } catch (e) { /* parent gone */ }
+    try { if (host) host.postMessage(msg, '*'); } catch (e) { /* host gone */ }
   }
 
   // Measure the mounted artifact and tell the panel. The artifact is cross-origin (no
@@ -28,6 +33,7 @@
   // height via a tiny bootstrap we inject, and we relay it. If it never reports, the panel
   // keeps the default height, which still renders.
   function relayHeight(h) {
+    if (fill) return; // a full tab already fills the viewport; content height is irrelevant
     var height = Math.max(60, Math.min(2000, Number(h) || 0));
     frame.style.height = height + 'px';
     post({ type: 'chatpanel:artifact-ready', id: currentId, height: height });
@@ -58,9 +64,9 @@
   }
 
   window.addEventListener('message', function (ev) {
-    // Only the embedding panel may drive this page.
-    if (ev.source !== parent) {
-      // …except the artifact frame reporting its height.
+    // Only the window that embedded/opened this page may drive it.
+    if (ev.source !== host) {
+      // …except the artifact frame reporting its own height.
       if (ev.source === frame.contentWindow && ev.data && typeof ev.data.__cpHeight === 'number') {
         relayHeight(ev.data.__cpHeight);
       }
@@ -68,11 +74,24 @@
     }
     var msg = ev.data;
     if (!msg || msg.type !== 'chatpanel:artifact') return;
+    if (currentId === msg.id) return;         // the opener nudges twice; mount once
     currentId = msg.id;
+    fill = !!msg.fill;
     try {
-      frame.style.height = '160px';           // provisional until the artifact reports
+      if (fill) {
+        // Full tab: give the artifact the whole viewport, the way a standalone file gets it —
+        // a canvas sized from window.innerHeight needs real room, not a 160px strip.
+        document.documentElement.style.height = '100%';
+        document.body.style.height = '100%';
+        frame.style.height = '100vh';
+      } else {
+        // A generous provisional height: artifacts commonly size a canvas from
+        // window.innerHeight, and a 160px strip would bake in a tiny drawing surface
+        // before the content ever reports back.
+        frame.style.height = '360px';
+      }
       frame.srcdoc = buildDoc(msg.html);      // mount (cross-origin: allow-scripts only)
-      post({ type: 'chatpanel:artifact-ready', id: currentId, height: 160 });
+      post({ type: 'chatpanel:artifact-ready', id: currentId, height: fill ? 0 : 360 });
     } catch (e) {
       post({ type: 'chatpanel:artifact-error', id: currentId, message: String((e && e.message) || e) });
     }

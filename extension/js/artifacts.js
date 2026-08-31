@@ -6,9 +6,9 @@
 //   • Preview mounts sandbox.html (a manifest sandbox page → opaque origin, no chrome.*),
 //     which mounts the artifact itself in a nested allow-scripts-only iframe. Two boundaries.
 //   • Code shows the source (the default, and the fail-safe).
-//   • Open ↗ pops the artifact out as a blob: URL in a normal browser tab — full size, still
-//     an isolated origin. This is also the fallback where manifest sandboxes don't exist
-//     (Firefox MV3), so the feature degrades instead of disappearing.
+//   • Open ↗ pops the artifact out full-size in a browser tab, through the SAME sandbox page
+//     (not a blob: URL — a blob inherits the panel's CSP, which blocks the artifact's inline
+//     scripts, so a canvas demo would open frozen at its default size).
 //
 // FAIL SAFE, ALWAYS: if the sandbox can't load, the source stays visible and the chat is
 // unaffected. Nothing here parses or trusts the artifact — it is only ever passed as a string
@@ -22,8 +22,7 @@ let seq = 0;
 // name is assembled rather than written as a literal: a bare 'sandbox.html' in a file that
 // DOES ship to Firefox is exactly what the parity guard forbids, since it would point at a
 // file the add-on doesn't carry. Preview is therefore Chromium-only by construction, and
-// everywhere else the card falls back to Code + "Open ↗" (a blob: tab — isolated on every
-// engine). Feature-detected below, never assumed.
+// everywhere else the card falls back to the Code view. Feature-detected below, never assumed.
 const SANDBOX_PAGE = ['sandbox', 'html'].join('.');
 
 function sandboxUrl() {
@@ -48,12 +47,34 @@ function el(tag, cls, text) {
   return n;
 }
 
-// Open the artifact full-size in its own tab. blob: gives it a fresh isolated origin — it is
-// just a web page, with no access to the extension. Revoked after the tab has taken it.
+// Open the artifact full-size in its own tab, through the SAME sandbox page.
+//
+// Not a blob: URL — that was the bug behind "it doesn't bounce when I open it". A blob:
+// document created here inherits the CREATING page's CSP, and the panel's is `script-src
+// 'self'`, so the artifact's inline <script> never ran: the canvas sat at its default
+// 300×150 and nothing animated. The sandbox page has its own CSP that permits inline
+// scripts, and a srcdoc child inherits that — so the artifact behaves exactly as it does in
+// a standalone file. We keep the opener handle to hand it the HTML (it can only postMessage
+// back; it is a separate opaque origin with no extension access).
 function openInTab(html) {
-  const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
-  try { window.open(url, '_blank', 'noopener,noreferrer'); } catch { /* popup blocked */ }
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  const url = sandboxUrl();
+  if (!url) return false;
+  let win;
+  try { win = window.open(url, '_blank'); } catch { return false; }
+  if (!win) return false; // popup blocked
+  const id = `t${++seq}`;
+  const onMsg = (ev) => {
+    if (ev.source !== win) return;
+    const m = ev.data;
+    if (!m || m.type !== 'chatpanel:sandbox-ready') return;
+    win.postMessage({ type: 'chatpanel:artifact', id, html, fill: true }, '*');
+    window.removeEventListener('message', onMsg);
+  };
+  window.addEventListener('message', onMsg);
+  // The page may have been ready before we attached; nudge it once it has loaded.
+  setTimeout(() => { try { win.postMessage({ type: 'chatpanel:artifact', id, html, fill: true }, '*'); } catch { /* closed */ } }, 400);
+  setTimeout(() => window.removeEventListener('message', onMsg), 10_000);
+  return true;
 }
 
 function mountPreview(host, html, onFail) {
@@ -62,12 +83,18 @@ function mountPreview(host, html, onFail) {
   const id = `a${++seq}`;
   const frame = document.createElement('iframe');
   frame.className = 'artifact-frame';
-  // allow-scripts ONLY. Never allow-same-origin: that would give the sandbox page our origin
-  // and defeat the isolation entirely.
-  frame.setAttribute('sandbox', 'allow-scripts');
+  // NO `sandbox` attribute here — on purpose, and it matters.
+  //
+  // sandbox.html is ALREADY a manifest sandbox page: Chrome serves it with the CSP
+  // `sandbox allow-scripts allow-popups`, so it is a unique opaque origin with no chrome.*
+  // access. Adding the attribute sandboxes it a SECOND time, which re-opaques the origin at
+  // the frame level — and then `script-src 'self'` no longer matches the extension URL, so
+  // js/sandbox-runner.js is blocked and the preview renders nothing at all. (That was the
+  // "Preview is empty" bug.) The isolation comes from the manifest + CSP; the artifact's own
+  // boundary is the nested allow-scripts-only srcdoc frame inside the page.
   frame.setAttribute('title', 'interactive artifact');
   frame.src = url;
-  frame.style.height = '160px';
+  frame.style.height = '360px';
 
   let ready = false;
   const onMsg = (ev) => {
@@ -78,7 +105,7 @@ function mountPreview(host, html, onFail) {
       frame.contentWindow.postMessage({ type: 'chatpanel:artifact', id, html }, '*');
     } else if (m.type === 'chatpanel:artifact-ready') {
       ready = true;
-      if (m.height) frame.style.height = `${Math.max(60, Math.min(2000, Number(m.height) || 160))}px`;
+      if (m.height) frame.style.height = `${Math.max(120, Math.min(2000, Number(m.height) || 360))}px`;
     } else if (m.type === 'chatpanel:artifact-error') {
       onFail(m.message || 'artifact failed to render');
     }
@@ -133,14 +160,19 @@ export function mountArtifacts(root) {
       const showPreview = () => {
         btnPreview.classList.add('is-on'); btnCode.classList.remove('is-on');
         if (src) src.style.display = 'none';
-        stage.style.display = '';
+        // 'block', never '' — the stylesheet sets .artifact-stage { display: none }, so
+        // clearing the inline style just hands control back to that rule and the preview
+        // stays invisible. (That was the other half of the "Preview is empty" bug.)
+        stage.style.display = 'block';
         status.textContent = '';
         if (!cleanup) cleanup = mountPreview(stage, html, fail);
       };
 
       btnPreview.addEventListener('click', showPreview);
       btnCode.addEventListener('click', showCode);
-      btnOpen.addEventListener('click', () => openInTab(html));
+      btnOpen.addEventListener('click', () => {
+        if (!openInTab(html)) status.textContent = 'Couldn\u2019t open a tab — allow pop-ups for this page.';
+      });
       showCode(); // default: the source. The user opts into running it.
     } catch { /* leave the code block untouched */ }
   }

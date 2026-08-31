@@ -28,7 +28,11 @@ for (const g of grants) {
   assert.ok(!/allow-same-origin/.test(g), `a sandbox grant includes allow-same-origin: "${g}"`);
   assert.match(g, /allow-scripts/, `a sandbox grant should allow scripts (and little else): "${g}"`);
 }
-assert.match(artifacts, /setAttribute\('sandbox', 'allow-scripts'\)/, 'panel frame is allow-scripts only');
+// The panel frame must NOT re-sandbox the page: sandbox.html is already a manifest sandbox
+// page, and sandboxing it again re-opaques the origin so `script-src 'self'` stops matching
+// and the runner never loads (the "Preview is empty" bug). Isolation comes from the manifest.
+assert.ok(!/frame\.setAttribute\('sandbox'/.test(artifacts),
+  'the panel must not add a sandbox attribute to the already-sandboxed page');
 assert.match(sandboxPage, /sandbox="allow-scripts"/, 'nested artifact frame is allow-scripts only');
 
 // 3. The panel itself never executes artifact HTML: no innerHTML of the source, no eval.
@@ -40,6 +44,14 @@ assert.match(markdown, /md-artifact-html/, 'html blocks become an upgradeable pl
 assert.ok(!/unescapeHtml\(buf/.test(markdown), 'the html block source is never unescaped into the page');
 
 // 5. The runner only accepts drive messages from its embedder (parent), not any window.
-assert.match(runner, /ev\.source !== parent/, 'runner ignores messages that are not from its embedder');
+// `host` is the parent frame when embedded, or the opener when opened as a tab — the runner
+// accepts drive messages from that window only.
+assert.match(runner, /ev\.source !== host/, 'runner ignores messages that are not from its host');
+assert.match(runner, /window\.parent !== window\) \? window\.parent : window\.opener/, 'host is parent-or-opener');
 
-console.log('ok — artifacts run only in an opaque-origin sandbox; never same-origin, never in-panel');
+// 6. Artifacts are never executed through a blob: URL made here — such a document inherits
+// the panel's CSP (script-src 'self'), so inline scripts silently never run.
+assert.ok(!/createObjectURL/.test(artifacts), 'artifacts are not run via a blob: URL from the panel');
+assert.match(artifacts, /window\.open\(url/, 'the pop-out goes through the sandbox page');
+
+console.log('ok — artifacts run only in an opaque-origin sandbox; never same-origin, never in-panel, never blob:');

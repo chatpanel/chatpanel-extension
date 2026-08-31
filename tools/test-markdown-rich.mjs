@@ -41,3 +41,18 @@ import { renderMarkdown } from '../extension/js/markdown.js';
   assert.match(h, /<pre><code class="lang-js">/);
 }
 console.log('ok — images (https/data only) + inert SVG rendering, unsafe schemes refused');
+
+// STREAMING: an UNCLOSED fence must stay a plain code block. Upgrading it on every token
+// made the message flicker and could mount half a document as an artifact.
+{
+  const partial = renderMarkdown('```html\n<html><body><canvas id="c">');
+  assert.ok(!/md-artifact-html/.test(partial), 'an open fence is not yet an artifact');
+  assert.match(partial, /<pre><code class="lang-html">/, 'it renders as an ordinary code block');
+  const complete = renderMarkdown('```html\n<html><body><canvas id="c"></canvas></body></html>\n```');
+  assert.match(complete, /md-artifact-html/, 'the closed block becomes an artifact');
+}
+{
+  const partialSvg = renderMarkdown('```svg\n<svg xmlns="http://www.w3.org/2000/svg"><circle');
+  assert.ok(!/md-artifact-svg/.test(partialSvg), 'a half-written svg is not rendered as an image');
+}
+console.log('ok — rich rendering waits for the closing fence (no streaming flicker)');
