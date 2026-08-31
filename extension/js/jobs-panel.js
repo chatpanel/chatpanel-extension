@@ -34,9 +34,9 @@ const WHEN_OPTIONS = [
   { id: 'once', label: 'Once, at…', kind: 'timer' },
   { id: meetingStartedTrigger.id, label: 'When a meeting starts', kind: 'event' },
   { id: personJoinedTrigger.id, label: 'When someone joins', kind: 'event', field: 'names', placeholder: 'Alex Rivera, Jordan Blake (blank = anyone)' },
-  { id: phraseTrigger.id, label: 'When a phrase is said', kind: 'event', field: 'any', placeholder: 'action item, follow up', required: true },
-  { id: topicTrigger.id, label: 'When someone talks about…', kind: 'event', field: 'terms', placeholder: 'pricing, renewal', required: true },
-  { id: questionTrigger.id, label: 'When a question is asked', kind: 'event' },
+  { id: phraseTrigger.id, label: 'When a phrase is said', kind: 'event', field: 'any', placeholder: 'action item, follow up', required: true, speaker: true },
+  { id: topicTrigger.id, label: 'When someone talks about…', kind: 'event', field: 'terms', placeholder: 'pricing, renewal', required: true, speaker: true },
+  { id: questionTrigger.id, label: 'When a question is asked', kind: 'event', speaker: true },
 ];
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -60,6 +60,14 @@ function build() {
       <div class="job-row">
         <input id="job-text" class="mon-edit-input" placeholder="What to do" spellcheck="false" hidden />
         <input id="job-param" class="mon-edit-input" spellcheck="false" hidden />
+        <!-- WHOSE speech. These triggers default to other people — right for an interview,
+             where the questions come from the interviewer, and baffling when you are testing
+             alone and nothing happens. The default was neither visible nor changeable. -->
+        <select id="job-speaker" class="mon-edit-every" hidden title="Whose speech to watch">
+          <option value="others">others speak</option>
+          <option value="anyone">anyone speaks</option>
+          <option value="me">I speak</option>
+        </select>
         <select id="job-day" class="mon-edit-every" hidden></select>
         <input id="job-time" class="mon-edit-every" type="time" value="08:00" hidden />
       </div>
@@ -108,6 +116,7 @@ function wireForm() {
   const when = el.querySelector('#job-when');
   const text = el.querySelector('#job-text');
   const param = el.querySelector('#job-param');
+  const speaker = el.querySelector('#job-speaker');
   const day = el.querySelector('#job-day');
   const time = el.querySelector('#job-time');
   const hint = el.querySelector('#job-hint');
@@ -130,6 +139,7 @@ function wireForm() {
     text.hidden = what.value !== 'prompt';
     param.hidden = !opt.field;
     param.placeholder = opt.placeholder || '';
+    speaker.hidden = !opt.speaker;
     day.hidden = opt.id !== 'weekly';
     time.hidden = opt.kind !== 'timer';
     hint.textContent = skills.length ? '' : 'Tip: write a skill in Settings → Skills to run it on a schedule.';
@@ -152,7 +162,10 @@ function wireForm() {
       name: skill ? skill.name : instruction.slice(0, 60),
       trigger: opt.kind === 'timer' ? timerTrigger.id : opt.id,
       schedule: opt.kind !== 'timer' ? null : scheduleFor(opt.id, h, m, Number(day.value)),
-      params: opt.field ? { [opt.field]: values } : {},
+      params: {
+        ...(opt.field ? { [opt.field]: values } : {}),
+        ...(opt.speaker ? { speaker: speaker.value || 'others' } : {}),
+      },
       action: skill ? { kind: 'skill', skillId: skill.id, skillName: skill.name } : { kind: 'prompt', text: instruction },
       createdAt: Date.now(),
     };

@@ -258,10 +258,13 @@ export const questionTrigger = defineTrigger({
   watches: ['meeting.transcript.delta'],
   matches: (event, params = {}, ctx = {}) => {
     for (const seg of event.segments || []) {
-      // ANYONE by default, including you. This said 'others', which quietly made the trigger
-      // useless in the case people actually test first — alone in a call, asking the question
-      // yourself, watching nothing happen. It also contradicted the documented default above.
-      // Someone who only wants other people's questions can still say so with params.speaker.
+      // Other people by default: this exists for reacting to what someone ELSE asks (an
+      // interview, a customer call). The job form offers the choice, so 'anyone' and 'me' are
+      // one dropdown away rather than an invisible default nobody can reach.
+      // ANYONE by default, including you. 'others' read well — this exists for reacting to
+      // what someone ELSE asks — but it made the first thing anybody does (test it alone in a
+      // call, ask a question, wait) match nothing, so the feature looked dead. "Only what
+      // other people ask" is still one dropdown away in the job form.
       if (!speakerAllowed(params.speaker || 'anyone', seg.speaker, ctx)) continue;
       const text = String(seg.text || '').trim();
       if (text.length < 8) continue; // "what?" is not a question worth waking a model for
