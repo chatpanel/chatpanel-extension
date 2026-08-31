@@ -679,21 +679,26 @@ async function runListMeetings(input, { canReadMeetings, loadSources, loadMeetin
   }
 
   // A participant filter that matches nothing is almost never "they attended nothing" — it is
-  // usually that the platform captured a different name than the one a person types (the
-  // platform records "Jordan Blake"; you ask about "Jordy"). Rather than guessing with a
-  // fuzzy rule, report the names actually held for that window and let the model choose: it
-  // has the context to know which one you meant, and the correction takes one more call.
+  // usually that the platform recorded a different form of the name than the one a person
+  // types. But DO NOT answer that by listing the participants: an earlier version of this did,
+  // and it was wrong twice over. It shipped dozens of real colleague names to whatever cloud
+  // model was driving the turn; and where redaction is on those names arrive as
+  // indistinguishable placeholders, so the model cannot pick one and instead confuses two
+  // different people — which is exactly what happened.
+  //
+  // The person at the keyboard already knows the name. Say what is true, say how many
+  // meetings hold participant data, and ask them.
   if (!rows.length && participant) {
-    const names = [...new Set(all
-      .filter((r) => (!since || r.date >= since) && (!before || r.date <= before))
-      .flatMap((r) => r.people))].filter(Boolean).slice(0, 40);
-    if (names.length) {
-      return `No meetings matched participant "${input.participant}" between those dates.\n`
-        + `Participants recorded in that window: ${names.join(', ')}.\n`
-        + 'Participant names come from the meeting platform, so a short name or nickname often will not match. '
-        + 'Pick the matching full name above and call again, or pass a regex such as /jord/ — do not report zero attendance from this result alone.';
+    const inWindow = all.filter((r) => (!since || r.date >= since) && (!before || r.date <= before));
+    const withPeople = inWindow.filter((r) => r.people.length).length;
+    if (withPeople) {
+      return `No meetings matched participant "${input.participant}" between those dates. `
+        + `${withPeople} of ${inWindow.length} meeting(s) in that window do have participant names recorded, so the filter ran against real data.\n`
+        + 'Names come from the meeting platform and are often a full legal name, so a short name or nickname will not match. '
+        + 'Do NOT report zero attendance from this. Ask the user for the exact name as it appears in the meeting, '
+        + 'or retry with a regex (e.g. participant: "/partial/") that matches a fragment you are confident about.';
     }
-    return `No meetings matched participant "${input.participant}" between those dates, and NO participant names were recorded for the meetings in that window — `
+    return `No meetings matched participant "${input.participant}" between those dates, and none of the ${inWindow.length} meeting(s) in that window have participant names recorded — `
       + 'so this does not show they attended nothing. Say that plainly, and offer to read a transcript with history_get_meeting instead.';
   }
 
