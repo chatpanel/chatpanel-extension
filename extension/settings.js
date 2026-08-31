@@ -6809,7 +6809,8 @@ $('obs-sync')?.addEventListener('click', async () => {
   try {
     const gwUrl = normalizeGatewayUrl(settings.gatewayUrl || 'http://127.0.0.1:4320');
     const { syncHistoryToGateway } = await import('./js/warm-sync.js');
-    const r = await syncHistoryToGateway(gwUrl);
+    // Manual reindex = force a full push (re-seed the watermark), not just the delta.
+    const r = await syncHistoryToGateway(gwUrl, { force: true });
     if (r?.ok) { btn.textContent = 'Synced ✓'; toast(`Reindexed ${r.sent ?? 0} record(s) to the gateway`); }
     else if (r?.skipped) { toast('Sync skipped — is the gateway running and its URL loopback?'); btn.textContent = label; }
     else { toast(`Sync failed: ${r?.error || 'gateway not reachable'}`); btn.textContent = label; }

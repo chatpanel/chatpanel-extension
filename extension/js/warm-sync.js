@@ -37,12 +37,43 @@ export function chunkHistoryUpserts(upserts, maxBytes = MAX_BATCH_BYTES) {
   return batches;
 }
 
+// The change-watermark: id → a cheap signature of what we last pushed. Persisted so an
+// INCREMENTAL sync sends only records that are new or changed, and REMOVES records that
+// vanished from the browser (a delete or a prune) — instead of re-pushing the whole corpus
+// every time a meeting adds one transcript line. Kept in chrome.storage.local so it survives
+// the ephemeral service worker.
+const SIG_KEY = 'chatpanel:warmSyncSigs';
+const sigOf = (u) => `${u.date || 0}:${(u.text || '').length}`;
+
+// Storage adapter — injected in tests; defaults to chrome.storage.local. When absent (a unit
+// test that passes no storage), the watermark is empty every time, so the sync degrades to a
+// full push and never removes — the safe, pre-incremental behavior.
+function defaultStorage() {
+  const local = globalThis.chrome?.storage?.local;
+  if (!local) return null;
+  return {
+    async get(key) { try { const g = await local.get(key); return g[key] || {}; } catch { return {}; } },
+    async set(key, val) { try { await local.set({ [key]: val }); } catch { /* ignore */ } },
+  };
+}
+
 // One sync pass. `gatewayUrl` is the local gateway base (e.g. http://127.0.0.1:4320).
 // Injectable deps keep it unit-testable. Returns a small summary; never throws.
+//
+// Incremental by default: diffs the current corpus against the watermark and sends only the
+// delta (changed/new upserts + vanished removes). `force: true` re-pushes everything (the
+// manual "Sync now" and startup catch-up), which also re-seeds the watermark.
+//
+// Removes are watermark-scoped ON PURPOSE: only records THIS pipeline synced and then saw
+// disappear are removed. Anything the gateway holds that never came through here — e.g.
+// records ingested from an encrypted backup — is left alone, so warm can still be a superset
+// archive without this sync nuking it.
 export async function syncHistoryToGateway(gatewayUrl, {
   signal,
   loadSources = loadHistorySources,
   fetchImpl = globalThis.fetch,
+  storage = defaultStorage(),
+  force = false,
 } = {}) {
   if (!gatewayUrl || syncing || typeof fetchImpl !== 'function') return { ok: false, skipped: true };
   // Fail closed: never send the decrypted corpus off-box. A non-loopback URL here
@@ -51,22 +82,45 @@ export async function syncHistoryToGateway(gatewayUrl, {
   syncing = true;
   try {
     const sources = await loadSources({ includeChats: true, includeMeetings: true, includeNotes: true });
-    const upserts = sources
+    const all = sources
       .filter((s) => s && s.id && s.text)
       .map((s) => ({ id: s.id, text: s.text, title: s.title || '', type: s.type || '', date: s.date || 0 }));
-    if (!upserts.length) return { ok: true, size: 0, sent: 0, removed: 0, batches: 0 };
-    let size = 0;
-    const batches = chunkHistoryUpserts(upserts);
-    for (const batch of batches) {
-      const res = await fetchImpl(`${String(gatewayUrl).replace(/\/$/, '')}/v1/history/ingest`, {
+
+    const prev = storage ? (await storage.get(SIG_KEY)) || {} : {};
+    const curSig = {};
+    for (const u of all) curSig[u.id] = sigOf(u);
+
+    // Delta: what to push, what to drop.
+    const upserts = force ? all : all.filter((u) => prev[u.id] !== curSig[u.id]);
+    const removes = Object.keys(prev).filter((id) => !(id in curSig));
+
+    if (!upserts.length && !removes.length) {
+      if (storage) await storage.set(SIG_KEY, curSig); // keep the watermark warm even on a no-op
+      return { ok: true, size: undefined, sent: 0, removed: 0, batches: 0, unchanged: true };
+    }
+
+    const base = String(gatewayUrl).replace(/\/$/, '');
+    const post = async (body) => {
+      const res = await fetchImpl(`${base}/v1/history/ingest`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ upserts: batch, removes: [] }), signal,
+        body: JSON.stringify(body), signal,
       });
       if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : 'no-response'}`);
-      const out = await res.json().catch(() => ({}));
+      return (await res.json().catch(() => ({}))) || {};
+    };
+
+    let size;
+    // Upserts can be large on a forced full sync → batch them. Removes ride the last POST
+    // (or their own, if there were no upserts) so a delete-only sync still goes through.
+    const batches = upserts.length ? chunkHistoryUpserts(upserts) : [[]];
+    for (let i = 0; i < batches.length; i++) {
+      const last = i === batches.length - 1;
+      const out = await post({ upserts: batches[i], removes: last ? removes : [] });
       size = out.size ?? size;
     }
-    return { ok: true, size, sent: upserts.length, removed: 0, batches: batches.length };
+
+    if (storage) await storage.set(SIG_KEY, curSig); // commit the watermark only after success
+    return { ok: true, size, sent: upserts.length, removed: removes.length, batches: batches.length };
   } catch (e) {
     return { ok: false, error: e && e.message ? e.message : String(e) };
   } finally {
@@ -74,6 +128,8 @@ export async function syncHistoryToGateway(gatewayUrl, {
   }
 }
 
-// Retained for callers/tests from the earlier tombstone implementation. Every
-// archive-preserving sync now sends current records as idempotent upserts.
-export function resetWarmSyncBaseline() { /* retained for API compatibility */ }
+// Clear the change-watermark so the next sync re-pushes everything (e.g. after the user
+// points at a fresh gateway). A subsequent sync with force:true does the same in one call.
+export async function resetWarmSyncBaseline(storage = defaultStorage()) {
+  if (storage) await storage.set(SIG_KEY, {});
+}
