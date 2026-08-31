@@ -4383,6 +4383,68 @@ function renderPrivacyMenu() {
     item.onmousedown = (e) => { e.preventDefault(); togglePiiPreview(); };
     menu.appendChild(item);
   }
+  // WHAT WAS ACTUALLY REDACTED IN THIS CONVERSATION — the check that tells you redaction is
+  // working, rather than that it is switched on.
+  //
+  // Read straight from the in-memory vault for this conversation. Nothing here is persisted:
+  // the Activity log deliberately records COUNTS ONLY (a record of what was redacted must not
+  // itself contain the redacted data), so the real before → after pairs exist only for as
+  // long as the conversation is open, on this device, in this page. Values stay hidden until
+  // asked for, so a shared screen doesn't expose them by default.
+  if (mode !== 'off') {
+    const vault = state.piiVaults.get(state.conv?.id);
+    const pairs = [...(vault?.byToken || new Map())].map(([token, value]) => ({ token, value }));
+    menu.appendChild(sectionLabel(`Redacted in this chat${pairs.length ? ` (${pairs.length})` : ''}`));
+    if (!pairs.length) {
+      const empty = document.createElement('div');
+      empty.className = 'menu-item';
+      empty.innerHTML = '<span class="mi-sub">Nothing redacted yet — send a message containing a name, email or phone number and it will appear here.</span>';
+      menu.appendChild(empty);
+    } else {
+      const box = document.createElement('div');
+      box.className = 'pii-pairs';
+      const draw = (reveal) => {
+        box.innerHTML = '';
+        for (const { token, value } of pairs.slice(0, 50)) {
+          const row = document.createElement('div');
+          row.className = 'pii-pair';
+          const real = document.createElement('span');
+          real.className = 'pii-real';
+          real.textContent = reveal ? value : '•'.repeat(Math.min(12, String(value).length));
+          const arrow = document.createElement('span');
+          arrow.className = 'pii-arrow';
+          arrow.textContent = '→';
+          const tok = document.createElement('code');
+          tok.className = 'pii-token';
+          tok.textContent = token;
+          row.append(real, arrow, tok);
+          box.appendChild(row);
+        }
+        if (pairs.length > 50) {
+          const more = document.createElement('div');
+          more.className = 'mi-sub';
+          more.textContent = `…and ${pairs.length - 50} more`;
+          box.appendChild(more);
+        }
+      };
+      draw(false);
+      const toggle = document.createElement('button');
+      toggle.className = 'menu-item toggle';
+      let shown = false;
+      const paint = () => {
+        toggle.innerHTML = `<span class="pii-box${shown ? ' on' : ''}">✓</span>`
+          + '<span style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">'
+          + `<span>${shown ? 'Hide' : 'Reveal'} the original values</span>`
+          + '<span class="mi-sub">Kept in memory for this conversation only — never written to disk.</span>'
+          + '</span>';
+      };
+      paint();
+      toggle.onmousedown = (e) => { e.preventDefault(); shown = !shown; draw(shown); paint(); };
+      menu.appendChild(box);
+      menu.appendChild(toggle);
+    }
+  }
+
   // Auto-detect categories. Shown whenever redaction is on — functional in Pro
   // model mode, otherwise a LOCKED preview so Free sees exactly what Pro unlocks.
   if (mode !== 'off') {
