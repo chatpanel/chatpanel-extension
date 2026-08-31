@@ -6283,13 +6283,34 @@ async function renderObservability() {
     : { tier: 'Warm', label: 'Local gateway', present: false, records: null, bytes: null, newest: null, note: 'Not running — start the gateway to mirror + search from CLI agents' };
   const cold = { tier: 'Cold', label: 'Encrypted cloud', present: false, records: null, bytes: null, newest: null, note: 'Not configured · planned: zero-knowledge cloud + Teams shared store' };
 
-  // A meaningful gap (>5 min) between hot's newest and warm's means the mirror is behind —
-  // that's the "3 days ago" the user sees when new chats/meetings haven't synced. Say so, and
-  // point at the fix. Equal newness (within the window) is NOT a lag — just no new activity.
+  // Auto-sync is what keeps the gateway current after every chat/meeting/note. It's off by
+  // default (pushing decrypted history to the gateway is opt-in), which is the usual reason
+  // the mirror lags: the gateway was configured for CLI agents, but nothing keeps it fresh.
+  // Surface it here with a one-click enable, so the fix isn't buried in the Gateway tab.
+  const autoSync = !!settings.ui?.warmSearch?.enabled;
+  const autoEl = $('obs-autosync');
+  if (autoEl) {
+    autoEl.innerHTML = autoSync
+      ? `<span class="obs-auto on"><span class="obs-dot on"></span>Auto-sync on</span> <span class="sub">— the gateway re-indexes ~30s after each chat, meeting or note, and on startup.</span>`
+      : `<span class="obs-auto off"><span class="obs-dot off"></span>Auto-sync off</span> <span class="sub">— the gateway only updates when you click Sync now, so CLI agents can see stale data.</span> <button id="obs-enable-auto" class="btn" type="button">Turn on auto-sync</button>`;
+    $('obs-enable-auto')?.addEventListener('click', async () => {
+      const b = $('obs-enable-auto'); if (b) { b.disabled = true; b.textContent = 'Turning on…'; }
+      settings.ui = settings.ui || {};
+      settings.ui.warmSearch = { enabled: true, url: gwUrl };
+      try { await saveSettings(settings); } catch { /* surfaced below */ }
+      try { const { syncHistoryToGateway } = await import('./js/warm-sync.js'); await syncHistoryToGateway(gwUrl, { force: true }); } catch { /* ignore */ }
+      toast('Auto-sync on — the gateway now stays current after every chat, meeting and note');
+      renderObservability();
+    });
+  }
+
+  // A meaningful gap (>5 min) between hot's newest and warm's means the mirror is behind.
+  // Frame it by WHY: auto-sync off (the fix is the toggle above) vs. a transient lag while a
+  // sync catches up (the fix is Sync now). Equal newness within the window isn't a lag at all.
   const LAG_MS = 5 * 60 * 1000;
   const behind = obs && hotNewest && (hotNewest - (warm.newest || 0) > LAG_MS);
   const lagHint = behind
-    ? `<div class="obs-lag">The gateway copy is behind this browser (newest here: ${obsAgo(hotNewest)}, in the gateway: ${obsAgo(warm.newest)}). CLI agents search the gateway copy, so click <b>Sync now</b> to reindex.</div>`
+    ? `<div class="obs-lag">The gateway copy is behind this browser (newest here: ${obsAgo(hotNewest)}, in the gateway: ${obsAgo(warm.newest)}). CLI agents search the gateway copy, so ${autoSync ? 'click <b>Sync now</b> to catch up' : 'turn on <b>auto-sync</b> above (or click <b>Sync now</b> once)'}.</div>`
     : '';
   storageEl.innerHTML = lagHint + [hot, warm, cold].map((t) => obsTierCard(formatBytes, t)).join('');
 

@@ -1084,3 +1084,9 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
   border-radius: 10px; padding: 9px 12px; margin-bottom: 10px; font-size: 12.5px; line-height: 1.4;
 }
 .obs-lag b { color: var(--accent); }
+
+.obs-autosync { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; font-size: 12.5px; }
+.obs-auto { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.obs-auto.on { color: var(--ok); }
+.obs-auto.off { color: var(--muted); }
+.obs-autosync .btn { padding: 5px 10px; }
