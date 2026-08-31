@@ -1090,6 +1090,14 @@ async function init() {
     if (t) { t.textContent = '›'; t.title = 'Show panel rail'; }
   }
   renderRail();
+  // Widgets are the user's own, so they load AFTER first paint — the rail renders instantly
+  // with its built-in panes and grows the pinned ones a moment later, rather than making the
+  // panel wait on storage to show anything.
+  requestIdleCallback?.(() => {
+    import('./js/widgets-panel.js')
+      .then((m) => { m.wireWidgetsPanel({ onPinsChanged: refreshWidgetPins }); return refreshWidgetPins(); })
+      .catch(() => {});
+  }, { timeout: 2000 });
   // Handoffs from the full Meetings dashboard. "Ask" attaches the meeting to the
   // normal chat composer; older/open-view paths still open the meeting drawer.
   try {
@@ -5164,7 +5172,35 @@ const RAIL_PANES = [
     isOpen: () => !$('meetings-drawer').classList.contains('hidden') },
   { id: 'watch', icon: '👁', label: 'Watch', title: 'Watch this page & act', pro: 'watch', open: openWatchPane,
     isOpen: () => !$('watch-menu').classList.contains('hidden') },
+  // The user's own widgets. One entry for the shelf; anything they PINNED is added beside it
+  // by refreshWidgetPins(). The rail is a strip, so pinning is what keeps it bounded — every
+  // widget claiming an icon would make it unscannable by the fifth one.
+  { id: 'widgets', icon: '✨', label: 'Widgets', title: 'Your widgets — small apps you kept',
+    open: () => import('./js/widgets-panel.js').then((m) => m.openWidgets()),
+    close: () => import('./js/widgets-panel.js').then((m) => m.closeWidgets()),
+    isOpen: () => !$('widgets-drawer')?.classList.contains('hidden') },
 ];
+
+// Pinned widgets appear as their own rail buttons, so a timer is one click from anywhere.
+// Rebuilt whenever pins change rather than kept in sync by hand.
+async function refreshWidgetPins() {
+  const { pinnedWidgets, openWidgetById } = await import('./js/widgets-panel.js');
+  for (let i = RAIL_PANES.length - 1; i >= 0; i--) {
+    if (RAIL_PANES[i].id.startsWith('widget:')) RAIL_PANES.splice(i, 1);
+  }
+  for (const rec of await pinnedWidgets()) {
+    RAIL_PANES.push({
+      id: `widget:${rec.manifest.id}`,
+      icon: '✦',
+      label: rec.manifest.name.slice(0, 8),
+      title: rec.manifest.name,
+      open: () => openWidgetById(rec.manifest.id),
+      close: () => import('./js/widgets-panel.js').then((m) => m.closeWidgets()),
+      isOpen: () => false, // a pinned button always re-opens its own widget
+    });
+  }
+  renderRail();
+}
 function registerPane(p) { RAIL_PANES.push(p); renderRail(); }
 
 function safePaneOpen(p) { try { return p.isOpen ? p.isOpen() : false; } catch { return false; } }

@@ -925,3 +925,17 @@ html.surface-tab body { max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px 
   cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--text-dim);
 }
 .red-reveal:hover { background: var(--bg-soft); color: var(--text); }
+
+/* Widgets drawer — the shelf of small apps the user kept. */
+.widgets-list { display: flex; flex-direction: column; gap: 4px; padding: 8px; }
+.widget-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-elev); color: var(--text); font: inherit; font-size: 13px; cursor: pointer;
+}
+.widget-row:hover { background: var(--bg-soft); }
+.widget-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.widget-row-pin { color: var(--accent); flex: 0 0 auto; }
+.widget-mount { padding: 8px; }
+/* The widget itself is cross-origin; it reports its own height and the host sizes the frame. */
+.widget-frame { width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
