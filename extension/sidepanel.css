@@ -787,3 +787,11 @@ html.surface-tab body { max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px 
    which model will answer, but during a turn it names the one actually answering. Same text
    shape, so without a mark the header appears not to have moved when it has. */
 .agent-routed.live { color: var(--accent, #4fb0ff); border-color: var(--accent, #4fb0ff); }
+
+/* Rich content in chat/notes/meetings — embedded images, SVG graphics, artifacts. */
+.bubble .md-img, .bubble .md-svg, .md-artifact img {
+  max-width: 100%; height: auto; border-radius: 10px; display: block; margin: 8px 0;
+  border: 1px solid var(--line, #e4e7ec); background: #fff;
+}
+.md-artifact { margin: 10px 0; }
+.md-artifact-svg img { padding: 8px; }
