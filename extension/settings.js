@@ -6290,16 +6290,23 @@ async function renderObservability() {
   const autoSync = !!settings.ui?.warmSearch?.enabled;
   const autoEl = $('obs-autosync');
   if (autoEl) {
+    // A symmetric toggle — on OR off, always with the opposite action available.
     autoEl.innerHTML = autoSync
-      ? `<span class="obs-auto on"><span class="obs-dot on"></span>Auto-sync on</span> <span class="sub">— the gateway re-indexes ~30s after each chat, meeting or note, and on startup.</span>`
-      : `<span class="obs-auto off"><span class="obs-dot off"></span>Auto-sync off</span> <span class="sub">— the gateway only updates when you click Sync now, so CLI agents can see stale data.</span> <button id="obs-enable-auto" class="btn" type="button">Turn on auto-sync</button>`;
-    $('obs-enable-auto')?.addEventListener('click', async () => {
-      const b = $('obs-enable-auto'); if (b) { b.disabled = true; b.textContent = 'Turning on…'; }
+      ? `<span class="obs-auto on"><span class="obs-dot on"></span>Auto-sync on</span> <span class="sub">— re-indexes ~30s after each chat, meeting or note, and on startup. It's a second on-disk copy, readable by the CLI agents you've connected.</span> <button id="obs-toggle-auto" class="btn" type="button" data-to="off">Turn off</button>`
+      : `<span class="obs-auto off"><span class="obs-dot off"></span>Auto-sync off</span> <span class="sub">— the gateway only updates when you click Sync now, so CLI agents can see stale data.</span> <button id="obs-toggle-auto" class="btn" type="button" data-to="on">Turn on auto-sync</button>`;
+    $('obs-toggle-auto')?.addEventListener('click', async () => {
+      const b = $('obs-toggle-auto');
+      const turnOn = b?.dataset.to === 'on';
+      if (b) { b.disabled = true; b.textContent = turnOn ? 'Turning on…' : 'Turning off…'; }
       settings.ui = settings.ui || {};
-      settings.ui.warmSearch = { enabled: true, url: gwUrl };
+      settings.ui.warmSearch = { enabled: turnOn, url: gwUrl };
       try { await saveSettings(settings); } catch { /* surfaced below */ }
-      try { const { syncHistoryToGateway } = await import('./js/warm-sync.js'); await syncHistoryToGateway(gwUrl, { force: true }); } catch { /* ignore */ }
-      toast('Auto-sync on — the gateway now stays current after every chat, meeting and note');
+      // Turning ON force-syncs once so it's current immediately. Turning OFF just stops future
+      // syncs; the copy already in the gateway stays until you clear it (Gateway tab).
+      if (turnOn) { try { const { syncHistoryToGateway } = await import('./js/warm-sync.js'); await syncHistoryToGateway(gwUrl, { force: true }); } catch { /* ignore */ } }
+      toast(turnOn
+        ? 'Auto-sync on — the gateway stays current after every chat, meeting and note'
+        : 'Auto-sync off — the gateway keeps what it has but will not update until you Sync now');
       renderObservability();
     });
   }
