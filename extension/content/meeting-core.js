@@ -71,6 +71,9 @@
 
   let finalizedTranscript = [];        // [{ t, speaker, text }]
   let currentSpokenEntry = null;       // the in-progress utterance
+  // Identity for a rolling caption line. `t` is bumped as the line grows (the delta filter
+  // needs that), so it cannot answer "same utterance?" — this can.
+  let spokenSeq = 0;
   const lastUtteranceMap = new Map();  // speaker → last full caption text (stale guard)
   const lastEntryIndexBySpeaker = new Map();
   const chatTranscript = [];           // [{ t, sender, receiver, text }]
@@ -138,7 +141,7 @@
           }
           if (!overlapFound) {
             pushFinalized(currentSpokenEntry);
-            currentSpokenEntry = { t: Date.now(), speaker, text: currentText };
+            currentSpokenEntry = { sid: `s:${++spokenSeq}`, t: Date.now(), speaker, text: currentText };
           }
         }
       }
@@ -158,7 +161,7 @@
         return;
       }
       if (currentSpokenEntry) pushFinalized(currentSpokenEntry);
-      currentSpokenEntry = { t: Date.now(), speaker, text: currentText };
+      currentSpokenEntry = { sid: `s:${++spokenSeq}`, t: Date.now(), speaker, text: currentText };
     }
     lastUtteranceMap.set(speaker, currentSpokenEntry.text);
     scheduleFlush();
@@ -171,10 +174,15 @@
     const idx = discreteIndex.get(id);
     if (idx !== undefined) {
       const e = finalizedTranscript[idx];
+      // `t` is bumped so the delta filter (sg.t >= lastDeltaTs) keeps re-sending this line as
+      // it grows. That makes t a FRESHNESS marker, not an identity — anything that needs to
+      // know "is this the same utterance I already saw?" must use `sid`, which never moves.
+      // A voice command keyed on t fired again on every caption update, which is how one
+      // spoken request became dozens of timers.
       if (e && e.text !== text) { e.text = text; e.t = Date.now(); scheduleFlush(); }
       return;
     }
-    finalizedTranscript.push({ t: Date.now(), speaker: speaker || 'Speaker', text });
+    finalizedTranscript.push({ sid: `d:${id}`, t: Date.now(), speaker: speaker || 'Speaker', text });
     discreteIndex.set(id, finalizedTranscript.length - 1);
     scheduleFlush();
   }

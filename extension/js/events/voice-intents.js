@@ -659,7 +659,12 @@ export function commandsFromSegments(segments, {
       // timer, on every caption update — indefinitely, and faster than the user could delete
       // them. The key now carries only what the same utterance keeps: where it was said, and
       // what it asked for.
-      key: `voice:${meetingId}:${seg.t || 0}:${parsed.intent || 'unknown'}:${parsed.ms ?? parsed.when ?? ''}`,
+      // IDENTITY, NOT FRESHNESS. `seg.t` is bumped every time a live caption's text grows —
+      // that is what keeps the line flowing through the delta filter — so keying on it made
+      // one spoken request look like a new request on every update, and a single "set a timer
+      // for 30 seconds" became a screenful of timers. `sid` is assigned once per utterance and
+      // never moves, so the same sentence keeps one key however many times it is rescanned.
+      key: `voice:${meetingId}:${seg.sid || seg.t || 0}:${parsed.intent || 'unknown'}:${parsed.ms ?? parsed.when ?? ''}`,
     });
     if (out.length >= max) break; // a pathological transcript cannot fire fifty actions
   }
