@@ -726,6 +726,97 @@ async function memoryWriteProvider(resolvedAgent) {
   });
 }
 
+// Read the message the user just sent for durable facts about them.
+//
+// The split is the whole capture policy, and it lives in @chatpanel/events/memory.js so every
+// surface applies it identically: a COMMAND ("remember that…") is consent already given and
+// saves itself with an Undo; a REVEAL ("I prefer…") is an inference and only ever becomes an
+// offer. Never awaited by send() — capture is a side effect of talking, not a step in it.
+async function captureMemory(text, convId) {
+  clearMemoryOffers();
+  if (!text) return;
+  try {
+    const { captureFromMessage } = await import('./js/memory.js');
+    const { saved, forgot, offers } = await captureFromMessage(text, {
+      settings: state.settings,
+      agentId: state.settings.activeAgentId || '',
+      surface: 'chat',
+      ref: convId,
+    });
+    for (const rec of saved) {
+      // Undo, not a confirm. The user typed the instruction; the cost of being wrong is one
+      // tap, and a dialog for something they just asked for is a tax on the clear case.
+      toastAction(
+        `🧠 ${rec.action === 'update' ? 'Updated' : 'Remembered'}: ${clipText(rec.text, 48)}`,
+        'Undo',
+        async () => {
+          const { forgetMemory } = await import('./js/store-memory.js');
+          await forgetMemory(rec.id);
+          toast('Removed');
+        },
+      );
+    }
+    if (forgot.length) toast(`🧠 Forgot ${forgot.length === 1 ? clipText(forgot[0].text, 40) : `${forgot.length} memories`}`, 2600);
+    if (offers.length) renderMemoryOffers(offers, convId);
+  } catch {
+    /* memory is an enhancement; it never breaks a turn */
+  }
+}
+
+const clipText = (t, n) => (String(t).length > n ? `${String(t).slice(0, n - 1)}…` : String(t));
+
+function clearMemoryOffers() {
+  const el = $('memory-offer');
+  if (!el) return;
+  el.innerHTML = '';
+  el.classList.add('hidden');
+}
+
+// One row per offered fact: what we heard, and two ways to answer. Dismiss is as prominent as
+// accept on purpose — an offer the user cannot easily refuse reads as a demand.
+function renderMemoryOffers(offers, convId) {
+  const el = $('memory-offer');
+  if (!el) return;
+  el.innerHTML = '';
+  for (const cand of offers) {
+    const row = document.createElement('div');
+    row.className = 'mo-row';
+
+    const label = document.createElement('span');
+    label.className = 'mo-text';
+    label.append('Remember: ');
+    const strong = document.createElement('b');
+    strong.textContent = cand.text;           // textContent, never innerHTML — this is user input
+    label.append(strong);
+
+    const yes = document.createElement('button');
+    yes.className = 'mo-yes';
+    yes.type = 'button';
+    yes.textContent = 'Remember';
+    yes.onclick = async () => {
+      row.remove();
+      if (!el.children.length) el.classList.add('hidden');
+      try {
+        const { acceptOffer } = await import('./js/memory.js');
+        await acceptOffer(cand, { agentId: state.settings.activeAgentId || '', surface: 'chat', ref: convId });
+        toast(`🧠 Remembered: ${clipText(cand.text, 48)}`);
+        logEvent('capability.activated', { capability: 'memory.write', classUsed: 'R', granted: true, reason: 'offer' });
+      } catch { toast('Could not save that memory', 2200); }
+    };
+
+    const no = document.createElement('button');
+    no.className = 'mo-no';
+    no.type = 'button';
+    no.title = 'Not this one';
+    no.textContent = '✕';
+    no.onclick = () => { row.remove(); if (!el.children.length) el.classList.add('hidden'); };
+
+    row.append(label, yes, no);
+    el.append(row);
+  }
+  el.classList.toggle('hidden', !el.children.length);
+}
+
 // Build the full toolset for a turn. The side-panel-specific part — page-action
 // tools (they need a live web tab + confirm dialogs) — is assembled here; the
 // portable part (history + web-search + MCP + narrowing) is delegated to the

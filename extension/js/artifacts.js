@@ -230,10 +230,34 @@ export function mountArtifacts(root) {
       const btnReset = el('button', 'artifact-btn', 'Reset');
       const btnCopy = el('button', 'artifact-btn', 'Copy');
       const btnOpen = el('button', 'artifact-btn artifact-open', 'Open ↗');
-      for (const b of [btnPreview, btnCode, btnRun, btnReset, btnCopy, btnOpen]) b.type = 'button';
+      // KEEP — the step that turns a generated thing into one of the user's own features.
+      // Without it a timer the model just built is a message that scrolls away; with it, it
+      // is in their ChatPanel tomorrow. Saving grants nothing: a kept widget still only gets
+      // its own state until the user approves more.
+      const btnKeep = el('button', 'artifact-btn artifact-keep', '＋ Keep');
+      btnKeep.title = 'Keep this as a widget in your ChatPanel';
+      for (const b of [btnPreview, btnCode, btnRun, btnReset, btnCopy, btnKeep, btnOpen]) b.type = 'button';
       btnReset.disabled = true; // nothing to reset until the source is edited
       const status = el('span', 'artifact-status');
-      bar.append(btnPreview, btnCode, btnRun, status, btnReset, btnCopy, btnOpen);
+      bar.append(btnPreview, btnCode, btnRun, status, btnReset, btnCopy, btnKeep, btnOpen);
+
+      btnKeep.onclick = async () => {
+        // The CURRENT source, so edits the user made before keeping are what gets kept.
+        const html = editor.value;
+        const suggested = /<title>([^<]{1,60})<\/title>/i.exec(html)?.[1]?.trim()
+          || (html.match(/<h1[^>]*>([^<]{1,60})<\/h1>/i)?.[1]?.trim())
+          || 'My widget';
+        const name = prompt('Keep this widget as:', suggested);
+        if (!name) return;
+        try {
+          const { saveWidget } = await import('./widgets-store.js');
+          const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64) || `widget-${Date.now()}`;
+          await saveWidget({ id, name: name.trim(), html, surface: 'panel' });
+          status.textContent = 'Kept — find it under Widgets';
+        } catch (e) {
+          status.textContent = `Couldn't keep it: ${e?.message || e}`;
+        }
+      };
 
       // EDITABLE SOURCE. A textarea, not a contenteditable <pre>: a textarea can only ever
       // hold text, so a pasted `<img onerror=...>` stays inert characters instead of becoming

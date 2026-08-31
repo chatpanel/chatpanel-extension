@@ -12,6 +12,13 @@
 //   panel  → sandbox : { type:'chatpanel:artifact', id, html }
 //   sandbox → panel  : { type:'chatpanel:artifact-ready', id, height }
 //                      { type:'chatpanel:artifact-error', id, message }
+//
+// A WIDGET additionally gets a way to ask the panel for something (its own saved state, or a
+// capability the user granted it). The wrapper only RELAYS — it adds no authority of its own,
+// and stamps nothing the panel could mistake for identity: the panel knows which widget this
+// frame is because it mounted it, so a widget naming another id gains nothing.
+//   sandbox → panel  : { type:'chatpanel:widget-call', id, call }
+//   panel  → sandbox : { type:'chatpanel:widget-result', id, callId, ok, value, error }
 // The panel resizes its iframe from `height`, so an artifact renders at its natural size.
 
 (function () {
@@ -51,16 +58,35 @@
     '})();<\/script>',
   ].join('');
 
+  // The widget client, injected only for widgets. Deliberately tiny and promise-shaped:
+  //   chatpanel.getState() / setState(v) / invoke(capability, args)
+  // It cannot reach the panel directly — every call goes to this wrapper, which relays.
+  var WIDGET_API = [
+    '<script>(function(){var n=0,waiting={};',
+    'function call(op,extra){var id="w"+(++n);var m={op:op,callId:id};',
+    'for(var k in extra)m[k]=extra[k];',
+    'return new Promise(function(res,rej){waiting[id]={res:res,rej:rej};',
+    'try{parent.postMessage({__cpWidgetCall:m},"*");}catch(e){rej(e);}});}',
+    'window.addEventListener("message",function(ev){var d=ev.data;',
+    'if(!d||!d.__cpWidgetResult)return;var r=d.__cpWidgetResult,w=waiting[r.callId];',
+    'if(!w)return;delete waiting[r.callId];',
+    'if(r.ok)w.res(r.value);else w.rej(new Error(r.error||"refused"));});',
+    'window.chatpanel={getState:function(){return call("state.get",{});},',
+    'setState:function(v){return call("state.set",{state:v});},',
+    'invoke:function(c,a){return call("invoke",{capability:c,args:a||{}});}};',
+    '})();<\/script>',
+  ].join('');
+
   // A minimal document wrapper so a bare fragment (no <html>) still renders sensibly, and a
   // full document keeps its own <head>. We only append our bootstrap.
-  function buildDoc(html) {
+  function buildDoc(html, widget) {
     var src = String(html || '');
     var base = /<html[\s>]/i.test(src)
       ? src
       : '<!doctype html><html><head><meta charset="utf-8">'
         + '<style>html,body{margin:0;padding:8px;font:13px/1.45 system-ui,sans-serif;color:#181b20;background:#fff}'
         + 'canvas{max-width:100%}</style></head><body>' + src + '</body></html>';
-    return base + BOOTSTRAP;
+    return base + BOOTSTRAP + (widget ? WIDGET_API : '');
   }
 
   window.addEventListener('message', function (ev) {
@@ -69,10 +95,19 @@
       // …except the artifact frame reporting its own height.
       if (ev.source === frame.contentWindow && ev.data && typeof ev.data.__cpHeight === 'number') {
         relayHeight(ev.data.__cpHeight);
+      } else if (ev.source === frame.contentWindow && ev.data && ev.data.__cpWidgetCall) {
+        // Relay only. The panel decides what is allowed; we deliberately don't inspect or
+        // enrich the call, so there is nothing here to get wrong.
+        post({ type: 'chatpanel:widget-call', id: currentId, call: ev.data.__cpWidgetCall });
       }
       return;
     }
     var msg = ev.data;
+    // A result for something the widget asked for: hand it straight down to the frame.
+    if (msg && msg.type === 'chatpanel:widget-result') {
+      try { frame.contentWindow.postMessage({ __cpWidgetResult: msg }, '*'); } catch (e) { /* frame gone */ }
+      return;
+    }
     if (!msg || msg.type !== 'chatpanel:artifact') return;
     if (currentId === msg.id) return;         // the opener nudges twice; mount once
     currentId = msg.id;
@@ -90,7 +125,7 @@
         // before the content ever reports back.
         frame.style.height = '360px';
       }
-      frame.srcdoc = buildDoc(msg.html);      // mount (cross-origin: allow-scripts only)
+      frame.srcdoc = buildDoc(msg.html, msg.widget);      // mount (cross-origin: allow-scripts only)
       post({ type: 'chatpanel:artifact-ready', id: currentId, height: fill ? 0 : 360 });
     } catch (e) {
       post({ type: 'chatpanel:artifact-error', id: currentId, message: String((e && e.message) || e) });

@@ -20,6 +20,7 @@
 
 import { CLASSES, EFFECTS, EGRESS, ACTOR_KINDS, SCOPE_KINDS, EventError } from './event.js';
 import { DATA_SCOPES } from './scopes.js';
+import { validateView } from './view.js';
 
 export { DATA_SCOPES } from './scopes.js';
 
@@ -47,6 +48,9 @@ export function validateCapability(c) {
   if (!c.output || typeof c.output.render !== 'function') {
     throw new EventError('SHAPE', 'capability.output.render required — canonical value and rendering are separate');
   }
+  // A capability MAY ship its own UI. Optional, and validated against this capability so a
+  // view can never name a capability its owner isn't already allowed to call.
+  if (c.view != null) validateView(c.view, c);
   // A class-R capability that declares egress is a contradiction: R is a determinism
   // guarantee, and a network round-trip is not deterministic.
   if (c.class === 'R' && c.egress !== 'none') {
