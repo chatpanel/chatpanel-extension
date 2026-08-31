@@ -1789,6 +1789,14 @@ function assistantBody(m) {
 }
 
 function enhanceCode(bubble) {
+  // Interactive artifacts (```html) — upgrade the code block into Preview | Code | Open ↗.
+  // Dynamic import: the artifact machinery is action-only and must stay off first paint, and
+  // a failure here must never cost the message its Copy buttons — hence the catch.
+  if (bubble?.querySelector?.('.md-artifact-html:not([data-artifact-ready])')) {
+    import('./js/artifacts.js')
+      .then(({ mountArtifacts }) => mountArtifacts(bubble))
+      .catch(() => { /* the escaped source stays visible — the fail-safe */ });
+  }
   bubble.querySelectorAll('pre').forEach((pre) => {
     if (pre.querySelector('.copy-code')) return;
     const btn = document.createElement('button');

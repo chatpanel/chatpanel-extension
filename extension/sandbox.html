@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!--
+  ChatPanel artifact sandbox.
+
+  Declared in the manifest's "sandbox.pages", so Chrome serves it from a UNIQUE OPAQUE
+  ORIGIN with no access to chrome.*, extension storage, or any extension page. This is the
+  ONLY place AI-generated HTML/JS is allowed to run — never the side panel, whose context
+  holds the user's data and API keys.
+
+  The runner script is loaded from a file (not inline) so this page needs no eval and stays
+  reviewable. It mounts the artifact in a NESTED srcdoc iframe with sandbox="allow-scripts"
+  and no allow-same-origin, so the artifact cannot even reach this wrapper.
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  #frame { border: 0; width: 100%; display: block; }
+</style>
+</head>
+<body>
+  <iframe id="frame" sandbox="allow-scripts" scrolling="no" title="artifact"></iframe>
+  <script src="js/sandbox-runner.js"></script>
+</body>
+</html>

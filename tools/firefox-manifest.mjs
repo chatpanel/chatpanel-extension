@@ -86,6 +86,13 @@ export const CHROMIUM_ONLY_PERMISSIONS = Object.freeze({
 // reading code the build can never reach — and, for the 6.3 MB WebLLM bundle, AMO's
 // linter rejecting the submission outright.
 export const CHROMIUM_ONLY_FILES = Object.freeze([
+  // Interactive-artifact sandbox. Firefox MV3 has no manifest "sandbox.pages", so the
+  // opaque-origin page can't exist there; js/artifacts.js degrades to Code + "Open ↗"
+  // (a blob: tab, which is isolated on every engine). Shipping the files without the
+  // manifest key would be a page that silently runs with normal extension privileges —
+  // exactly what must never happen.
+  'sandbox.html',
+  'js/sandbox-runner.js',
   'offscreen.html',         // host page for the offscreen WebLLM engine
   'js/offscreen-webllm.js', // its entry point (statically imports the bundle below)
   // The WebLLM runtime. Dead weight on Firefox in the most literal sense: its runtime
@@ -100,7 +107,7 @@ export const CHROMIUM_ONLY_FILES = Object.freeze([
 ]);
 
 // Manifest keys Firefox does not understand. Left in place they are install warnings.
-export const CHROMIUM_ONLY_KEYS = Object.freeze(['minimum_chrome_version', 'side_panel', 'options_page', 'key', 'update_url', 'oauth2']);
+export const CHROMIUM_ONLY_KEYS = Object.freeze(['sandbox', 'minimum_chrome_version', 'side_panel', 'options_page', 'key', 'update_url', 'oauth2']);
 
 export function readChromeManifest(extDir = path.join(ROOT, 'extension')) {
   return JSON.parse(readFileSync(path.join(extDir, 'manifest.json'), 'utf8'));
