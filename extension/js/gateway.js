@@ -117,6 +117,14 @@ export async function getGatewayLogs(baseUrl) {
   catch { return []; }
 }
 
+// Observability for the storage/agent-access dashboard: warm-tier storage stats plus the
+// cross-agent read log. Admin-gated, so this rides the token (Chrome omits Origin on GET).
+// Returns null when the gateway isn't running — the dashboard frames that as optional.
+export async function getGatewayObservability(baseUrl, { limit = 200 } = {}) {
+  try { return await jfetch(`${normalizeGatewayUrl(baseUrl)}/v1/observability?limit=${limit}`); }
+  catch { return null; }
+}
+
 export async function setGatewayConfig(baseUrl, patch) {
   return jfetch(`${normalizeGatewayUrl(baseUrl)}/config`, {
     method: 'POST',

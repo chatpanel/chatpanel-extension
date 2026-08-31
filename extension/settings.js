@@ -55,7 +55,7 @@ import { webgpuSupport } from './js/webgpu-support.js';
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth } from './js/storage-health.js';
-import { checkGateway, getGatewayConfig, getGatewayLogs, setGatewayConfig, ensureGatewayEntitlement, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
+import { checkGateway, getGatewayConfig, getGatewayLogs, getGatewayObservability, setGatewayConfig, ensureGatewayEntitlement, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
 import { createVault, redactText } from './js/pii-redact.js';
 import { detectEntities } from './js/pii-detect.js';
 import {
@@ -6262,14 +6262,13 @@ async function renderObservability() {
     note: `${convs?.length || 0} chats · ${mtgs?.length || 0} meetings · ${nts?.length || 0} notes`,
   };
 
-  // WARM — the local gateway mirror. The settings page is a chrome-extension:// origin, so
-  // this fetch carries the Origin the gateway needs to authorize the read.
-  const gwUrl = String(settings.gatewayUrl || 'http://127.0.0.1:4320').replace(/\/+$/, '');
-  let obs = null;
-  try {
-    const r = await fetch(`${gwUrl}/v1/observability`, { signal: AbortSignal.timeout(2500) });
-    if (r.ok) obs = await r.json();
-  } catch { /* gateway not running — framed as optional below, not an error */ }
+  // WARM — the local gateway mirror. /v1/observability is admin-gated, and Chrome omits
+  // Origin on GET to a permitted host, so it rides the admin token. Make sure we have one
+  // (POSTs DO carry Origin, so the handshake can fetch it) before the read.
+  const gwUrl = normalizeGatewayUrl(settings.gatewayUrl || 'http://127.0.0.1:4320');
+  if (settings.gatewayToken) setGatewayToken(settings.gatewayToken);
+  await handshakeGatewayToken(gwUrl).catch(() => {});
+  const obs = await getGatewayObservability(gwUrl).catch(() => null);
 
   const warm = obs
     ? { tier: 'Warm', label: 'Local gateway', present: true, records: obs.storage?.warm?.records ?? 0, bytes: obs.storage?.warm?.bytes ?? null, newest: obs.storage?.warm?.newest ?? null, note: 'Searchable by any connected CLI agent' }
