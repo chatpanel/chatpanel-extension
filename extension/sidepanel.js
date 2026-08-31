@@ -3568,6 +3568,9 @@ function eventStamp(event) {
 // --------------------------------------------------------------------------
 let voiceMod = null;            // the module + engine, resolved once
 let voiceLoading = null;
+// The meeting whose start has already been announced, so the poll that recomputes the live
+// set cannot fire "when a meeting starts" over and over for the same call.
+let meetingStartAnnounced = null;
 const voiceSeen = new Map();    // meetingId → newest segment ts already scanned
 const voiceReported = new Set(); // command keys already surfaced (refusals repeat otherwise)
 
@@ -5429,7 +5432,13 @@ async function renderScribeIndicator(liveOpt) {
   const fresh = [];
   for (const e of live) {
     if (e.persistedAt && now - e.persistedAt < ZOMBIE_MS) fresh.push(e);
-    else markMeetingEnded(e.id).then(() => maybeExtractMeetingTopics(e.id)).catch(() => {});
+    else {
+      markMeetingEnded(e.id).then(() => maybeExtractMeetingTopics(e.id)).catch(() => {});
+      // The counterpart to meeting.started, and dead for the same reason: the trigger was
+      // offered in the UI and nothing ever emitted the event it watches. A "send me the notes
+      // when the call ends" job could be created and would simply never run.
+      fireMeetingTrigger({ type: 'meeting.ended', meetingId: e.id, title: e.title || '', platform: e.platform || '' });
+    }
   }
   live = fresh;
 
@@ -5438,12 +5447,35 @@ async function renderScribeIndicator(liveOpt) {
   const top = [...live].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
   const prevId = state.liveMeeting && state.liveMeeting.id;
   const prevTabId = state.liveMeeting && state.liveMeeting.tabId;
-  state.liveMeeting = top ? { id: top.id, title: top.title, tabId: top.id === prevId ? prevTabId : undefined } : null;
+  state.liveMeeting = top
+    ? { id: top.id, title: top.title, platform: top.platform || '', tabId: top.id === prevId ? prevTabId : undefined }
+    : null;
   if ((state.liveMeeting && state.liveMeeting.id) !== prevId) {
     renderContextBar();
     // A different meeting just became the live one (start / attach / boot) — restore any
     // active monitors saved for it that aren't in this conversation yet.
     if (state.liveMeeting?.id) hydrateMonitorsForMeeting(state.liveMeeting.id);
+    // THE EVENT "when a meeting starts" WAITS FOR. The trigger existed and was selectable,
+    // but nothing ever emitted `meeting.started` — only transcript deltas — so a job bound to
+    // it could be created and could never run. This is the one place that knows a meeting has
+    // become live, whichever way it got there.
+    //
+    // Guarded by id, so the periodic refresh that recomputes `live` cannot re-announce the
+    // same meeting: a job that runs a skill must fire once per meeting, not once per poll.
+    if (state.liveMeeting?.id && meetingStartAnnounced !== state.liveMeeting.id) {
+      meetingStartAnnounced = state.liveMeeting.id;
+      // Zoom, Meet, Teams and Webex all land here: every adapter writes the same meeting
+      // index, and this reads the index rather than any one client. `platform` rides along so
+      // a job scoped to one client ("when a Zoom call starts") can match — without it, the
+      // trigger's platform filter compares against undefined and never fires.
+      fireMeetingTrigger({
+        type: 'meeting.started',
+        meetingId: state.liveMeeting.id,
+        title: state.liveMeeting.title || '',
+        platform: state.liveMeeting.platform || '',
+      });
+    }
+    if (!state.liveMeeting?.id) meetingStartAnnounced = null; // the next meeting is a new start
   }
 
   const el = $('scribe-indicator');
