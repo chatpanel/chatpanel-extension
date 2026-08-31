@@ -2622,7 +2622,7 @@ function renderBridgeAgents() {
 // Human label for a CLI kind, used in the collapsed summary line.
 const AGENT_KIND_LABEL = {
   claude: 'Claude Code', codex: 'Codex', antigravity: 'Antigravity',
-  pi: 'Pi', opencode: 'OpenCode', kiro: 'Kiro', copilot: 'GitHub Copilot',
+  pi: 'Pi', opencode: 'OpenCode', hermes: 'Hermes', kiro: 'Kiro', copilot: 'GitHub Copilot',
   deepseek: 'DeepSeek Harness',
   custom: 'Custom CLI',
 };
