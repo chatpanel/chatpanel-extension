@@ -546,7 +546,37 @@ export const monitorIntent = defineVoiceIntent({
   },
 });
 
-export const BUILTIN_VOICE_INTENTS = Object.freeze([timerIntent, reminderIntent, noteIntent, monitorIntent]);
+// "Every weekday at 8am run my daily brief." The recurrence parser already existed for
+// reminders; what makes this different is that the thing being scheduled is WORK — a skill
+// the user already wrote — so the job says only when, and the skill stays the single
+// definition of what. Declared class C because it will start a model turn every time.
+export const scheduleIntent = defineVoiceIntent({
+  id: 'voice:schedule',
+  label: 'Schedule something',
+  description: 'Runs one of your skills (or a plain instruction) on a schedule.',
+  examples: ['every weekday at 8am run my daily brief', 'run the standup summary every morning', 'tomorrow at 9 do the release checklist'],
+  classUsed: 'C',
+  match: (command, { now = Date.now() } = {}) => {
+    const verb = /\b(run|do|start|kick\s+off|execute)\b/i.exec(command);
+    if (!verb) return null;
+    const when = parseWhen(command, { now });
+    // No time is not a schedule — it is a request to do something now, which is a chat
+    // message, not a job. Refusing here is what keeps "run the checklist" out of the
+    // scheduler.
+    if (!when) return null;
+    let target = when.end > when.start
+      ? command.slice(0, when.start) + ' ' + command.slice(when.end)
+      : command;
+    const v = /\b(run|do|start|kick\s+off|execute)\b/i.exec(target);
+    target = tidy((v ? target.slice(v.index + v[0].length) : target)
+      .replace(/^\s*(?:my|the|our)\b/i, '')
+      .replace(/\b(skill|job|task)\b\s*$/i, ''));
+    if (!target) return null;
+    return { target, at: when.at, recurrence: when.recurrence, when: when.kind };
+  },
+});
+
+export const BUILTIN_VOICE_INTENTS = Object.freeze([timerIntent, reminderIntent, scheduleIntent, noteIntent, monitorIntent]);
 
 function tidy(s) {
   return String(s || '').replace(/\s+/g, ' ').replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, '').trim();
@@ -604,6 +634,15 @@ export function commandsFromSegments(segments, {
     if (seg.t && seg.t <= sinceTs) continue;
     const parsed = parseCommand(seg.text, { wake, intents, now });
     if (!parsed) continue;
+    // NO INTENT, NO ACTION. parseCommand returns a shape for anything that carries the wake
+    // word and a time-ish phrase, intent included or not — so "we should talk about the chat
+    // panel roadmap next week" came back as a command with intent:null and the caller acted
+    // on it anyway. In a live meeting that means ordinary conversation quietly sets timers,
+    // which is what happened: a caption grows, keeps matching, and fires again.
+    //
+    // An automation that runs when it did not understand the request is worse than one that
+    // does nothing, so an unrecognised utterance stops here.
+    if (!parsed.intent) continue;
     const allowed = isSelf ? !!isSelf(seg.speaker) : false;
     out.push({
       ...parsed,
@@ -611,9 +650,16 @@ export function commandsFromSegments(segments, {
       speaker: seg.speaker || '',
       t: seg.t || now,
       meetingId,
-      // Stable across redeliveries of the same segment, so the rule engine's dedup does its
-      // job: a flush that resends the last ten seconds must not set two timers.
-      key: `voice:${meetingId}:${seg.t || 0}:${parsed.at}:${parsed.intent || 'unknown'}`,
+      // Stable across redeliveries of the same segment, so the dedupe actually dedupes.
+      //
+      // `parsed.at` used to be in this key, and it is an ABSOLUTE time computed as now + the
+      // spoken duration — so it changed on every scan. A live caption is rescanned as the
+      // sentence grows (deliberately: a half-heard command must get a second chance), which
+      // meant one "set a timer for 10 seconds" produced a brand-new key, and a brand-new
+      // timer, on every caption update — indefinitely, and faster than the user could delete
+      // them. The key now carries only what the same utterance keeps: where it was said, and
+      // what it asked for.
+      key: `voice:${meetingId}:${seg.t || 0}:${parsed.intent || 'unknown'}:${parsed.ms ?? parsed.when ?? ''}`,
     });
     if (out.length >= max) break; // a pathological transcript cannot fire fifty actions
   }
