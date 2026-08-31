@@ -39,3 +39,33 @@ assert.match(panel, /platform: top\.platform \|\| ''/, 'taken from the index eve
 }
 
 console.log(`ok — every meeting trigger has an emitter, on every client (${watched.filter((t) => t.startsWith('meeting.')).length} checked)`);
+
+// END TO END, on every client: the event the panel now fires must actually select the job.
+{
+  const { jobsForEvent } = await import('../extension/js/events/schedule.js');
+  const { triggers } = await import('../extension/js/jobs.js');
+  const job = {
+    id: 'j1', name: 'Interview', enabled: true,
+    trigger: 'meeting:started', params: {},
+    action: { kind: 'skill', skill: 'Interview' },
+  };
+  for (const platform of ['zoom', 'meet', 'teams', 'webex']) {
+    const event = { type: 'meeting.started', meetingId: `m-${platform}`, title: `${platform} call`, platform };
+    const hits = jobsForEvent([job], event, { registry: triggers });
+    assert.equal(hits.length, 1, `a start job fires on ${platform}`);
+  }
+  // A job scoped to one client fires only there — which needs the platform the panel now sends.
+  const zoomOnly = { ...job, params: { platform: 'zoom' } };
+  assert.equal(jobsForEvent([zoomOnly], { type: 'meeting.started', meetingId: 'a', platform: 'zoom' }, { registry: triggers }).length, 1);
+  assert.equal(jobsForEvent([zoomOnly], { type: 'meeting.started', meetingId: 'b', platform: 'teams' }, { registry: triggers }).length, 0);
+}
+
+// THE OCCURRENCE IS THE MEETING, not a wall clock and not zero.
+{
+  const panelSrc = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  const stamp = panelSrc.slice(panelSrc.indexOf('function eventStamp'), panelSrc.indexOf('function eventStamp') + 900);
+  assert.match(stamp, /if \(event\.meetingId\) return event\.meetingId;/,
+    'a start/end is claimed per meeting — falling through to 0 let the first call ever claim the only slot, permanently');
+  // Failures must be visible; a silent catch is why a dead trigger looked like a working one.
+  assert.match(panelSrc, /console\.warn\('\[jobs\] meeting trigger failed'/, 'a failing job says so');
+}

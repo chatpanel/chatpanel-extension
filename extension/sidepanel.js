@@ -3544,7 +3544,12 @@ async function fireMeetingTrigger(event, ctx) {
       if (hit.job.action.kind === 'monitor') { await addMonitor({ kind: 'qa', prompt: hit.job.action.prompt }); continue; }
       await runJobTurn(hit.job, { why: hit.match.why });
     }
-  } catch { /* a job that fails must never disturb the meeting */ }
+  } catch (e) {
+    // A job that fails must never disturb the meeting — but it must not vanish either. The
+    // silent catch is why a trigger that never fired looked identical to one that fired and
+    // did nothing.
+    console.warn('[jobs] meeting trigger failed', event?.type, e);
+  }
 }
 
 // One stamp per event, stable across redelivery: the newest line for a transcript delta,
@@ -3553,6 +3558,15 @@ function eventStamp(event) {
   if (Array.isArray(event.segments) && event.segments.length) {
     return event.segments.reduce((max, sg) => Math.max(max, sg.t || 0), 0);
   }
+  // A start or an end happens once per MEETING, so the meeting IS the occurrence.
+  //
+  // Without this the stamp fell through to `event.at || event.t || 0` — and a start event
+  // carries neither, so every meeting claimed the same key, `<job>@meeting.started@0`. Claims
+  // are persisted, so the first call anyone ever joined took that slot permanently and every
+  // meeting afterwards was refused as a duplicate: the job looked broken and was in fact
+  // deduped against a call from days ago. A wall-clock stamp would fix that and break the
+  // other half — the live set is recomputed on a poll, and each poll would look new.
+  if (event.meetingId) return event.meetingId;
   return event.at || event.t || 0;
 }
 
