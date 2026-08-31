@@ -69,3 +69,19 @@ console.log(`ok — every meeting trigger has an emitter, on every client (${wat
   // Failures must be visible; a silent catch is why a dead trigger looked like a working one.
   assert.match(panelSrc, /console\.warn\('\[jobs\] meeting trigger failed'/, 'a failing job says so');
 }
+
+// YOUR OWN QUESTIONS COUNT. The question trigger defaulted to 'others', so the way people
+// actually test it — alone in a call, asking a question themselves — matched nothing, and the
+// job looked broken. It also contradicted the documented default ('anyone') two functions up.
+{
+  const { jobsForEvent } = await import('../extension/js/events/schedule.js');
+  const { triggers } = await import('../extension/js/jobs.js');
+  const ctx = { isSelf: (sp) => /^you$/i.test(String(sp || '')) };
+  const job = (params) => ({ id: 'j', name: 'Interview', enabled: true, trigger: 'meeting:question', params, action: { kind: 'monitor', prompt: 'x' } });
+  const said = (speaker) => ({ type: 'meeting.transcript.delta', meetingId: 'm', segments: [{ sid: 's', t: 1, speaker, text: 'What is the first thing we need to do?' }] });
+
+  assert.equal(jobsForEvent([job({})], said('You'), { registry: triggers, ctx }).length, 1, 'your own question fires it');
+  assert.equal(jobsForEvent([job({})], said('Alex Rivera'), { registry: triggers, ctx }).length, 1, 'and so does someone else\'s');
+  // Anyone who wants only other people's questions can still say so.
+  assert.equal(jobsForEvent([job({ speaker: 'others' })], said('You'), { registry: triggers, ctx }).length, 0);
+}

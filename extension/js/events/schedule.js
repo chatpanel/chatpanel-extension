@@ -258,7 +258,11 @@ export const questionTrigger = defineTrigger({
   watches: ['meeting.transcript.delta'],
   matches: (event, params = {}, ctx = {}) => {
     for (const seg of event.segments || []) {
-      if (!speakerAllowed(params.speaker || 'others', seg.speaker, ctx)) continue;
+      // ANYONE by default, including you. This said 'others', which quietly made the trigger
+      // useless in the case people actually test first — alone in a call, asking the question
+      // yourself, watching nothing happen. It also contradicted the documented default above.
+      // Someone who only wants other people's questions can still say so with params.speaker.
+      if (!speakerAllowed(params.speaker || 'anyone', seg.speaker, ctx)) continue;
       const text = String(seg.text || '').trim();
       if (text.length < 8) continue; // "what?" is not a question worth waking a model for
       if (text.includes('?') || QUESTION.test(text)) return { why: `question from ${seg.speaker || 'someone'}`, segment: seg };
