@@ -1252,6 +1252,18 @@ function runtimeContextSystem(settings) {
       `time-sensitive facts.`,
     );
   } catch { /* Date unavailable — skip */ }
+  // What the panel can SHOW. Without this an agent that owns a filesystem (Codex, Claude
+  // Code) answers "make me a game" by writing index.html and telling the user to open it —
+  // technically done, but the thing they asked to see never appears. Naming the renderable
+  // block types is what turns those answers into something visible in the reply.
+  lines.push(
+    `ChatPanel renders your reply: a fenced \`\`\`html block becomes a live, runnable preview ` +
+    `(games and canvas demos included), \`\`\`mermaid becomes a diagram, \`\`\`svg becomes a ` +
+    `graphic, and Markdown images display inline. When the user asks to see, play, view or ` +
+    `render something, put the complete self-contained code in a fenced block IN YOUR REPLY. ` +
+    `Writing it only to a file, or telling them to open a file in a browser, does not show ` +
+    `them anything — write the file too if it is useful, but always include the code here.`,
+  );
   const lang = String(settings?.ui?.language || '').trim();
   if (lang && !/^(auto|default)$/i.test(lang)) {
     lines.push(
