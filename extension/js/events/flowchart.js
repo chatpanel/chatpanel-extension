@@ -320,11 +320,22 @@ function styleFor(id, graph, rankIdx) {
  * Mermaid flowchart text → a complete SVG document string, or null if it isn't a flowchart
  * this renderer handles (the caller then keeps the code block).
  */
-export function renderFlowchartSvg(text, { padding = 18, maxWidth = 1400 } = {}) {
+export function renderFlowchartSvg(text, { padding = 18, maxWidth = 1400, autoFlip = true } = {}) {
   const graph = parseFlowchart(text);
   if (!graph) return null;
-  const L = layoutFlowchart(graph);
+  let L = layoutFlowchart(graph);
   if (!L.boxes.size) return null;
+
+  // A broad tree laid out top-down (one root, six categories, ~28 leaves) becomes a 3000px
+  // strip that is unreadable in a side panel. When a chart comes out far wider than it is
+  // tall, lay it out left-to-right instead: the same graph, but the wide rank stacks
+  // vertically and every label stays legible at fit-width. Purely a presentation choice —
+  // the Code view always shows what the model actually wrote.
+  if (autoFlip) {
+    const aspect = L.width / Math.max(1, L.height);
+    if (aspect > 2.2 && !L.horizontal) L = layoutFlowchart(graph, { dir: 'LR' });
+    else if (aspect < 0.25 && L.horizontal) L = layoutFlowchart(graph, { dir: 'TB' });
+  }
 
   const W = Math.min(maxWidth, Math.ceil(L.width + padding * 2));
   const H = Math.ceil(L.height + padding * 2);

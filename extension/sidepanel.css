@@ -846,3 +846,5 @@ html.surface-tab body { max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px 
   .tok-tag { color: #f9a8d4; }
   .tok-atr { color: #fde047; }
 }
+.artifact-zoom { min-width: 30px; font-variant-numeric: tabular-nums; }
+.artifact-diagram { max-height: 70vh; overflow: auto; }

@@ -49,10 +49,14 @@ assert.ok(!/unescapeHtml\(buf/.test(markdown), 'the html block source is never u
 assert.match(runner, /ev\.source !== host/, 'runner ignores messages that are not from its host');
 assert.match(runner, /window\.parent !== window\) \? window\.parent : window\.opener/, 'host is parent-or-opener');
 
-// 6. Artifacts are never executed through a blob: URL made here — such a document inherits
-// the panel's CSP (script-src 'self'), so inline scripts silently never run.
-assert.ok(!/createObjectURL/.test(artifacts), 'artifacts are not run via a blob: URL from the panel');
-assert.match(artifacts, /window\.open\(url/, 'the pop-out goes through the sandbox page');
+// 6. EXECUTABLE artifacts are never run through a blob: URL made here — such a document
+// inherits the panel's CSP (script-src 'self'), so inline scripts silently never run. A blob
+// is still fine for an inert SVG IMAGE (no scripts involved), so the rule is about type.
+for (const m of artifacts.matchAll(/new Blob\(\[[^\]]*\],\s*\{\s*type:\s*'([^']+)'/g)) {
+  assert.equal(m[1], 'image/svg+xml', `a blob: URL may only carry an inert SVG image, got ${m[1]}`);
+}
+assert.ok(!/new Blob\(\[html\]/.test(artifacts), 'artifact HTML is never turned into a blob: document');
+assert.match(artifacts, /window\.open\(url, '_blank'\)/, 'the HTML pop-out goes through the sandbox page');
 
 // 7. The EDITABLE source view must not become an injection path: a textarea can only hold
 // text, so pasted markup stays inert characters. A contenteditable region would put
