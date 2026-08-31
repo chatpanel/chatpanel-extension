@@ -55,7 +55,7 @@ import { webgpuSupport } from './js/webgpu-support.js';
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth } from './js/storage-health.js';
-import { checkGateway, getGatewayConfig, getGatewayLogs, getGatewayObservability, setGatewayConfig, ensureGatewayEntitlement, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
+import { checkGateway, getGatewayConfig, getGatewayLogs, getGatewayObservability, clearGatewayHistory, setGatewayConfig, ensureGatewayEntitlement, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
 import { createVault, redactText } from './js/pii-redact.js';
 import { detectEntities } from './js/pii-detect.js';
 import {
@@ -6302,7 +6302,7 @@ async function renderObservability() {
       settings.ui.warmSearch = { enabled: turnOn, url: gwUrl };
       try { await saveSettings(settings); } catch { /* surfaced below */ }
       // Turning ON force-syncs once so it's current immediately. Turning OFF just stops future
-      // syncs; the copy already in the gateway stays until you clear it (Gateway tab).
+      // syncs; the copy already in the gateway stays until you use "Clear gateway copy".
       if (turnOn) { try { const { syncHistoryToGateway } = await import('./js/warm-sync.js'); await syncHistoryToGateway(gwUrl, { force: true }); } catch { /* ignore */ } }
       toast(turnOn
         ? 'Auto-sync on — the gateway stays current after every chat, meeting and note'
@@ -6829,6 +6829,24 @@ async function verifyReplay() {
 
 $('activity-replay')?.addEventListener('click', verifyReplay);
 $('obs-refresh')?.addEventListener('click', renderObservability);
+$('obs-clear')?.addEventListener('click', async () => {
+  const gwUrl = normalizeGatewayUrl(settings.gatewayUrl || 'http://127.0.0.1:4320');
+  if (!confirm('Delete the gateway\'s on-disk copy of your history?\n\nCLI agents will find nothing there until the next sync. Your browser data (the source) is untouched. If auto-sync is on, it will re-populate after your next chat/meeting/note.')) return;
+  const btn = $('obs-clear'); const label = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = 'Clearing…'; }
+  try {
+    const r = await clearGatewayHistory(gwUrl);
+    // Reset the sync watermark so a later sync re-pushes from scratch instead of assuming
+    // the gateway still holds what we last sent.
+    try { const { resetWarmSyncBaseline } = await import('./js/warm-sync.js'); await resetWarmSyncBaseline(); } catch { /* ignore */ }
+    toast(`Cleared ${r?.dropped ?? ''} record(s) from the gateway`.replace('  ', ' '));
+  } catch (e) {
+    toast(`Clear failed: ${e?.message || e}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+    renderObservability();
+  }
+});
 $('obs-sync')?.addEventListener('click', async () => {
   const btn = $('obs-sync');
   if (!btn || btn.disabled) return;

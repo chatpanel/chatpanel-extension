@@ -125,6 +125,14 @@ export async function getGatewayObservability(baseUrl, { limit = 200 } = {}) {
   catch { return null; }
 }
 
+// Purge the gateway's on-disk copy of your history (the warm mirror). Admin-gated write.
+// Returns { ok, dropped, size }.
+export async function clearGatewayHistory(baseUrl) {
+  return jfetch(`${normalizeGatewayUrl(baseUrl)}/v1/history/clear`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+  });
+}
+
 export async function setGatewayConfig(baseUrl, patch) {
   return jfetch(`${normalizeGatewayUrl(baseUrl)}/config`, {
     method: 'POST',
