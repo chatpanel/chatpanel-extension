@@ -387,6 +387,7 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
   const system = combineSystemPrompt(agent.systemPrompt, tools?.system);
   const sys = system ? [{ role: 'system', content: system }] : [];
   const headers = { ...sanitizeExtraHeaders(agent.headers), 'Content-Type': 'application/json' };
+  Object.assign(headers, openRouterIdentityHeaders(agent, base));
   Object.assign(headers, await authHeadersForEndpoint(agent));
   if (!headers.Authorization && agent.apiKey) headers['Authorization'] = `Bearer ${agent.apiKey}`;
   const toolSpecs = tools?.specs?.map((s) => ({
@@ -2302,6 +2303,21 @@ function modelSizeScore(id) {
   return 50;
 }
 
+// OpenRouter identifies the CALLING APP by HTTP-Referer / X-Title, and gates some models to
+// apps it recognises ("only available on agentic harnesses"). That identity has to follow the
+// DESTINATION, not the preset dropdown: choosing "Custom / self-hosted" and typing the
+// OpenRouter URL used to send no identity at all, so the request arrived anonymous and the
+// gate could never pass. Headers the user set themselves always win.
+function openRouterIdentityHeaders(agent, base) {
+  if (!isOpenRouterEndpoint(agent, base)) return {};
+  const set = sanitizeExtraHeaders(agent?.headers) || {};
+  const has = (k) => Object.keys(set).some((h) => h.toLowerCase() === k.toLowerCase());
+  const out = {};
+  if (!has('HTTP-Referer')) out['HTTP-Referer'] = 'https://chatpanel.net';
+  if (!has('X-Title')) out['X-Title'] = 'ChatPanel';
+  return out;
+}
+
 function isOpenRouterEndpoint(agent, base = '') {
   try {
     return agent?.authMode === 'openrouter' || /(^|\.)openrouter\.ai$/i.test(new URL(base || 'https://example.com').hostname);
@@ -2390,6 +2406,7 @@ export async function listModelOptions(agent) {
   }
   const base = (agent.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
   const headers = { ...sanitizeExtraHeaders(agent.headers) };
+  Object.assign(headers, openRouterIdentityHeaders(agent, base));
   Object.assign(headers, await authHeadersForEndpoint(agent));
   if (!headers.Authorization && agent.apiKey) headers['Authorization'] = `Bearer ${agent.apiKey}`;
   const res = await reachableFetch(`${base}/models`, { headers }, agent, base);
