@@ -4527,6 +4527,13 @@ function renderPrefs() {
   $('pref-live-notes').value = String(settings.ui.liveNotesIntervalMin ?? 2);
   $('pref-meeting-window').value = String(settings.ui.meetingWindowMin ?? 0);
   $('pref-meeting-summary-style').value = settings.ui.meetingSummaryStyle === 'detailed' ? 'detailed' : 'concise';
+  // Spoken commands. `from` is a security control, so it is stored and shown exactly as
+  // chosen — never inferred from whether a name happens to be filled in.
+  const voice = settings.ui.voice || {};
+  $('pref-voice-enabled').checked = voice.enabled !== false;
+  $('pref-voice-wake').value = voice.wakeWord || 'ChatPanel';
+  $('pref-voice-from').value = ['me', 'anyone', 'off'].includes(voice.from) ? voice.from : 'me';
+  $('pref-voice-names').value = (Array.isArray(voice.selfNames) ? voice.selfNames : []).join(', ');
   // Internal sites — a REACH ceiling, not a redaction rule.
   //
   // The built-ins are TOGGLES, not lines in a textarea. Hand-editing a list that contains
@@ -5013,6 +5020,15 @@ async function savePrefs() {
   settings.ui.liveNotesIntervalMin = Number($('pref-live-notes').value);
   settings.ui.meetingWindowMin = Number($('pref-meeting-window').value);
   settings.ui.meetingSummaryStyle = $('pref-meeting-summary-style').value === 'detailed' ? 'detailed' : 'concise';
+  settings.ui.voice = {
+    ...(settings.ui.voice || {}),
+    enabled: $('pref-voice-enabled').checked,
+    // A blank wake word would compile to nothing and either disable the feature silently or
+    // match everything — neither is what an empty box means, so it falls back to the default.
+    wakeWord: $('pref-voice-wake').value.trim() || 'ChatPanel',
+    from: ['me', 'anyone', 'off'].includes($('pref-voice-from').value) ? $('pref-voice-from').value : 'me',
+    selfNames: $('pref-voice-names').value.split(',').map((n) => n.trim()).filter(Boolean),
+  };
   settings.ui.piiRedaction = {
     ...(settings.ui.piiRedaction || {}),
     mode: $('priv-mode').value,

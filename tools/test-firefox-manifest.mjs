@@ -73,7 +73,7 @@ for (const p of Object.keys(CHROMIUM_ONLY_PERMISSIONS)) {
 }
 assert.ok(dropped.length, 'expected at least one Chromium-only permission to be dropped — did the Chrome manifest change?');
 // Everything Firefox CAN do must still be asked for, or the feature dies silently.
-for (const p of ['storage', 'tabs', 'scripting', 'activeTab', 'contextMenus', 'alarms', 'identity', 'downloads', 'unlimitedStorage', 'webNavigation']) {
+for (const p of ['storage', 'tabs', 'scripting', 'activeTab', 'contextMenus', 'alarms', 'notifications', 'identity', 'downloads', 'unlimitedStorage', 'webNavigation']) {
   assert.ok(ff.permissions.includes(p), `permission "${p}" is supported on Firefox and must be carried over`);
 }
 

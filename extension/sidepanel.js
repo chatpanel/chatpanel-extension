@@ -1097,6 +1097,21 @@ async function init() {
     import('./js/widgets-panel.js')
       .then((m) => { m.wireWidgetsPanel({ onPinsChanged: refreshWidgetPins }); return refreshWidgetPins(); })
       .catch(() => {});
+    // Anything the worker scheduled while no window was open — a morning brief that came
+    // due before the panel was opened. Idle, and only ever a storage read when there is
+    // nothing waiting, so a user with no jobs pays nothing for the feature existing.
+    drainPendingJobs().catch(() => {});
+    // The rail button for everything ChatPanel will do unprompted. Same idle slot, same
+    // reason: nobody's first paint should wait on a list of scheduled jobs.
+    import('./js/jobs-panel.js')
+      .then((m) => m.wireJobsPane({
+        registerPane,
+        toast,
+        // Read at open time, not captured: a skill written after the panel loaded should
+        // appear in the picker without a reload.
+        skills: () => enabledSkills(state.settings?.skills),
+      }))
+      .catch(() => {});
   }, { timeout: 2000 });
   // Handoffs from the full Meetings dashboard. "Ask" attaches the meeting to the
   // normal chat composer; older/open-view paths still open the meeting drawer.
@@ -1166,6 +1181,12 @@ async function init() {
       // land here — if it does, that's a licensing bug, so say that instead of upselling.
       if (isPro(state.license)) toast('Meeting not saved — capture was refused despite Pro. Check Settings → License.', 6000);
       else showMeetingLimitPrompt();
+    } else if (msg?.type === 'CP_JOBS_DUE') {
+      // The worker hit a job it cannot finish alone (it needs a model).
+      drainPendingJobs();
+    } else if (msg?.type === 'CP_JOB_FIRED') {
+      // A notify job with no notifications permission to deliver it — say it here instead.
+      toast(`${msg.title}${msg.body ? ` — ${msg.body}` : ''}`, 6000);
     } else if (msg?.type === 'CP_MEETING_DELTA' && msg.meetingId) {
       // New speech, pushed the moment it is durable. Everything on this path is free and
       // local — no model, no storage read — so it can afford to run on every flush.
@@ -3412,6 +3433,130 @@ function monitorLabel(m) {
 }
 
 // --------------------------------------------------------------------------
+// Scheduled and triggered jobs — the half that needs a model.
+//
+// The service worker finishes anything that is only a message (a timer, a reminder). What
+// lands here is what needs a turn: a SKILL to run every morning, a prompt, a monitor to
+// start. The result goes into its own conversation so it is findable later — a job that ran
+// while you were away and left its output nowhere has not run, from your point of view.
+// --------------------------------------------------------------------------
+function jobWhenLabel(job, lastRun = 0) {
+  const at = job.schedule?.kind === 'once' ? job.schedule.at : null;
+  const next = at ?? (() => { try { return whenNextFor(job, lastRun); } catch { return null; } })();
+  if (!next) return 'when it triggers';
+  const d = new Date(next);
+  const today = new Date().toDateString() === d.toDateString();
+  const when = today ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  return job.schedule?.kind === 'once' ? `at ${when}` : `${job.schedule.kind}, next ${when}`;
+}
+function whenNextFor(job, lastRun) {
+  // Loaded already by every path that can reach this label.
+  return jobsMod?.whenNext(job, Date.now(), lastRun) ?? null;
+}
+
+let jobsMod = null;
+async function jobs() {
+  if (!jobsMod) jobsMod = await import('./js/jobs.js');
+  return jobsMod;
+}
+
+// Run the model half of one job. Deliberately built on the same pieces as a monitor turn —
+// one target resolution, one toolset, one redaction vault — rather than a second turn path
+// that would drift away from the guarded one.
+async function runJobTurn(job, { why = '' } = {}) {
+  const instruction = await jobInstruction(job);
+  if (!instruction) return;
+  const conv = await createConversation({ agentId: state.settings.activeAgentId, title: job.name });
+  const now = Date.now();
+  conv.messages.push({ id: uid(), role: 'user', content: instruction, ts: now, hidden: true });
+  const assistant = { id: uid(), role: 'assistant', content: '', ts: now, pending: true };
+  conv.messages.push(assistant);
+  try {
+    const resolved = resolveTarget(agentForConv(conv), state.settings);
+    const tools = await toolsetFor(resolved, { userText: instruction, pageTools: false });
+    const { buildRedaction } = await import('./js/turn-tools.js');
+    const redaction = buildRedaction({ settings: state.settings, license: state.license, vault: piiVaultFor(conv.id) });
+    let out = '';
+    await streamChat({
+      agent: resolved,
+      messages: [{ role: 'user', content: instruction }],
+      settings: state.settings,
+      tools,
+      redaction,
+      onDelta: (d) => { out += d; },
+    });
+    assistant.content = out.trim() || '(no output)';
+  } catch (e) {
+    assistant.content = `⚠ ${e?.message || 'failed'}`;
+  } finally {
+    assistant.pending = false;
+    await saveConversation(conv).catch(() => {});
+  }
+  toastAction(`${job.name} ran${why ? ` — ${why}` : ''}`, 'Open', () => openConversation(conv.id), 6000);
+}
+
+// What to actually say to the model. A skill job names a skill the user already wrote, so
+// the skill stays the single definition of the work — the job only says when.
+async function jobInstruction(job) {
+  if (job.action.kind === 'prompt') return job.action.text || '';
+  if (job.action.kind === 'skill') {
+    const skill = (state.settings?.skills || []).find((sk) => sk.id === job.action.skillId);
+    if (!skill?.prompt) {
+      toast(`“${job.name}” points at a skill that no longer exists`, 5000);
+      return '';
+    }
+    return skill.prompt;
+  }
+  return '';
+}
+
+// Occurrences the worker left for a window. Drained on panel open and when it tells us.
+async function drainPendingJobs() {
+  const m = await jobs();
+  const pending = await m.pendingRuns();
+  for (const entry of pending) {
+    await m.clearPending(entry.key);
+    const job = await m.getJob(entry.jobId);
+    if (!job?.enabled) continue;
+    if (!(await m.withinLimits(job))) { toast(`“${job.name}” hit its daily limit`, 4000); continue; }
+    await m.countRun(job.id);
+    if (job.action.kind === 'monitor') { await addMonitor({ kind: 'qa', prompt: job.action.prompt }); continue; }
+    await runJobTurn(job, { why: 'scheduled' });
+  }
+}
+
+// An in-meeting event: match it against the user's jobs and run what fires. The matching is
+// pure and free; only a match costs anything.
+async function fireMeetingTrigger(event, ctx) {
+  try {
+    const m = await jobs();
+    const voice = state.settings?.ui?.voice;
+    const { makeSelfMatcher, voiceSettings } = await import('./js/voice-commands.js');
+    const hits = await m.jobsForMeetingEvent(event, { isSelf: makeSelfMatcher(voiceSettings(voice)), ...ctx });
+    for (const hit of hits) {
+      // Dedup per event, so a redelivered delta cannot run the same brief twice.
+      const stamp = hit.match.segment?.t ?? eventStamp(event);
+      if (!(await m.claimOccurrence(`${hit.job.id}@${event.type}@${stamp}`))) continue;
+      if (!(await m.withinLimits(hit.job))) continue; // a phrase said fifty times is not fifty jobs
+      await m.countRun(hit.job.id);
+      if (hit.job.action.kind === 'notify') { toast(`${hit.job.name} — ${hit.match.why}`, 5000); continue; }
+      if (hit.job.action.kind === 'monitor') { await addMonitor({ kind: 'qa', prompt: hit.job.action.prompt }); continue; }
+      await runJobTurn(hit.job, { why: hit.match.why });
+    }
+  } catch { /* a job that fails must never disturb the meeting */ }
+}
+
+// One stamp per event, stable across redelivery: the newest line for a transcript delta,
+// the event's own time otherwise.
+function eventStamp(event) {
+  if (Array.isArray(event.segments) && event.segments.length) {
+    return event.segments.reduce((max, sg) => Math.max(max, sg.t || 0), 0);
+  }
+  return event.at || event.t || 0;
+}
+
+// --------------------------------------------------------------------------
 // Spoken commands — "ChatPanel, set a timer for ten minutes".
 //
 // The transcript is already arriving every few seconds; that makes it an input device. The
@@ -3443,6 +3588,26 @@ async function voiceRuntime() {
         await addMonitor({ kind: 'qa', prompt: cmd.args.prompt });
         return { message: `Watching: ${cmd.args.prompt}` };
       });
+      // Timers and reminders became possible the moment jobs got somewhere durable to live:
+      // both are `notify` actions, so the service worker finishes them with the panel shut.
+      const asJob = async (cmd) => {
+        const m = await jobs();
+        const spec = m.jobFromCommand(cmd, { now: Date.now() });
+        if (!spec) return { message: `Noted: ${cmd.args.text} — say a time to make it a reminder` };
+        await m.putJob(spec);
+        return { message: `${spec.name} — ${jobWhenLabel(spec)}` };
+      };
+      actions.bind('voice:timer', asJob);
+      actions.bind('voice:reminder', asJob);
+      // "Every weekday at 8am run my daily brief" — resolved against the skills this user
+      // has, so the job points AT the skill rather than copying its prompt.
+      actions.bind('voice:schedule', async (cmd) => {
+        const m = await jobs();
+        const spec = m.bindSkill(m.jobFromCommand(cmd, { now: Date.now() }), enabledSkills(state.settings?.skills));
+        if (!spec) return { message: `Couldn’t schedule “${cmd.args.target}”` };
+        await m.putJob(spec);
+        return { message: `${spec.name} — ${jobWhenLabel(spec)}` };
+      });
       voiceMod = { vc, engine: await rules.ruleEngine(), actions };
       return voiceMod;
     })();
@@ -3467,6 +3632,9 @@ async function onMeetingDelta(meetingId, segments) {
     // Minus one, so the line still being spoken is re-scanned as it grows: a command that
     // arrives half-finished must get a second chance when the sentence completes.
     voiceSeen.set(meetingId, Math.max(0, newest - 1));
+    // Jobs the user bound to what is SAID — a phrase, a topic, a question. Same delta,
+    // same free matching pass; only a match costs anything.
+    fireMeetingTrigger({ type: 'meeting.transcript.delta', meetingId, segments });
     if (!commands.length) return;
     await vc.dispatchVoiceCommands(commands, {
       engine,

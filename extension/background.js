@@ -18,6 +18,7 @@ import { getSettings } from './js/store.js';
 const REVALIDATE_ALARM = 'chatpanel-revalidate-license';
 const WARM_SYNC_ALARM = 'chatpanel-warm-sync';   // coalesced background push of history → local gateway
 const MEETING_HB_ALARM = 'chatpanel-meeting-hb'; // un-throttled heartbeat that keeps backgrounded meeting tabs flushing
+const JOBS_ALARM = 'chatpanel-jobs';             // ONE alarm for every scheduled job — see js/jobs.js
 const LIVE_TABS_KEY = 'cpLiveMeetingTabs';       // session-scoped map: tabId → { meetingId, platform }
 
 // --------------------------------------------------------------------------
@@ -281,6 +282,9 @@ chrome.runtime.onStartup.addListener(() => {
   revalidate().catch(() => {});
   syncBackupAlarm().then(() => runScheduledBackupIfDue()).catch(() => {});
   runWarmSyncIfEnabled().catch(() => {}); // catch up anything written while the browser was closed
+  // A laptop that was shut at 8pm missed this morning's brief. Run what the job's own
+  // onMissed policy says to run, and re-arm — an alarm does not survive a browser restart.
+  runDueJobs().catch(() => {});
 });
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === REVALIDATE_ALARM) revalidate().catch(() => {});
@@ -289,6 +293,89 @@ chrome.alarms.onAlarm.addListener((a) => {
   }
   else if (a.name === MEETING_HB_ALARM) meetingHeartbeat().catch(() => {});
   else if (a.name === WARM_SYNC_ALARM) runWarmSyncIfEnabled().catch(() => {});
+  else if (a.name === JOBS_ALARM) runDueJobs().catch(() => {});
+});
+
+// --------------------------------------------------------------------------
+// Scheduled jobs — the half that can run with no window open.
+//
+// A `notify` action (a timer, a reminder) is finished here: it costs nothing, needs no
+// model, and a reminder that only arrives when the panel happens to be open is not a
+// reminder. Anything that needs a model is left PENDING for the panel — a turn needs
+// settings, a licence, redaction and often a tool loop, none of which belong in a worker
+// that can be killed mid-sentence.
+//
+// Everything is loaded dynamically: a browser where nobody has created a job must not pay
+// for the scheduler on every service-worker cold start.
+// --------------------------------------------------------------------------
+const jobsPort = {
+  schedule(atMs) {
+    // chrome.alarms refuses anything under a minute and rounds; `when` is what keeps a
+    // 10-minute timer landing at 10 minutes rather than on the next periodic tick.
+    chrome.alarms.create(JOBS_ALARM, { when: Math.max(atMs, Date.now() + 1000) });
+  },
+  cancel() { chrome.alarms.clear(JOBS_ALARM); },
+};
+
+async function runDueJobs() {
+  const jobs = await import('./js/jobs.js');
+  const due = await jobs.dueNow();
+  for (const entry of due) {
+    if (entry.skipped) { await jobs.recordRun(entry.job.id, entry.at); continue; }
+    if (!(await jobs.claimOccurrence(entry.key))) continue; // the panel got there first
+    await jobs.recordRun(entry.job.id, entry.at);
+    // The ceiling every job has whether or not its author set one — a misconfigured
+    // schedule must cost a day's worth of runs, not a month's.
+    if (!(await jobs.withinLimits(entry.job))) continue;
+    await jobs.countRun(entry.job.id);
+    if (jobs.needsWindow(entry.job)) {
+      await jobs.addPending({ key: entry.key, jobId: entry.job.id, at: entry.at });
+      flashBadge('•', '#5b5bf0');
+      chrome.runtime.sendMessage({ type: 'CP_JOBS_DUE' }).catch(() => { /* no panel open */ });
+      continue;
+    }
+    await deliverNotify(entry.job, entry.at);
+  }
+  await jobs.armWake(jobsPort); // always re-arm: a recurring job's next slot is now knowable
+}
+
+// Still feature-detected even though `notifications` is now in the manifest: Firefox for
+// Android and the Chromium Android builds do not all expose the namespace, and an undefined
+// namespace called bare at top level takes the whole worker down. Without it a job still
+// runs and is still recorded — the user sees it on the badge and in the panel instead.
+async function deliverNotify(job, at) {
+  const title = job.action.title || job.name || 'ChatPanel';
+  const body = job.action.body || '';
+  try {
+    if (chrome.notifications?.create) {
+      await chrome.notifications.create(`cp-job-${job.id}-${at}`, {
+        type: 'basic', iconUrl: chrome.runtime.getURL('assets/icon128.png'), title, message: body,
+        // Reminders are the one notification that must not disappear while you are looking
+        // away from the screen — that is the entire job.
+        requireInteraction: job.action.kind === 'notify' && !!job.action.sticky,
+      });
+      return;
+    }
+  } catch { /* fall through to the badge */ }
+  flashBadge('⏰', '#dc2626');
+  chrome.runtime.sendMessage({ type: 'CP_JOB_FIRED', title, body }).catch(() => {});
+}
+
+// A reminder you cannot act on is half a reminder: clicking it opens the panel, where the
+// job list and the chat are. Guarded because a click is only SOMETIMES a user gesture as far
+// as sidePanel.open is concerned, and a refusal here must not throw inside a listener.
+chrome.notifications?.onClicked?.addListener?.((id) => {
+  if (!String(id).startsWith('cp-job-')) return;
+  chrome.notifications.clear(id).catch(() => {});
+  chrome.windows?.getCurrent?.()
+    .then((w) => (w?.id != null ? openSidePanel({ windowId: w.id }) : null))
+    .catch(() => { /* no gesture, or no windows API (Android) — the badge still carries it */ });
+});
+
+// Jobs are created in the panel; the worker owns the alarm, so it re-arms when they change.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes['chatpanel:jobs']) return;
+  import('./js/jobs.js').then((m) => m.armWake(jobsPort)).catch(() => {});
 });
 
 // Open the panel and hand it the click target. The panel listens for

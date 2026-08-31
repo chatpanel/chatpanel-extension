@@ -67,7 +67,7 @@ export {
   compileWake, findWakeCommand, parseCommand, commandsFromSegments,
   parseDuration, parseClock, parseWhen, parseNumberWords, normalizeSpeech, tokenize, editDistance,
   defineVoiceIntent, createVoiceIntentRegistry, defaultVoiceIntents, BUILTIN_VOICE_INTENTS,
-  timerIntent, reminderIntent, noteIntent, monitorIntent,
+  timerIntent, reminderIntent, scheduleIntent, noteIntent, monitorIntent,
 } from './voice-intents.js';
 export { explainMcpError, packageFromArgs } from './mcp-errors.js';
 export { createManifest, ManifestError, SOURCES } from './manifest.js';

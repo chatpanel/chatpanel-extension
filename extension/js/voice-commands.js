@@ -148,15 +148,19 @@ export function createVoiceActions(map = {}) {
  * Offer a delta's commands to the engine, one event per command so each is deduped on its
  * own key. Never throws — automation is a passenger, not a driver.
  */
-export async function dispatchVoiceCommands(commands, { engine, actions, onOutcome = () => {} } = {}) {
+export async function dispatchVoiceCommands(commands, { engine, actions, onOutcome = () => {}, seen = null } = {}) {
   const out = [];
   for (const command of commands) {
     if (!command.allowed) {
       // Reported, not dropped: "someone else said it" is the single most likely reason a
       // user's command did nothing, and they cannot guess it.
+      //
+      // Told ONCE, though. A line keeps being re-offered while it is the newest thing said,
+      // and the engine's dedup never sees these (they are refused before dispatch) — so
+      // without this the refusal is a toast on every flush until someone else speaks.
       const outcome = { ok: false, reason: 'not-you', command };
       out.push(outcome);
-      onOutcome(outcome);
+      if (!seen?.has(command.key)) { rememberKey(seen, command.key); onOutcome(outcome); }
       continue;
     }
     let fired = [];
@@ -196,4 +200,13 @@ export function outcomeMessage(outcome) {
     default:
       return '';
   }
+}
+
+// Bounded: a long meeting must not accumulate keys forever. Oldest-first, because the only
+// thing this set protects against is a repeat within the next few seconds.
+const SEEN_MAX = 200;
+function rememberKey(seen, key) {
+  if (!seen) return;
+  seen.add(key);
+  if (seen.size > SEEN_MAX) for (const k of seen) { seen.delete(k); if (seen.size <= SEEN_MAX) break; }
 }

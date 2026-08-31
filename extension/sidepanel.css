@@ -944,3 +944,12 @@ html.surface-tab body { max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px 
 .widget-mount { padding: 8px; }
 /* The widget itself is cross-origin; it reports its own height and the host sizes the frame. */
 .widget-frame { width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
+
+/* Create-a-job form at the top of the Jobs pane. Two selects and at most two fields —
+   "do THIS when THAT" — so the pane stays a list rather than becoming a settings page. */
+.job-new { padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--bg-elev); }
+.job-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.job-row:last-child { margin-bottom: 0; }
+.job-row > select, .job-row > input { flex: 1 1 0; min-width: 0; }
+.job-row > input[type="time"] { flex: 0 0 auto; }
+.job-row > .mon-edit-lab { flex: 1 1 auto; }

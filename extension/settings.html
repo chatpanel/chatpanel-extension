@@ -463,6 +463,40 @@ npx @chatpanel/bridge</code></pre>
             keeps long meetings from growing the prompt (and cost) on every question —
             use the full transcript for short calls, a window for long ones.
           </p>
+          <hr class="sep" />
+          <label class="check">
+            <input type="checkbox" id="pref-voice-enabled" />
+            <span>Spoken commands — act on “<em>wake word</em>, …” said during a meeting</span>
+          </label>
+          <div class="row half">
+            <div>
+              <label for="pref-voice-wake">Wake word</label>
+              <input type="text" id="pref-voice-wake" placeholder="ChatPanel" spellcheck="false" />
+            </div>
+            <div>
+              <label for="pref-voice-from">Act on commands from</label>
+              <select id="pref-voice-from">
+                <option value="me">Only me (recommended)</option>
+                <option value="anyone">Anyone in the meeting</option>
+                <option value="off">Nobody — just listen, never act</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label for="pref-voice-names">My name in captions</label>
+              <input type="text" id="pref-voice-names" placeholder="Alex Rivera, Alex" spellcheck="false" />
+            </div>
+          </div>
+          <p class="muted tiny">
+            Say “ChatPanel, keep an eye on the pricing question” to start a live monitor
+            without touching the panel. Matching happens on your device against the caption
+            text — no audio, no model call, nothing sent anywhere until a command actually
+            runs. <strong>Everyone in a meeting is on the transcript</strong>, so ChatPanel
+            only acts on lines spoken by you: Teams and Zoom label you “You”, while Google
+            Meet uses your real name — put that name (and any short form the captions use)
+            in the field above so your own commands are recognised.
+          </p>
         </div>
         <div class="card">
           <div class="card-head">
@@ -1743,6 +1777,8 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
           </select>
         </div>
         <label class="check"><input type="checkbox" class="ba-local" /> Use my local skills, MCP &amp; config (uncheck = isolated &amp; faster)</label>
+        <div class="row ba-mcpoff-row"><label>Skip MCP servers</label><input class="ba-mcpoff" placeholder="names from the CLI's own config, comma-separated — e.g. wiki, tickets  (blank = load them all)" /></div>
+        <p class="muted tiny ba-mcpoff-row">The CLI loads every MCP server in its config on every message, so one that can&rsquo;t log in or can&rsquo;t be reached fails the whole turn. List the ones you don&rsquo;t need here. ChatPanel also skips a server that just broke a turn, and tells you which.</p>
         <div class="row"><label>System prompt</label><textarea class="ba-system" rows="2" placeholder="Optional system / role instructions"></textarea></div>
         <div class="entity-foot"><span class="card-foot-name"></span><span class="ba-status status"></span><button class="btn primary ba-save">Save</button></div>
       </div>

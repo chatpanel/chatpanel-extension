@@ -1193,3 +1193,6 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 }
 .memory-row .mem-btn:hover { background: var(--border); color: var(--text); }
 .memory-row .mem-btn.on { color: var(--accent); }
+
+/* Section break inside a settings card. */
+hr.sep { border: none; border-top: 1px solid var(--border); margin: 16px 0 14px; }
