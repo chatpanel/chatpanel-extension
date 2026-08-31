@@ -130,9 +130,21 @@ body.rail-collapsed { --rail-w: 0px; }
 /* Dropdown menus */
 .menu {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
-  background: var(--bg-elev); border: 1px solid var(--border);
+  border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow);
-  min-width: 220px; max-width: 320px; max-height: 60vh; overflow: auto; padding: 6px;
+  min-width: 220px; max-width: 320px; max-height: 70vh; overflow: auto; padding: 6px;
+  /* SCROLL SHADOWS. With nine agents plus endpoints the picker overflows, and it scrolled
+     silently: the last visible row rendered in full, so the list looked complete and a
+     newly-added agent below the fold read as "it didn't get added". These four layers are
+     the classic pure-CSS cue — the `local` gradients travel with the content and uncover a
+     `scroll`-fixed shadow only while there is more in that direction, so the hint appears
+     exactly when it is true and disappears at either end. */
+  background:
+    linear-gradient(var(--bg-elev) 30%, transparent) top / 100% 20px no-repeat local,
+    linear-gradient(transparent, var(--bg-elev) 70%) bottom / 100% 20px no-repeat local,
+    radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, .16), transparent) top / 100% 8px no-repeat scroll,
+    radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, .16), transparent) bottom / 100% 8px no-repeat scroll,
+    var(--bg-elev);
 }
 .menu.up { top: auto; bottom: calc(100% + 6px); }
 .menu-item {
