@@ -918,7 +918,10 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
         <div class="card" id="obs-card">
           <div class="card-head">
             <h2>Storage &amp; agent access <span class="sub">— where your data lives, and which agents read it</span></h2>
-            <button id="obs-refresh" class="btn" type="button">Refresh</button>
+            <div class="row" style="gap:6px">
+              <button id="obs-sync" class="btn" type="button" title="Push this browser's latest chats, meetings and notes to the local gateway now">Sync now</button>
+              <button id="obs-refresh" class="btn" type="button">Refresh</button>
+            </div>
           </div>
           <p class="muted tiny">
             Your chats, meetings and notes live in the browser (<b>hot</b>) and are mirrored to

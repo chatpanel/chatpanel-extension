@@ -6255,10 +6255,18 @@ async function renderObservability() {
     meetings.getMeetingIndex?.().catch(() => []) || [],
     notes.getNoteIndex?.().catch(() => []) || [],
   ]);
+  // Hot freshness from the same fields warm sync stamps as each record's date, so hot-newest
+  // and warm-newest are comparable: a gap between them IS the sync lag (not "no new activity").
+  const maxOf = (arr, pick) => arr.reduce((m, e) => Math.max(m, pick(e) || 0), 0);
+  const hotNewest = Math.max(
+    maxOf(convs, (e) => e.updatedAt),
+    maxOf(mtgs, (e) => e.endedAt || e.startedAt || e.persistedAt),
+    maxOf(nts, (e) => e.updatedAt || e.createdAt),
+  ) || null;
   const hot = {
     tier: 'Hot', label: 'Browser · this device', present: true,
     records: (convs?.length || 0) + (mtgs?.length || 0) + (nts?.length || 0),
-    bytes: est.usage ?? null, newest: null,
+    bytes: est.usage ?? null, newest: hotNewest,
     note: `${convs?.length || 0} chats · ${mtgs?.length || 0} meetings · ${nts?.length || 0} notes`,
   };
 
@@ -6275,7 +6283,15 @@ async function renderObservability() {
     : { tier: 'Warm', label: 'Local gateway', present: false, records: null, bytes: null, newest: null, note: 'Not running — start the gateway to mirror + search from CLI agents' };
   const cold = { tier: 'Cold', label: 'Encrypted cloud', present: false, records: null, bytes: null, newest: null, note: 'Not configured · planned: zero-knowledge cloud + Teams shared store' };
 
-  storageEl.innerHTML = [hot, warm, cold].map((t) => obsTierCard(formatBytes, t)).join('');
+  // A meaningful gap (>5 min) between hot's newest and warm's means the mirror is behind —
+  // that's the "3 days ago" the user sees when new chats/meetings haven't synced. Say so, and
+  // point at the fix. Equal newness (within the window) is NOT a lag — just no new activity.
+  const LAG_MS = 5 * 60 * 1000;
+  const behind = obs && hotNewest && (hotNewest - (warm.newest || 0) > LAG_MS);
+  const lagHint = behind
+    ? `<div class="obs-lag">The gateway copy is behind this browser (newest here: ${obsAgo(hotNewest)}, in the gateway: ${obsAgo(warm.newest)}). CLI agents search the gateway copy, so click <b>Sync now</b> to reindex.</div>`
+    : '';
+  storageEl.innerHTML = lagHint + [hot, warm, cold].map((t) => obsTierCard(formatBytes, t)).join('');
 
   // AGENT ACCESS — the cross-agent read log from the gateway.
   if (!obs) {
@@ -6785,6 +6801,25 @@ async function verifyReplay() {
 
 $('activity-replay')?.addEventListener('click', verifyReplay);
 $('obs-refresh')?.addEventListener('click', renderObservability);
+$('obs-sync')?.addEventListener('click', async () => {
+  const btn = $('obs-sync');
+  if (!btn || btn.disabled) return;
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Syncing…';
+  try {
+    const gwUrl = normalizeGatewayUrl(settings.gatewayUrl || 'http://127.0.0.1:4320');
+    const { syncHistoryToGateway } = await import('./js/warm-sync.js');
+    const r = await syncHistoryToGateway(gwUrl);
+    if (r?.ok) { btn.textContent = 'Synced ✓'; toast(`Reindexed ${r.sent ?? 0} record(s) to the gateway`); }
+    else if (r?.skipped) { toast('Sync skipped — is the gateway running and its URL loopback?'); btn.textContent = label; }
+    else { toast(`Sync failed: ${r?.error || 'gateway not reachable'}`); btn.textContent = label; }
+  } catch (e) {
+    toast(`Sync failed: ${e?.message || e}`); btn.textContent = label;
+  } finally {
+    setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = label; } }, 1200);
+    renderObservability();
+  }
+});
 $('activity-refresh')?.addEventListener('click', renderActivity);
 $('activity-kind')?.addEventListener('change', renderActivity);
 $('activity-background')?.addEventListener('change', renderActivity);
