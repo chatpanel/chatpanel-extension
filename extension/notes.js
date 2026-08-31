@@ -2130,9 +2130,44 @@ async function askAboutNote() {
   }
 }
 
-function copyCurrent() {
+// Tables and code need to survive the paste, and Google Docs / Slack / mail compose all read
+// text/html — but they style nothing themselves, so borders and monospace have to ride along
+// as inline attributes on the copied markup.
+function richHtmlForClipboard(md) {
+  let html = renderMarkdown(md);
+  html = html
+    .replace(/<table>/g, '<table style="border-collapse:collapse;border:1px solid #ccc" cellpadding="6">')
+    .replace(/<(th|td)([ >])/g, '<$1 style="border:1px solid #ccc;text-align:left"$2')
+    .replace(/<pre>/g, '<pre style="background:#f5f5f5;padding:10px;border-radius:6px;white-space:pre-wrap;font-family:ui-monospace,Menlo,Consolas,monospace">')
+    .replace(/<blockquote>/g, '<blockquote style="border-left:3px solid #ccc;margin:0;padding-left:12px;color:#555">');
+  return `<meta charset="utf-8">${html}`;
+}
+
+// Copy what you are LOOKING AT.
+//   Live / Read  → the FORMATTED note (rich text): paste into Docs, Slack or an email and the
+//                  bold, tables and bullets arrive intact, with the Markdown source carried
+//                  alongside as text/plain for anywhere that wants plain text.
+//   Write / Split (source) → the raw Markdown, for another Markdown editor.
+// Falls back to plain Markdown wherever the async clipboard or ClipboardItem is unavailable.
+async function copyCurrent() {
   if (!current) return;
-  navigator.clipboard.writeText(noteToMarkdown(current)).then(() => toast('Copied as Markdown'), () => toast('Copy failed'));
+  const md = noteToMarkdown(current);
+  const panes = $('n-panes');
+  const formatted = panes.classList.contains('live') || panes.classList.contains('read');
+  if (formatted && typeof ClipboardItem === 'function' && navigator.clipboard?.write) {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html': new Blob([richHtmlForClipboard(md)], { type: 'text/html' }),
+        'text/plain': new Blob([md], { type: 'text/plain' }),
+      })]);
+      toast('Copied with formatting');
+      return;
+    } catch { /* fall through to plain text */ }
+  }
+  navigator.clipboard.writeText(md).then(
+    () => toast(formatted ? 'Copied as Markdown' : 'Copied Markdown source'),
+    () => toast('Copy failed'),
+  );
 }
 function exportFilename(note) {
   return (note?.title || 'note').replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 70) || 'note';
