@@ -165,14 +165,23 @@ assert.doesNotMatch(freeProvider.system, /meeting history/);
 assert.match(freeProvider.system, /<sup>\[1\]<\/sup>/, 'History tool prompt should require superscript citations.');
 assert.match(freeProvider.system, /Sources/, 'History tool prompt should require a Sources section.');
 
+// history_search now returns { text, note } so the tool step can name WHICH tier answered
+// (browser index vs the gateway's warm copy). The model still reads only `text` — unwrap it
+// here the same way providers.js does.
+const searchText = (r) => (typeof r === 'string' ? r : r?.text ?? '');
+
 const freeSearch = await freeProvider.execute('history_search', {
   query: 'redis cache',
   scope: 'all',
   limit: 5,
   maxChars: 2000,
 });
-assert.match(freeSearch, /No matching local history sources/);
-assert.doesNotMatch(freeSearch, /Redis cache invalidation/);
+assert.match(searchText(freeSearch), /No matching local history sources/);
+assert.doesNotMatch(searchText(freeSearch), /Redis cache invalidation/);
+
+// PROVENANCE: the result carries which tier answered, so the step can show it. With no warm
+// gateway configured the answer came from the in-browser index alone.
+assert.equal(freeSearch.note, 'ChatPanel · browser', 'names the tier that answered');
 
 const proProvider = historyToolProvider({ includeMeetings: true, loadSources: async () => sources });
 assert.match(proProvider.system, /meeting history/);
@@ -182,9 +191,9 @@ const proSearch = await proProvider.execute('history_search', {
   limit: 5,
   maxChars: 2000,
 });
-assert.match(proSearch, /\[meeting:m1#0\] Redis planning/);
-assert.match(proSearch, /Redis cache invalidation/);
-assert.match(proSearch, /Open: \[Open in ChatPanel\]\(chrome-extension:\/\/abc\/meetings\.html#m1\)/);
+assert.match(searchText(proSearch), /\[meeting:m1#0\] Redis planning/);
+assert.match(searchText(proSearch), /Redis cache invalidation/);
+assert.match(searchText(proSearch), /Open: \[Open in ChatPanel\]\(chrome-extension:\/\/abc\/meetings\.html#m1\)/);
 
 const titleOnlyMeeting = meetingSource(
   { id: 'm-title', title: 'Jordan / Alex 1:1', startedAt: 1710000500000, platform: 'zoom' },
@@ -204,7 +213,7 @@ const titleSearch = await titleProvider.execute('history_search', {
   field: 'title',
   limit: 5,
 });
-assert.match(titleSearch, /\[meeting:m-title#0\] Jordan \/ Alex 1:1/);
+assert.match(searchText(titleSearch), /\[meeting:m-title#0\] Jordan \/ Alex 1:1/);
 
 const contentSearch = await titleProvider.execute('history_search', {
   query: 'jordan',
@@ -213,7 +222,7 @@ const contentSearch = await titleProvider.execute('history_search', {
   field: 'content',
   limit: 5,
 });
-assert.match(contentSearch, /No matching local history sources/);
+assert.match(searchText(contentSearch), /No matching local history sources/);
 
 const meetingIntentSources = [
   {

@@ -419,12 +419,17 @@ export async function retrieveHistory(
       recency, // mild freshness prior (default on for the model's history search)
     }, { version: historySourcesVersion() })
     : [];
+  // Which tier actually answered — surfaced on the tool step so a reader can tell an
+  // in-browser answer from one the local gateway supplied (they have different freshness
+  // and different coverage, and "why didn't it find that" usually turns on this).
+  let via = 'browser';
   if (q && warm?.url) {
     // Fail-safe: any gateway hiccup returns [] and HOT stands unchanged. Note we no
     // longer require HOT to have results — warm can answer alone when the browser
     // index is empty/cold or doesn't hold the matching (older) source.
     const warmHits = await searchGateway(warm.url, q, { limit: 20 });
     if (warmHits.length) {
+      via = results.length ? 'browser + gateway' : 'gateway';
       // Resolve WARM-only hits (sources HOT didn't return) back to results from the
       // full local source list — the actual "fall back to warm" behavior.
       const sourceById = new Map(sources.map((s) => [s.id, s]));
@@ -442,6 +447,7 @@ export async function retrieveHistory(
   return {
     sources,
     results,
+    via,
     attachment: buildHistoryRagAttachment(q, results, { maxChars }),
   };
 }
@@ -776,7 +782,7 @@ export function historyToolProvider({
       if (name === 'history_search') {
         const query = String(input?.query || '').trim();
         if (!query) return 'history_search requires a non-empty query.';
-        const { results } = await retrieveHistory(query, {
+        const { results, via } = await retrieveHistory(query, {
           includeMeetings: canReadMeetings,
           scope: input?.scope || 'all',
           limit: input?.limit,
@@ -786,7 +792,9 @@ export function historyToolProvider({
           loadSources,
           warm,
         });
-        return formatHistoryResults(results, { query, maxChars: input?.maxChars });
+        // `note` becomes the step's badge, so the reader sees WHICH tier answered —
+        // the in-browser index, the local gateway's warm copy, or both fused.
+        return { text: formatHistoryResults(results, { query, maxChars: input?.maxChars }), note: `ChatPanel · ${via}` };
       }
       if (name === 'history_get_source') {
         const sourceId = String(input?.sourceId || '').trim();

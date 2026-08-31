@@ -712,7 +712,13 @@ export function webSearchToolProvider(opts = {}) {
       if (!q) return 'No query provided to web_search.';
       try {
         const res = await webSearch(q, opts);
-        return searchResultsToText(res);
+        // Return an OBJECT so the step can name the ENGINE that actually served the results.
+        // "web_search" alone doesn't tell the user whether Brave, Startpage or DuckDuckGo
+        // answered — which matters, because engines differ in coverage, and because a CLI
+        // agent may have run its OWN search instead of this one. `note` becomes the step's
+        // badge (toolStatus); `text` is what the model reads, unchanged.
+        const engines = (res?.engines || []).join(', ');
+        return { text: searchResultsToText(res), note: engines ? `ChatPanel · ${engines}` : 'ChatPanel' };
       } catch (e) {
         return `web_search failed: ${e.message}`;
       }
