@@ -254,3 +254,55 @@ const reset = () => clearAllMemories();
 
 assert.equal(memoryEnabled({}), true, 'memory works out of the box — onboarding is a hard requirement');
 console.log('memory tests passed');
+
+// ── Two-way sync with the gateway ────────────────────────────────────────────
+// The property that makes two stores hold one truth: both sides reconcile with the same
+// function, keyed on the FACT rather than a row id, so repeated passes converge.
+{
+  const { syncMemoryWithGateway } = await import('../extension/js/warm-sync.js');
+  const store = await import('../extension/js/store-memory.js');
+  await reset();
+  await rememberMemory({ text: 'Goes by Alex', kind: 'identity' });
+
+  let posted = null;
+  // The gateway's reply: what we pushed, PLUS something an agent wrote over MCP.
+  const fetchImpl = async (url, init) => {
+    posted = JSON.parse(init.body);
+    return {
+      ok: true,
+      json: async () => ({
+        ok: true, size: 2, merged: 1,
+        memories: [
+          { text: 'Goes by Alex', kind: 'identity', createdAt: 1, updatedAt: 1 },
+          { text: 'Prefers pnpm over npm', kind: 'preference', createdAt: 2, updatedAt: 2, source: { via: 'mcp', agent: 'codex' } },
+        ],
+      }),
+    };
+  };
+
+  const r1 = await syncMemoryWithGateway('http://127.0.0.1:4320', { fetchImpl, store });
+  assert.equal(r1.ok, true);
+  assert.equal(posted.upserts.length, 1, 'our memories are pushed');
+  assert.equal(posted.upserts[0].id, undefined, 'without ids — the gateway matches on the fact');
+  assert.equal(r1.pulled, 1, "only what the agent wrote comes back as new");
+  assert.equal((await getMemories()).length, 2, 'the CLI-written memory reached the panel');
+
+  // Running it again must change nothing. This is the test that would fail if either side
+  // matched on row id instead of on the fact.
+  const r2 = await syncMemoryWithGateway('http://127.0.0.1:4320', { fetchImpl, store });
+  assert.equal(r2.pulled, 0, 'a second pass merges nothing');
+  assert.equal((await getMemories()).length, 2, 'and does not double the store');
+}
+{
+  // Memory is the most personal thing here — it must never leave the machine.
+  const { syncMemoryWithGateway } = await import('../extension/js/warm-sync.js');
+  const store = await import('../extension/js/store-memory.js');
+  let called = false;
+  const r = await syncMemoryWithGateway('https://memories.example.com', {
+    fetchImpl: async () => { called = true; return { ok: true, json: async () => ({}) }; },
+    store,
+  });
+  assert.equal(r.ok, false, 'an off-box gateway is refused');
+  assert.equal(called, false, 'and nothing is sent at all');
+  assert.match(r.error, /loopback/);
+}

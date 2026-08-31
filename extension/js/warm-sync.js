@@ -128,6 +128,57 @@ export async function syncHistoryToGateway(gatewayUrl, {
   }
 }
 
+/**
+ * MEMORY sync — two-way, in one round trip.
+ *
+ * History flows one way: the browser is the origin and the gateway is a warm copy. Memory does
+ * not. A CLI agent calling `remember` over MCP writes to the GATEWAY, and that fact has to come
+ * back or the feature is two half-memories that disagree — the panel would not know your name
+ * because you told Claude Code, which is exactly the failure memory exists to remove.
+ *
+ * A two-way merge is normally where duplication starts. It is safe here for one reason: both
+ * sides reconcile with the SAME function from the same file, and `reconcile` keys on the FACT
+ * (its slot, then its wording), not on a row id. So pushing what was already pushed merges
+ * nothing, the ids never have to agree, and repeated passes converge instead of doubling.
+ *
+ * Loopback-only, like the history push: memory is the most personal thing here.
+ */
+export async function syncMemoryWithGateway(gatewayUrl, {
+  signal, fetchImpl = globalThis.fetch, store = null,
+} = {}) {
+  if (!gatewayUrl || typeof fetchImpl !== 'function') return { ok: false, skipped: true };
+  if (!isLoopbackGateway(gatewayUrl)) {
+    return { ok: false, skipped: true, error: 'gateway url is not loopback — refusing to send memory off-box' };
+  }
+  // Imported at the call site: warm sync runs on an alarm in the service worker, and the
+  // memory store must not sit on any module's static graph (see store.js).
+  const mem = store || await import('./store-memory.js');
+  try {
+    const mine = await mem.getMemories();
+    const res = await fetchImpl(`${String(gatewayUrl).replace(/\/$/, '')}/v1/memory/sync`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // Sent WITHOUT ids: the gateway matches on the fact, and forcing our row ids onto its
+      // store would make the two sides' identities collide for no benefit.
+      body: JSON.stringify({
+        upserts: mine.map(({ id, ...rest }) => rest),  // eslint-disable-line no-unused-vars
+      }),
+      signal,
+    });
+    if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : 'no-response'}`);
+    const out = (await res.json().catch(() => ({}))) || {};
+
+    // Pull back the merged set. `importMemories` reconciles too, so what we just pushed comes
+    // home as duplicates (no-ops) and only what the agents wrote is actually new.
+    const pulled = Array.isArray(out.memories)
+      ? await mem.importMemories(out.memories.map(({ id, ...rest }) => rest), { mode: 'merge' }) // eslint-disable-line no-unused-vars
+      : 0;
+    return { ok: true, pushed: mine.length, merged: out.merged || 0, pulled, size: out.size };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
+  }
+}
+
 // Clear the change-watermark so the next sync re-pushes everything (e.g. after the user
 // points at a fresh gateway). A subsequent sync with force:true does the same in one call.
 export async function resetWarmSyncBaseline(storage = defaultStorage()) {

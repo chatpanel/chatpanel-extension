@@ -257,8 +257,12 @@ async function runWarmSyncIfEnabled() {
   try { ws = (await getSettings())?.ui?.warmSearch; } catch { return; }
   if (!ws?.enabled || !ws.url) return; // gateway off — nothing to do
   try {
-    const { syncHistoryToGateway } = await import('./js/warm-sync.js');
+    const { syncHistoryToGateway, syncMemoryWithGateway } = await import('./js/warm-sync.js');
     await syncHistoryToGateway(ws.url);
+    // Memory rides the same pass, but it is a two-way merge, not a push: an agent that called
+    // `remember` over MCP wrote to the gateway, and that has to come home or the panel does
+    // not know what the terminal was told.
+    await syncMemoryWithGateway(ws.url);
   } catch (e) { console.debug('[chatpanel] bg warm sync', e?.message || e); }
 }
 
@@ -266,7 +270,7 @@ async function runWarmSyncIfEnabled() {
 // via the alarm (min granularity ~30s) so a transcript burst is one sync, not N.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
-  if (Object.keys(changes).some((k) => /^chatpanel:(conv|chat|meeting|note)/i.test(k))) {
+  if (Object.keys(changes).some((k) => /^chatpanel:(conv|chat|meeting|note|memory)/i.test(k))) {
     chrome.alarms.create(WARM_SYNC_ALARM, { delayInMinutes: 0.5 });
   }
 });
