@@ -102,6 +102,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish to Chrome Web Store
+        id: chrome
         continue-on-error: true
         # Decoupled from tagging: ONLY a manual workflow_dispatch with
         # publish_chrome=true submits to the store. A tag push builds + releases
@@ -170,6 +171,7 @@ jobs:
           echo "Submitted for review."
 
       - name: Publish to Microsoft Edge Add-ons
+        id: edge
         continue-on-error: true
         # Same decoupling as Chrome: ONLY a manual workflow_dispatch with
         # publish_edge=true submits. Uploads the SAME dist/chatpanel-extension.zip
@@ -182,6 +184,7 @@ jobs:
         run: node tools/publish-edge.mjs
 
       - name: Publish to addons.mozilla.org
+        id: amo
         # Same decoupling as the other two stores. Uploads dist/chatpanel-firefox.zip
         # AND dist/chatpanel-firefox-sources.zip (AMO requires the source for the
         # generated vendor bundles) via the v5 submission API — tools/publish-amo.mjs.
@@ -215,3 +218,44 @@ jobs:
             dist/chatpanel-extension-*.zip
             dist/chatpanel-firefox.xpi
             dist/chatpanel-firefox-*.zip
+
+      # WHAT ACTUALLY SHIPPED.
+      #
+      # Each store publishes with continue-on-error so one store's problem cannot block the
+      # other two — which is right, and which also means the run's green tick says nothing
+      # about whether anything reached a store. It has already misled once: a Chrome publish
+      # rejected with HTTP 400 ("provide mandatory privacy information") sat under a
+      # successful run, and the release was reported as done.
+      #
+      # So the outcome of each requested store is printed, and a store that was ASKED to
+      # publish and did not is a failed run. Skipped-because-not-requested stays quiet;
+      # skipped-because-no-credentials is called out, because "nothing happened" and "we have
+      # no key for that store" are different problems with the same silence.
+      - name: Release summary
+        if: ${{ always() && github.event_name == 'workflow_dispatch' }}
+        env:
+          CHROME: ${{ steps.chrome.outcome }}
+          EDGE: ${{ steps.edge.outcome }}
+          AMO: ${{ steps.amo.outcome }}
+        run: |
+          fail=0
+          line() {
+            local store="$1" want="$2" got="$3" key="$4"
+            if [ "$want" != "true" ]; then echo "· $store — not requested"; return; fi
+            case "$got" in
+              success) echo "✅ $store — submitted";;
+              skipped) echo "⚠️  $store — SKIPPED: no credentials configured ($key)"; fail=1;;
+              *)       echo "❌ $store — publish did not complete (see the step log)"; fail=1;;
+            esac
+          }
+          {
+            echo "### Store publish results"
+            echo ''
+            line "Chrome Web Store" "${{ inputs.publish_chrome }}" "$CHROME" "CHROME_REFRESH_TOKEN"
+            line "Microsoft Edge"   "${{ inputs.publish_edge }}"   "$EDGE"   "EDGE_API_KEY"
+            line "addons.mozilla.org" "${{ inputs.publish_firefox }}" "$AMO" "AMO_JWT_SECRET"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$fail" = 1 ]; then
+            echo "::error::A store that was asked to publish did not. The build is fine and the GitHub Release is complete — finish the store submission by hand."
+            exit 1
+          fi
