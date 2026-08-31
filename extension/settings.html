@@ -282,6 +282,43 @@ npx @chatpanel/bridge</code></pre>
       <!-- MEETINGS (live scribe preferences) -->
       <section class="panel hidden" data-panel="workspace">
 
+        <!-- MEMORY -->
+        <details class="ws-section" id="ws-memory" open>
+        <summary class="ws-heading"><span class="inline-ico" data-icon="sparkles"></span> Memory</summary>
+        <div class="card">
+          <div class="card-head">
+            <h2>Memory <span class="sub">— what every model already knows about you</span></h2>
+            <div class="card-actions">
+              <label class="check"><input type="checkbox" id="memory-enabled" /> Enabled</label>
+            </div>
+          </div>
+          <p class="muted">
+            Short, durable facts — your name, how you like answers written, what you're working on —
+            carried into every conversation, on every agent, and available to Claude Code, Codex and any
+            other MCP client through the ChatPanel gateway. Say <code>remember that&nbsp;…</code> in a chat
+            and it's saved here; say <code>forget&nbsp;…</code> and it's gone. Stored encrypted on this
+            device and included in your backups.
+          </p>
+          <label class="check"><input type="checkbox" id="memory-offers" /> Offer to remember things I mention in passing</label>
+          <p class="muted" style="margin-top:2px">
+            When on, saying something like &ldquo;I prefer terse answers&rdquo; shows a one-tap
+            <strong>Remember</strong> chip above the composer. Nothing is ever saved without your tap —
+            only a direct instruction saves itself.
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Stored memories <span class="sub" id="memory-count"></span></h2>
+            <div class="card-actions">
+              <button id="memory-add" class="btn" type="button">Add memory</button>
+              <button id="memory-clear" class="btn danger" type="button">Forget all</button>
+            </div>
+          </div>
+          <div id="memory-list" class="memory-list"></div>
+        </div>
+        </details>
+
         <!-- NOTES -->
         <details class="ws-section" id="ws-notes" open>
         <summary class="ws-heading"><span class="inline-ico" data-icon="notes"></span> Notes</summary>

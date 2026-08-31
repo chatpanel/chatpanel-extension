@@ -117,6 +117,7 @@ async function init() {
   renderSkills();
   renderPrefs();
   setupNotesPrefs();
+  setupMemoryPrefs();
   renderLicense();
   wireGateway();
   renderGateway();
@@ -260,6 +261,166 @@ function wireSectionJumps() {
   for (const b of document.querySelectorAll('[data-jump]')) {
     b.addEventListener('click', (e) => { e.preventDefault(); jumpToSection(b.dataset.jump); });
   }
+}
+
+// --------------------------------------------------------------------------
+// Memory — the management view.
+//
+// This page is not a nicety. Memory is the one feature that puts words in front of a model on
+// the user's behalf on EVERY turn, so it has to be readable in one screen, correctable in one
+// click and deletable without ceremony — otherwise the honest advice would be to turn it off.
+// Hence: full text always shown (never truncated), edit in place, and every row says where it
+// came from.
+// --------------------------------------------------------------------------
+// The store and the contract are loaded on FIRST RENDER, not at module top: this page already
+// pulls a megabyte, and the memory list is one section of one tab of nine. Cached after the
+// first call, so the toggles and every later re-render are free.
+let memoryApi = null;
+async function memoryModule() {
+  if (!memoryApi) {
+    const [store, contract] = await Promise.all([
+      import('./js/store-memory.js'),
+      import('./js/events/memory.js'),
+    ]);
+    memoryApi = { ...store, ...contract };
+  }
+  return memoryApi;
+}
+
+function setupMemoryPrefs() {
+  const en = $('memory-enabled');
+  const offers = $('memory-offers');
+  if (en) {
+    en.checked = settings.ui?.memory?.enabled !== false;
+    en.onchange = () => {
+      settings.ui = settings.ui || {};
+      settings.ui.memory = { ...(settings.ui.memory || {}), enabled: en.checked };
+      saveSettings(settings);
+      if (offers) offers.disabled = !en.checked;
+    };
+  }
+  if (offers) {
+    offers.checked = settings.ui?.memory?.offers !== false;
+    offers.disabled = settings.ui?.memory?.enabled === false;
+    offers.onchange = () => {
+      settings.ui = settings.ui || {};
+      settings.ui.memory = { ...(settings.ui.memory || {}), offers: offers.checked };
+      saveSettings(settings);
+    };
+  }
+  if ($('memory-add')) $('memory-add').onclick = addMemoryRow;
+  if ($('memory-clear')) {
+    $('memory-clear').onclick = async () => {
+      const { getMemories, clearAllMemories } = await memoryModule();
+      const all = await getMemories();
+      if (!all.length) return;
+      // Irreversible and unrecoverable — memory is the one store with no source to rebuild
+      // it from, so this is the one place a confirm is worth the friction.
+      if (!confirm(`Forget all ${all.length} memories? This cannot be undone.`)) return;
+      await clearAllMemories();
+      renderMemories();
+    };
+  }
+  renderMemories();
+}
+
+async function renderMemories() {
+  const list = $('memory-list');
+  if (!list) return;
+  const { getMemories } = await memoryModule();
+  const all = await getMemories().catch(() => []);
+  const count = $('memory-count');
+  if (count) count.textContent = all.length ? `— ${all.length} of ${200} kept` : '';
+  list.innerHTML = '';
+  if (!all.length) {
+    const empty = document.createElement('div');
+    empty.className = 'mem-empty';
+    empty.textContent = 'Nothing remembered yet. Say “remember that …” in a chat, or add one here.';
+    list.append(empty);
+    return;
+  }
+  for (const m of all) list.append(memoryRow(m, memoryApi));
+  hydrate(list);
+}
+
+function memoryRow(m, { MEMORY_KINDS, MEMORY_KIND_NAMES, MAX_MEMORY_CHARS, forgetMemory, updateMemory }) {
+  const row = document.createElement('div');
+  row.className = 'memory-row';
+
+  const kind = document.createElement('select');
+  kind.className = 'mem-kind';
+  for (const k of MEMORY_KIND_NAMES) {
+    const opt = document.createElement('option');
+    opt.value = k;
+    opt.textContent = k;
+    opt.selected = k === m.kind;
+    kind.append(opt);
+  }
+  kind.title = MEMORY_KINDS[m.kind]?.hint || '';
+  kind.onchange = async () => { await updateMemory(m.id, { kind: kind.value }); renderMemories(); };
+
+  const body = document.createElement('div');
+  body.className = 'mem-body';
+
+  // A textarea, not a truncated line: a memory the user cannot read in full is one they
+  // cannot judge, and judging them is the entire purpose of this list.
+  const text = document.createElement('textarea');
+  text.className = 'mem-text';
+  text.rows = 1;
+  text.maxLength = MAX_MEMORY_CHARS;
+  text.value = m.text;
+  const grow = () => { text.style.height = 'auto'; text.style.height = `${text.scrollHeight}px`; };
+  text.oninput = grow;
+  text.onblur = async () => {
+    const next = text.value.trim();
+    if (!next || next === m.text) { text.value = m.text; grow(); return; }
+    try { await updateMemory(m.id, { text: next }); } catch { text.value = m.text; }
+    renderMemories();
+  };
+  requestAnimationFrame(grow);
+
+  const meta = document.createElement('div');
+  meta.className = 'mem-meta';
+  const via = m.source?.via === 'agent' ? `saved by ${m.source.agent || 'an agent'}` : 'saved by you';
+  const when = m.updatedAt ? new Date(m.updatedAt).toLocaleDateString() : '';
+  const used = m.useCount ? ` · used ${m.useCount}×` : '';
+  const was = m.history?.length ? ` · was “${m.history.at(-1).text}”` : '';
+  meta.textContent = [via, when].filter(Boolean).join(' · ') + used + was;
+
+  body.append(text, meta);
+
+  const actions = document.createElement('div');
+  actions.className = 'mem-actions';
+
+  const pin = document.createElement('button');
+  pin.type = 'button';
+  pin.className = `mem-btn${m.pinned ? ' on' : ''}`;
+  pin.title = m.pinned ? 'Always included — click to unpin' : 'Pin: always include this one';
+  pin.textContent = m.pinned ? '★' : '☆';
+  pin.onclick = async () => { await updateMemory(m.id, { pinned: !m.pinned }); renderMemories(); };
+
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'mem-btn';
+  del.title = 'Forget this';
+  del.textContent = '✕';
+  del.onclick = async () => { await forgetMemory(m.id); renderMemories(); };
+
+  actions.append(pin, del);
+  row.append(kind, body, actions);
+  return row;
+}
+
+async function addMemoryRow() {
+  const text = prompt('What should ChatPanel remember about you?\n\nOne short sentence, e.g. “Prefers terse answers with no preamble”.');
+  if (!text?.trim()) return;
+  try {
+    const { rememberMemory } = await memoryModule();
+    await rememberMemory({ text: text.trim(), kind: 'preference', source: { via: 'user', surface: 'settings' } });
+  } catch (e) {
+    alert(e.message || 'Could not save that memory.');
+  }
+  renderMemories();
 }
 
 // --------------------------------------------------------------------------

@@ -1166,6 +1166,10 @@ async function init() {
       // land here — if it does, that's a licensing bug, so say that instead of upselling.
       if (isPro(state.license)) toast('Meeting not saved — capture was refused despite Pro. Check Settings → License.', 6000);
       else showMeetingLimitPrompt();
+    } else if (msg?.type === 'CP_MEETING_DELTA' && msg.meetingId) {
+      // New speech, pushed the moment it is durable. Everything on this path is free and
+      // local — no model, no storage read — so it can afford to run on every flush.
+      onMeetingDelta(msg.meetingId, msg.segments);
     } else if (msg?.type === 'CP_MEETING_JOINED' || msg?.type === 'CP_MEETING_CAPTIONS') {
       // JOINED: the user joined a call (inCall flipped) → auto-start now.
       // CAPTIONS: live-caption state flipped → refresh so the "captions off" warning
@@ -3405,6 +3409,73 @@ function monitorIcon(m) {
 function monitorLabel(m) {
   if (m.kind === 'tldr') return m.prompt ? `TL;DR — ${m.prompt}` : 'Running TL;DR';
   return m.prompt || m.title || 'Monitor';
+}
+
+// --------------------------------------------------------------------------
+// Spoken commands — "ChatPanel, set a timer for ten minutes".
+//
+// The transcript is already arriving every few seconds; that makes it an input device. The
+// matching is pure and free (js/voice-commands.js over the shared parser), so this runs on
+// every flush without a model, and a model is only ever involved in carrying a command out.
+//
+// Loaded on the FIRST delta, never at boot: a user who is not in a meeting must not pay a
+// byte of this on first paint.
+// --------------------------------------------------------------------------
+let voiceMod = null;         // the module + engine, resolved once
+let voiceLoading = null;
+const voiceSeen = new Map(); // meetingId → newest segment ts already scanned
+
+async function voiceRuntime() {
+  if (voiceMod) return voiceMod;
+  if (!voiceLoading) {
+    voiceLoading = (async () => {
+      const [vc, rules] = await Promise.all([
+        import('./js/voice-commands.js'),
+        import('./js/rules-builtin.js'),
+      ]);
+      const actions = vc.createVoiceActions();
+      // What this client can actually DO today. A monitor is startable right now, is
+      // visible the moment it exists, and is undone by closing its card — which is the bar
+      // an unattended action has to clear. Timers and reminders are recognised and
+      // reported until the scheduler can hold them (docs/feature-f5-scheduler.md).
+      actions.bind('voice:monitor', async (cmd) => {
+        await addMonitor({ kind: 'qa', prompt: cmd.args.prompt });
+        return { message: `Watching: ${cmd.args.prompt}` };
+      });
+      voiceMod = { vc, engine: await rules.ruleEngine(), actions };
+      return voiceMod;
+    })();
+  }
+  return voiceLoading;
+}
+
+async function onMeetingDelta(meetingId, segments) {
+  if (!Array.isArray(segments) || !segments.length) return;
+  // Only the meeting this conversation is actually attached to: acting on a call the user
+  // is not looking at is how automation surprises people.
+  if (state.liveMeeting?.id !== meetingId) return;
+  const voice = state.settings?.ui?.voice;
+  if (voice && voice.enabled === false) return;
+  try {
+    const { vc, engine, actions } = await voiceRuntime();
+    const sinceTs = voiceSeen.get(meetingId) || 0;
+    const commands = vc.scanDelta({ segments, voice, meetingId, sinceTs, now: Date.now() });
+    // Advance the watermark on the LAST line seen, whether or not it held a command — the
+    // scan is what is being deduped here, not the command (the rule engine does that).
+    const newest = segments.reduce((max, sg) => Math.max(max, sg.t || 0), sinceTs);
+    // Minus one, so the line still being spoken is re-scanned as it grows: a command that
+    // arrives half-finished must get a second chance when the sentence completes.
+    voiceSeen.set(meetingId, Math.max(0, newest - 1));
+    if (!commands.length) return;
+    await vc.dispatchVoiceCommands(commands, {
+      engine,
+      actions,
+      onOutcome: (outcome) => {
+        const msg = vc.outcomeMessage(outcome);
+        if (msg) toast(msg, outcome.ok ? 3000 : 4500);
+      },
+    });
+  } catch { /* a spoken command that fails must never disturb the meeting */ }
 }
 
 // Panel height — monitors are a live dashboard, so the panel must be sizeable:

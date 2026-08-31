@@ -24,16 +24,35 @@ const K_MEMORY = 'chatpanel:memory';
 const uid = () => `mem_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
 // A single in-memory copy, so the ambient recall on every turn is a map lookup rather than a
-// storage read + decrypt. Invalidated by any write here and by a write from another context
-// (the service worker, the settings page) via the storage listener below.
+// storage read + decrypt. Every turn needs the whole set, so this is the difference between
+// one decrypt per session and one per message.
 let cache = null;
 
-function invalidate() { cache = null; }
+// Storage events fire for changes made by ANY context — INCLUDING THIS ONE. Without this
+// counter the cache was worthless: writeAll() populated it, its own write came straight back
+// as an onChanged event, and the next read went to storage anyway. Events arrive in order, so
+// counting our own writes and skipping exactly that many is enough to tell "I did this" from
+// "the settings page did this" without comparing encrypted blobs (whose IVs differ per write).
+let selfWrites = 0;
 
 if (globalThis.chrome?.storage?.onChanged) {
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes[K_MEMORY]) invalidate();
+    if (area !== 'local' || !changes[K_MEMORY]) return;
+    if (selfWrites > 0) { selfWrites -= 1; return; }
+    cache = null; // another context edited memory — re-read on next use
   });
+}
+
+// The one place memory is written, so the self-write bookkeeping cannot be forgotten at a
+// call site. Returns nothing; callers set `cache` themselves before calling.
+async function put(list) {
+  selfWrites += 1;
+  try {
+    await chrome.storage.local.set({ [K_MEMORY]: await encryptJSON(list) });
+  } catch (e) {
+    selfWrites = Math.max(0, selfWrites - 1); // no event will come for a write that failed
+    throw e;
+  }
 }
 
 // Decrypt-on-read with a best-effort repair of any legacy plaintext value — the same pattern
@@ -66,7 +85,7 @@ export async function getMemories() {
 async function writeAll(list) {
   const { kept, dropped } = pruneMemories(list, { now: Date.now(), max: DEFAULT_MAX_MEMORIES });
   cache = kept.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-  await chrome.storage.local.set({ [K_MEMORY]: await encryptJSON(cache) });
+  await put(cache);
   return { memories: cache, dropped };
 }
 
@@ -117,12 +136,12 @@ export async function touchMemories(ids) {
   if (!ids?.length) return;
   const all = await getMemories();
   cache = markUsed(all, ids, { now: Date.now() });
-  try { await chrome.storage.local.set({ [K_MEMORY]: await encryptJSON(cache) }); } catch { /* stats are not worth failing a turn */ }
+  try { await put(cache); } catch { /* stats are not worth failing a turn */ }
 }
 
 export async function clearAllMemories() {
   cache = [];
-  await chrome.storage.local.set({ [K_MEMORY]: await encryptJSON([]) });
+  await put([]);
 }
 
 // --------------------------------------------------------------------------

@@ -113,8 +113,8 @@ assert.match(
 // a link into a collapsed section opens it first, and the collapse state is remembered
 // per viewer without throwing in a private window.
 const workspace = html.match(/data-panel="workspace">([\s\S]*?)<section class="panel/)?.[1] || '';
-assert.equal((workspace.match(/<details class="ws-section"/g) || []).length, 3, 'Notes, Meetings and History are collapsible sections');
-assert.equal((workspace.match(/<summary class="ws-heading"/g) || []).length, 3, 'each section heading is its summary');
+assert.equal((workspace.match(/<details class="ws-section"/g) || []).length, 4, 'Memory, Notes, Meetings and History are collapsible sections');
+assert.equal((workspace.match(/<summary class="ws-heading"/g) || []).length, 4, 'each section heading is its summary');
 assert.equal((workspace.match(/<details/g) || []).length, (workspace.match(/<\/details>/g) || []).length, 'section details are balanced');
 assert.match(
   js,
@@ -124,6 +124,17 @@ assert.match(
 assert.match(js, /cp:settings:ws-collapsed/, 'collapse state is remembered');
 assert.match(js, /catch \{ \/\* private window/, 'and a blocked localStorage does not throw');
 assert.match(css, /details\.ws-section\[open\] > summary\.ws-heading::after/, 'the chevron reflects open/closed');
+// Memory puts words in front of a model on the user's behalf on EVERY turn, so it is the one
+// feature whose management view is load-bearing: if a person cannot read what is stored, edit a
+// wrong one and delete it, the honest advice would be to turn the feature off.
+assert.match(workspace, /id="memory-enabled"/, 'memory can be turned off');
+assert.match(workspace, /id="memory-offers"/, 'the "remember this?" offers can be turned off separately');
+assert.match(workspace, /id="memory-list"/, 'stored memories are listed');
+assert.match(workspace, /id="memory-clear"/, 'and can all be forgotten');
+assert.match(js, /confirm\(`Forget all/, 'forgetting everything is confirmed — nothing can rebuild it');
+assert.match(js, /text\.onblur = async \(\) => \{/, 'each memory is editable in place');
+assert.match(js, /createElement\('textarea'\)[\s\S]{0,400}mem-text/, 'memory text is a textarea — shown in full, never truncated to one line');
+
 // Privacy and Gateway are ONE tab. They answer the same question — what leaves this device —
 // and split across two tabs they duplicated the NER model catalog outright. The merge is only
 // safe while every old entry point still lands where it used to, so this block pins the three

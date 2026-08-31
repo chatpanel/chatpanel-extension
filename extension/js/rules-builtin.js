@@ -17,6 +17,7 @@
 
 import { defineRule, createRuleEngine } from './events/rules.js';
 import { declarePlugins, pluginManifest } from './plugins.js';
+import { voiceCommandRule } from './voice-commands.js';
 
 /**
  * A turn that repeated the same failing call is nearly always ChatPanel's problem, not the
@@ -53,7 +54,11 @@ export const slowSetupRule = defineRule({
   then: async (event) => ({ note: `Setup took ${(event.payload.prepMs / 1000).toFixed(1)}s — a tool or MCP server is slow to connect` }),
 });
 
-export const BUILTIN_RULES = [repeatedFailureRule, slowSetupRule];
+// Spoken commands are the first rule that ACTS rather than notices, which is why every
+// guard it needs is in its declaration rather than in its caller: it is switchable here
+// like any plugin, it fires only for the device owner's own speech, and each command is
+// deduped on its own id so a redelivered transcript flush cannot set two timers.
+export const BUILTIN_RULES = [repeatedFailureRule, slowSetupRule, voiceCommandRule];
 
 let engine = null;
 

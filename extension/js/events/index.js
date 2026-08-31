@@ -54,6 +54,13 @@ export { makeSourceStore, manifestText, shortUrl, readSource, sourceId } from '.
 export { classifySource, extractUrls, hostMatches, meetReach, sourcePolicyFor, DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './sources.js';
 export { defineRule, createRuleEngine, SUPPRESSED, RuleError } from './rules.js';
 export { defineMeetingAnalyzer, createAnalyzerRegistry, CADENCES, AnalyzerError } from './meeting-analyzers.js';
+export {
+  DEFAULT_WAKE, MAX_COMMANDS_PER_DELTA, DAYPART_HOUR, VoiceIntentError,
+  compileWake, findWakeCommand, parseCommand, commandsFromSegments,
+  parseDuration, parseClock, parseWhen, parseNumberWords, normalizeSpeech, tokenize, editDistance,
+  defineVoiceIntent, createVoiceIntentRegistry, defaultVoiceIntents, BUILTIN_VOICE_INTENTS,
+  timerIntent, reminderIntent, noteIntent, monitorIntent,
+} from './voice-intents.js';
 export { explainMcpError, packageFromArgs } from './mcp-errors.js';
 export { createManifest, ManifestError, SOURCES } from './manifest.js';
 export { createKernel, meetDecisions, KernelError, REQUIRED_PLUGINS, ALLOW_ALL } from './kernel.js';

@@ -365,6 +365,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // id). Reporting {ok:true} regardless made a failed write indistinguishable from a
         // real one — the capture looks healthy while nothing reaches the index.
         if (r?.ok === false) return sendResponse?.({ ok: false, error: r.error || 'persist refused (no record id?)' });
+        // Push the new speech to whoever is listening (the panel) the moment it is
+        // durable. Best-effort and unawaited: no panel open is the normal case, and a
+        // capture must never wait on a UI.
+        if (Array.isArray(msg.delta) && msg.delta.length) {
+          chrome.runtime.sendMessage({
+            type: 'CP_MEETING_DELTA', meetingId: r?.id || msg.record.id, segments: msg.delta,
+          }).catch(() => { /* no receiver */ });
+        }
         return trackMeetingTab(tabId, frameId, msg.record)
           .catch(() => {})
           .then(() => sendResponse?.({ ok: true, id: r?.id }));

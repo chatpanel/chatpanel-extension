@@ -200,6 +200,12 @@ export function defaultSettings() {
       // merging new transcript into the existing summary. 0 = off. Default 2m so
       // meetings are summarized (and saved to Past Meetings) out of the box.
       liveNotesIntervalMin: 2,
+      // Spoken commands during a meeting: "<wake word>, set a timer for 10 minutes".
+      // `from` is the security control, not a preference — a meeting transcript carries
+      // everyone in the room, so 'anyone' hands every participant a button on this
+      // machine. 'me' matches the "You"/"Me" caption label plus `selfNames` (Google Meet
+      // resolves "You" to the real name, so that list is how it is recognised there).
+      voice: { enabled: true, wakeWord: 'ChatPanel', from: 'me', selfNames: [] },
       // Topic extraction: when enabled, ChatPanel extracts durable graph topics
       // after chats/meetings change. Blank targetId means the current active
       // model/agent; a specific target id pins extraction to that configured model.
@@ -899,11 +905,19 @@ export async function exportAllData() {
   const meetings = await exportMeetings();
   const notes = await exportNotes(); // v5 — user notes as a third first-class source
   const notesConfig = await exportNotesConfig(); // v6 — Notes UI + co-writer config (localStorage)
+  // v7 — memory. Small, but the most expensive thing to lose: it is what the user TAUGHT
+  // ChatPanel, and unlike a chat or a note there is no way to reconstruct it from anywhere else.
+  //
+  // Imported HERE, not at module top: store.js is on the side panel's first-paint graph, and a
+  // static import dragged store-memory + the shared memory contract (37.8 KB) onto every cold
+  // start to serve a function that only runs when someone takes a backup.
+  const { exportMemories } = await import('./store-memory.js');
+  const memories = await exportMemories();
   const settings = await getSettings();
   const oauthTokens = await exportOAuthTokens(); // endpoint sign-ins (v4) — see SECURITY note above
   return {
     type: BACKUP_TYPE,
-    version: 6,
+    version: 7,
     exportedAt: Date.now(),
     count: conv.count,
     conversations: conv.conversations,
@@ -912,6 +926,8 @@ export async function exportAllData() {
     notesCount: notes.length,
     notes,
     notesConfig,
+    memoriesCount: memories.length,
+    memories,
     settings,
     oauthTokens,
   };
@@ -927,6 +943,10 @@ export async function importAllData(data, {
   const conversations = await importConversations(data, { mode }); // validates the file
   const meetings = await importMeetings(data.meetings, { mode });
   const notes = await importNotes(data.notes, { mode }); // v5+; older backups have no notes
+  // v7+. Merge reconciles rather than appends, so restoring the same backup twice is a no-op
+  // instead of doubling every memory. Dynamic for the same first-paint reason as the export.
+  const { importMemories } = await import('./store-memory.js');
+  const memories = await importMemories(data.memories, { mode });
   // v6+: Notes UI + co-writer config (localStorage). Older backups have none.
   if (includeSettings && data.notesConfig && typeof data.notesConfig === 'object') {
     await importNotesConfig(data.notesConfig, { mode });
@@ -943,7 +963,7 @@ export async function importAllData(data, {
   if (includeOAuthTokens && data.oauthTokens && typeof data.oauthTokens === 'object') {
     await importOAuthTokens(data.oauthTokens, { mode });
   }
-  return { conversations, meetings, notes, settings };
+  return { conversations, meetings, notes, memories, settings };
 }
 
 function titleFrom(text) {

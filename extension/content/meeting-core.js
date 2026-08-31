@@ -39,6 +39,8 @@
 
   const SCHEMA_VERSION = 1;
   const FLUSH_DEBOUNCE_MS = 4000;
+  const DELTA_MAX = 40;      // one flush's worth of speech; a cap, not an expectation
+  let lastDeltaTs = 0;       // newest segment timestamp already pushed to the panel
 
   const adapter = (window.__cpMeetingAdapters || []).find((a) => {
     try { return a.match(location.href); } catch { return false; }
@@ -220,7 +222,16 @@
     // goes undefined and any chrome.* call throws. Skip quietly once detached.
     if (!chrome.runtime?.id) return;
     try {
-      const res = await chrome.runtime.sendMessage({ type: 'CP_MEETING_PERSIST', record: buildRecord(status, endReason) });
+      const record = buildRecord(status, endReason);
+      // The lines said SINCE the last flush, sent alongside (never inside) the record so
+      // storage is untouched by this. The panel gets new speech pushed to it every few
+      // seconds instead of re-reading and decrypting a transcript that only grows — which
+      // is what makes acting on what was just said cheap enough to do at all.
+      //
+      // `>=`, not `>`: the line being spoken right now keeps its timestamp while its text
+      // grows, so it must be re-sent as it completes. Consumers dedupe on content.
+      const delta = record.segments.filter((sg) => sg.t >= lastDeltaTs).slice(-DELTA_MAX);
+      const res = await chrome.runtime.sendMessage({ type: 'CP_MEETING_PERSIST', record, delta });
       // Free lifetime cap: the worker refused to store this NEW meeting. Tear down so we
       // don't persist into the void, and don't auto-restart (meetings are Free up to the
       // cap; the user upgrades from the panel). Existing meetings are never blocked.
@@ -234,6 +245,10 @@
       } else {
         flushOk += 1;
         lastFlushOkAt = Date.now();
+        // Only advance the watermark on a write that actually landed — a failed flush must
+        // re-offer its lines, or a command spoken during a storage hiccup is lost.
+        const last = record.segments[record.segments.length - 1];
+        if (last) lastDeltaTs = last.t;
       }
     } catch (e) {
       // A failure here means the capture is recording into the VOID — the bar still says

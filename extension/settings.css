@@ -1165,3 +1165,31 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
   background: var(--field, #f7f8fa); color: var(--muted, #646b76);
   border: 1px solid var(--border, #e4e7ec);
 }
+
+/* Stored memories — a plain, readable list. Memory a person cannot inspect and correct is
+   memory they cannot trust, so the management view is deliberately as simple as the feature. */
+.memory-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.memory-list .mem-empty { color: var(--muted); font-size: 13px; padding: 6px 2px; }
+.memory-row {
+  display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px;
+  background: var(--card-2, rgba(127,127,127,.06)); border: 1px solid var(--border); border-radius: 9px;
+}
+.memory-row .mem-kind {
+  flex: 0 0 auto; font-size: 10.5px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase;
+  color: var(--accent); background: var(--accent-weak, rgba(124,140,248,.14));
+  border-radius: 6px; padding: 3px 7px; margin-top: 1px;
+}
+.memory-row .mem-body { flex: 1; min-width: 0; }
+.memory-row .mem-text {
+  width: 100%; background: none; border: none; color: var(--text); font: inherit; font-size: 13.5px;
+  padding: 1px 0; resize: none; overflow: hidden;
+}
+.memory-row .mem-text:focus { outline: none; border-bottom: 1px solid var(--accent); }
+.memory-row .mem-meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.memory-row .mem-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; }
+.memory-row .mem-btn {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 13px; padding: 4px 6px; border-radius: 6px; line-height: 1;
+}
+.memory-row .mem-btn:hover { background: var(--border); color: var(--text); }
+.memory-row .mem-btn.on { color: var(--accent); }
