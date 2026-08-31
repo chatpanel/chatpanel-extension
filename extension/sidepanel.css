@@ -358,6 +358,27 @@ html.surface-tab body { max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px 
 .bubble .step-status.bad { color: #e0607a; opacity: 1; }
 .bubble .step-shot { max-width: 260px; max-height: 170px; border-radius: 6px; border: 1px solid var(--border); margin: 2px 0 4px; }
 
+/* "Remember this?" offer above the composer. Deliberately quieter than the skill chip —
+   it is an offer about something the user said in passing, not a suggestion for the turn. */
+.memory-offer { display: flex; flex-direction: column; gap: 4px; padding: 4px 12px 0; }
+.memory-offer .mo-row { display: flex; align-items: center; gap: 6px; }
+.memory-offer .mo-text {
+  flex: 1; min-width: 0; font-size: 12px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.memory-offer .mo-text b { color: var(--text); font-weight: 600; }
+.memory-offer .mo-yes {
+  flex: 0 0 auto; background: var(--accent-soft); border: 1px solid transparent;
+  color: var(--accent); font: inherit; font-size: 11.5px; font-weight: 600;
+  padding: 3px 9px; border-radius: 7px; cursor: pointer;
+}
+.memory-offer .mo-yes:hover { border-color: var(--accent); }
+.memory-offer .mo-no {
+  flex: 0 0 auto; background: none; border: none; color: var(--text-dim);
+  cursor: pointer; font-size: 12px; padding: 3px 6px; border-radius: 6px;
+}
+.memory-offer .mo-no:hover { background: var(--bg-soft); }
+
 /* Skill auto-suggestion chip above the composer */
 .skill-suggest { display: flex; align-items: center; gap: 6px; padding: 4px 12px 0; }
 

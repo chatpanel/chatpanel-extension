@@ -46,6 +46,7 @@ export async function buildTurnTools({
   includeMcp = true,
   connectors = [],           // a relayed agent's OWN MCP server names, from the bridge's /health
   noteWriter = null,         // surface-built provider for WRITING notes (needs confirm + a window)
+  memoryWriter = null,       // surface-built provider for WRITING memory (same: every write is confirmed)
   extraProviders = [],       // surface-specific providers prepended verbatim
   onMcpError = () => {},
 } = {}) {
@@ -90,7 +91,7 @@ export async function buildTurnTools({
   const groups = await buildToolGroups({
     resolvedAgent, settings, license, bridgeUrl, bridgeAvailable,
     userText, attachments, mcpMode, skillRun, history, liveReader,
-    includeHistory, includeWebSearch, includeMcp, noteWriter,
+    includeHistory, includeWebSearch, includeMcp, noteWriter, memoryWriter,
     onMcpError,
     // Timing the connect stays here: it is a fact about this TURN, and a group should not
     // have to know it is being measured.

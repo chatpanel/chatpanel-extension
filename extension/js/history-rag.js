@@ -618,7 +618,7 @@ async function meetingRows({ needPeople, loadSources, loadMeetingIndex }) {
 
 const ONE_ON_ONE_RE = /\b(?:1\s*[:x/]\s*1|1\s*[-\s]*(?:on|to)\s*[-\s]*1|one[-\s]*on[-\s]*one)\b/i;
 
-function formatMeetingList(rows, { now }) {
+function formatMeetingList(rows, { now, participant = '' } = {}) {
   if (!rows.length) return 'No meetings matched those filters.';
   const lines = [
     `Meetings (${rows.length}):`,
@@ -628,7 +628,17 @@ function formatMeetingList(rows, { now }) {
   for (const r of rows) {
     const when = r.date ? new Date(r.date).toLocaleString() : 'unknown date';
     const ago = r.date ? ` (${Math.max(0, Math.round((now - r.date) / DAY_MS))}d ago)` : '';
-    const who = r.people.length ? ` · ${r.people.slice(0, 8).join(', ')}` : '';
+    // Show the MATCHED person first, and never truncate silently. The list was capped at 8
+    // with no marker, so a filtered-in participant who sat past position 8 was invisible —
+    // and a model reading the line concluded they had not attended and under-reported the
+    // count against the tool's own answer. A cap is fine; hiding that there is a cap is not.
+    let people = r.people;
+    if (participant) {
+      const hit = people.filter((x) => anyPersonMatches([x], participant));
+      people = [...hit, ...people.filter((x) => !hit.includes(x))];
+    }
+    const extra = people.length > 8 ? ` +${people.length - 8} more` : '';
+    const who = people.length ? ` · ${people.slice(0, 8).join(', ')}${extra}` : '';
     const plat = r.platform ? ` · ${r.platform}` : '';
     const open = r.url ? ` · Open: [Open in ChatPanel](${r.url})` : '';
     lines.push(`[${r.sourceId}] ${r.title} · ${when}${ago}${plat}${who}${open}`);
@@ -702,7 +712,7 @@ async function runListMeetings(input, { canReadMeetings, loadSources, loadMeetin
       + 'so this does not show they attended nothing. Say that plainly, and offer to read a transcript with history_get_meeting instead.';
   }
 
-  return formatMeetingList(rows.slice(0, limit), { now });
+  return formatMeetingList(rows.slice(0, limit), { now, participant });
 }
 
 function historySystem(includeMeetings, explicit = false, hasLive = false) {

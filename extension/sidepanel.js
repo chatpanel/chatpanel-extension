@@ -700,6 +700,32 @@ async function noteWriteProvider(resolvedAgent) {
   return { specs: NOTE_TOOL_SPECS, execute };
 }
 
+// The `memory` tool. Every write is confirmed, with the SAME card as a page action or a note
+// write — and for a stronger reason than either: a memory is carried into every future turn on
+// every model, so an agent that just read a web page must not be able to install one silently.
+// See js/memory.js for the full rule (the author decides the gate).
+async function memoryWriteProvider(resolvedAgent) {
+  if (!resolvedAgent) return null;
+  const { memoryToolProvider, memoryEnabled } = await import('./js/memory.js');
+  if (!memoryEnabled(state.settings)) return null;
+  return memoryToolProvider({
+    confirm: async (detail) => ((await confirmPageAction({
+      title: detail.title,
+      body: detail.body,
+      agent: detail.agent,
+    })) === 'deny' ? 'deny' : 'allow'),
+    needsConfirm: state.settings.ui?.pageActionConfirm !== false,
+    agentLabel: resolvedAgent.name || resolvedAgent.model || 'AI',
+    agentId: resolvedAgent.id || '',
+    ref: state.conv?.id || '',
+    onChanged: (action, records) => {
+      toast(action === 'forget' ? '🧠 Forgotten' : action === 'update' ? '🧠 Memory updated' : '🧠 Remembered');
+      logEvent('capability.activated', { capability: 'memory.write', classUsed: 'R', granted: true, reason: action });
+      void records;
+    },
+  });
+}
+
 // Build the full toolset for a turn. The side-panel-specific part — page-action
 // tools (they need a live web tab + confirm dialogs) — is assembled here; the
 // portable part (history + web-search + MCP + narrowing) is delegated to the
@@ -734,6 +760,7 @@ async function toolsetFor(
     // the usual suspects.
     connectors: (state.bridge?.agents || []).find((a) => a.id === resolvedAgent?.bridgeAgent)?.connectors || [],
     noteWriter: await noteWriteProvider(resolvedAgent),
+    memoryWriter: await memoryWriteProvider(resolvedAgent),
     userText,
     attachments,
     mcpMode,
@@ -2291,6 +2318,10 @@ async function send() {
     const queued = state.streams.has(conv.id); // a reply is already in flight
     userMsg.queued = queued;
     conv.messages.push(userMsg);
+    // READ WHAT THEY JUST TYPED for anything worth keeping. Deterministic (a regex pass, no
+    // model call), so it costs nothing to run on every message, and never blocks the send:
+    // a memory that failed to save must not cost the user their turn.
+    captureMemory(text, conv.id);
     input.value = '';
     autoGrow();
     suggestSuppressed = false;
@@ -2542,10 +2573,24 @@ async function runStream(agent, assistant, conv) {
     const tools = isWebllm ? undefined : withToolCancellation(rawTools, assistant, conv);
     // System prompt = the agent's own + (when compacted) the running summary.
     // providers.js appends tools.system once per backend, so keep it out here.
+    // WHAT THE MODEL ALREADY KNOWS ABOUT THIS USER — carried, not looked up.
+    //
+    // In the SYSTEM PROMPT rather than in the toolset, deliberately. A tool has to be
+    // reached for, and the models that most need to be told the user's name are exactly the
+    // ones that will not think to ask; the in-browser model cannot ask at all, since it is
+    // armed with no tools. Recall is budgeted and mostly ambient (identity + preference), so
+    // this is ~100 tokens, not a corpus — see @chatpanel/events/memory.js.
+    const { recallForTurn } = await import('./js/memory.js'); // module-cached after turn one
+    const memory = await recallForTurn({
+      text: profile.userText || '',
+      settings: state.settings,
+      agentId: resolved.id || '',
+    }).catch(() => ({ system: '' }));
     const systemPrompt = isWebllm
-      ? systemWithSummary(resolved.systemPrompt, conv)
+      ? combineSystemPrompt(systemWithSummary(resolved.systemPrompt, conv), memory.system)
       : combineSystemPrompt(
         systemWithSummary(resolved.systemPrompt, conv),
+        memory.system,
         sourceCitationSystem(),
       );
     // Reversible PII vault is per-conversation, so a placeholder stays stable turn

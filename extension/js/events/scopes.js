@@ -17,4 +17,4 @@
 // zero runtime dependencies by design; pulling the capability machinery and the event
 // schema behind it to reach a five-element array would be the transitive-graph mistake
 // the extension's first-paint budget exists to prevent, one repo over.
-export const DATA_SCOPES = Object.freeze(['notes', 'meetings', 'chats', 'page', 'files', 'net']);
+export const DATA_SCOPES = Object.freeze(['notes', 'meetings', 'chats', 'memory', 'page', 'files', 'net']);

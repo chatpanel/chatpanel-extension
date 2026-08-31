@@ -58,7 +58,11 @@ assert.match(recent, /1d ago/);
 // Participant filter (needs people → source path).
 const withJordan = await pro.execute('history_list_meetings', { participant: 'jordan' });
 assert.deepEqual(ids(withJordan), ['meeting:scrum', 'meeting:right', 'meeting:old'], 'all Jordan meetings, newest first');
-assert.match(withJordan, /Alex Rivera, Jordan Blake/);
+// The MATCHED participant leads the line. The list is capped at 8 names, and it used to be
+// capped SILENTLY — so someone who matched the filter but sat past position 8 was invisible,
+// and a model reading the line concluded they had not attended and under-reported against the
+// tool's own count. Putting the match first makes the filtered-on person always visible.
+assert.match(withJordan, /· Jordan Blake, Alex Rivera/, 'the person filtered on is shown first');
 
 // "latest 1:1 with Jordan" — participant + oneOnOne drops the 4-person scrum.
 const oneOnOnes = await pro.execute('history_list_meetings', { participant: 'jordan', oneOnOne: true, limit: 1 });
@@ -104,3 +108,22 @@ assert.match(historyToolProvider({ includeMeetings: true, explicit: true }).syst
 assert.match(pro.system, /history_list_meetings/);
 
 console.log('history list-meetings tests passed');
+
+// A capped participant list must SAY it is capped, so nothing looks like the whole set.
+{
+  const many = Array.from({ length: 12 }, (_, i) => `Person ${i + 1}`);
+  const proMany = historyToolProvider({
+    includeMeetings: true,
+    now: NOW,
+    loadMeetingIndex: async () => [],
+    loadSources: async () => [{
+      id: 'meeting:big', type: 'meeting', title: 'All hands', date: NOW,
+      meta: { id: 'big', platform: 'zoom', people: [...many, 'Jordan Blake'], terms: [] },
+    }],
+  });
+  const out = await proMany.execute('history_list_meetings', { participant: 'jordan' });
+  assert.match(out, /· Jordan Blake,/, 'the match leads even from position 13');
+  assert.match(out, /\+5 more/, 'and the truncation is stated, not silent');
+}
+
+console.log('ok — history_list_meetings');

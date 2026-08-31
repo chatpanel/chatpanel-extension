@@ -58,6 +58,12 @@ export { createKernel, meetDecisions, KernelError, REQUIRED_PLUGINS, ALLOW_ALL }
 export { replay, formatReport, parseJsonl, toJsonl } from './harness.js';
 export { compileQuery, findMatches, matchIndexFor, expandReplacement, replaceMatch, replaceAll, replaceAllInRange, MAX_MATCHES } from './text-search.js';
 export { DATA_SCOPES } from './scopes.js';
+export {
+  MEMORY_VERSION, MEMORY_KINDS, MEMORY_KIND_NAMES, AMBIENT_KINDS, MAX_MEMORY_CHARS, MIN_MEMORY_CHARS,
+  DEFAULT_MAX_MEMORIES, DEFAULT_BLOCK_CHARS, SAME_FACT, MEMORY_TOOL_SPEC, MEMORY_UPCASTERS, MemoryError,
+  normalizeMemory, isValidMemory, memoryKey, slotOf, similarity, containment, candidatesFrom, reconcile, matchForForget,
+  recall, memoryBlock, markUsed, pruneMemories, memoryToolSystem, upcastMemory,
+} from './memory.js';
 export { SOURCE_TRUST, SkillSourceError, defineSkillSource, createSkillSourceRegistry } from './skill-sources.js';
 export { SKILL_MANIFEST_VERSION, SKILL_CONTEXTS, SKILL_HISTORY_SCOPES, SKILL_MCP_MODES, SKILL_TRUST, SKILL_FILE_KINDS, SKILL_UPCASTERS, SkillManifestError, isSafeSkillPath, originOf, trustOf, skillFiles, needsBridge, declaredAccess, originLabel, sameSkillOrigin, skillIsStale, validateSkill, upcastSkill, upcastSkills, normalizeSkill } from './skill-manifest.js';
 export { SKILL_VARS, SKILL_VAR_NAMES, skillVar, skillVarPattern, parseSkillVars, lintSkillPrompt, suggestSkillVar, substituteSkillVars, skillVarGuidance, SkillVarError } from './skill-vars.js';

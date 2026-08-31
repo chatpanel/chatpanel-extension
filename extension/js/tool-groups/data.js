@@ -25,7 +25,7 @@ export const dataGroup = defineToolGroup({
   id: 'data',
   label: "The user's own data and the web",
   priority: 50,
-  applies: (ctx) => !!ctx.resolvedAgent && (ctx.includeHistory !== false || ctx.includeWebSearch !== false || !!ctx.noteWriter),
+  applies: (ctx) => !!ctx.resolvedAgent && (ctx.includeHistory !== false || ctx.includeWebSearch !== false || !!ctx.noteWriter || !!ctx.memoryWriter),
   async build(ctx) {
     const { settings = {}, license = null } = ctx;
     const pro = isPro(license);
@@ -61,7 +61,11 @@ export const dataGroup = defineToolGroup({
     //
     // Supplied by the SURFACE (ctx.noteWriter) rather than built here, because every write
     // asks the user to confirm and shows them the result — both of which need a window.
-    const providersOut = [read, ctx.noteWriter].filter(Boolean);
+    // `memory` stays out of the `find` dispatcher for the same reason `note` does — and one
+    // more. It writes, so hiding it behind a name that means "search" would misdescribe it;
+    // and what it writes is carried into every FUTURE turn, which is not a thing the model
+    // should be able to reach for without the name of the action being visible in the call.
+    const providersOut = [read, ctx.noteWriter, ctx.memoryWriter].filter(Boolean);
     if (!providersOut.length) return null;
     return providersOut.length === 1 ? providersOut[0] : buildToolset(providersOut);
   },
