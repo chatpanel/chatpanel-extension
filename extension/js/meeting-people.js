@@ -125,3 +125,29 @@ export function speakerCountOfMeeting(rec) {
   if (participants.length) return participants.length;
   return participantRowsOfMeeting(rec).length;
 }
+
+// Match a person by name. Two EXPLICIT modes, no guessing:
+//   • substring  — the default, case-insensitive;
+//   • /regex/    — when the caller wants control (flags allowed; always case-insensitive).
+//
+// Deliberately NOT fuzzy. A nickname ("Jordy") is not a substring of the recorded name
+// ("Jordan Blake"), and a similarity heuristic that made those match would also quietly match
+// the wrong person — with no way for the caller to tell which happened. The tool instead
+// reports the names it DOES hold when a filter finds nothing, so the model can pick the right
+// one and retry. Predictable and honest beats clever here.
+export function personMatches(name, query) {
+  const n = String(name || '').toLowerCase().trim();
+  const q = String(query || '').toLowerCase().trim();
+  if (!n || !q) return false;
+  const re = /^\/(.+)\/([a-z]*)$/.exec(q);
+  if (re) {
+    try { return new RegExp(re[1], re[2].includes('i') ? re[2] : `${re[2]}i`).test(n); }
+    catch { return false; } // a malformed pattern must not throw mid-search
+  }
+  return n.includes(q);
+}
+
+/** Does any of `people` match `query`? */
+export function anyPersonMatches(people, query) {
+  return (people || []).some((p) => personMatches(p, query));
+}

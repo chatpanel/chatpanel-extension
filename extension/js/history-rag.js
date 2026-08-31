@@ -2,7 +2,7 @@ import { getConversation, getIndex } from './store.js';
 import { getMeeting, getMeetingIndex, getMeetingNotes, getMeetingTopics, meetingToText } from './store-meetings.js';
 import { getNote, getNoteIndex } from './store-notes.js';
 import { getMeetingMonitors, monitorsSearchText } from './store-monitors.js';
-import { peopleOfMeeting } from './meeting-people.js';
+import { peopleOfMeeting, anyPersonMatches } from './meeting-people.js';
 import { insightTopicItemsFromNotes } from './topic-extraction.js';
 import { sourceCitationSystem } from './tool-hints.js';
 import {
@@ -650,13 +650,14 @@ async function runListMeetings(input, { canReadMeetings, loadSources, loadMeetin
   const before = parseWhen(input?.before, now);
   const needPeople = !!participant || qTokens.length > 0 || oneOnOne || sort === 'relevant';
 
-  let rows = await meetingRows({ needPeople, loadSources, loadMeetingIndex });
+  const all = await meetingRows({ needPeople, loadSources, loadMeetingIndex });
+  let rows = all;
 
   rows = rows.filter((r) => {
     if (since && r.date < since) return false;
     if (before && r.date > before) return false;
     if (platform && r.platform.toLowerCase() !== platform) return false;
-    if (participant && !r.people.some((p) => String(p).toLowerCase().includes(participant))) return false;
+    if (participant && !anyPersonMatches(r.people, participant)) return false;
     if (oneOnOne && !(ONE_ON_ONE_RE.test(r.title) || r.people.length === 2)) return false;
     if (qTokens.length) {
       const hay = `${r.title} ${r.people.join(' ')} ${r.terms.join(' ')}`.toLowerCase();
@@ -675,6 +676,25 @@ async function runListMeetings(input, { canReadMeetings, loadSources, loadMeetin
     rows.sort((a, b) => (a.date || 0) - (b.date || 0));
   } else {
     rows.sort((a, b) => (b.date || 0) - (a.date || 0));
+  }
+
+  // A participant filter that matches nothing is almost never "they attended nothing" — it is
+  // usually that the platform captured a different name than the one a person types (the
+  // platform records "Jordan Blake"; you ask about "Jordy"). Rather than guessing with a
+  // fuzzy rule, report the names actually held for that window and let the model choose: it
+  // has the context to know which one you meant, and the correction takes one more call.
+  if (!rows.length && participant) {
+    const names = [...new Set(all
+      .filter((r) => (!since || r.date >= since) && (!before || r.date <= before))
+      .flatMap((r) => r.people))].filter(Boolean).slice(0, 40);
+    if (names.length) {
+      return `No meetings matched participant "${input.participant}" between those dates.\n`
+        + `Participants recorded in that window: ${names.join(', ')}.\n`
+        + 'Participant names come from the meeting platform, so a short name or nickname often will not match. '
+        + 'Pick the matching full name above and call again, or pass a regex such as /jord/ — do not report zero attendance from this result alone.';
+    }
+    return `No meetings matched participant "${input.participant}" between those dates, and NO participant names were recorded for the meetings in that window — `
+      + 'so this does not show they attended nothing. Say that plainly, and offer to read a transcript with history_get_meeting instead.';
   }
 
   return formatMeetingList(rows.slice(0, limit), { now });

@@ -33,7 +33,7 @@ const TOLERANT_TOKEN_RE = /\[{0,2}([A-Z][A-Z0-9]*_\d+)\]{0,2}/g;
 // A vault is the per-conversation mapping between placeholders and originals. Keep
 // one per conversation so PERSON_1 means the same entity across turns.
 export function createVault() {
-  // `aliases` maps a pseudonym (e.g. "Alex") back to the real value (e.g. "Suresh")
+  // `aliases` maps a pseudonym (e.g. "Robin") back to the real value (e.g. "Alex Rivera")
   // so LOCAL tool calls (history/meeting search) can run on real data. The reply
   // restorer ignores it — pseudonyms stay permanent in the user's view.
   return { byToken: new Map(), byValue: new Map(), counts: new Map(), aliases: new Map() };

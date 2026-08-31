@@ -17,17 +17,18 @@ const vault = createVault();
 const harness = makeToolHarness({
   vault,
   toolData: 'redactRemote',
-  redactOpts: { tier: 'basic', dictionary: [{ value: 'Suresh', alias: 'John' }] },
+  redactOpts: { tier: 'basic', dictionary: [{ value: 'Rivera', alias: 'Vega' }] },
 });
 
 // A public search result keeps the real public name — the answer stays factually correct.
-const web = harness.toModelResult('web_search', { text: 'Mysore Seshaiah Suresh Babu Naidu is an actor.' });
-assert.match(web.text, /Suresh/, 'a public figure is not renamed in fetched results');
-assert.ok(!/John/.test(web.text), 'the pseudonym is not applied to public content');
+const web = harness.toModelResult('web_search', { text: 'Ana Lucia Rivera Santos is a film director.' });
+assert.match(web.text, /Rivera/, 'a public figure is not renamed in fetched results');
+assert.ok(!/Vega/.test(web.text), 'the pseudonym is not applied to public content');
 
 // A LOCAL result is still redacted — this is where a leak could actually happen.
-const local = harness.toModelResult('history_search', { text: 'Meeting with Suresh about the roadmap.' });
-assert.ok(!/Suresh/.test(local.text), "the user's own history is still pseudonymised");
-assert.match(local.text, /John/, 'and the pseudonym is applied there');
+const local = harness.toModelResult('history_search', { text: 'Meeting with Rivera about the roadmap.' });
+assert.ok(!/Rivera/.test(local.text), "the user's own history is still pseudonymised");
+assert.match(local.text, /Vega/, 'and the pseudonym is applied there');
+
 
 console.log('ok — public results stay factual; local/private results stay redacted');

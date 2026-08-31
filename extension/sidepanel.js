@@ -3263,6 +3263,76 @@ function monitorLabel(m) {
   return m.prompt || m.title || 'Monitor';
 }
 
+// Panel height — monitors are a live dashboard, so the panel must be sizeable:
+// drag its top edge for any height (double-click resets), or maximize it to fill
+// everything above the composer. The chosen height is persisted per install so it
+// survives a reload and the next meeting. A pinned height overrides the CSS 44vh.
+const MONITORS_H_KEY = 'cp:monitorsH';
+const MONITORS_MIN_H = 96;
+let monitorsH = Math.max(0, parseInt(localStorage.getItem(MONITORS_H_KEY) || '', 10) || 0);
+let monitorsMax = false;
+
+// Shortest it may get: the sticky controls stay fully visible (they never shrink —
+// see .mon-controls) plus a sliver of the card list, so a hard drag down can't clip
+// the add-a-monitor row out of reach.
+function monitorsMinH() {
+  const controls = document.querySelector('.mon-controls')?.getBoundingClientRect().height || 0;
+  return Math.max(MONITORS_MIN_H, Math.round(controls + 44));
+}
+
+// Tallest the panel may get: the panel column minus the composer, minus a sliver of
+// chat so the conversation never disappears completely.
+function monitorsMaxH() {
+  const body = ($('panel-body') || document.body).getBoundingClientRect().height || window.innerHeight;
+  const composer = document.querySelector('.composer')?.getBoundingClientRect().height || 0;
+  return Math.max(MONITORS_MIN_H, Math.round(body - composer - 56));
+}
+
+// Re-clamps on every render and on window resize, so a height saved in a tall window
+// can't push the composer off-screen in a short one.
+function applyMonitorsHeight() {
+  const panel = $('monitors-panel');
+  if (!panel) return;
+  const h = monitorsMax ? monitorsMaxH() : (monitorsH ? Math.min(monitorsH, monitorsMaxH()) : 0);
+  panel.style.height = h ? `${h}px` : '';
+  panel.style.maxHeight = h ? 'none' : ''; // pinned height wins over the CSS cap
+}
+
+function setMonitorsHeight(px, { persist = true } = {}) {
+  monitorsH = Math.max(monitorsMinH(), Math.min(Math.round(px), monitorsMaxH()));
+  monitorsMax = false; // a manual drag always leaves maximized mode
+  if (persist) localStorage.setItem(MONITORS_H_KEY, String(monitorsH));
+  applyMonitorsHeight();
+}
+
+function resetMonitorsHeight() {
+  monitorsH = 0;
+  monitorsMax = false;
+  localStorage.removeItem(MONITORS_H_KEY);
+  applyMonitorsHeight();
+}
+
+// The handle is rebuilt with the panel on every render (renderMonitors clears it),
+// so wiring lives here and is re-attached per render — same as the panel's buttons.
+function wireMonitorsResize(handle, panel) {
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = panel.getBoundingClientRect().height;
+    handle.setPointerCapture(e.pointerId);
+    const onMove = (ev) => setMonitorsHeight(startH + (startY - ev.clientY), { persist: false }); // drag up → taller
+    const onUp = () => {
+      handle.releasePointerCapture(e.pointerId);
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      localStorage.setItem(MONITORS_H_KEY, String(monitorsH));
+    };
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+  });
+  handle.addEventListener('dblclick', () => resetMonitorsHeight());
+}
+
 function renderMonitors() {
   const panel = $('monitors-panel');
   if (!panel) return;
@@ -3270,6 +3340,13 @@ function renderMonitors() {
   panel.classList.toggle('hidden', !show);
   if (!show) { panel.innerHTML = ''; return; }
   panel.innerHTML = '';
+
+  // Drag the top edge to resize the whole panel (double-click resets).
+  const grip = document.createElement('div');
+  grip.className = 'mon-resize';
+  grip.title = 'Drag to resize · double-click to reset';
+  wireMonitorsResize(grip, panel);
+  panel.appendChild(grip);
 
   // Two-pane layout: a sticky control row (title + input + quick goals) that never
   // scrolls, over a dedicated scroll list of question cards — so the input stays
@@ -3289,7 +3366,21 @@ function renderMonitors() {
   refresh.title = 'Refresh now — pull the latest transcript, update the summary, and re-answer all live (non-paused) monitors';
   refresh.disabled = monitorRefreshing;
   refresh.onclick = () => refreshMonitorsNow();
-  head.append(title, refresh);
+  // Maximize / restore. Repaints itself instead of re-rendering the panel, so a
+  // half-typed question in the add-a-monitor input survives the toggle.
+  const expand = document.createElement('button');
+  expand.className = 'mon-expand';
+  const paintExpand = () => {
+    expand.innerHTML = icon(monitorsMax ? 'chevron-down' : 'expand');
+    expand.title = monitorsMax
+      ? 'Restore the panel — back to its previous height'
+      : 'Maximize — fill the panel above the composer (or drag the top edge for any height)';
+    expand.setAttribute('aria-label', monitorsMax ? 'Restore monitors panel' : 'Maximize monitors panel');
+    expand.setAttribute('aria-pressed', String(monitorsMax));
+  };
+  paintExpand();
+  expand.onclick = () => { monitorsMax = !monitorsMax; applyMonitorsHeight(); paintExpand(); };
+  head.append(title, refresh, expand);
   controls.appendChild(head);
 
   // Add-a-question input + quick goals (TL;DR + the user's meeting skills).
@@ -3420,6 +3511,8 @@ function renderMonitors() {
     card.appendChild(body);
     list.appendChild(card);
   }
+
+  applyMonitorsHeight(); // re-clamp the pinned height against the current window
 }
 
 // A monitor accumulates findings as the meeting runs, so the card shows the NEWEST one
@@ -7090,6 +7183,8 @@ function wireEvents() {
   };
 
   wireComposerResize();
+  // A window resize can invalidate a pinned monitors height (saved tall, reopened short).
+  window.addEventListener('resize', () => applyMonitorsHeight());
 
   const input = $('input');
   input.oninput = () => {

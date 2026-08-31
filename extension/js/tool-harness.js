@@ -124,8 +124,9 @@ export function makeToolHarness({ vault = null, toolData = 'real', redactOpts = 
       // Redaction exists to stop the user's information LEAVING the device. Text coming back
       // from a public web search never left it — the model's provider could fetch the same
       // page itself — so rewriting it buys no privacy and actively corrupts facts: a
-      // dictionary pseudonym (Suresh → John) renamed a public actor inside search results,
-      // and the answer came back about "Mysore Seshaiah John Babu Naidu". The detectors
+      // dictionary pseudonym (a user's own name → a stand-in) renamed a same-named public
+      // figure inside search results, and the answer came back about a person who does not
+      // exist. The detectors
       // (emails, phones, keys) also fire on unrelated strangers' details in fetched pages.
       //
       // So public-source results pass through intact. Everything local or private — history,

@@ -645,8 +645,24 @@ html.surface-tab body { max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px 
 .live-summary-b { font-size: 13px; }
 /* Live monitors panel (pinned above the composer) — standing meeting goals.
    Two panes: a sticky control row (never scrolls) over a scrollable card list. */
-.monitors-panel { display: flex; flex-direction: column; min-height: 0; max-height: 44vh; border-top: 1px solid var(--border); background: var(--panel); padding: 6px 10px 8px; }
-.mon-controls { position: sticky; top: 0; z-index: 1; background: var(--panel); padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.monitors-panel {
+  position: relative; flex: 0 0 auto;
+  display: flex; flex-direction: column; min-height: 0; max-height: 44vh;
+  border-top: 1px solid var(--border); background: var(--bg-elev); padding: 6px 10px 8px;
+}
+.mon-controls { flex: 0 0 auto; position: sticky; top: 0; z-index: 1; background: var(--bg-elev); padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+/* Drag the top edge to give the live dashboard more room (double-click resets to
+   the default 44vh); the maximize button fills everything above the composer. JS
+   pins an explicit height that overrides max-height — see applyMonitorsHeight. */
+.mon-resize { position: absolute; top: -4px; left: 0; right: 0; height: 9px; cursor: ns-resize; z-index: 6; touch-action: none; }
+.mon-resize::before {
+  content: ""; position: absolute; left: 50%; top: 3px; transform: translateX(-50%);
+  width: 38px; height: 3px; border-radius: 2px; background: var(--text-dim); opacity: 0; transition: opacity .15s;
+}
+.monitors-panel:hover .mon-resize::before, .mon-resize:hover::before { opacity: .6; }
+.mon-expand { cursor: pointer; border: none; background: none; color: var(--text-dim); padding: 1px 3px; display: inline-flex; align-items: center; border-radius: 6px; }
+.mon-expand:hover { color: var(--accent); }
+.mon-expand svg { width: 14px; height: 14px; }
 .mon-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-top: 6px; }
 .mon-empty { font-size: 12px; color: var(--text-dim); padding: 6px 2px; }
 .mon-head { display: flex; align-items: center; gap: 6px; padding: 2px 2px 6px; }
