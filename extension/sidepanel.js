@@ -3464,8 +3464,8 @@ async function jobs() {
 // Run the model half of one job. Deliberately built on the same pieces as a monitor turn —
 // one target resolution, one toolset, one redaction vault — rather than a second turn path
 // that would drift away from the guarded one.
-async function runJobTurn(job, { why = '' } = {}) {
-  const instruction = await jobInstruction(job);
+async function runJobTurn(job, { why = '', event = null, match = null } = {}) {
+  const instruction = await jobInstruction(job, { why, event, match });
   if (!instruction) return;
   const conv = await createConversation({ agentId: state.settings.activeAgentId, title: job.name });
   const now = Date.now();
@@ -3498,17 +3498,55 @@ async function runJobTurn(job, { why = '' } = {}) {
 
 // What to actually say to the model. A skill job names a skill the user already wrote, so
 // the skill stays the single definition of the work — the job only says when.
-async function jobInstruction(job) {
-  if (job.action.kind === 'prompt') return job.action.text || '';
+async function jobInstruction(job, { why = '', event = null, match = null } = {}) {
+  let prompt = '';
+  if (job.action.kind === 'prompt') prompt = job.action.text || '';
   if (job.action.kind === 'skill') {
     const skill = (state.settings?.skills || []).find((sk) => sk.id === job.action.skillId);
     if (!skill?.prompt) {
       toast(`“${job.name}” points at a skill that no longer exists`, 5000);
       return '';
     }
-    return skill.prompt;
+    prompt = skill.prompt;
   }
-  return '';
+  if (!prompt) return '';
+  const context = await meetingJobContext(event, match);
+  return context ? `${prompt}\n\n${context}` : prompt;
+}
+
+/**
+ * What a meeting-triggered job is actually about.
+ *
+ * WITHOUT THIS THE FEATURE IS A DEMO. A skill run because someone said "action item" was
+ * being handed its own prompt and nothing else — no transcript, no summary, not even the
+ * line that fired it — so an "Interview" skill triggered mid-call had no idea what was said
+ * and answered in the abstract. A trigger decides WHEN; the job still has to be told WHAT.
+ *
+ * On `meeting.ended` the whole transcript goes in (that is the write-up case, and it is the
+ * one moment the whole thing exists). While a meeting runs, the recent window plus the
+ * running summary — the same shape a monitor turn gets, for the same cost reasons.
+ */
+async function meetingJobContext(event, match) {
+  if (!event?.meetingId) return '';
+  const ended = event.type === 'meeting.ended';
+  try {
+    const rec = await getMeeting(event.meetingId).catch(() => null);
+    if (!rec) return '';
+    const transcript = meetingToText(rec, { sinceTs: ended ? 0 : Date.now() - 15 * 60_000 });
+    const summary = await getLiveNotesText(event.meetingId).catch(() => '');
+    const said = match?.segment?.text
+      ? `WHAT TRIGGERED THIS: ${match.segment.speaker || 'someone'} said “${match.segment.text.trim()}”`
+      : '';
+    return [
+      `MEETING: ${rec.title || event.title || 'Untitled'}${ended ? ' (just ended)' : ' (in progress)'}`,
+      said,
+      summary && `RUNNING SUMMARY:\n${summary}`,
+      transcript && `${ended ? 'FULL TRANSCRIPT' : 'RECENT TRANSCRIPT'}:\n${transcript}`,
+      'Ground everything in the meeting above. Say plainly what is not in it rather than inventing.',
+    ].filter(Boolean).join('\n\n');
+  } catch {
+    return ''; // a job that cannot read the meeting still runs, just without it
+  }
 }
 
 // Occurrences the worker left for a window. Drained on panel open and when it tells us.
@@ -3539,10 +3577,13 @@ async function fireMeetingTrigger(event, ctx) {
       const stamp = hit.match.segment?.t ?? eventStamp(event);
       if (!(await m.claimOccurrence(`${hit.job.id}@${event.type}@${stamp}`))) continue;
       if (!(await m.withinLimits(hit.job))) continue; // a phrase said fifty times is not fifty jobs
+      // A topic a meeting keeps returning to is one thing happening, not six.
+      if (!(await m.withinCooldown(hit.job))) continue;
       await m.countRun(hit.job.id);
+      await m.markFired(hit.job.id);
       if (hit.job.action.kind === 'notify') { toast(`${hit.job.name} — ${hit.match.why}`, 5000); continue; }
       if (hit.job.action.kind === 'monitor') { await addMonitor({ kind: 'qa', prompt: hit.job.action.prompt }); continue; }
-      await runJobTurn(hit.job, { why: hit.match.why });
+      await runJobTurn(hit.job, { why: hit.match.why, event, match: hit.match });
     }
   } catch (e) {
     // A job that fails must never disturb the meeting — but it must not vanish either. The
@@ -3585,6 +3626,9 @@ let voiceLoading = null;
 // The meeting whose start has already been announced, so the poll that recomputes the live
 // set cannot fire "when a meeting starts" over and over for the same call.
 let meetingStartAnnounced = null;
+// The meetings that were live on the previous pass, so one leaving can be noticed. Their
+// title/platform ride along because by the time we notice, the entry is already gone.
+let prevLive = new Map();
 const voiceSeen = new Map();    // meetingId → newest segment ts already scanned
 const voiceReported = new Set(); // command keys already surfaced (refusals repeat otherwise)
 
@@ -3704,7 +3748,15 @@ async function onMeetingDelta(meetingId, segments) {
     voiceSeen.set(meetingId, Math.max(0, newest - 1));
     // Jobs the user bound to what is SAID — a phrase, a topic, a question. Same delta,
     // same free matching pass; only a match costs anything.
-    fireMeetingTrigger({ type: 'meeting.transcript.delta', meetingId, segments });
+    //
+    // NEW lines only. The delta re-sends recent speech (deliberately: a caption grows as it
+    // is spoken), so handing the whole window to the triggers made an already-matched line
+    // match again on the next flush — which is half of "it runs on every utterance". The
+    // other half was substring matching, fixed in the shared trigger.
+    const freshSegments = segments.filter((sg) => (sg.t || 0) > sinceTs);
+    if (freshSegments.length) {
+      fireMeetingTrigger({ type: 'meeting.transcript.delta', meetingId, segments: freshSegments });
+    }
     if (!commands.length) return;
     // Anything already acted on stays acted on, across panel reloads and across the user
     // deleting what it produced.
@@ -5448,13 +5500,24 @@ async function renderScribeIndicator(liveOpt) {
     if (e.persistedAt && now - e.persistedAt < ZOMBIE_MS) fresh.push(e);
     else {
       markMeetingEnded(e.id).then(() => maybeExtractMeetingTopics(e.id)).catch(() => {});
-      // The counterpart to meeting.started, and dead for the same reason: the trigger was
-      // offered in the UI and nothing ever emitted the event it watches. A "send me the notes
-      // when the call ends" job could be created and would simply never run.
-      fireMeetingTrigger({ type: 'meeting.ended', meetingId: e.id, title: e.title || '', platform: e.platform || '' });
     }
   }
   live = fresh;
+
+  // A MEETING ENDED — whichever way it ended.
+  //
+  // Emitting this where a zombie is reaped only covered a crashed tab. The service worker is
+  // the primary ender: it flips a meeting to 'ended' the moment the user leaves or the tab
+  // closes, and `live` filters those out BEFORE this code sees them — so on a normal hang-up,
+  // the ordinary case, nothing ever fired and a "write up the call afterwards" job could not
+  // run. What both endings share is that the meeting stops being live, so that is what this
+  // watches.
+  const liveNow = new Set(fresh.map((e) => e.id));
+  for (const [id, meta] of prevLive) {
+    if (liveNow.has(id)) continue;
+    fireMeetingTrigger({ type: 'meeting.ended', meetingId: id, title: meta.title || '', platform: meta.platform || '' });
+  }
+  prevLive = new Map(fresh.map((e) => [e.id, { title: e.title, platform: e.platform }]));
 
   // Cache the most-recent live meeting so it can auto-attach + show a context chip
   // from ANY tab. When it starts/changes/ends, refresh the context bar.

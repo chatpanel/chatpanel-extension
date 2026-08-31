@@ -30,7 +30,7 @@ assert.match(panel, /if \(!state\.liveMeeting\?\.id\) meetingStartAnnounced = nu
 // a job scoped to one client ("when a Zoom call starts") compares against undefined and never
 // fires.
 assert.match(panel, /platform: state\.liveMeeting\.platform \|\| ''/, 'started carries the platform');
-assert.match(panel, /type: 'meeting\.ended'.*platform: e\.platform/, 'and so does ended');
+assert.match(panel, /type: 'meeting\.ended'.*platform: meta\.platform/, 'and so does ended');
 assert.match(panel, /platform: top\.platform \|\| ''/, 'taken from the index every adapter writes');
 {
   const { readdirSync } = await import('node:fs');
@@ -95,5 +95,35 @@ console.log(`ok — every meeting trigger has an emitter, on every client (${wat
   assert.match(panelSrc, /opt\.speaker \? \{ speaker: speaker\.value \|\| 'others' \}/, 'and it reaches the saved job');
   for (const t of ['questionTrigger', 'phraseTrigger', 'topicTrigger']) {
     assert.ok(new RegExp(`${t}\\.id.*speaker: true`).test(panelSrc), `${t} offers the choice`);
+  }
+}
+
+// AN ENDING IS AN ENDING, however the call ended.
+{
+  const panelSrc = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  // The service worker marks a meeting 'ended' on a normal leave and `live` filters those out
+  // before the panel loop sees them — so firing where a ZOMBIE is reaped covered only a
+  // crashed tab, and a normal hang-up (the ordinary case) fired nothing at all.
+  assert.match(panelSrc, /const liveNow = new Set\(fresh\.map/, 'the panel diffs the live set');
+  assert.match(panelSrc, /for \(const \[id, meta\] of prevLive\)/, 'and notices what left it');
+  assert.match(panelSrc, /if \(liveNow\.has\(id\)\) continue;/, 'only for meetings that are actually gone');
+  // The title/platform must be remembered, because by the time we notice, the entry is gone.
+  assert.match(panelSrc, /prevLive = new Map\(fresh\.map\(\(e\) => \[e\.id, \{ title: e\.title, platform: e\.platform \}\]\)\)/,
+    'so the event can still say which meeting and which client');
+
+  // And the form offers both ends of a meeting, not just the start.
+  const jobsSrc = readFileSync(new URL('../extension/js/jobs-panel.js', import.meta.url), 'utf8');
+  assert.match(jobsSrc, /meetingStartedTrigger\.id, label: 'When a meeting starts'/);
+  assert.match(jobsSrc, /meetingEndedTrigger\.id, label: 'When a meeting ends'/);
+}
+
+// The end job matches on every client, same as the start one.
+{
+  const { jobsForEvent } = await import('../extension/js/events/schedule.js');
+  const { triggers } = await import('../extension/js/jobs.js');
+  const job = { id: 'j2', name: 'Write-up', enabled: true, trigger: 'meeting:ended', params: {}, action: { kind: 'skill', skill: 'Notes' } };
+  for (const platform of ['zoom', 'meet', 'teams', 'webex']) {
+    const hits = jobsForEvent([job], { type: 'meeting.ended', meetingId: `m-${platform}`, title: `${platform} call`, platform }, { registry: triggers });
+    assert.equal(hits.length, 1, `an end job fires on ${platform}`);
   }
 }
