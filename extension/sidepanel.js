@@ -3571,6 +3571,59 @@ let voiceLoading = null;
 const voiceSeen = new Map();    // meetingId → newest segment ts already scanned
 const voiceReported = new Set(); // command keys already surfaced (refusals repeat otherwise)
 
+// ACTED-ON COMMANDS, ON DISK.
+//
+// Everything that deduped a spoken command used to live in memory: the rule engine's own
+// `seen` set, the scan watermark, this page's state. The side panel is closed and reopened
+// constantly, and each time it came back the engine was new and empty, the watermark was 0,
+// and the delta still carried the last lines said — so every command in it fired again. A
+// user who deleted the duplicate timers just made room for the next batch.
+//
+// Deleting a job is emphatically not a request to recreate it, so this record is what makes
+// "already done" outlive the page. Keyed by command key (stable per utterance) and capped, so
+// a long meeting cannot grow it without bound.
+const VOICE_ACTED_KEY = 'chatpanel:voiceActed';
+const VOICE_ACTED_MAX = 500;
+// A second, SEMANTIC guard. Per-utterance identity is not enough on its own: live captions
+// split one spoken sentence across segments and re-emit it as the window rolls, so the same
+// request arrives again under a new id and fires again — "one per caption message", which is
+// what a user sees as an unstoppable stream. Asking twice for the same thing within a couple
+// of minutes is a duplicate, not a second intention; anyone who really wants two identical
+// timers can add one from the Jobs panel.
+const VOICE_REPEAT_MS = 120_000;
+let voiceActed = null; // Map of key → when it was acted on
+
+async function loadVoiceActed() {
+  if (voiceActed) return voiceActed;
+  try {
+    const got = await chrome.storage.local.get(VOICE_ACTED_KEY);
+    const rows = Array.isArray(got?.[VOICE_ACTED_KEY]) ? got[VOICE_ACTED_KEY] : [];
+    voiceActed = new Map(rows.filter((r) => Array.isArray(r) && r.length === 2));
+  } catch {
+    voiceActed = new Map(); // storage unavailable → in-memory only, still better than nothing
+  }
+  return voiceActed;
+}
+
+// What the request WAS, independent of which caption carried it.
+const voiceGist = (c) => `gist:${c.meetingId}:${c.intent}:${c.ms ?? c.when ?? ''}`;
+
+/** Should this command run? False if this exact utterance, or the same request, already did. */
+function voiceIsFresh(acted, command, now) {
+  if (acted.has(command.key)) return false;
+  const at = acted.get(voiceGist(command));
+  return !(at && now - at < VOICE_REPEAT_MS);
+}
+
+async function rememberVoiceActed(commands, now) {
+  const acted = await loadVoiceActed();
+  for (const c of commands) { acted.set(c.key, now); acted.set(voiceGist(c), now); }
+  // Keep the newest; an old meeting's commands cannot recur anyway.
+  const rows = [...acted.entries()].slice(-VOICE_ACTED_MAX);
+  voiceActed = new Map(rows);
+  try { await chrome.storage.local.set({ [VOICE_ACTED_KEY]: rows }); } catch { /* memory only */ }
+}
+
 async function voiceRuntime() {
   if (voiceMod) return voiceMod;
   if (!voiceLoading) {
@@ -3636,7 +3689,14 @@ async function onMeetingDelta(meetingId, segments) {
     // same free matching pass; only a match costs anything.
     fireMeetingTrigger({ type: 'meeting.transcript.delta', meetingId, segments });
     if (!commands.length) return;
-    await vc.dispatchVoiceCommands(commands, {
+    // Anything already acted on stays acted on, across panel reloads and across the user
+    // deleting what it produced.
+    const nowTs = Date.now();
+    const acted = await loadVoiceActed();
+    const fresh = commands.filter((c) => voiceIsFresh(acted, c, nowTs));
+    if (!fresh.length) return;
+    await rememberVoiceActed(fresh, nowTs);
+    await vc.dispatchVoiceCommands(fresh, {
       engine,
       actions,
       seen: voiceReported,
