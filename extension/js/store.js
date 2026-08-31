@@ -80,7 +80,8 @@ export function defaultSettings() {
         builtin: true,
       },
     ],
-    // Agents — the local bridge (CLI) agents: Claude Code, Codex, Antigravity.
+    // Agents — the local bridge (CLI) agents: Claude Code, Codex, Antigravity, Pi,
+    // OpenCode, Hermes, Kiro, Copilot. Each appears only when its CLI is on PATH.
     agents: [
       {
         id: 'claude-code',
@@ -131,6 +132,17 @@ export function defaultSettings() {
         name: 'OpenCode',
         kind: 'bridge',
         bridgeAgent: 'opencode',
+        systemPrompt: '',
+        workingDir: '',
+        permissionMode: 'default',
+        useLocalConfig: true,
+        builtin: true,
+      },
+      {
+        id: 'hermes',
+        name: 'Hermes',
+        kind: 'bridge',
+        bridgeAgent: 'hermes',
         systemPrompt: '',
         workingDir: '',
         permissionMode: 'default',
