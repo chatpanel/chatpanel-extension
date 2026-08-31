@@ -6831,7 +6831,13 @@ $('activity-replay')?.addEventListener('click', verifyReplay);
 $('obs-refresh')?.addEventListener('click', renderObservability);
 $('obs-clear')?.addEventListener('click', async () => {
   const gwUrl = normalizeGatewayUrl(settings.gatewayUrl || 'http://127.0.0.1:4320');
-  if (!confirm('Delete the gateway\'s on-disk copy of your history?\n\nCLI agents will find nothing there until the next sync. Your browser data (the source) is untouched. If auto-sync is on, it will re-populate after your next chat/meeting/note.')) return;
+  const { confirmDelete } = await import('./js/confirm-modal.js');
+  const ok = await confirmDelete({
+    title: 'Clear the gateway copy?',
+    body: 'Deletes the gateway\'s on-disk mirror of your chats, meetings and notes — the copy that CLI agents (Codex, Claude Code) search. Useful to reclaim disk space, remove that second copy for privacy, or rebuild a stale index. Your browser data — the source of truth — is untouched. To refill the gateway afterward: turn on auto-sync, or click Sync now.',
+    confirmLabel: 'Clear copy',
+  });
+  if (!ok) return;
   const btn = $('obs-clear'); const label = btn?.textContent;
   if (btn) { btn.disabled = true; btn.textContent = 'Clearing…'; }
   try {
@@ -6839,7 +6845,7 @@ $('obs-clear')?.addEventListener('click', async () => {
     // Reset the sync watermark so a later sync re-pushes from scratch instead of assuming
     // the gateway still holds what we last sent.
     try { const { resetWarmSyncBaseline } = await import('./js/warm-sync.js'); await resetWarmSyncBaseline(); } catch { /* ignore */ }
-    toast(`Cleared ${r?.dropped ?? ''} record(s) from the gateway`.replace('  ', ' '));
+    toast(`Cleared ${r?.dropped ?? 0} record(s). Turn on auto-sync (or click Sync now) to refill the gateway.`);
   } catch (e) {
     toast(`Clear failed: ${e?.message || e}`);
   } finally {
