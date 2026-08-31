@@ -141,9 +141,38 @@ export function widgetAuthoringSystem() {
     'If the widget should remember anything between visits — elapsed time, notes, a tally, settings — persist it with the ChatPanel widget API, which is injected automatically:',
     '  await chatpanel.getState()      // returns what was saved, or null the first time',
     '  await chatpanel.setState(value) // save any JSON value',
-    'Load state on start and save it whenever it changes. Do not use localStorage or cookies — the sandbox discards them; setState is the only thing that survives.',
+    'Load state on start and save it whenever it changes. It works in the chat preview too, not only once kept. localStorage is backed by the same store, but indexedDB and cookies THROW in the sandbox — never use them.',
     'The sandbox has NO network access and no access to the user\'s data, so build the widget to work entirely offline unless the user has granted it a capability.',
     'Keep it compact and readable at ~320px wide (the panel is narrow), and give it sensible defaults so it is useful the moment it appears.',
     'Give the file a <title> — it becomes the widget\'s name, and its icon is chosen from that name (a "Pomodoro Timer" gets a timer, "Standup Notes" a notepad).',
+  ].join('\n');
+}
+
+/**
+ * How to keep a secret, told ONLY when the turn is about one.
+ *
+ * The widget guidance above rides on every turn that could produce HTML and is already at
+ * its budget, and this is three times the size of the line it would replace. It is also
+ * irrelevant to a pomodoro timer. So it is gated on the user actually asking for something
+ * that holds credentials — which is cheap, deterministic, and wrong only in the direction
+ * that costs nothing (a missed hint means a widget that stores a password in plain state,
+ * and the vault is still there for the next attempt).
+ */
+const SECRETY = /\b(password|passphrase|secret|vault|credential|api[- ]?key|token|pin code|private note|login|2fa|seed phrase)/i;
+
+export function wantsVaultGuidance(userText) {
+  return SECRETY.test(String(userText || ''));
+}
+
+export function vaultWidgetSystem() {
+  return [
+    'Secrets in a widget (passwords, keys, private notes) must NOT go in state — state is plain JSON on disk. Use the encrypted vault, which is keyed by a passphrase ChatPanel never stores:',
+    '  <meta name="chatpanel-requests" content="vault.status, vault.unlock, vault.list, vault.add, vault.reveal">',
+    '  await chatpanel.invoke("vault.status")                        // { exists, locked, entries }',
+    '  await chatpanel.invoke("vault.unlock")                        // ChatPanel asks for the passphrase itself',
+    '  await chatpanel.invoke("vault.add", { title, note, secret })',
+    '  await chatpanel.invoke("vault.list", { query })               // titles only, never secrets',
+    '  await chatpanel.invoke("vault.reveal", { id })                // ChatPanel asks the user each time',
+    'Never build your own passphrase box and never keep the secret in a variable longer than you need it. The user approves these once, when they keep the widget, so any call can throw — catch it and say so in the UI. Build the locked state first: a vault UI that assumes it is unlocked is wrong most of the time.',
   ].join('\n');
 }

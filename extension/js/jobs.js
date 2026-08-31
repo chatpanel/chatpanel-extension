@@ -289,3 +289,41 @@ export function whenNext(job, now = Date.now(), lastRun = 0) {
 }
 
 export { occurrenceKey };
+
+// ---------------------------------------------------------------------------
+// Backup
+// ---------------------------------------------------------------------------
+
+/**
+ * Jobs and their watermarks. The watermarks matter as much as the jobs: restore the
+ * definitions without them and every daily brief since the backup was taken looks missed,
+ * so the first wake-up after a restore runs a catch-up nobody asked for.
+ *
+ * Claims and pending work are deliberately NOT exported — they describe what one machine was
+ * part-way through, and carrying them to another would suppress a run that machine never did.
+ */
+export async function exportJobs() {
+  return { jobs: await read(JOBS_KEY), runs: await read(RUNS_KEY) };
+}
+
+export async function importJobs(data, { mode = 'merge' } = {}) {
+  if (!data || typeof data !== 'object') return 0;
+  const incoming = data.jobs && typeof data.jobs === 'object' ? data.jobs : {};
+  const current = mode === 'replace' ? {} : await read(JOBS_KEY);
+  const runs = mode === 'replace' ? {} : await read(RUNS_KEY);
+  let n = 0;
+  for (const [id, job] of Object.entries(incoming)) {
+    try {
+      current[id] = defineJob(job); // validated on the way in: a job that cannot run is not stored
+      n += 1;
+    } catch {
+      /* skip the malformed one, keep the rest — a bad line must not lose a backup */
+    }
+  }
+  for (const [id, at] of Object.entries(data.runs || {})) {
+    if (current[id]) runs[id] = Math.max(runs[id] || 0, Number(at) || 0);
+  }
+  await write(JOBS_KEY, current);
+  await write(RUNS_KEY, runs);
+  return n;
+}

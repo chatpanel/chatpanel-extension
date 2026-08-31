@@ -1,4 +1,4 @@
-import { widgetAuthoringSystem } from './tool-hints.js';
+import { widgetAuthoringSystem, vaultWidgetSystem, wantsVaultGuidance } from './tool-hints.js';
 // Turn capability — the ONE place a "model turn" is armed with tools + PII
 // redaction, shared by every ChatPanel surface (the side panel, the Notes
 // dashboard, and anything that comes next).
@@ -180,11 +180,15 @@ export async function buildTurnTools({
   // told the model any of that, so the whole surface was undiscoverable: a model that doesn't
   // know it can emit a runnable widget writes a paragraph describing one instead.
   const widgetSystem = widgetAuthoringSystem();
+  // And how to keep a SECRET in one — but only when the turn is about a secret. The widget
+  // guidance above ships on every turn and is already at its budget; this is the same
+  // trade-off skillCatalogSystem makes with userText, for the same reason.
+  const vaultSystem = wantsVaultGuidance(userText) ? vaultWidgetSystem() : '';
   if (!toolset) {
-    const system = [skillSystem, widgetSystem].filter(Boolean).join('\n\n');
+    const system = [skillSystem, widgetSystem, vaultSystem].filter(Boolean).join('\n\n');
     return { specs: [], execute: async () => '', system };
   }
-  toolset.system = [skillSystem, catalogSystem, widgetSystem, toolset.system].filter(Boolean).join('\n\n');
+  toolset.system = [skillSystem, catalogSystem, widgetSystem, vaultSystem, toolset.system].filter(Boolean).join('\n\n');
   // WHAT THE AGENT MAY STILL DO ON ITS OWN. Everything this harness says about the relayed
   // tools is a restriction — each written to stop a specific substitution — and read together
   // by an agent that also carries its own connectors they add up to "do not use your own

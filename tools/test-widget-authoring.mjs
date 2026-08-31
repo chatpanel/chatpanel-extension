@@ -20,8 +20,11 @@ assert.match(sys, /NO network access/i, 'and off fetching, which the sandbox blo
 // It has to actually reach the model, on turns with tools and without.
 const turn = readFileSync(new URL('../extension/js/turn-tools.js', import.meta.url), 'utf8');
 assert.match(turn, /const widgetSystem = widgetAuthoringSystem\(\)/, 'built every turn');
-assert.match(turn, /system = \[skillSystem, widgetSystem\]/, 'reaches a turn with no toolset');
-assert.match(turn, /\[skillSystem, catalogSystem, widgetSystem, toolset\.system\]/, 'and a turn with one');
+// Matched loosely at the ends: other guidance fragments (the vault one, gated on the turn's
+// text) join the same arrays, and this guard is about WHERE the widget guidance goes, not
+// about being the only thing that goes there.
+assert.match(turn, /system = \[skillSystem, widgetSystem[,\]]/, 'reaches a turn with no toolset');
+assert.match(turn, /\[skillSystem, catalogSystem, widgetSystem,[^\]]*toolset\.system\]/, 'and a turn with one');
 
 // It rides on every turn, so it must stay cheap.
 assert.ok(sys.length < 1400, `guidance is ${sys.length} chars — keep it lean, it ships every turn`);

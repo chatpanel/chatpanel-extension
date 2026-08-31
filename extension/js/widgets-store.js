@@ -85,3 +85,45 @@ export async function setWidgetState(id, state) {
   await write(STATE_KEY, states);
   return state;
 }
+
+// ---------------------------------------------------------------------------
+// Backup
+// ---------------------------------------------------------------------------
+
+/**
+ * Widgets are the clearest case of "data a backup must carry": a widget the user asked for
+ * and kept is a feature of THEIR ChatPanel that exists nowhere else — no release contains
+ * it, and re-asking a model produces a different app. Its state travels too, because a habit
+ * tracker without its history is a new habit tracker.
+ */
+export async function exportWidgets() {
+  return { widgets: await read(KEY), state: await read(STATE_KEY) };
+}
+
+/**
+ * Grants ride along. A grant is consent this user already gave to this widget, and it is
+ * still intersected with what the manifest asks for on the way in — so a backup edited to
+ * request more gains nothing.
+ */
+export async function importWidgets(data, { mode = 'merge' } = {}) {
+  if (!data || typeof data !== 'object') return 0;
+  const incoming = data.widgets && typeof data.widgets === 'object' ? data.widgets : {};
+  const incomingState = data.state && typeof data.state === 'object' ? data.state : {};
+  const current = mode === 'replace' ? {} : await read(KEY);
+  const currentState = mode === 'replace' ? {} : await read(STATE_KEY);
+  let n = 0;
+  for (const [id, rec] of Object.entries(incoming)) {
+    if (!rec?.manifest?.id) continue;
+    try {
+      validateWidget(rec.manifest);
+    } catch {
+      continue; // a manifest that cannot be validated cannot be mounted, so it is not kept
+    }
+    current[id] = { ...rec, grants: effectiveGrants(rec.manifest, rec.grants || []) };
+    if (incomingState[id] !== undefined) currentState[id] = incomingState[id];
+    n += 1;
+  }
+  await write(KEY, current);
+  await write(STATE_KEY, currentState);
+  return n;
+}

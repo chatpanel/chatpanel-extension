@@ -54,6 +54,13 @@ export { makeSourceStore, manifestText, shortUrl, readSource, sourceId } from '.
 export { classifySource, extractUrls, hostMatches, meetReach, sourcePolicyFor, DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './sources.js';
 export { defineRule, createRuleEngine, SUPPRESSED, RuleError } from './rules.js';
 export {
+  VAULT_VERSION, KDF_ITERATIONS, KDF_HASH, DEFAULT_LOCK_MS, VaultError,
+  MAX_TITLE_CHARS, MAX_NOTE_CHARS, MAX_SECRET_CHARS, MAX_ENTRIES,
+  createVault, unlockVault, deriveKey, sealEntry, openEntry,
+  validateEntry, entryMeta, searchEntries, isLocked, lockedSummary, canAddEntry,
+  toB64, fromB64,
+} from './vault.js';
+export {
   SCHEDULE_KINDS, TRIGGER_KINDS, JOB_ACTIONS, MISSED_POLICIES, ScheduleError,
   validateSchedule, nextFireAt, occurrencesBetween, nextWakeAt,
   defineTrigger, createTriggerRegistry, BUILTIN_TRIGGERS,

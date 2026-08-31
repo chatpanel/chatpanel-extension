@@ -887,7 +887,12 @@ export async function importConversations(data, { mode = 'merge' } = {}) {
 }
 
 // "Export data" — the FULL portable backup: everything needed to recreate this
-// install on another machine. version 6 adds `notesConfig` (the Notes UI +
+// install on another machine. version 8 adds `widgets` (the mini-apps the user kept, their
+// grants AND their state — a widget exists nowhere else: no release contains it, and
+// re-asking a model produces a different app), `jobs` (schedules, triggers and their
+// watermarks) and `vault` (the encrypted secret store — ciphertext, salt and verifier only,
+// which is exactly why it is safe to include and useless without the passphrase);
+// version 7 added `memories`; version 6 adds `notesConfig` (the Notes UI +
 // co-writer swarm config — role→model overrides, gear, source filter, layout —
 // which lives in localStorage, so it travels too); version 5 added `notes`;
 // version 4 adds `oauthTokens` (endpoint sign-ins, so a restore doesn't force a
@@ -915,9 +920,20 @@ export async function exportAllData() {
   const memories = await exportMemories();
   const settings = await getSettings();
   const oauthTokens = await exportOAuthTokens(); // endpoint sign-ins (v4) — see SECURITY note above
+  // v8 — the three stores that arrived after v7 and would otherwise be silently dropped by a
+  // restore. Dynamic for the same first-paint reason as the memory import above: none of
+  // this belongs on the side panel's cold start to serve a button nobody has pressed yet.
+  const [{ exportWidgets }, { exportJobs }, { exportVault }] = await Promise.all([
+    import('./widgets-store.js'), import('./jobs.js'), import('./vault.js'),
+  ]);
+  const [widgets, jobs, vault] = await Promise.all([
+    exportWidgets().catch(() => null),
+    exportJobs().catch(() => null),
+    exportVault().catch(() => null),
+  ]);
   return {
     type: BACKUP_TYPE,
-    version: 7,
+    version: 8,
     exportedAt: Date.now(),
     count: conv.count,
     conversations: conv.conversations,
@@ -930,6 +946,9 @@ export async function exportAllData() {
     memories,
     settings,
     oauthTokens,
+    widgets,
+    jobs,
+    vault,
   };
 }
 
@@ -963,7 +982,26 @@ export async function importAllData(data, {
   if (includeOAuthTokens && data.oauthTokens && typeof data.oauthTokens === 'object') {
     await importOAuthTokens(data.oauthTokens, { mode });
   }
-  return { conversations, meetings, notes, memories, settings };
+  // v8+. Widgets are the user's own features, so they restore with the main data. Jobs are
+  // machine configuration (a schedule that wakes THIS device), and the vault is credentials
+  // — each rides the flag that already governs its kind, so Drive sync cannot silently
+  // reconfigure or unlock one device from another.
+  let widgets = 0;
+  let jobs = 0;
+  let vault = false;
+  if (data.widgets) {
+    const { importWidgets } = await import('./widgets-store.js');
+    widgets = await importWidgets(data.widgets, { mode }).catch(() => 0);
+  }
+  if (includeSettings && data.jobs) {
+    const { importJobs } = await import('./jobs.js');
+    jobs = await importJobs(data.jobs, { mode }).catch(() => 0);
+  }
+  if (includeOAuthTokens && data.vault) {
+    const { importVault } = await import('./vault.js');
+    vault = await importVault(data.vault, { mode }).catch(() => false);
+  }
+  return { conversations, meetings, notes, memories, settings, widgets, jobs, vault };
 }
 
 function titleFrom(text) {

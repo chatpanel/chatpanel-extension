@@ -20,8 +20,12 @@ assert.ok(!/call\.widgetId|msg\.widgetId/.test(host), 'never taken from the mess
   assert.equal(spoofed.widgetId, 'my-timer');
 }
 
-// A KEPT WIDGET GETS NO POWERS. Saving must not grant anything.
-assert.match(artifacts, /saveWidget\(\{ id, name: name\.trim\(\), html, surface: 'panel' \}\)/, 'kept with no requests');
+// A KEPT WIDGET GETS NO POWERS. Keeping records what the widget ASKS for and grants none of
+// it: clicking "Keep" means "I want this", not "I trust this with my passwords". Consent is a
+// separate act in the Widgets pane, where it can also be revoked.
+assert.match(artifacts, /saveWidget\(\{ id, name: name\.trim\(\), html, surface: 'panel', requests: requestedCapabilities\(html\) \}\)/,
+  'kept with its requests recorded');
+assert.ok(!/saveWidget\([^)]*\{\s*approved/.test(artifacts), 'keeping must never approve anything');
 assert.throws(
   () => validateWidgetMessage({ op: 'invoke', callId: 'c', capability: 'history_search' }, { widgetId: 'w', grants: [] }),
   /no grant/,

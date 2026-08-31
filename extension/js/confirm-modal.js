@@ -32,6 +32,11 @@ function injectStyles() {
   .cp-confirm-btn:focus-visible{outline:2px solid var(--accent,#4f7cff);outline-offset:2px}
   @keyframes cp-confirm-fade{from{opacity:0}to{opacity:1}}
   @keyframes cp-confirm-pop{from{opacity:0;transform:translateY(6px) scale(.98)}to{opacity:1;transform:none}}
+  .cp-secret-input,.cp-secret-verify{width:100%;box-sizing:border-box;margin-bottom:8px;padding:9px 11px;border-radius:9px;border:1px solid var(--border,#33363d);background:var(--bg,#111318);color:inherit;font:inherit}
+  .cp-secret-input:focus,.cp-secret-verify:focus{outline:none;border-color:var(--accent,#4f7cff)}
+  .cp-secret-err{color:var(--danger,#dc2626);font-size:12.5px;margin-bottom:8px}
+  .cp-secret-ok{background:var(--accent,#4f7cff);color:#fff}
+  .cp-secret-ok:hover{filter:brightness(1.07)}
   @media (prefers-reduced-motion:reduce){.cp-confirm-ov,.cp-confirm-card{animation:none}}
   `;
   document.head.appendChild(el);
@@ -95,5 +100,70 @@ export function confirmDelete({ title = 'Delete?', body = '', confirmLabel = 'De
     document.addEventListener('keydown', onKey, true);
     document.body.appendChild(ov);
     cancel.focus(); // safe default — Enter can't confirm
+  });
+}
+
+// A passphrase prompt, in the same modal so a request for a secret can never be mistaken for
+// part of the page that asked for it.
+//
+// THE HOST OWNS THIS, ALWAYS. A widget or a page that collected the passphrase itself would
+// be a widget that has the passphrase; here it never leaves this dialog — the caller gets an
+// unlocked vault or nothing. Enter DOES submit (unlike the destructive dialog, where a stray
+// keypress must not delete): typing a password and pressing return is the expected motion.
+export function promptSecret({
+  title = 'Passphrase', body = '', label = 'Passphrase', confirmLabel = 'Unlock',
+  placeholder = '', verify = null,
+} = {}) {
+  injectStyles();
+  return new Promise((resolve) => {
+    const ov = document.createElement('div');
+    ov.className = 'cp-confirm-ov';
+    ov.setAttribute('role', 'dialog');
+    ov.innerHTML = `
+      <div class="cp-confirm-card">
+        <div class="cp-confirm-head"><div class="cp-confirm-title"></div></div>
+        <p class="cp-confirm-body"></p>
+        <input type="password" class="cp-secret-input" autocomplete="current-password" spellcheck="false" />
+        <input type="password" class="cp-secret-verify" autocomplete="new-password" spellcheck="false" hidden />
+        <div class="cp-secret-err" hidden></div>
+        <div class="cp-confirm-row">
+          <button class="cp-confirm-btn cp-confirm-cancel" type="button">Cancel</button>
+          <button class="cp-confirm-btn cp-secret-ok" type="button"></button>
+        </div>
+      </div>`;
+    // Text, never innerHTML: a title can carry an entry name the user typed.
+    ov.querySelector('.cp-confirm-title').textContent = title;
+    ov.querySelector('.cp-confirm-body').textContent = body;
+    ov.querySelector('.cp-secret-ok').textContent = confirmLabel;
+    const input = ov.querySelector('.cp-secret-input');
+    const second = ov.querySelector('.cp-secret-verify');
+    const err = ov.querySelector('.cp-secret-err');
+    input.placeholder = placeholder || label;
+    if (verify) {
+      second.hidden = false;
+      second.placeholder = 'Repeat it';
+    }
+    document.body.appendChild(ov);
+    input.focus();
+
+    const close = (value) => { ov.remove(); document.removeEventListener('keydown', onKey); resolve(value); };
+    const submit = () => {
+      const value = input.value;
+      if (!value) { show('Type your passphrase'); return; }
+      // A vault whose passphrase was mistyped at creation is a vault nobody can ever open,
+      // and there is no recovery path by design — so creation asks twice.
+      if (verify && value !== second.value) { show('Those do not match'); return; }
+      if (verify && value.length < 8) { show('Use at least 8 characters'); return; }
+      close(value);
+    };
+    function show(msg) { err.hidden = false; err.textContent = msg; }
+    ov.querySelector('.cp-confirm-cancel').onclick = () => close(null);
+    ov.querySelector('.cp-secret-ok').onclick = submit;
+    ov.onclick = (e) => { if (e.target === ov) close(null); };
+    const onKey = (e) => {
+      if (e.key === 'Escape') close(null);
+      if (e.key === 'Enter' && (e.target === input || e.target === second)) submit();
+    };
+    document.addEventListener('keydown', onKey);
   });
 }

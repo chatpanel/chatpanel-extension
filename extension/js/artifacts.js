@@ -43,6 +43,17 @@ function sourceOf(node) {
   return code ? code.textContent || '' : '';
 }
 
+// <meta name="chatpanel-requests" content="vault.add, vault.list">
+//
+// A meta tag rather than a prose declaration, because this has to be machine-read before the
+// widget runs — and because the model writing one file should be able to state it in the
+// file. Capped and namespaced: an unknown id simply never resolves to anything.
+export function requestedCapabilities(html) {
+  const m = /<meta[^>]+name=["']chatpanel-requests["'][^>]+content=["']([^"']{1,300})["']/i.exec(String(html || ''));
+  if (!m) return [];
+  return [...new Set(m[1].split(',').map((c) => c.trim()).filter((c) => /^[a-z][a-z0-9.]{1,40}$/.test(c)))].slice(0, 8);
+}
+
 function el(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -250,9 +261,16 @@ export function mountArtifacts(root) {
         const name = prompt('Keep this widget as:', suggested);
         if (!name) return;
         try {
-          const { saveWidget } = await import('./widgets-store.js');
+          const { saveWidget, setWidgetState } = await import('./widgets-store.js');
           const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64) || `widget-${Date.now()}`;
-          await saveWidget({ id, name: name.trim(), html, surface: 'panel' });
+          // The widget's REQUESTS are recorded; nothing is granted. Keeping something must
+          // never be the moment powers are handed over — a person clicking "Keep" is saying
+          // "I want this", not "I trust this with my passwords". Consent happens later, in
+          // the Widgets pane, where it can also be taken back.
+          await saveWidget({ id, name: name.trim(), html, surface: 'panel', requests: requestedCapabilities(html) });
+          // Whatever it remembered while you were trying it out comes with it — otherwise
+          // keeping a widget you had just set up would silently reset it.
+          if (box.value != null) await setWidgetState(id, box.value);
           status.textContent = 'Kept — find it under Widgets';
         } catch (e) {
           status.textContent = `Couldn't keep it: ${e?.message || e}`;

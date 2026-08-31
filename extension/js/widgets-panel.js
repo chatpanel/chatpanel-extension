@@ -9,7 +9,7 @@
 // list in a narrow strip, so the rail shows the ones the user pinned (capped) plus one
 // Widgets entry for the rest.
 
-import { listWidgets, deleteWidget, pinWidget, getWidget } from './widgets-store.js';
+import { listWidgets, deleteWidget, pinWidget, getWidget, saveWidget } from './widgets-store.js';
 import { mountWidget } from './widget-host.js';
 
 // No cap. The rail scrolls, so pinning as many as you like is the user's call rather than
@@ -27,6 +27,98 @@ function showList() {
   $('widget-view')?.classList.add('hidden');
 }
 
+// What each capability means, in a line a person can refuse. A permission nobody can read is
+// a permission nobody can decline.
+const CAPABILITY_WORDS = {
+  'vault.status': 'see whether your vault is locked',
+  'vault.unlock': 'ask you to unlock your vault',
+  'vault.lock': 'lock your vault',
+  'vault.list': 'list the titles in your vault',
+  'vault.add': 'add entries to your vault',
+  'vault.reveal': 'read a secret (asks you every time)',
+  'vault.remove': 'delete an entry (asks you every time)',
+};
+
+/**
+ * The permission row for one widget.
+ *
+ * Consent lives HERE rather than at Keep time on purpose: clicking "Keep" means "I want
+ * this", not "I trust this with my passwords", and a permission granted in the same click as
+ * the thing you wanted is a permission nobody read. Here it is a separate decision, next to
+ * the widget it belongs to, and — the half that matters more — it can be taken back.
+ */
+async function renderPermissions(rec) {
+  let row = $('widget-perms');
+  if (!row) {
+    const host = $('widget-mount')?.parentElement;
+    if (!host) return;
+    row = document.createElement('div');
+    row.id = 'widget-perms';
+    row.className = 'widget-perms';
+    host.insertBefore(row, $('widget-mount'));
+  }
+  const wants = (rec.manifest.requests || []).filter((c) => CAPABILITY_WORDS[c]);
+  row.innerHTML = '';
+  row.hidden = !wants.length;
+  if (!wants.length) return;
+  const granted = (rec.grants || []).length > 0;
+  const what = document.createElement('span');
+  what.className = 'widget-perm-what';
+  what.textContent = granted
+    ? `Allowed to: ${wants.map((c) => CAPABILITY_WORDS[c]).join(', ')}`
+    : `Wants to: ${wants.map((c) => CAPABILITY_WORDS[c]).join(', ')}`;
+  const btn = document.createElement('button');
+  btn.className = 'mon-skill-btn';
+  btn.textContent = granted ? 'Revoke' : 'Allow';
+  btn.onclick = async () => {
+    const next = granted ? [] : wants;
+    // saveWidget intersects with what the manifest asks for, so this can only ever narrow.
+    await saveWidget(rec.manifest, { approved: next });
+    rec.grants = next;
+    await renderPermissions(rec);
+    // The frame holds the OLD grant list, and a revoked widget that keeps working until the
+    // panel is reopened is a revoke that did not happen.
+    openOne(rec.manifest.id);
+  };
+  row.append(what, btn);
+}
+
+/**
+ * The capabilities a widget may reach, and the only path to them.
+ *
+ * The grant check already happened in widget-host (against the shared contract) before this
+ * is called — this decides what a granted call actually DOES, and it is deliberately a small
+ * explicit table rather than a lookup into everything ChatPanel can do. A widget is
+ * model-built code the user accepted on a whim; the list of things it can reach should be
+ * readable in one screen.
+ *
+ * Everything here is loaded on FIRST USE, so a browser where no widget was ever granted a
+ * capability never pays for the vault, its crypto, or the modal.
+ */
+async function invokeForWidget(rec, capability, args) {
+  if (!String(capability || '').startsWith('vault.')) throw new Error(`unknown capability: ${capability}`);
+  const [{ vaultCapabilities }, { confirmDelete, promptSecret }] = await Promise.all([
+    import('./vault.js'), import('./confirm-modal.js'),
+  ]);
+  const name = rec?.manifest?.name || 'A widget';
+  const caps = vaultCapabilities({
+    // The widget cannot draw this dialog, cannot pre-answer it, and cannot make it look like
+    // its own UI — which is the entire reason a reveal goes through the host.
+    confirm: (q) => confirmDelete({ ...q, body: `${q.body}\n\nAsked for by “${name}”.` }),
+    askPassphrase: ({ create }) => promptSecret({
+      title: create ? 'Create your vault' : 'Unlock your vault',
+      body: create
+        ? 'Everything in the vault is encrypted with this passphrase, and it is never stored. If you forget it, the entries cannot be recovered — by us or by anyone.'
+        : `“${name}” is asking to use your vault.`,
+      confirmLabel: create ? 'Create vault' : 'Unlock',
+      verify: !!create,
+    }),
+  });
+  const fn = caps[capability];
+  if (!fn) throw new Error(`unknown capability: ${capability}`);
+  return fn(args || {});
+}
+
 async function openOne(id) {
   const rec = await getWidget(id);
   if (!rec) return;
@@ -37,11 +129,13 @@ async function openOne(id) {
   const mount = $('widget-mount');
   mount.innerHTML = '';
   if (mounted) mounted.destroy();
-  mounted = mountWidget(mount, rec);
+  mounted = mountWidget(mount, rec, { invokeCapability: (capability, args) => invokeForWidget(rec, capability, args) });
   if (!mounted) {
     // No sandbox page on this engine (Firefox). Say so rather than showing an empty box.
     mount.textContent = 'Widgets need the sandboxed renderer, which this browser does not provide.';
   }
+
+  renderPermissions(rec);
 
   const pin = $('widget-pin');
   const paint = () => { pin.textContent = rec.pinned ? '★' : '☆'; pin.title = rec.pinned ? 'Unpin from the rail' : 'Pin to the rail'; };
