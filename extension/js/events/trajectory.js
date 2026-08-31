@@ -52,7 +52,7 @@ export function displayName(call) {
 }
 
 /** Entry kinds, in the order they conventionally appear. Used for grouping and colour. */
-export const ENTRY_KINDS = Object.freeze(['system', 'user', 'context', 'route', 'tool', 'result', 'reasoning', 'assistant']);
+export const ENTRY_KINDS = Object.freeze(['system', 'user', 'context', 'route', 'privacy', 'tool', 'result', 'reasoning', 'assistant']);
 
 const short = (s, n = 120) => {
   const t = String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -99,6 +99,27 @@ export function buildTrajectory(events) {
           data: { tool: p.tool, count: p.count, sources: p.sources || [] },
         });
         break;
+
+      // WHAT LEFT THE DEVICE, AND IN WHAT SHAPE. A trajectory that shows the prompt, the
+      // tools and the answer but not the redaction cannot answer the question the product
+      // exists to answer — "what did the model actually see?". Counts by entity type only;
+      // the values are never in the event (see the privacy.redacted contract).
+      case 'privacy.redacted': {
+        const counts = p.counts || {};
+        const total = Object.values(counts).reduce((n, v) => n + (Number(v) || 0), 0);
+        if (!total) break;
+        const byType = Object.entries(counts)
+          .sort((a, b) => b[1] - a[1])
+          .map(([type, n]) => `${n} ${type.toLowerCase().replace(/_/g, ' ')}`)
+          .join(' · ');
+        entries.push({
+          kind: 'privacy', at: e.at,
+          title: `Redacted ${total} value${total === 1 ? '' : 's'} before sending`,
+          detail: byType,
+          data: { counts },
+        });
+        break;
+      }
 
       case 'assistant.prompted':
         entries.push({ kind: 'system', at: e.at, title: 'Prompt', detail: `${p.chars || 0} chars`, ref: p.ref, expandsToMessages: true });

@@ -855,6 +855,9 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .tj-assistant .tj-tag { background: #2a3550; color: #9dc0ff; }
 /* Routing decisions read as decisions, not as errors — a failover is a recovery. */
 .tj-route .tj-tag { background: #3a2f4a; color: #c9a7f5; }
+/* Redaction: the step that says what the model was NOT allowed to see. Its own colour, so
+   the privacy boundary is findable at a glance in a long run. */
+.tj-privacy .tj-tag { background: #16323f; color: #7fd4e8; }
 
 .tj-preview {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
