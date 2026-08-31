@@ -5,7 +5,10 @@
 // module upgrades that placeholder into a Preview | Code | Open ↗ card:
 //   • Preview mounts sandbox.html (a manifest sandbox page → opaque origin, no chrome.*),
 //     which mounts the artifact itself in a nested allow-scripts-only iframe. Two boundaries.
-//   • Code shows the source (the default, and the fail-safe).
+//   • Code is an EDITABLE source view (the default, and the fail-safe): tweak the HTML and
+//     press Run ▶ (or Cmd/Ctrl+Enter) to re-run it — a playground, not a viewer. Reset
+//     restores what the model wrote. Editing changes nothing about the security model: the
+//     text still only ever executes inside the sandbox.
 //   • Open ↗ pops the artifact out full-size in a browser tab, through the SAME sandbox page
 //     (not a blob: URL — a blob inherits the panel's CSP, which blocks the artifact's inline
 //     scripts, so a canvas demo would open frozen at its default size).
@@ -131,47 +134,95 @@ export function mountArtifacts(root) {
   for (const node of root.querySelectorAll('.md-artifact-html:not([data-artifact-ready])')) {
     try {
       node.setAttribute('data-artifact-ready', '1');
-      const html = sourceOf(node);
-      if (!html.trim()) continue;
+      const original = sourceOf(node);
+      if (!original.trim()) continue;
 
       const bar = el('div', 'artifact-bar');
       const btnPreview = el('button', 'artifact-btn', 'Preview');
       const btnCode = el('button', 'artifact-btn is-on', 'Code');
+      const btnRun = el('button', 'artifact-btn artifact-run', 'Run ▶');
+      const btnReset = el('button', 'artifact-btn', 'Reset');
+      const btnCopy = el('button', 'artifact-btn', 'Copy');
       const btnOpen = el('button', 'artifact-btn artifact-open', 'Open ↗');
-      btnPreview.type = btnCode.type = btnOpen.type = 'button';
+      for (const b of [btnPreview, btnCode, btnRun, btnReset, btnCopy, btnOpen]) b.type = 'button';
+      btnReset.disabled = true; // nothing to reset until the source is edited
       const status = el('span', 'artifact-status');
-      bar.append(btnPreview, btnCode, btnOpen, status);
+      bar.append(btnPreview, btnCode, btnRun, status, btnReset, btnCopy, btnOpen);
+
+      // EDITABLE SOURCE. A textarea, not a contenteditable <pre>: a textarea can only ever
+      // hold text, so a pasted `<img onerror=...>` stays inert characters instead of becoming
+      // live nodes in the panel's DOM. Its value is still only ever handed to the sandbox.
+      const editor = el('textarea', 'artifact-editor');
+      editor.value = original;
+      editor.spellcheck = false;
+      editor.setAttribute('aria-label', 'artifact source (editable)');
+      editor.rows = Math.max(6, Math.min(24, original.split('\n').length + 1));
 
       const stage = el('div', 'artifact-stage');
       const src = node.querySelector('.artifact-src');
+      if (src) src.remove(); // the editor replaces the static block
       node.insertBefore(bar, node.firstChild);
-      node.appendChild(stage);
+      node.append(editor, stage);
 
+      const currentHtml = () => editor.value;
       let cleanup = null;
+      let mountedSrc = null; // what the live frame is actually running
+
       const showCode = () => {
         btnCode.classList.add('is-on'); btnPreview.classList.remove('is-on');
-        if (src) src.style.display = '';
+        editor.style.display = 'block';
         stage.style.display = 'none';
       };
       const fail = (why) => {
         status.textContent = `Preview unavailable — ${why}`;
         showCode();
       };
-      const showPreview = () => {
+      // Remount whenever the source changed since the last run — that is what makes the
+      // editor a playground rather than a viewer.
+      const showPreview = ({ force = false } = {}) => {
         btnPreview.classList.add('is-on'); btnCode.classList.remove('is-on');
-        if (src) src.style.display = 'none';
+        editor.style.display = 'none';
         // 'block', never '' — the stylesheet sets .artifact-stage { display: none }, so
         // clearing the inline style just hands control back to that rule and the preview
         // stays invisible. (That was the other half of the "Preview is empty" bug.)
         stage.style.display = 'block';
         status.textContent = '';
-        if (!cleanup) cleanup = mountPreview(stage, html, fail);
+        const html = currentHtml();
+        if (force || !cleanup || mountedSrc !== html) {
+          if (cleanup) cleanup();   // drop the old listener
+          stage.textContent = '';   // and the old frame — a fresh document each run
+          cleanup = mountPreview(stage, html, fail);
+          mountedSrc = html;
+        }
       };
 
-      btnPreview.addEventListener('click', showPreview);
+      editor.addEventListener('input', () => {
+        const dirty = editor.value !== original;
+        btnReset.disabled = !dirty;
+        status.textContent = dirty ? 'Edited — press Run ▶' : '';
+      });
+      // Ctrl/Cmd+Enter runs, the way every playground does it.
+      editor.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); showPreview({ force: true }); }
+      });
+
+      btnPreview.addEventListener('click', () => showPreview());
       btnCode.addEventListener('click', showCode);
+      btnRun.addEventListener('click', () => showPreview({ force: true }));
+      btnReset.addEventListener('click', () => {
+        editor.value = original;
+        btnReset.disabled = true;
+        status.textContent = '';
+        if (stage.style.display === 'block') showPreview({ force: true });
+      });
+      btnCopy.addEventListener('click', () => {
+        navigator.clipboard.writeText(currentHtml()).then(() => {
+          btnCopy.textContent = 'Copied';
+          setTimeout(() => { btnCopy.textContent = 'Copy'; }, 1200);
+        }).catch(() => { status.textContent = 'Copy failed'; });
+      });
       btnOpen.addEventListener('click', () => {
-        if (!openInTab(html)) status.textContent = 'Couldn\u2019t open a tab — allow pop-ups for this page.';
+        if (!openInTab(currentHtml())) status.textContent = 'Couldn’t open a tab — allow pop-ups for this page.';
       });
       showCode(); // default: the source. The user opts into running it.
     } catch { /* leave the code block untouched */ }

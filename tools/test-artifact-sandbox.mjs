@@ -54,4 +54,15 @@ assert.match(runner, /window\.parent !== window\) \? window\.parent : window\.op
 assert.ok(!/createObjectURL/.test(artifacts), 'artifacts are not run via a blob: URL from the panel');
 assert.match(artifacts, /window\.open\(url/, 'the pop-out goes through the sandbox page');
 
-console.log('ok — artifacts run only in an opaque-origin sandbox; never same-origin, never in-panel, never blob:');
+// 7. The EDITABLE source view must not become an injection path: a textarea can only hold
+// text, so pasted markup stays inert characters. A contenteditable region would put
+// attacker-shaped nodes straight into the panel's DOM.
+assert.match(artifacts, /el\('textarea', 'artifact-editor'\)/, 'the editor is a textarea');
+// Check the code, not the prose (the file explains WHY contenteditable is avoided).
+const artifactCode = artifacts.replace(/^\s*\/\/.*$/gm, '');
+assert.ok(!/contentEditable|contenteditable/.test(artifactCode), 'never a contenteditable source view');
+// Edited text follows the same path as the model's: into the sandbox, never into the panel.
+assert.match(artifacts, /const currentHtml = \(\) => editor\.value/, 'the edited value is read as text');
+assert.ok(!/innerHTML\s*=\s*(currentHtml|editor)/.test(artifacts), 'edited source is never injected into the panel');
+
+console.log('ok — artifacts run only in an opaque-origin sandbox; never same-origin, never in-panel, never blob:; editing stays text');
