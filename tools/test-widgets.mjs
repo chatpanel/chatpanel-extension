@@ -49,4 +49,28 @@ assert.match(store, /delete states\[id\]/, 'state is removed with the widget');
 assert.throws(() => validateWidget({ id: 'Bad Id', name: 'x', html: '<i>' }), /lowercase/);
 assert.ok(validateWidget({ id: 'pomodoro', name: 'Pomodoro', html: '<div>25:00</div>' }));
 
-console.log('ok — widgets are persistent, sandboxed, and powerless until granted');
+// PINNED WIDGETS ARE DISTINGUISHABLE AND UNCAPPED.
+{
+  const { widgetIcon } = await import('../extension/js/events/widget.js');
+  const panel = readFileSync(new URL('../extension/js/widgets-panel.js', import.meta.url), 'utf8');
+  const side = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../extension/sidepanel.css', import.meta.url), 'utf8');
+
+  // Each pinned widget shows its OWN icon, by name, resolved through the extension's set.
+  assert.match(side, /iconName: widgetIcon\(rec\.manifest\)/, 'the rail asks for the widget\'s own icon');
+  assert.match(side, /p\.iconName \? icon\(p\.iconName\)/, 'and renders it from the vendored set');
+  const icons = ['Pomodoro Timer', 'Standup Notes', 'Habit Tracker'].map((name) => widgetIcon({ name }));
+  assert.equal(new Set(icons).size, icons.length, 'three different widgets get three different icons');
+
+  // Every derived name must EXIST in the icon set, or the rail renders an empty square.
+  const iconsSrc = readFileSync(new URL('../extension/js/icons.js', import.meta.url), 'utf8');
+  for (const name of [...icons, widgetIcon({ name: 'Zxq' })]) {
+    assert.ok(new RegExp(`"${name}":`).test(iconsSrc), `icon "${name}" is vendored`);
+  }
+
+  // No cap — the rail scrolls instead.
+  assert.ok(!/MAX_PINNED/.test(panel), 'pinning is not capped');
+  assert.match(css, /overflow-y: auto; overflow-x: hidden/, 'the rail scrolls rather than clipping');
+}
+
+console.log('ok — widgets are persistent, sandboxed, powerless until granted, and each pins with its own icon');

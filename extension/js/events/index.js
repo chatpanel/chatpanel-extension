@@ -38,7 +38,7 @@ export { defineToolGroup, createToolGroupRegistry, ToolGroupError } from './tool
 export { toolNeedFor } from './tool-need.js';
 export { parseFlowchart, layoutFlowchart, renderFlowchartSvg } from './flowchart.js';
 export { validateView, validateViewInvocation, viewResult } from './view.js';
-export { validateWidget, validateWidgetMessage, effectiveGrants, WIDGET_SURFACES } from './widget.js';
+export { validateWidget, validateWidgetMessage, effectiveGrants, widgetIcon, WIDGET_SURFACES } from './widget.js';
 export { fuseRRF, planQueries, multiSearch } from './rrf.js';
 export {
   ACCESS_LOG_VERSION, ACCESS_LOG_MAX, redactAccessArgs, makeAccessEvent,
@@ -53,6 +53,14 @@ export { defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, 
 export { makeSourceStore, manifestText, shortUrl, readSource, sourceId } from './sources-retrieval.js';
 export { classifySource, extractUrls, hostMatches, meetReach, sourcePolicyFor, DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './sources.js';
 export { defineRule, createRuleEngine, SUPPRESSED, RuleError } from './rules.js';
+export {
+  SCHEDULE_KINDS, TRIGGER_KINDS, JOB_ACTIONS, MISSED_POLICIES, ScheduleError,
+  validateSchedule, nextFireAt, occurrencesBetween, nextWakeAt,
+  defineTrigger, createTriggerRegistry, BUILTIN_TRIGGERS,
+  timerTrigger, meetingStartedTrigger, meetingEndedTrigger, personJoinedTrigger,
+  phraseTrigger, topicTrigger, questionTrigger, voiceCommandTrigger,
+  defineJob, dueJobs, jobsForEvent, occurrenceKey,
+} from './schedule.js';
 export { defineMeetingAnalyzer, createAnalyzerRegistry, CADENCES, AnalyzerError } from './meeting-analyzers.js';
 export {
   DEFAULT_WAKE, MAX_COMMANDS_PER_DELTA, DAYPART_HOUR, VoiceIntentError,

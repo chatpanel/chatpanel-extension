@@ -50,6 +50,11 @@ export function validateWidget(w) {
   if (!str(w.name)) throw new EventError('SHAPE', 'widget.name required');
   if (!str(w.html)) throw new EventError('SHAPE', 'widget.html required');
   if (w.html.length > MAX_HTML) throw new EventError('SHAPE', `widget.html exceeds ${MAX_HTML} bytes`);
+  // An icon NAME (the client maps it to its own icon set), so a pinned widget is
+  // recognisable at a glance rather than being one of five identical marks.
+  if (w.icon != null && !(str(w.icon) && /^[a-z][a-z0-9-]{0,31}$/.test(w.icon))) {
+    throw new EventError('SHAPE', 'widget.icon must be an icon name like "timer"');
+  }
   if (w.surface != null && !WIDGET_SURFACES.includes(w.surface)) {
     throw new EventError('SHAPE', `widget.surface must be one of ${WIDGET_SURFACES}`);
   }
@@ -115,4 +120,42 @@ export function validateWidgetMessage(msg, { widgetId, grants = [] } = {}) {
 export function effectiveGrants(widget, approved = []) {
   const asked = new Set(widget?.requests || []);
   return (approved || []).filter((id) => asked.has(id));
+}
+
+// Pick an icon for a widget from what it is called. A pinned widget sits in a narrow strip
+// next to the others, so five identical marks are worse than no icon at all — the point of
+// pinning is to find the thing without reading.
+//
+// Returns an icon NAME, not a glyph: the client owns how it is drawn (the extension resolves
+// these through its vendored set, a mobile client through its own), and a name survives that
+// mapping in a way an emoji does not. Every name here exists in the extension's icon set.
+const ICON_WORDS = [
+  [/\b(timers?|pomodoro|stopwatch|countdowns?|intervals?)\b/i, 'timer'],
+  [/\b(calc|calculators?|math|arithmetic|tip)\b/i, 'hash'],
+  [/\b(notes?|sticky|scratch|memos?|journals?)\b/i, 'notebook-pen'],
+  [/\b(todos?|tasks?|checklists?|habits?|trackers?)\b/i, 'list-checks'],
+  [/\b(charts?|graphs?|stats?|metrics?|dashboards?)\b/i, 'bar-chart-3'],
+  [/\b(convert|converters?|units?|currency|exchange|weights?)\b/i, 'scale'],
+  [/\b(calendars?|schedules?|agendas?|dates?)\b/i, 'calendar'],
+  [/\b(clocks?|time|timezones?|zones?)\b/i, 'clock'],
+  [/\b(goals?|targets?|focus|okrs?)\b/i, 'target'],
+  [/\b(ideas?|brainstorm|prompts?)\b/i, 'lightbulb'],
+  [/\b(dice|random|rolls?|roller|coins?|shuffle)\b/i, 'zap'],
+  [/\b(search|find|lookup)\b/i, 'search'],
+  [/\b(web|urls?|links?|browser)\b/i, 'globe'],
+  [/\b(mood|mind|memory|brain)\b/i, 'brain'],
+  [/\b(password|secrets?|vault|lock)\b/i, 'lock'],
+  [/\b(quotes?|sayings?)\b/i, 'quote'],
+  [/\b(meetings?|standups?|people|team)\b/i, 'users'],
+  [/\b(music|player|sound|audio)\b/i, 'play'],
+  [/\b(photos?|images?|gallery)\b/i, 'image'],
+  [/\b(files?|documents?|docs?)\b/i, 'file-text'],
+];
+
+/** The widget's own icon if it declared one, else one derived from its name. */
+export function widgetIcon(widget) {
+  if (widget?.icon) return widget.icon;
+  const name = String(widget?.name || '');
+  for (const [re, iconName] of ICON_WORDS) if (re.test(name)) return iconName;
+  return 'app-window'; // generic, but never the mark the shelf itself uses
 }

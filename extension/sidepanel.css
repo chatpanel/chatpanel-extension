@@ -58,11 +58,16 @@ body.rail-collapsed { --rail-w: 0px; }
 
 /* Collapsible right icon rail — pluggable panes (Meetings, Watch, future). */
 .rail {
-  flex: 0 0 var(--rail-w); width: var(--rail-w); overflow: hidden;
+  flex: 0 0 var(--rail-w); width: var(--rail-w);
   display: flex; flex-direction: column; align-items: center; gap: 6px;
   padding: 10px 0; background: var(--bg-elev); border-left: 1px solid var(--border);
   transition: flex-basis .14s ease, width .14s ease;
+  /* Pinning is uncapped, so the rail must carry however many the user pins. It scrolls
+     vertically and hides the scrollbar — a 48px strip has no room for one, and the icons
+     themselves are the affordance. overflow-x stays hidden so a wide label can't push it. */
+  overflow-y: auto; overflow-x: hidden; scrollbar-width: none;
 }
+.rail::-webkit-scrollbar { width: 0; height: 0; }
 .rail-btn {
   width: 48px; flex: 0 0 auto; border: none; border-radius: 10px; cursor: pointer;
   background: transparent; color: var(--text); line-height: 1; padding: 6px 0;

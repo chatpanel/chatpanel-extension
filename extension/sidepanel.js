@@ -3421,9 +3421,10 @@ function monitorLabel(m) {
 // Loaded on the FIRST delta, never at boot: a user who is not in a meeting must not pay a
 // byte of this on first paint.
 // --------------------------------------------------------------------------
-let voiceMod = null;         // the module + engine, resolved once
+let voiceMod = null;            // the module + engine, resolved once
 let voiceLoading = null;
-const voiceSeen = new Map(); // meetingId → newest segment ts already scanned
+const voiceSeen = new Map();    // meetingId → newest segment ts already scanned
+const voiceReported = new Set(); // command keys already surfaced (refusals repeat otherwise)
 
 async function voiceRuntime() {
   if (voiceMod) return voiceMod;
@@ -3470,6 +3471,7 @@ async function onMeetingDelta(meetingId, segments) {
     await vc.dispatchVoiceCommands(commands, {
       engine,
       actions,
+      seen: voiceReported,
       onOutcome: (outcome) => {
         const msg = vc.outcomeMessage(outcome);
         if (msg) toast(msg, outcome.ok ? 3000 : 4500);
@@ -5256,13 +5258,16 @@ const RAIL_PANES = [
 // Rebuilt whenever pins change rather than kept in sync by hand.
 async function refreshWidgetPins() {
   const { pinnedWidgets, openWidgetById } = await import('./js/widgets-panel.js');
+  const { widgetIcon } = await import('./js/events/widget.js');
   for (let i = RAIL_PANES.length - 1; i >= 0; i--) {
     if (RAIL_PANES[i].id.startsWith('widget:')) RAIL_PANES.splice(i, 1);
   }
   for (const rec of await pinnedWidgets()) {
     RAIL_PANES.push({
       id: `widget:${rec.manifest.id}`,
-      icon: '✦',
+      // Its OWN icon — a timer looks like a timer. Five identical marks would defeat the
+      // whole point of pinning, which is finding the thing without reading the label.
+      iconName: widgetIcon(rec.manifest),
       label: rec.manifest.name.slice(0, 8),
       title: rec.manifest.name,
       open: () => openWidgetById(rec.manifest.id),
@@ -5290,8 +5295,10 @@ function renderRail() {
     btn.className = 'rail-btn' + (active ? ' active' : '');
     const ico = document.createElement('span');
     ico.className = 'rail-ico';
-    const railSvg = iconForEmoji(p.icon);
-    if (railSvg) ico.innerHTML = railSvg; else ico.textContent = p.icon;
+    // A pane may name an icon directly (widgets do, so each looks like what it is); the
+    // built-in panes still map their emoji through the same vendored set.
+    const railSvg = p.iconName ? icon(p.iconName) : iconForEmoji(p.icon);
+    if (railSvg) ico.innerHTML = railSvg; else ico.textContent = p.icon || '';
     btn.appendChild(ico);
     if (p.label) {
       const lab = document.createElement('span');

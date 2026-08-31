@@ -12,7 +12,9 @@
 import { listWidgets, deleteWidget, pinWidget, getWidget } from './widgets-store.js';
 import { mountWidget } from './widget-host.js';
 
-export const MAX_PINNED = 4; // the rail is a strip, not a dock — past this it stops scanning
+// No cap. The rail scrolls, so pinning as many as you like is the user's call rather than
+// ours — and each pinned widget carries its own icon, which is what actually keeps a long
+// strip scannable.
 
 let mounted = null;   // the live widget instance, so we can tear it down
 let onChange = null;  // told when pins change, so the rail can re-render
@@ -46,10 +48,6 @@ async function openOne(id) {
   paint();
   pin.onclick = async () => {
     const pinnedNow = !rec.pinned;
-    if (pinnedNow && (await listWidgets()).filter((w) => w.pinned).length >= MAX_PINNED) {
-      pin.title = `Unpin one first — the rail holds ${MAX_PINNED}`;
-      return;
-    }
     await pinWidget(id, pinnedNow);
     rec.pinned = pinnedNow;
     paint();
@@ -107,7 +105,7 @@ export async function openWidgetById(id) {
 }
 
 export async function pinnedWidgets() {
-  return (await listWidgets()).filter((w) => w.pinned).slice(0, MAX_PINNED);
+  return (await listWidgets()).filter((w) => w.pinned);
 }
 
 export function wireWidgetsPanel({ onPinsChanged } = {}) {

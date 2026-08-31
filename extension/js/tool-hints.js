@@ -144,5 +144,6 @@ export function widgetAuthoringSystem() {
     'Load state on start and save it whenever it changes. Do not use localStorage or cookies — the sandbox discards them; setState is the only thing that survives.',
     'The sandbox has NO network access and no access to the user\'s data, so build the widget to work entirely offline unless the user has granted it a capability.',
     'Keep it compact and readable at ~320px wide (the panel is narrow), and give it sensible defaults so it is useful the moment it appears.',
+    'Give the file a <title> — it becomes the widget\'s name, and its icon is chosen from that name (a "Pomodoro Timer" gets a timer, "Standup Notes" a notepad).',
   ].join('\n');
 }
