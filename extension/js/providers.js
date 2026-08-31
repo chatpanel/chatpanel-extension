@@ -1262,7 +1262,10 @@ function runtimeContextSystem(settings) {
     `graphic, and Markdown images display inline. When the user asks to see, play, view or ` +
     `render something, put the complete self-contained code in a fenced block IN YOUR REPLY. ` +
     `Writing it only to a file, or telling them to open a file in a browser, does not show ` +
-    `them anything — write the file too if it is useful, but always include the code here.`,
+    `them anything — write the file too if it is useful, but always include the code here. ` +
+    `One limit worth knowing: most large sites (google.com, most apps) send X-Frame-Options or ` +
+    `frame-ancestors and CANNOT be embedded in an iframe by anyone — do not offer to embed a ` +
+    `site as if it will work; say it must be opened in a tab, or build the thing being asked for.`,
   );
   const lang = String(settings?.ui?.language || '').trim();
   if (lang && !/^(auto|default)$/i.test(lang)) {

@@ -19,3 +19,9 @@ assert.match(body, /only to a file|open a file in a browser/, 'names the file-on
 assert.match(body, /write the file too/, 'writing a file as well is still allowed');
 
 console.log('ok — models are told what the panel renders, and to put the code in the reply');
+
+// Embedding an external site usually cannot work (X-Frame-Options / frame-ancestors), and a
+// model that offers it produces a silent blank box. The hint says so.
+assert.match(body, /X-Frame-Options|frame-ancestors/i, 'names the real mechanism');
+assert.match(body, /opened in a tab/i, 'and the thing that does work');
+console.log('ok — models are told external sites usually cannot be iframed');

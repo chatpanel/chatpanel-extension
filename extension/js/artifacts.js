@@ -251,6 +251,23 @@ export function mountArtifacts(root) {
       node.append(editor, stage);
 
       const currentHtml = () => editor.value;
+      // An artifact that embeds an EXTERNAL site usually cannot work, and the failure is a
+      // silent blank box: most large sites send X-Frame-Options / frame-ancestors, which tells
+      // the browser to refuse being framed by anyone. Nothing on our side can override that —
+      // it is the site's decision. Say so up front, and offer the thing that does work:
+      // opening it in a tab.
+      const framed = /<iframe[^>]+src\s*=\s*["'](https?:\/\/[^"']+)/i.exec(original);
+      if (framed) {
+        const site = el('button', 'artifact-btn artifact-open', 'Open site ↗');
+        site.type = 'button';
+        site.title = `Open ${framed[1]} in a new tab`;
+        site.addEventListener('click', () => {
+          try { window.open(framed[1], '_blank', 'noopener,noreferrer'); } catch { /* blocked */ }
+        });
+        bar.insertBefore(site, btnOpen);
+        status.textContent = 'Many sites refuse to be embedded — if the preview is blank, use Open site.';
+      }
+
       let cleanup = null;
       let mountedSrc = null; // what the live frame is actually running
 
