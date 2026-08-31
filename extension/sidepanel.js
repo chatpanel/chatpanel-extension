@@ -1599,6 +1599,16 @@ function stepLabel(s) {
     case 'draw_path': return `Drew a stroke (${i.points?.length || 0} pts)`;
     case 'input_sequence': return `Combined input (${i.steps?.length || 0} steps)`;
     case 'save_app_controls': return `Learned how to control ${String(i.app || 'this app').slice(0, 40)}`;
+    // CLI-agent (bridge) steps — show the actual command / files, the way Codex's own CLI
+    // does, not a bare "shell". The full output rides in the collapsible result below.
+    case 'shell': {
+      const cmd = String(i.command || '').replace(/^\/bin\/(?:ba|z)?sh\s+-l?c\s+/, '').replace(/\s+/g, ' ').trim();
+      return cmd ? `$ ${cmd.slice(0, 100)}` : 'Ran a shell command';
+    }
+    case 'edit': {
+      const files = Array.isArray(i.files) ? i.files : [];
+      return files.length ? `Edited ${files.join(', ').slice(0, 90)}` : 'Edited files';
+    }
     default: {
       const mcp = /^mcp_(.+?)__(.+)$/.exec(s.tool || '');
       if (mcp) return `${displayMcpServer(mcp[1])} / ${mcp[2]}`;
@@ -1612,6 +1622,8 @@ function stepLabel(s) {
 // innerHTML (the text label beside it is escaped separately).
 function stepIcon(s) {
   switch (s.tool) {
+    case 'shell': return icon('code');
+    case 'edit': return icon('edit');
     case 'inspect_page': return icon('search');
     case 'fill_form':
     case 'fill_combobox':
@@ -1655,6 +1667,7 @@ function displayMcpServer(slug) {
 // the raw input for these. Everything else (MCP tools, a CLI's own tools) shows
 // its call arguments so the log reads like a real activity trace.
 const LABELED_TOOLS = new Set([
+  'shell', 'edit', // CLI-agent steps: the command/files are in the label; output is in the result
   'inspect_page', 'fill_form', 'fill_combobox', 'click_element', 'click_by_text',
   'screenshot', 'marked_screenshot', 'click_mark', 'click_at', 'move_mouse', 'type_text',
   'press_key', 'scroll', 'draw_path', 'input_sequence', 'capture_pointer', 'save_app_controls',
