@@ -6329,7 +6329,7 @@ async function renderObservability() {
   }
   const access = obs.access || [];
   if (!access.length) {
-    accessEl.innerHTML = `<p class="muted tiny">No agent has read your data through the gateway yet. Connect one from the <a href="#" id="obs-gw-jump">Gateway tab</a> and every read appears here — which agent, which tool, when.</p>`;
+    accessEl.innerHTML = `<p class="muted tiny">No tool calls recorded since the gateway last started. This log is <b>in-memory</b> — it resets whenever the gateway restarts (e.g. an update), and it fills only when an agent actually runs a query, not just from being connected. Run a history search in a connected agent (Codex, Claude&nbsp;Code, OpenCode) and it appears here: which agent, which tool, when. <a href="#" id="obs-gw-jump">Manage connected agents →</a></p>`;
     $('obs-gw-jump')?.addEventListener('click', (e) => { e.preventDefault(); document.querySelector('.tab[data-tab="gateway"]')?.click(); });
     return;
   }
