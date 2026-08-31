@@ -461,46 +461,47 @@ npx @chatpanel/bridge</code></pre>
 
       </section>
 
-      <!-- PRIVACY -->
+      <!-- PRIVACY & GATEWAY — one tab, three layers. The Gateway used to be its own
+           tab; it is a SECTION here (#pv-gateway) and #gateway still deep-links to it. -->
       <section class="panel hidden" data-panel="privacy">
-        <div class="card">
+
+        <div class="card pv-intro">
           <div class="card-head">
-            <h2>Internal sites <span class="sub">— content from these never leaves your machine</span></h2>
+            <h2>Privacy &amp; Gateway <span class="sub">— what leaves this device, and in what shape</span></h2>
           </div>
-          <p class="muted">Redaction removes sensitive <em>values</em>. This decides where a page may be
-            <strong>sent at all</strong>: when a turn draws on an internal source, only a local model may answer it —
-            whichever model is selected. Everything that can only exist on a private network is covered below and <strong>on by default</strong> — untick
-            any that are not internal for you (a local dev server you deliberately test against a cloud model), and add
-            your own domains for internal sites that sit on public DNS.</p>
-          <label class="row"><input type="checkbox" id="internal-guard" checked>
-            <span>Keep content from internal sites on this device</span></label>
-          <div class="field">
-            <span>Addresses treated as internal
-              <span class="sub">— on by default; untick any that are not internal for you</span></span>
-            <div id="internal-catalog" class="internal-catalog"></div>
-            <button type="button" class="btn small" id="internal-restore">Restore all defaults</button>
+          <p class="muted">Three layers, each configurable on its own. Redaction changes <em>what a model sees</em>;
+            the data boundary decides <em>whether a page may be sent at all</em>; the gateway is an optional local
+            process that adds on-device models and applies the same rules to tools outside the extension.</p>
+          <div class="pv-map">
+            <button type="button" class="pv-map-item" data-jump="pv-redaction">
+              <span class="pv-map-n">1</span>
+              <b>Redaction</b>
+              <span class="pv-map-d">Sensitive values are replaced before a model sees them, restored in your reply.</span>
+            </button>
+            <button type="button" class="pv-map-item" data-jump="pv-boundary">
+              <span class="pv-map-n">2</span>
+              <b>Data boundary</b>
+              <span class="pv-map-d">Content from internal sites is answered only by a model on this device.</span>
+            </button>
+            <button type="button" class="pv-map-item" data-jump="pv-gateway">
+              <span class="pv-map-n">3</span>
+              <b>Gateway <span class="pv-map-opt">optional</span></b>
+              <span class="pv-map-d">Local speech-to-text, local PII detection, routing &amp; full-history search.</span>
+            </button>
           </div>
-          <label class="field">
-            <span>My own internal domains <span class="sub">one per line — a domain covers its subdomains</span></span>
-            <textarea id="internal-patterns" rows="4" spellcheck="false"
-              placeholder="acme-corp.example&#10;*.eng.acme-corp.example"></textarea>
-          </label>
-          <label class="field">
-            <span>Where these may be answered</span>
-            <select id="internal-ceiling">
-              <option value="device">This device only — a model running locally</option>
-              <option value="trusted">My workspace — also allows a gateway or LAN model you run</option>
-            </select>
-          </label>
-          <p class="muted" id="internal-note"></p>
         </div>
+
+        <!-- 1 · REDACTION (in the extension itself) -->
+        <details class="ws-section" id="pv-redaction" open>
+        <summary class="ws-heading"><span class="inline-ico" data-icon="privacy"></span> Redaction — what a model actually sees</summary>
         <div class="card">
           <div class="card-head">
-            <h2>Privacy <span class="sub">— redact PII before it reaches a model</span></h2>
+            <h2>Redaction <span class="sub">— PII replaced before it reaches a model</span></h2>
           </div>
           <p class="muted">Sensitive values are replaced before anything reaches a model, then restored in the reply you
             see. <strong>Patterns</strong> catch structured secrets (emails, phones, cards, keys, IPs) + your dictionary;
-            <strong>AI detection</strong> (Pro) adds names, orgs &amp; locations.</p>
+            <strong>AI detection</strong> (Pro) adds names, orgs &amp; locations. This runs in the browser, so it
+            protects you whether or not the gateway is installed.</p>
           <div class="priv-grid">
             <div class="priv-col">
               <h3 class="priv-h">Redaction</h3>
@@ -540,20 +541,19 @@ npx @chatpanel/bridge</code></pre>
                     placeholder="http://127.0.0.1:9009/ner" /></div>
                 <div class="row"><label>Timeout (ms)</label><input id="priv-det-timeout" type="number" min="200"
                     max="10000" placeholder="1500" /></div>
+                <!-- The bundled detector IS the gateway's in-process NER, so the model catalog
+                     lives once, under Gateway → On-device models. This block only reports health
+                     and points there — a second catalog here would be the same list twice. -->
                 <div id="priv-ner-block" class="hidden">
                   <p class="muted sm">Uses the <strong>ChatPanel Gateway's</strong> in-process NER (POST
-                    <code>&lt;gateway&gt;/ner</code>) — runs on your machine, no extra port. Set the gateway's URL on
-                    the <strong>Gateway</strong> tab; the default is <code>http://127.0.0.1:4320</code>.</p>
+                    <code>&lt;gateway&gt;/ner</code>) — runs on your machine, no extra port. Its URL and the NER model it
+                    loads are set once, in <strong>Gateway → On-device models</strong> below.</p>
                   <div class="row" style="margin-top:4px">
                     <button type="button" id="priv-ner-check" class="btn">Check NER health</button>
+                    <button type="button" class="btn ghost" data-jump="pv-models">Manage NER models
+                      <span class="inline-ico" data-icon="external-link"></span></button>
                   </div>
                   <p class="status" id="priv-ner-status">—</p>
-                  <h3 class="priv-h">NER model</h3>
-                  <p class="muted sm">The local model that finds names, organizations and locations. Switching
-                    downloads it once (stored under <code>~/.chatpanel/models</code>); a bigger model is more accurate
-                    but a larger download. Shared with the Gateway tab — they use the same gateway.</p>
-                  <div id="priv-models"></div>
-                  <p class="status" id="priv-models-status">—</p>
                 </div>
                 <p class="muted sm">Redact these types <span class="sub">(emails &amp; phones always redact)</span>:</p>
                 <label class="check"><input type="checkbox" id="priv-det-person" /> People (names)</label>
@@ -592,10 +592,13 @@ npx @chatpanel/bridge</code></pre>
               <p class="muted sm">Local history/meeting/page tools always get real values; <strong>Real values</strong>
                 also lets MCP tools resolve them (the value reaches that MCP server). <strong>Redact remote</strong> keeps
                 PII off third-party MCP servers.</p>
+              <p class="muted sm" id="priv-pro-note"><span class="inline-ico" data-icon="star"></span> <strong>Pro</strong> unlocks name/org redaction, page/meeting/history /
+                tool-result scope, an unlimited dictionary, and local-model detection. Free covers secrets (emails, keys,
+                cards, phones) in chat.</p>
             </div>
           </div>
-          <div id="priv-flow" class="priv-flow hidden">
-            <h3 class="priv-h">Test end-to-end</h3>
+          <details id="priv-flow" class="priv-flow hidden">
+            <summary class="pv-sub-summary">Test end-to-end <span class="sub">— run one prompt through the whole pipeline</span></summary>
             <p class="muted sm">Paste a prompt, pick a model, and Run to see the whole flow left → right: what's
               detected, what the model sees, what tools receive, the model's reply, and what you see. Tweak entities /
               redact vs pseudonymize and re-run to compare.</p>
@@ -612,23 +615,58 @@ npx @chatpanel/bridge</code></pre>
             </div>
             <p class="muted sm" id="priv-flow-status" style="margin:6px 0 0"></p>
             <div id="priv-flow-out" class="flow-track"></div>
-          </div>
-          <p class="muted sm" id="priv-pro-note"><span class="inline-ico" data-icon="star"></span> <strong>Pro</strong> unlocks name/org redaction, page/meeting/history /
-            tool-result scope, an unlimited dictionary, and local-model detection. Free covers secrets (emails, keys,
-            cards, phones) in chat.</p>
+          </details>
         </div>
-      </section>
+        </details><!-- /#pv-redaction -->
 
-      <!-- GATEWAY -->
-      <section class="panel hidden" data-panel="gateway">
+        <!-- 2 · DATA BOUNDARY -->
+        <details class="ws-section" id="pv-boundary">
+        <summary class="ws-heading"><span class="inline-ico" data-icon="lock"></span> Data boundary — internal sites stay on this device</summary>
         <div class="card">
           <div class="card-head">
-            <h2>Privacy Gateway <span class="sub">— PII redaction for tools outside the extension</span></h2>
+            <h2>Internal sites <span class="sub">— content from these never leaves your machine</span></h2>
           </div>
-          <p class="muted">The <strong>ChatPanel Gateway</strong> is a small local process that puts the same
-            redaction in the middle of two CLI agents: point OpenCode / Pi at it and it drives
-            <strong>Codex</strong> or <strong>Claude Code</strong> behind your subscription login (via the bridge),
-            redacting on the way out and restoring in the reply. Configure that gateway from here.</p>
+          <p class="muted">Redaction removes sensitive <em>values</em>. This decides where a page may be
+            <strong>sent at all</strong>: when a turn draws on an internal source, only a local model may answer it —
+            whichever model is selected. Everything that can only exist on a private network is covered below and <strong>on by default</strong> — untick
+            any that are not internal for you (a local dev server you deliberately test against a cloud model), and add
+            your own domains for internal sites that sit on public DNS.</p>
+          <label class="row"><input type="checkbox" id="internal-guard" checked>
+            <span>Keep content from internal sites on this device</span></label>
+          <div class="field">
+            <span>Addresses treated as internal
+              <span class="sub">— on by default; untick any that are not internal for you</span></span>
+            <div id="internal-catalog" class="internal-catalog"></div>
+            <button type="button" class="btn small" id="internal-restore">Restore all defaults</button>
+          </div>
+          <label class="field">
+            <span>My own internal domains <span class="sub">one per line — a domain covers its subdomains</span></span>
+            <textarea id="internal-patterns" rows="4" spellcheck="false"
+              placeholder="acme-corp.example&#10;*.eng.acme-corp.example"></textarea>
+          </label>
+          <label class="field">
+            <span>Where these may be answered</span>
+            <select id="internal-ceiling">
+              <option value="device">This device only — a model running locally</option>
+              <option value="trusted">My workspace — also allows a gateway or LAN model you run</option>
+            </select>
+          </label>
+          <p class="muted" id="internal-note"></p>
+        </div>
+        </details><!-- /#pv-boundary -->
+
+        <!-- 3 · GATEWAY -->
+        <details class="ws-section" id="pv-gateway">
+        <summary class="ws-heading"><span class="inline-ico" data-icon="plug"></span> Privacy Gateway — a local process that extends all of the above</summary>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Connection <span class="sub">— a small process on your machine, free &amp; open-source</span></h2>
+          </div>
+          <p class="muted">The <strong>ChatPanel Gateway</strong> runs on-device models (speech-to-text, PII
+            detection) and puts the same redaction in the middle of tools <em>outside</em> the extension: point
+            OpenCode / Pi at it and it drives <strong>Codex</strong> or <strong>Claude Code</strong> behind your
+            subscription login (via the bridge), redacting on the way out and restoring in the reply.</p>
 
           <div class="row"><label>Gateway URL</label>
             <input id="gw-url" type="text" placeholder="http://127.0.0.1:4320" />
@@ -645,17 +683,21 @@ npx @chatpanel/bridge</code></pre>
           </div>
           <p class="muted tiny hidden" id="gw-token-hint">Only needed for older gateways. Find it in
             <code>~/.chatpanel/gateway-token</code> (macOS/Linux) — or just update the gateway and it authorizes automatically.</p>
-          <label class="check" title="Push your chats & meetings to this local gateway so it (and other on-device tools/agents) can search your full history off the browser thread. Data is sent to your LOCAL gateway only — it never leaves your machine.">
-            <input type="checkbox" id="gw-warm-search" /> Index my history to this gateway for fast full-corpus search
-          </label>
-          <p class="muted tiny">Opt-in. Sends your <strong>decrypted</strong> chats &amp; meetings to your <em>local</em> gateway (on-device) so search scales past what the browser can hold. Off = search stays in-browser only.</p>
 
-          <label class="check" title="Hand your backup password to this local gateway so it can decrypt your daily encrypted backups and index them — the gateway then holds your full history even when ChatPanel isn't open. Stored encrypted on your machine; never leaves it.">
-            <input type="checkbox" id="gw-backup-key" /> Let this gateway decrypt &amp; index my daily backups
-          </label>
-          <p class="muted tiny">Sends your <strong>backup password</strong> (from the Backup section) to your <em>local</em> gateway so it can read your <code>.encrypted.json</code> backups and index them — full history available to the gateway/console/agents even when ChatPanel is closed. <span id="gw-backup-key-status"></span></p>
+          <!-- Shown when the gateway isn't running yet (most users, incl. Free): a preview of
+               what the gateway unlocks, so the capabilities are DISCOVERABLE before install.
+               refreshGateway() hides this and reveals #gw-config once connected. -->
+          <div id="gw-preview">
+            <p class="muted sm" style="margin-top:10px"><strong>What the gateway adds</strong> — all on your machine, once it's running:</p>
+            <ul class="gw-caps">
+              <li>🎙 <strong>Local speech-to-text</strong> — dictate into ChatPanel with a Whisper model you choose &amp; download; your audio never leaves your machine.</li>
+              <li>🛡 <strong>Local PII detection (NER)</strong> — the names / orgs / locations detector; pick from downloadable multilingual &amp; de-identification models.</li>
+              <li>🔀 <strong>Model routing</strong> — send OpenCode · Pi · aider through your Codex / Claude Code login via the bridge, redacted on the way out and restored in the reply.</li>
+              <li>🔎 <strong>Full-history search</strong> — index your chats &amp; meetings locally so on-device agents can search your whole corpus.</li>
+            </ul>
+          </div>
 
-          <details class="gw-help" open>
+          <details class="gw-help">
             <summary>Install the Gateway &amp; use it as a model in ChatPanel</summary>
             <p class="muted sm"><strong>1 · Install it</strong> — runs as a background process and starts at login
               (needs the bridge running):</p>
@@ -676,29 +718,39 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
               every request is redacted on the way out and restored in the reply. Any other OpenAI-compatible client
               (OpenCode · Pi · aider) can point at the same <code>http://127.0.0.1:4320/v1</code>.</p>
           </details>
+        </div>
 
-          <!-- Shown when the gateway isn't running yet (most users, incl. Free): a preview of
-               what the gateway unlocks, so the capabilities are DISCOVERABLE before install.
-               refreshGateway() hides this and reveals #gw-config once connected. -->
-          <div id="gw-preview">
-            <p class="muted sm" style="margin-top:10px"><strong>What the gateway adds</strong> — all on your machine, once it's running:</p>
-            <ul class="gw-caps">
-              <li>🎙 <strong>Local speech-to-text</strong> — dictate into ChatPanel with a Whisper model you choose &amp; download; your audio never leaves your machine.</li>
-              <li>🛡 <strong>Local PII detection (NER)</strong> — the names / orgs / locations detector; pick from downloadable multilingual &amp; de-identification models.</li>
-              <li>🔀 <strong>Model routing</strong> — send OpenCode · Pi · aider through your Codex / Claude Code login via the bridge, redacted on the way out and restored in the reply.</li>
-              <li>🔎 <strong>Full-history search</strong> — index your chats &amp; meetings locally so on-device agents can search your whole corpus.</li>
-            </ul>
-            <p class="muted tiny">Free &amp; open-source. Install it above, then this tab manages all of the above.</p>
+        <!-- History indexing lives OUTSIDE #gw-config on purpose: both switches must stay
+             reachable (to turn off) even when the gateway is momentarily unreachable. -->
+        <details class="ws-section" id="gw-sec-history">
+        <summary class="ws-heading"><span class="inline-ico" data-icon="history-clock"></span> History indexing — let the gateway search your corpus</summary>
+        <div class="card">
+          <label class="check" title="Push your chats & meetings to this local gateway so it (and other on-device tools/agents) can search your full history off the browser thread. Data is sent to your LOCAL gateway only — it never leaves your machine.">
+            <input type="checkbox" id="gw-warm-search" /> Index my history to this gateway for fast full-corpus search
+          </label>
+          <p class="muted tiny">Opt-in. Sends your <strong>decrypted</strong> chats &amp; meetings to your <em>local</em> gateway (on-device) so search scales past what the browser can hold. Off = search stays in-browser only.</p>
+
+          <label class="check" title="Hand your backup password to this local gateway so it can decrypt your daily encrypted backups and index them — the gateway then holds your full history even when ChatPanel isn't open. Stored encrypted on your machine; never leaves it.">
+            <input type="checkbox" id="gw-backup-key" /> Let this gateway decrypt &amp; index my daily backups
+          </label>
+          <p class="muted tiny">Sends your <strong>backup password</strong> (from the Backup section) to your <em>local</em> gateway so it can read your <code>.encrypted.json</code> backups and index them — full history available to the gateway/console/agents even when ChatPanel is closed. <span id="gw-backup-key-status"></span></p>
+        </div>
+        </details><!-- /#gw-sec-history -->
+
+        <div id="gw-config" class="hidden">
+          <div class="gw-flow">
+            <div class="gw-flow-box"><b>CLIENTS</b><span class="muted sm">OpenCode · Pi · aider<br>→ <code>:4320/v1</code></span></div>
+            <div class="gw-flow-arrow">⟶</div>
+            <div class="gw-flow-box gw-flow-mid"><b>CHATPANEL GATEWAY</b><span class="muted sm">redact → route → restore</span></div>
+            <div class="gw-flow-arrow">⟶</div>
+            <div class="gw-flow-box"><b>DESTINATIONS</b><span class="muted sm" id="gw-flow-dests">your APIs &amp; agents</span></div>
           </div>
 
-          <div id="gw-config" class="hidden">
-            <div class="gw-flow">
-              <div class="gw-flow-box"><b>CLIENTS</b><span class="muted sm">OpenCode · Pi · aider<br>→ <code>:4320/v1</code></span></div>
-              <div class="gw-flow-arrow">⟶</div>
-              <div class="gw-flow-box gw-flow-mid"><b>CHATPANEL GATEWAY</b><span class="muted sm">redact → route → restore</span></div>
-              <div class="gw-flow-arrow">⟶</div>
-              <div class="gw-flow-box"><b>DESTINATIONS</b><span class="muted sm" id="gw-flow-dests">your APIs &amp; agents</span></div>
-            </div>
+          <!-- 3a · gateway-side redaction (its own engine + dictionary; separate from the
+               in-browser one above, which protects you when the gateway isn't in the path) -->
+          <details class="ws-section" id="gw-sec-redaction" open>
+          <summary class="ws-heading"><span class="inline-ico" data-icon="privacy"></span> Gateway redaction — for traffic that doesn't go through the panel</summary>
+          <div class="card">
             <div class="priv-grid">
               <div class="priv-col">
                 <h3 class="priv-h">Redaction</h3>
@@ -731,36 +783,70 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                   leave your machine and reach that provider.</p>
                 <div class="row" style="margin-top:4px">
                   <button type="button" id="gw-ner-check" class="btn">Check NER health</button>
+                  <button type="button" class="btn ghost" data-jump="pv-models">Choose the NER model
+                    <span class="inline-ico" data-icon="external-link"></span></button>
                 </div>
                 <p class="status" id="gw-ner-status">—</p>
+              </div>
 
-                <h3 class="priv-h">NER model (redaction)</h3>
-                <p class="muted sm">The local detector that finds names, organizations and locations. Runs
-                  <strong>in-process</strong>. Switching downloads the model once (to <code>~/.chatpanel/models</code>);
-                  a bigger model is more accurate but a larger download.</p>
-                <div id="gw-models" class="model-list"></div>
-                <p class="status" id="gw-models-status">—</p>
-                <div class="model-reg">
-                  <div class="model-reg-bar">
-                    <input id="gw-ner-search" placeholder="Search Hugging Face for NER models — e.g. multilingual, deid, indic" />
-                    <button id="gw-ner-search-btn" class="btn" type="button">Search</button>
-                  </div>
-                  <div id="gw-ner-search-results" class="model-reg-results hidden"></div>
-                  <p class="muted sm" style="margin:4px 0 0">Only <strong>transformers.js</strong> (ONNX) token-classification
-                    models are shown — anything listed will actually run in-process. Downloaded from Hugging Face directly
-                    (your choice, not the ChatPanel mirror), then usable by ChatPanel and any derivative app on this gateway.</p>
-                </div>
-
+              <div class="priv-col">
                 <h3 class="priv-h">Dictionary</h3>
                 <div class="field">
                   <label class="sub"><code>=&gt; LABEL</code> redacts reversibly; <code>-&gt; alias</code> pseudonymizes
-                    permanently; a plain term or <code>/regex/flags</code> also works.</label>
+                    permanently; a plain term or <code>/regex/flags</code> also works. Separate from the panel's own
+                    dictionary above — this one applies to traffic the gateway sees.</label>
                   <textarea id="gw-dictionary" rows="4"
                     placeholder="Acme Corp => ORG&#10;Project Atlas -> Project Nimbus&#10;/EMP-\d+/ => TICKET"></textarea>
+                  <div class="row" style="margin:6px 0 0">
+                    <button type="button" id="gw-dict-copy" class="btn ghost">Copy from the panel's dictionary</button>
+                  </div>
                   <p class="muted sm" style="margin:4px 0 0">Free applies the first <strong>5</strong> entries; Pro is
                     unlimited.</p>
                 </div>
 
+                <h3 class="priv-h">Pro</h3>
+                <div class="row">
+                  <button type="button" id="gw-pro-activate" class="btn">Activate with my ChatPanel Pro</button>
+                  <span class="status" id="gw-pro-status"></span>
+                </div>
+                <p class="muted sm" id="gw-free-usage">Free includes <strong>25 full redactions</strong> total (the
+                  real thing — names &amp; orgs included) to try it out, then it's Pro. Pro (your existing subscription)
+                  unlocks <strong>unlimited</strong> redaction — nothing to paste.</p>
+                <details>
+                  <summary class="muted sm">Advanced: paste a token manually</summary>
+                  <div class="row" style="margin-top:6px"><label>Entitlement token</label>
+                    <input id="gw-pro-token" type="password" placeholder="leave blank to use your subscription" /></div>
+                </details>
+              </div>
+            </div>
+          </div>
+          </details><!-- /#gw-sec-redaction -->
+
+          <!-- 3b · routing -->
+          <details class="ws-section" id="gw-sec-routing">
+          <summary class="ws-heading"><span class="inline-ico" data-icon="tools"></span> Routing — destinations &amp; tools</summary>
+          <div class="card">
+            <div class="priv-grid">
+              <div class="priv-col">
+                <h3 class="priv-h">Destinations <span class="sub">— your APIs &amp; agents</span></h3>
+                <p class="muted sm">Pick which configured <strong>APIs</strong> (API tab) and <strong>agents</strong>
+                  (Agents tab) the gateway routes to. Clients select one by its model name via <code>/v1/models</code>.</p>
+                <div class="gw-dest-select" id="gw-dest-select">
+                  <button type="button" class="gw-dest-trigger" id="gw-dest-trigger" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="gw-dest-summary" id="gw-dest-summary">No destinations selected</span>
+                    <span class="gw-dest-caret" aria-hidden="true" data-icon="caret"></span>
+                  </button>
+                  <div class="gw-dest-menu hidden" id="gw-dest-menu" role="listbox" aria-multiselectable="true">
+                    <div class="gw-dest-menu-head">
+                      <button type="button" id="gw-dest-all" class="btn sm">Select all</button>
+                      <button type="button" id="gw-dest-none" class="btn sm">Clear</button>
+                    </div>
+                    <div id="gw-dests" class="gw-dest-list"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="priv-col">
                 <h3 class="priv-h">Tools (auto mode)</h3>
                 <div class="row"><label>Tools receive</label>
                   <select id="gw-tools-data">
@@ -780,124 +866,134 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                   <label class="check" style="margin-top:6px"><input type="checkbox" id="gw-tools-narrowall" />
                     Also narrow non-MCP tools — only if your client has no essential core tools</label>
                 </details>
-
-                <h3 class="priv-h">Pro</h3>
-                <div class="row">
-                  <button type="button" id="gw-pro-activate" class="btn">Activate with my ChatPanel Pro</button>
-                  <span class="status" id="gw-pro-status"></span>
-                </div>
-                <p class="muted sm" id="gw-free-usage">Free includes <strong>25 full redactions</strong> total (the
-                  real thing — names &amp; orgs included) to try it out, then it's Pro. Pro (your existing subscription)
-                  unlocks <strong>unlimited</strong> redaction — nothing to paste.</p>
-                <details>
-                  <summary class="muted sm">Advanced: paste a token manually</summary>
-                  <div class="row" style="margin-top:6px"><label>Entitlement token</label>
-                    <input id="gw-pro-token" type="password" placeholder="leave blank to use your subscription" /></div>
-                </details>
-
-                <h3 class="priv-h">Monitoring</h3>
-                <label class="check"><input type="checkbox" id="gw-log" /> Log requests (counts + per-stage latency, no values)</label>
-                <label class="check"><input type="checkbox" id="gw-log-detail" /> Capture redaction detail
-                  <span class="muted sm">— expand a request to see what was redacted</span></label>
-                <div id="gw-log-detail-mode" class="gw-detail-mode hidden">
-                  <label class="radio"><input type="radio" name="gw-detail" value="types" checked />
-                    Types + tokens only <span class="muted sm">(PERSON_1, EMAIL_1 — no real values)</span></label>
-                  <label class="radio"><input type="radio" name="gw-detail" value="values" />
-                    Include real values <span class="muted sm">⚠ shows your actual PII; kept in memory only</span></label>
-                </div>
-                <p class="muted sm" id="gw-monitor">—</p>
-                <div class="row" style="margin:4px 0">
-                  <button type="button" id="gw-logs-refresh" class="btn">Recent requests <span class="inline-ico" data-icon="refresh"></span></button>
-                </div>
-                <div id="gw-logs" class="muted sm"></div>
-                <details style="margin-top:8px">
-                  <summary class="muted sm">Advanced: allow a browser app</summary>
-                  <p class="muted sm" style="margin-top:6px">Local CLI tools (OpenCode / Pi) need nothing here — they
-                    just work. Only add a web origin if a <strong>browser app</strong> should call the gateway.</p>
-                  <textarea id="gw-origins" rows="2" placeholder="https://app.example.com"></textarea>
-                </details>
-              </div>
-
-              <div class="priv-col">
-                <h3 class="priv-h">Destinations <span class="sub">— your APIs &amp; agents</span></h3>
-                <p class="muted sm">Pick which configured <strong>APIs</strong> (API tab) and <strong>agents</strong>
-                  (Agents tab) the gateway routes to. Clients select one by its model name via <code>/v1/models</code>.</p>
-                <div class="gw-dest-select" id="gw-dest-select">
-                  <button type="button" class="gw-dest-trigger" id="gw-dest-trigger" aria-haspopup="listbox" aria-expanded="false">
-                    <span class="gw-dest-summary" id="gw-dest-summary">No destinations selected</span>
-                    <span class="gw-dest-caret" aria-hidden="true" data-icon="caret"></span>
-                  </button>
-                  <div class="gw-dest-menu hidden" id="gw-dest-menu" role="listbox" aria-multiselectable="true">
-                    <div class="gw-dest-menu-head">
-                      <button type="button" id="gw-dest-all" class="btn sm">Select all</button>
-                      <button type="button" id="gw-dest-none" class="btn sm">Clear</button>
-                    </div>
-                    <div id="gw-dests" class="gw-dest-list"></div>
-                  </div>
-                </div>
               </div>
             </div>
-            <h3 class="priv-h" style="margin-top:14px">Speech-to-text (dictation) model</h3>
-              <p class="muted sm">Local <strong>whisper</strong> for the mic button — audio never leaves your machine.
-                Pick by your hardware: lighter models are faster/smaller, larger ones more accurate. Multilingual models
-                auto-detect the spoken language.
-                <strong>Non-Latin languages</strong> (Telugu, Hindi, Chinese, Arabic…) need <strong>Small</strong> or
-                <strong>Large&nbsp;v3&nbsp;Turbo</strong> — Tiny/Base transcribe them poorly.</p>
-              <div id="gw-stt-models" class="model-list"></div>
-              <p class="status" id="gw-stt-models-status">—</p>
-              <div id="gw-stt-runtime-hint" class="stt-runtime-hint hidden"></div>
-              <div class="model-reg">
-                <div class="model-reg-bar">
-                  <input id="gw-stt-search" placeholder="Search Hugging Face for whisper models — e.g. large-v3-turbo, distil, medium" />
-                  <button id="gw-stt-search-btn" class="btn" type="button">Search</button>
-                </div>
-                <div id="gw-stt-search-results" class="model-reg-results hidden"></div>
-                <p class="muted sm" style="margin:4px 0 0">Only <strong>transformers.js</strong> (ONNX) whisper models are
-                  shown — anything listed will actually run. Downloaded from Hugging Face directly, then usable by ChatPanel
-                  and any derivative app on this gateway.</p>
-              </div>
-              <div class="field row" style="margin-top:8px">
-                <label style="min-width:auto">Precision (quantization)</label>
-                <select id="gw-stt-dtype"></select>
-              </div>
-              <p class="muted sm" id="gw-stt-dtype-note" style="margin:4px 0 0"></p>
-              <div class="field row" style="margin-top:8px">
-                <label style="min-width:auto">Dictation language</label>
-                <select id="gw-stt-lang">
-                  <option value="">Auto-detect</option>
-                  <option value="en">English</option>
-                  <option value="te">Telugu (తెలుగు)</option>
-                  <option value="hi">Hindi (हिन्दी)</option>
-                  <option value="ta">Tamil (தமிழ்)</option>
-                  <option value="kn">Kannada (ಕನ್ನಡ)</option>
-                  <option value="ml">Malayalam (മലയാളം)</option>
-                  <option value="es">Spanish</option>
-                  <option value="fr">French</option>
-                  <option value="de">German</option>
-                  <option value="zh">Chinese</option>
-                  <option value="ja">Japanese</option>
-                  <option value="ar">Arabic</option>
-                </select>
-              </div>
-              <p class="muted sm" style="margin:4px 0 0">Auto-detect works well on Small+. Pin a language if detection
-                guesses wrong on short phrases.</p>
+          </div>
+          </details><!-- /#gw-sec-routing -->
 
-              <h3 class="priv-h" style="margin-top:14px">Speaker model (diarization)</h3>
-              <p class="muted sm">Tells voices apart for <strong>meeting transcription</strong> — labels each line
-                <em>Speaker&nbsp;1 / Speaker&nbsp;2 / …</em> (not limited to two; scales to a roomful). Runs in-process,
-                audio never leaves your machine. One-time download; needed only for the Notes <strong>Transcribe
-                meeting</strong> button and online meeting transcription.</p>
-              <div id="gw-diarize-models" class="model-list"></div>
-              <p class="status" id="gw-diarize-status">—</p>
+          <!-- 3c · the on-device model catalogs. ONE home for every model the gateway runs
+               (NER, whisper, diarization) — the Redaction section links here rather than
+               repeating the NER list. -->
+          <details class="ws-section" id="pv-models">
+          <summary class="ws-heading"><span class="inline-ico" data-icon="bot"></span> On-device models — PII detection · dictation · speakers</summary>
 
-              <div class="row" style="margin-top:8px">
-              <button type="button" id="gw-save" class="btn primary">Save to gateway</button>
-              <span class="status" id="gw-save-status"></span>
+          <div class="card">
+            <div class="card-head">
+              <h2>NER model <span class="sub">— finds names, organizations &amp; locations</span></h2>
             </div>
+            <p class="muted sm">The local detector behind <strong>Bundled NER</strong> — used by both the panel's
+              redaction and the gateway's. Runs <strong>in-process</strong>. Switching downloads the model once (to
+              <code>~/.chatpanel/models</code>); a bigger model is more accurate but a larger download.</p>
+            <div id="gw-models" class="model-list"></div>
+            <p class="status" id="gw-models-status">—</p>
+            <div class="model-reg">
+              <div class="model-reg-bar">
+                <input id="gw-ner-search" placeholder="Search Hugging Face for NER models — e.g. multilingual, deid, indic" />
+                <button id="gw-ner-search-btn" class="btn" type="button">Search</button>
+              </div>
+              <div id="gw-ner-search-results" class="model-reg-results hidden"></div>
+              <p class="muted sm" style="margin:4px 0 0">Only <strong>transformers.js</strong> (ONNX) token-classification
+                models are shown — anything listed will actually run in-process. Downloaded from Hugging Face directly
+                (your choice, not the ChatPanel mirror), then usable by ChatPanel and any derivative app on this gateway.</p>
+            </div>
+          </div>
 
-            <h3 class="priv-h" style="margin-top:14px">Test a prompt <span class="sub">— see the redaction flow end-to-end</span></h3>
+          <div class="card">
+            <div class="card-head">
+              <h2>Speech-to-text <span class="sub">— the mic button, on-device</span></h2>
+            </div>
+            <p class="muted sm">Local <strong>whisper</strong> for the mic button — audio never leaves your machine.
+              Pick by your hardware: lighter models are faster/smaller, larger ones more accurate. Multilingual models
+              auto-detect the spoken language.
+              <strong>Non-Latin languages</strong> (Telugu, Hindi, Chinese, Arabic…) need <strong>Small</strong> or
+              <strong>Large&nbsp;v3&nbsp;Turbo</strong> — Tiny/Base transcribe them poorly.</p>
+            <div id="gw-stt-models" class="model-list"></div>
+            <p class="status" id="gw-stt-models-status">—</p>
+            <div id="gw-stt-runtime-hint" class="stt-runtime-hint hidden"></div>
+            <div class="model-reg">
+              <div class="model-reg-bar">
+                <input id="gw-stt-search" placeholder="Search Hugging Face for whisper models — e.g. large-v3-turbo, distil, medium" />
+                <button id="gw-stt-search-btn" class="btn" type="button">Search</button>
+              </div>
+              <div id="gw-stt-search-results" class="model-reg-results hidden"></div>
+              <p class="muted sm" style="margin:4px 0 0">Only <strong>transformers.js</strong> (ONNX) whisper models are
+                shown — anything listed will actually run. Downloaded from Hugging Face directly, then usable by ChatPanel
+                and any derivative app on this gateway.</p>
+            </div>
+            <div class="field row" style="margin-top:8px">
+              <label style="min-width:auto">Precision (quantization)</label>
+              <select id="gw-stt-dtype"></select>
+            </div>
+            <p class="muted sm" id="gw-stt-dtype-note" style="margin:4px 0 0"></p>
+            <div class="field row" style="margin-top:8px">
+              <label style="min-width:auto">Dictation language</label>
+              <select id="gw-stt-lang">
+                <option value="">Auto-detect</option>
+                <option value="en">English</option>
+                <option value="te">Telugu (తెలుగు)</option>
+                <option value="hi">Hindi (हिन्दी)</option>
+                <option value="ta">Tamil (தமிழ்)</option>
+                <option value="kn">Kannada (ಕನ್ನಡ)</option>
+                <option value="ml">Malayalam (മലയാളം)</option>
+                <option value="es">Spanish</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+                <option value="zh">Chinese</option>
+                <option value="ja">Japanese</option>
+                <option value="ar">Arabic</option>
+              </select>
+            </div>
+            <p class="muted sm" style="margin:4px 0 0">Auto-detect works well on Small+. Pin a language if detection
+              guesses wrong on short phrases.</p>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>Speaker model <span class="sub">— diarization for meeting transcription</span></h2>
+            </div>
+            <p class="muted sm">Tells voices apart for <strong>meeting transcription</strong> — labels each line
+              <em>Speaker&nbsp;1 / Speaker&nbsp;2 / …</em> (not limited to two; scales to a roomful). Runs in-process,
+              audio never leaves your machine. One-time download; needed only for the Notes <strong>Transcribe
+              meeting</strong> button and online meeting transcription.</p>
+            <div id="gw-diarize-models" class="model-list"></div>
+            <p class="status" id="gw-diarize-status">—</p>
+          </div>
+          </details><!-- /#pv-models -->
+
+          <!-- 3d · monitoring -->
+          <details class="ws-section" id="gw-sec-monitor">
+          <summary class="ws-heading"><span class="inline-ico" data-icon="history-clock"></span> Monitoring &amp; access</summary>
+          <div class="card">
+            <label class="check"><input type="checkbox" id="gw-log" /> Log requests (counts + per-stage latency, no values)</label>
+            <label class="check"><input type="checkbox" id="gw-log-detail" /> Capture redaction detail
+              <span class="muted sm">— expand a request to see what was redacted</span></label>
+            <div id="gw-log-detail-mode" class="gw-detail-mode hidden">
+              <label class="radio"><input type="radio" name="gw-detail" value="types" checked />
+                Types + tokens only <span class="muted sm">(PERSON_1, EMAIL_1 — no real values)</span></label>
+              <label class="radio"><input type="radio" name="gw-detail" value="values" />
+                Include real values <span class="muted sm">⚠ shows your actual PII; kept in memory only</span></label>
+            </div>
+            <p class="muted sm" id="gw-monitor">—</p>
+            <div class="row" style="margin:4px 0">
+              <button type="button" id="gw-logs-refresh" class="btn">Recent requests <span class="inline-ico" data-icon="refresh"></span></button>
+            </div>
+            <div id="gw-logs" class="muted sm"></div>
+            <details style="margin-top:8px">
+              <summary class="muted sm">Advanced: allow a browser app</summary>
+              <p class="muted sm" style="margin-top:6px">Local CLI tools (OpenCode / Pi) need nothing here — they
+                just work. Only add a web origin if a <strong>browser app</strong> should call the gateway.</p>
+              <textarea id="gw-origins" rows="2" placeholder="https://app.example.com"></textarea>
+            </details>
+          </div>
+          </details><!-- /#gw-sec-monitor -->
+
+          <!-- 3e · verify -->
+          <details class="ws-section" id="gw-sec-test">
+          <summary class="ws-heading"><span class="inline-ico" data-icon="play"></span> Test a prompt through the gateway</summary>
+          <div class="card">
             <p class="muted sm">Sends through the gateway with the same engine + config above: what's detected, what the
-              destination model/agent sees (redacted), and the restored reply you get back.</p>
+              destination model/agent sees (redacted), and the restored reply you get back. Save first if you changed
+              anything.</p>
             <textarea id="gw-test-input" rows="2" style="width:100%;box-sizing:border-box"
               placeholder="My name is John, email john@adams.com — who is the president with my name?"></textarea>
             <p class="muted sm" style="margin:8px 0 2px">Tools to arm — the destination runs the tool round-trip through the gateway (real values restored):</p>
@@ -910,7 +1006,17 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
             </div>
             <div id="gw-test-out" class="flow-track"></div>
           </div>
-        </div>
+          </details><!-- /#gw-sec-test -->
+
+          <!-- Sticky so "Save to gateway" is in reach from any of the sections above it —
+               a long panel where the only Save is off-screen is how edits get lost. -->
+          <div class="gw-savebar">
+            <button type="button" id="gw-save" class="btn primary">Save to gateway</button>
+            <span class="status" id="gw-save-status"></span>
+          </div>
+        </div><!-- /#gw-config -->
+        </details><!-- /#pv-gateway -->
+
       </section>
 
       <!-- USAGE -->

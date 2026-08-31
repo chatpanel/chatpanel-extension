@@ -1663,7 +1663,28 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
     redactResults: gatedScope(activeCfg, effIsPro).toolResults,
     remoteTools: tools?.remoteTools, // explicit remote set (L3), not the name heuristic
   });
+  // Snapshot the vault BEFORE redacting, so we can tell what THIS turn contributed. The vault
+  // accumulates across a conversation (PERSON_1 must mean the same person every turn), so its
+  // total is a conversation fact; the delta is the per-message one the panel shows inline.
+  const knownTokens = new Set(vault ? vault.byToken.keys() : []);
   const red = redactOutbound({ messages, system: agent.systemPrompt, vault, cfg: activeCfg, isPro: effIsPro, entities: activeEntities });
+  // Tell the panel what this turn replaced — PLACEHOLDERS ONLY, never the values. The message
+  // is persisted to conversation storage, so a value here would write PII to disk; the panel
+  // resolves a token back to its original from the live in-memory vault when the user asks.
+  try {
+    if (vault) {
+      const added = [...vault.byToken.keys()].filter((t) => !knownTokens.has(t));
+      if (added.length) {
+        const counts = {};
+        for (const t of added) {
+          const m = /^\[\[([A-Z][A-Z0-9]*)_\d+\]\]$/.exec(t);
+          const type = m ? m[1] : 'OTHER';
+          counts[type] = (counts[type] || 0) + 1;
+        }
+        onEvent?.({ type: 'redaction', tokens: added, counts });
+      }
+    }
+  } catch { /* visibility must never break a turn */ }
   // WHAT THE PRIVACY LAYER ACTUALLY CAUGHT. The promise ("PII never leaves the device") is
   // invisible without this — the Activity log could say redaction ran, but not what it
   // found. Counts by entity type only: safe to persist, and it never records a real value.

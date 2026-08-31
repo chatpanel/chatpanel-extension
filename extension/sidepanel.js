@@ -1459,6 +1459,7 @@ function renderMessage(m) {
     bubble.innerHTML = assistantBody(m);
     enhanceCode(bubble);
     wireStepControls(bubble);
+    wireRedactionReveal(bubble);
   } else {
     // user bubble: plain text + attachment note (+ image thumbnails)
     bubble.textContent = m.content;
@@ -1517,6 +1518,7 @@ function updateBubble(m) {
   bubble.innerHTML = assistantBody(m);
   enhanceCode(bubble);
   wireStepControls(bubble);
+  wireRedactionReveal(bubble);
   // The byline as well, not only the body. Routing is decided BEFORE the first token, so
   // the model that is answering was knowable the whole time — showing it only after the
   // reply finished meant watching text arrive from a model the header still misnamed.
@@ -1712,6 +1714,31 @@ function stepControls(s) {
   return ` <button type="button" class="step-skip" data-skip-tool="${escapeAttr(s.callId)}" title="Skip waiting for this tool result">Skip</button>`;
 }
 
+// WHAT THE MODEL WAS NOT ALLOWED TO SEE — inline, beside the Actions log.
+//
+// Redaction is the product's core promise and it was invisible in the conversation: the
+// answer came back about a different person and nothing on screen explained why. This says
+// so, in place, at the moment it matters.
+//
+// The message stores PLACEHOLDERS and counts only (it is persisted); the real values are
+// resolved from the live in-memory vault when the reader asks, and never written down.
+function renderRedaction(m) {
+  const r = m.redaction;
+  if (!r?.tokens?.length) return '';
+  const byType = Object.entries(r.counts || {})
+    .sort((a, b) => b[1] - a[1])
+    .map(([type, n]) => `${n} ${escapeAttr(type.toLowerCase().replace(/_/g, ' '))}`)
+    .join(' · ');
+  const rows = r.tokens.slice(0, 30).map((t) => `<div class="red-row" data-token="${escapeAttr(t)}">`
+    + `<span class="red-real" data-masked="1">••••••••</span>`
+    + `<span class="red-arrow">→</span><code class="red-token">${escapeAttr(t)}</code></div>`).join('');
+  return `<details class="agent-steps redaction-log"><summary>${icon('privacy')} Redacted (${r.tokens.length})`
+    + `<span class="red-sum"> ${byType}</span></summary>`
+    + `<div class="steps-body"><div class="red-note">Replaced before the request left this device — the model saw the placeholders.</div>`
+    + rows
+    + `<button type="button" class="red-reveal">Reveal originals</button></div></details>`;
+}
+
 // Collapsible "Actions" log of the agent's tool calls (args, status, screenshots).
 function renderSteps(m) {
   const open = m.pending ? ' open' : '';
@@ -1733,6 +1760,29 @@ function renderSteps(m) {
     ? '<div class="steps-live"><span class="spinner"></span><span class="steps-live-txt">Working…</span></div>'
     : '';
   return `<details class="agent-steps"${open}><summary>${icon('tools')} Actions (${m.steps.length})</summary><div class="steps-body">${items}${live}</div></details>`;
+}
+
+// Reveal the originals for one message's redaction block. Values come from the LIVE vault
+// for the open conversation — they were never stored with the message — so this shows
+// nothing once the conversation is closed and reopened, which is the intended trade.
+function wireRedactionReveal(root) {
+  for (const box of root.querySelectorAll('.redaction-log')) {
+    const btn = box.querySelector('.red-reveal');
+    if (!btn || btn.dataset.wired) continue;
+    btn.dataset.wired = '1';
+    btn.addEventListener('click', () => {
+      const vault = state.piiVaults.get(state.conv?.id);
+      const shown = btn.dataset.on === '1';
+      for (const row of box.querySelectorAll('.red-row')) {
+        const cell = row.querySelector('.red-real');
+        const value = vault?.byToken?.get(row.dataset.token);
+        if (shown) cell.textContent = '••••••••';
+        else cell.textContent = value || '(no longer in memory — reopened conversation)';
+      }
+      btn.dataset.on = shown ? '' : '1';
+      btn.textContent = shown ? 'Reveal originals' : 'Hide originals';
+    });
+  }
 }
 
 function wireStepControls(root) {
@@ -1770,6 +1820,7 @@ async function copyChatAsMarkdown() {
 // Assistant bubble = an optional "Actions" log + streamed "thinking" + the answer.
 function assistantBody(m) {
   let html = '';
+  if (m.redaction?.tokens?.length) html += renderRedaction(m);
   if (m.steps?.length) html += renderSteps(m);
   if (m.thinking) {
     const open = m.pending ? ' open' : '';
@@ -2548,6 +2599,12 @@ async function runStream(agent, assistant, conv) {
           // the turn started. Only for the conversation on screen: a background turn must
           // not retitle the one being read.
           if (conv.id === state.conv?.id) showLiveRoute(ev.model, ev.reasons);
+          if (!raf) raf = requestAnimationFrame(flush);
+        } else if (ev.type === 'redaction') {
+          // What this turn replaced before the model saw it. Placeholders + counts only —
+          // the values stay in the in-memory vault, so nothing sensitive is persisted with
+          // the conversation.
+          assistant.redaction = { tokens: ev.tokens || [], counts: ev.counts || {} };
           if (!raf) raf = requestAnimationFrame(flush);
         } else if (ev.type === 'reasoning' && ev.text) {
           assistant.thinking = (assistant.thinking || '') + ev.text;
