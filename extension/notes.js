@@ -2130,44 +2130,28 @@ async function askAboutNote() {
   }
 }
 
-// Tables and code need to survive the paste, and Google Docs / Slack / mail compose all read
-// text/html — but they style nothing themselves, so borders and monospace have to ride along
-// as inline attributes on the copied markup.
-function richHtmlForClipboard(md) {
-  let html = renderMarkdown(md);
-  html = html
-    .replace(/<table>/g, '<table style="border-collapse:collapse;border:1px solid #ccc" cellpadding="6">')
-    .replace(/<(th|td)([ >])/g, '<$1 style="border:1px solid #ccc;text-align:left"$2')
-    .replace(/<pre>/g, '<pre style="background:#f5f5f5;padding:10px;border-radius:6px;white-space:pre-wrap;font-family:ui-monospace,Menlo,Consolas,monospace">')
-    .replace(/<blockquote>/g, '<blockquote style="border-left:3px solid #ccc;margin:0;padding-left:12px;color:#555">');
-  return `<meta charset="utf-8">${html}`;
-}
-
 // Copy what you are LOOKING AT.
-//   Live / Read  → the FORMATTED note (rich text): paste into Docs, Slack or an email and the
-//                  bold, tables and bullets arrive intact, with the Markdown source carried
-//                  alongside as text/plain for anywhere that wants plain text.
+//   Live / Read  → the FORMATTED note (rich text), with the Markdown carried alongside as
+//                  text/plain, so a paste into Docs, Slack or an email keeps its formatting.
 //   Write / Split (source) → the raw Markdown, for another Markdown editor.
-// Falls back to plain Markdown wherever the async clipboard or ClipboardItem is unavailable.
+// Shares one implementation with the editor's own Cmd+C handler (js/rich-clipboard.js), so
+// the button and the keystroke can never produce different output for the same note.
 async function copyCurrent() {
   if (!current) return;
   const md = noteToMarkdown(current);
   const panes = $('n-panes');
   const formatted = panes.classList.contains('live') || panes.classList.contains('read');
-  if (formatted && typeof ClipboardItem === 'function' && navigator.clipboard?.write) {
-    try {
-      await navigator.clipboard.write([new ClipboardItem({
-        'text/html': new Blob([richHtmlForClipboard(md)], { type: 'text/html' }),
-        'text/plain': new Blob([md], { type: 'text/plain' }),
-      })]);
-      toast('Copied with formatting');
+  try {
+    if (formatted) {
+      const rich = await writeRichToClipboard(md);
+      toast(rich ? 'Copied with formatting' : 'Copied as Markdown');
       return;
-    } catch { /* fall through to plain text */ }
+    }
+    await navigator.clipboard.writeText(md);
+    toast('Copied Markdown source');
+  } catch {
+    toast('Copy failed');
   }
-  navigator.clipboard.writeText(md).then(
-    () => toast(formatted ? 'Copied as Markdown' : 'Copied Markdown source'),
-    () => toast('Copy failed'),
-  );
 }
 function exportFilename(note) {
   return (note?.title || 'note').replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 70) || 'note';

@@ -19,7 +19,8 @@ import {
   markdown, markdownLanguage, tags as t,
 } from './vendor/codemirror.js';
 import { agentRegionsExtension, agentAuthorOf } from './notes-regions.js';
-import { renderMarkdown } from './markdown.js'; // reuse the read-mode renderer for live table blocks
+import { renderMarkdown } from './markdown.js';
+import { writeRichToEvent } from './rich-clipboard.js'; // reuse the read-mode renderer for live table blocks
 
 // Markdown token → CSS class (colors/weights live in notes.css so themes control them).
 const HL = HighlightStyle.define([
@@ -376,6 +377,14 @@ const blockField = StateField.define({
   provide: (f) => EditorView.decorations.from(f),
 });
 
+// The selected Markdown, rendered onto the clipboard event. Returns true when handled.
+function copyRich(event, view) {
+  const sel = view.state.selection.ranges.filter((r) => !r.empty);
+  if (!sel.length) return false; // nothing selected — let CodeMirror handle it
+  const md = sel.map((r) => view.state.sliceDoc(r.from, r.to)).join('\n');
+  return writeRichToEvent(event, md);
+}
+
 // Create the live-preview editor inside `parent`. Callbacks: onChange(value, update) on every
 // doc change, onSelection() on cursor moves, onKey(event)->true to mark a key handled (so CM
 // won't also act on it). Facade mirrors the textarea verbs the rest of Notes already uses.
@@ -422,6 +431,20 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
         if (!target) return false;
         e.preventDefault();
         onLink(target);
+        return true;
+      },
+      // COPY / CUT → put the RENDERED note on the clipboard as well as the Markdown.
+      //
+      // The document here IS Markdown; the live view only decorates it. So a plain Cmd+C
+      // handed Google Docs or Slack `**bold**` and raw table pipes — the reformatting the
+      // live view exists to avoid. We write text/html (rendered) and text/plain (the source)
+      // so the target app picks: rich editors take the formatting, Markdown editors take the
+      // source. Selecting nothing falls through to CodeMirror's own behaviour.
+      copy: (e, v) => copyRich(e, v),
+      cut: (e, v) => {
+        if (!copyRich(e, v)) return false;
+        // We consumed the event, so the deletion half of a cut is ours to perform.
+        v.dispatch(v.state.replaceSelection(''));
         return true;
       },
       // Paste a bare URL → let the host upgrade it to [Title](url). onPaste calls preventDefault
