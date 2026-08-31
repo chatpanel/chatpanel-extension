@@ -1792,10 +1792,17 @@ function enhanceCode(bubble) {
   // Interactive artifacts (```html) — upgrade the code block into Preview | Code | Open ↗.
   // Dynamic import: the artifact machinery is action-only and must stay off first paint, and
   // a failure here must never cost the message its Copy buttons — hence the catch.
-  if (bubble?.querySelector?.('.md-artifact-html:not([data-artifact-ready])')) {
+  if (bubble?.querySelector?.('.md-artifact-html:not([data-artifact-ready]), .md-artifact-mermaid:not([data-artifact-ready])')) {
     import('./js/artifacts.js')
       .then(({ mountArtifacts }) => mountArtifacts(bubble))
       .catch(() => { /* the escaped source stays visible — the fail-safe */ });
+  }
+  // Syntax colouring for fenced blocks that declared a language. Dynamic: a message with no
+  // code never loads it, and a failure just leaves the block as plain (already escaped) text.
+  if (bubble?.querySelector?.('pre > code[class^="lang-"]:not([data-hl])')) {
+    import('./js/highlight.js')
+      .then(({ highlightCode }) => highlightCode(bubble))
+      .catch(() => { /* plain text is a fine fallback */ });
   }
   bubble.querySelectorAll('pre').forEach((pre) => {
     if (pre.querySelector('.copy-code')) return;

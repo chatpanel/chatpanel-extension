@@ -129,8 +129,61 @@ function mountPreview(host, html, onFail) {
  * Idempotent (a re-render marks nodes done), and never throws — a failure leaves the code
  * block exactly as it was.
  */
+// Render a ```mermaid block as a diagram. The renderer is pure text → SVG (shared package),
+// and the result is shown through an <img src="data:image/svg+xml,…"> — restricted mode, so
+// no scripts and no external fetches, exactly like a ```svg block. Diagram types the renderer
+// does not cover return null, and the code block simply stays.
+async function mountDiagrams(root) {
+  const nodes = root.querySelectorAll('.md-artifact-mermaid:not([data-artifact-ready])');
+  if (!nodes.length) return;
+  let renderFlowchartSvg;
+  try { ({ renderFlowchartSvg } = await import('./events/flowchart.js')); } catch { return; }
+  for (const node of nodes) {
+    try {
+      node.setAttribute('data-artifact-ready', '1');
+      const source = sourceOf(node);
+      const svg = renderFlowchartSvg(source);
+      if (!svg) continue; // not a flowchart — leave the source visible
+
+      const bar = el('div', 'artifact-bar');
+      const btnDiagram = el('button', 'artifact-btn is-on', 'Diagram');
+      const btnCode = el('button', 'artifact-btn', 'Code');
+      const btnCopy = el('button', 'artifact-btn artifact-open', 'Copy');
+      for (const b of [btnDiagram, btnCode, btnCopy]) b.type = 'button';
+      bar.append(btnDiagram, btnCode, btnCopy);
+
+      const figure = el('div', 'artifact-diagram');
+      const img = document.createElement('img');
+      img.alt = 'diagram';
+      img.src = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+      figure.appendChild(img);
+
+      const src = node.querySelector('.artifact-src');
+      node.insertBefore(bar, node.firstChild);
+      node.appendChild(figure);
+
+      const show = (diagram) => {
+        btnDiagram.classList.toggle('is-on', diagram);
+        btnCode.classList.toggle('is-on', !diagram);
+        figure.style.display = diagram ? 'block' : 'none';
+        if (src) src.style.display = diagram ? 'none' : 'block';
+      };
+      btnDiagram.addEventListener('click', () => show(true));
+      btnCode.addEventListener('click', () => show(false));
+      btnCopy.addEventListener('click', () => {
+        navigator.clipboard.writeText(source).then(() => {
+          btnCopy.textContent = 'Copied';
+          setTimeout(() => { btnCopy.textContent = 'Copy'; }, 1200);
+        }).catch(() => {});
+      });
+      show(true); // the picture is the point — show it first
+    } catch { /* leave the code block untouched */ }
+  }
+}
+
 export function mountArtifacts(root) {
   if (!root || !root.querySelectorAll) return;
+  mountDiagrams(root).catch(() => { /* the source stays visible */ });
   for (const node of root.querySelectorAll('.md-artifact-html:not([data-artifact-ready])')) {
     try {
       node.setAttribute('data-artifact-ready', '1');

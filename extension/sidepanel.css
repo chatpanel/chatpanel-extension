@@ -821,3 +821,28 @@ html.surface-tab body { max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px 
 .artifact-run { color: var(--accent, #5b5bf0); border-color: var(--accent-line, rgba(91,91,240,.32)); font-weight: 600; }
 .artifact-btn:disabled { opacity: .45; cursor: default; }
 .artifact-btn:disabled:hover { background: transparent; color: var(--muted, #646b76); }
+.artifact-diagram { padding: 10px; background: #fff; overflow-x: auto; }
+.artifact-diagram img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.md-artifact-mermaid { border: 1px solid var(--line, #e4e7ec); border-radius: 10px; overflow: hidden; margin: 10px 0; }
+.md-artifact-mermaid .artifact-src { margin: 0; border-radius: 0; display: none; }
+
+/* Syntax highlighting tokens — tuned for both themes via the shared palette. */
+.tok-com { color: #6b7280; font-style: italic; }
+.tok-str { color: #16a34a; }
+.tok-num { color: #c2410c; }
+.tok-kw  { color: #7c3aed; font-weight: 600; }
+.tok-fn  { color: #2563eb; }
+.tok-cls { color: #0891b2; }
+.tok-tag { color: #db2777; }
+.tok-atr { color: #ca8a04; }
+.tok-pun { color: var(--muted, #646b76); }
+@media (prefers-color-scheme: dark) {
+  .tok-com { color: #8b93a1; }
+  .tok-str { color: #6ee7a8; }
+  .tok-num { color: #fdba74; }
+  .tok-kw  { color: #c4b5fd; }
+  .tok-fn  { color: #93c5fd; }
+  .tok-cls { color: #67e8f9; }
+  .tok-tag { color: #f9a8d4; }
+  .tok-atr { color: #fde047; }
+}

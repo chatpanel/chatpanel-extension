@@ -36,6 +36,7 @@ export { createRegistry, REGISTRY_STATES } from './registry.js';
 export { defineSearchEngine, reconcileEngines, attemptOrder, ENGINE_KINDS, SearchEngineError } from './search-engines.js';
 export { defineToolGroup, createToolGroupRegistry, ToolGroupError } from './tool-groups.js';
 export { toolNeedFor } from './tool-need.js';
+export { parseFlowchart, layoutFlowchart, renderFlowchartSvg } from './flowchart.js';
 export {
   ACCESS_LOG_VERSION, ACCESS_LOG_MAX, redactAccessArgs, makeAccessEvent,
   createAccessLog, makeStorageTier, formatBytes,
