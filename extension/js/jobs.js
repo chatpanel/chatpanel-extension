@@ -26,6 +26,17 @@ export const RUNS_KEY = 'chatpanel:jobRuns';     // id -> last OCCURRENCE run (n
 export const CLAIMS_KEY = 'chatpanel:jobClaims'; // occurrence keys already taken, bounded
 export const PENDING_KEY = 'chatpanel:jobPending'; // occurrences waiting for a window
 export const COUNTS_KEY = 'chatpanel:jobCounts';   // id -> { day, n } — the spend ceiling
+export const FIRED_KEY = 'chatpanel:jobFired';     // id -> ms of the last event-triggered run
+export const LOG_KEY = 'chatpanel:jobLog';         // id -> [{ at, why, convId, ok, note }]
+
+// Per job, because the question is always "what did THIS one do", and because a global log
+// would be dominated by whichever job runs most often.
+export const MAX_LOG_PER_JOB = 25;
+
+// A phrase said three times in a minute is one thing happening, not three. Without this, a
+// meeting that keeps returning to a topic runs the same skill on every mention — which is
+// what "it triggers on every utterance" feels like even after the matching is correct.
+export const DEFAULT_COOLDOWN_MS = 90_000;
 
 // A job that fails must back off, not retry in a tight loop. The autocomplete-against-a-
 // stopped-model failure (65 turns in 2–9ms) is what an unattended loop looks like, and a
@@ -71,6 +82,9 @@ export async function removeJob(id) {
   const runs = await read(RUNS_KEY);
   delete runs[id];
   await write(RUNS_KEY, runs);
+  const log = await read(LOG_KEY);
+  delete log[id];
+  await write(LOG_KEY, log); // orphaned history would be a quiet leak, like widget state
 }
 
 export async function setJobEnabled(id, enabled) {
@@ -113,6 +127,41 @@ export async function claimOccurrence(key) {
 }
 
 const dayOf = (ts) => new Date(ts).toDateString();
+
+/**
+ * What a job DID, so it can be found after the fact.
+ *
+ * A run that only announced itself in a toast is a run nobody can see: miss the toast — or
+ * be away from the machine, which is the whole point of a job — and there is no way back to
+ * what triggered it or what came out. The conversation id is the link: the output already
+ * lives in chat history, this is what makes it reachable from the job that caused it.
+ */
+export async function logRun(jobId, entry) {
+  const log = await read(LOG_KEY);
+  const list = Array.isArray(log[jobId]) ? log[jobId] : [];
+  list.unshift({ at: Date.now(), ...entry });
+  log[jobId] = list.slice(0, MAX_LOG_PER_JOB);
+  await write(LOG_KEY, log);
+}
+
+export async function runHistory(jobId) {
+  const log = await read(LOG_KEY);
+  return Array.isArray(log[jobId]) ? log[jobId] : [];
+}
+
+/** Has this job fired too recently to fire again? Event triggers only — a schedule is exact. */
+export async function withinCooldown(job, now = Date.now()) {
+  const fired = await read(FIRED_KEY);
+  const last = fired[job.id] || 0;
+  const ms = Number(job.limits?.cooldownMs) >= 0 ? Number(job.limits.cooldownMs) : DEFAULT_COOLDOWN_MS;
+  return !last || now - last >= ms;
+}
+
+export async function markFired(jobId, now = Date.now()) {
+  const fired = await read(FIRED_KEY);
+  fired[jobId] = now;
+  await write(FIRED_KEY, fired);
+}
 
 /**
  * Has this job already run as often today as it is allowed to?
@@ -303,7 +352,7 @@ export { occurrenceKey };
  * part-way through, and carrying them to another would suppress a run that machine never did.
  */
 export async function exportJobs() {
-  return { jobs: await read(JOBS_KEY), runs: await read(RUNS_KEY) };
+  return { jobs: await read(JOBS_KEY), runs: await read(RUNS_KEY), log: await read(LOG_KEY) };
 }
 
 export async function importJobs(data, { mode = 'merge' } = {}) {
@@ -323,7 +372,12 @@ export async function importJobs(data, { mode = 'merge' } = {}) {
   for (const [id, at] of Object.entries(data.runs || {})) {
     if (current[id]) runs[id] = Math.max(runs[id] || 0, Number(at) || 0);
   }
+  const log = mode === 'replace' ? {} : await read(LOG_KEY);
+  for (const [id, list] of Object.entries(data.log || {})) {
+    if (current[id] && Array.isArray(list)) log[id] = list.slice(0, MAX_LOG_PER_JOB);
+  }
   await write(JOBS_KEY, current);
   await write(RUNS_KEY, runs);
+  await write(LOG_KEY, log);
   return n;
 }

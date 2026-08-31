@@ -1107,6 +1107,9 @@ async function init() {
       .then((m) => m.wireJobsPane({
         registerPane,
         toast,
+        // The pane lists what each job produced; opening one is the panel's business, not
+        // the pane's — it does not know what a conversation is.
+        openConversation: (id) => openConversation(id),
         // Read at open time, not captured: a skill written after the panel loaded should
         // appear in the picker without a reload.
         skills: () => enabledSkills(state.settings?.skills),
@@ -3472,6 +3475,7 @@ async function runJobTurn(job, { why = '', event = null, match = null } = {}) {
   conv.messages.push({ id: uid(), role: 'user', content: instruction, ts: now, hidden: true });
   const assistant = { id: uid(), role: 'assistant', content: '', ts: now, pending: true };
   conv.messages.push(assistant);
+  let failed = '';
   try {
     const resolved = resolveTarget(agentForConv(conv), state.settings);
     const tools = await toolsetFor(resolved, { userText: instruction, pageTools: false });
@@ -3489,9 +3493,19 @@ async function runJobTurn(job, { why = '', event = null, match = null } = {}) {
     assistant.content = out.trim() || '(no output)';
   } catch (e) {
     assistant.content = `⚠ ${e?.message || 'failed'}`;
+    failed = e?.message || 'failed';
   } finally {
     assistant.pending = false;
     await saveConversation(conv).catch(() => {});
+    // Findable afterwards, not just announceable now. A toast you were not there to see is
+    // the normal case for a job — that is what a job IS — so the run is recorded against the
+    // job with the reason it fired and a way back to what it produced.
+    await (await jobs()).logRun(job.id, {
+      why,
+      convId: conv.id,
+      ok: !failed,
+      note: failed || assistant.content.slice(0, 140),
+    }).catch(() => {});
   }
   toastAction(`${job.name} ran${why ? ` — ${why}` : ''}`, 'Open', () => openConversation(conv.id), 6000);
 }
@@ -3581,8 +3595,16 @@ async function fireMeetingTrigger(event, ctx) {
       if (!(await m.withinCooldown(hit.job))) continue;
       await m.countRun(hit.job.id);
       await m.markFired(hit.job.id);
-      if (hit.job.action.kind === 'notify') { toast(`${hit.job.name} — ${hit.match.why}`, 5000); continue; }
-      if (hit.job.action.kind === 'monitor') { await addMonitor({ kind: 'qa', prompt: hit.job.action.prompt }); continue; }
+      if (hit.job.action.kind === 'notify') {
+        toast(`${hit.job.name} — ${hit.match.why}`, 5000);
+        await m.logRun(hit.job.id, { why: hit.match.why, ok: true, note: hit.job.action.body || '' });
+        continue;
+      }
+      if (hit.job.action.kind === 'monitor') {
+        await addMonitor({ kind: 'qa', prompt: hit.job.action.prompt });
+        await m.logRun(hit.job.id, { why: hit.match.why, ok: true, note: `Started a monitor: ${hit.job.action.prompt}` });
+        continue;
+      }
       await runJobTurn(hit.job, { why: hit.match.why, event, match: hit.match });
     }
   } catch (e) {

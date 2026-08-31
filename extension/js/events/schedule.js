@@ -160,6 +160,32 @@ export function createTriggerRegistry(triggers = []) {
 const words = (s) => String(s || '').toLowerCase().match(/[\p{L}\p{N}']+/gu) || [];
 const norm = (s) => String(s || '').trim().toLowerCase();
 
+/** Shorter than this and ordinary speech contains it constantly. */
+export const MIN_PHRASE_CHARS = 3;
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Whole-word containment, not `includes`.
+ *
+ * A substring match turns "in" into a trigger that fires on interview, thing, going and
+ * finding — which is indistinguishable, from the user's chair, from a trigger that ignores
+ * its phrase entirely. That is exactly how it was reported: "for every utterance I say, it
+ * runs". Boundaries are only required at ends that are word characters, so "action item"
+ * still matches "an action item," and ":shipped" still matches ":shipped".
+ */
+export function saidIn(text, phrase) {
+  const p = norm(phrase);
+  if (p.length < MIN_PHRASE_CHARS) return false;
+  const left = /[\p{L}\p{N}]/u.test(p[0]) ? '\\b' : '';
+  const right = /[\p{L}\p{N}]/u.test(p[p.length - 1]) ? '\\b' : '';
+  try {
+    return new RegExp(`${left}${escapeRe(p)}${right}`, 'iu').test(String(text || ''));
+  } catch {
+    return norm(text).includes(p); // a phrase that will not compile still gets a plain match
+  }
+}
+
 // Whose speech a meeting trigger cares about. The default is 'anyone' because a phrase
 // trigger is usually watching for what OTHERS say — unlike a spoken command, which is only
 // ever the owner's (see voice-intents.js).
@@ -216,12 +242,14 @@ export const phraseTrigger = defineTrigger({
   kind: 'meeting',
   watches: ['meeting.transcript.delta'],
   matches: (event, params = {}, ctx = {}) => {
-    const any = (params.any || []).map(norm).filter(Boolean);
-    if (!any.length) return null; // a phrase trigger with no phrase would fire on every word
+    // Both guards exist because their absence looks the same to a user: a trigger that fires
+    // on everything. An empty list would match every line; a one- or two-letter phrase
+    // effectively does too.
+    const any = (params.any || []).map(norm).filter((p) => p.length >= MIN_PHRASE_CHARS);
+    if (!any.length) return null;
     for (const seg of event.segments || []) {
       if (!speakerAllowed(params.speaker, seg.speaker, ctx)) continue;
-      const text = norm(seg.text);
-      const hit = any.find((p) => text.includes(p));
+      const hit = any.find((p) => saidIn(seg.text, p));
       if (hit) return { why: `“${hit}” said by ${seg.speaker || 'someone'}`, segment: seg, phrase: hit };
     }
     return null;

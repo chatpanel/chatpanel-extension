@@ -184,3 +184,69 @@ const local = (days, hour, minute = 0) => new Date(2026, 5, 1 + days, hour, minu
 }
 
 console.log('jobs tests passed');
+
+// ── the "it fires on every utterance" report ───────────────────────────────
+{
+  // Reported from a live meeting: an "Interview" job on a phrase trigger ran on every line.
+  // Three separate causes, each of which alone produces that symptom.
+  const { phraseTrigger: pt } = await import('../extension/js/events/schedule.js');
+
+  // 1. Substring matching. Fixed in the shared trigger — asserted there — and inherited here.
+  await jobs.putJob({
+    id: 'j-int', name: 'Interview', trigger: pt.id, params: { any: ['interview'], speaker: 'anyone' },
+    action: { kind: 'skill', skillId: 'sk-int' }, createdAt: 1,
+  });
+  const delta = (text) => ({ type: 'meeting.transcript.delta', meetingId: 'm1', segments: [{ t: Date.now(), speaker: 'Alex Rivera', text }] });
+  assert.equal((await jobs.jobsForMeetingEvent(delta('so how are we doing on the plan'), {})).length, 0,
+    'an ordinary line must not fire a phrase job');
+  assert.equal((await jobs.jobsForMeetingEvent(delta('starting the interview now'), {})).length, 1);
+
+  // 2. A cooldown, so a topic a meeting keeps returning to is one thing happening, not six.
+  const job = await jobs.getJob('j-int');
+  assert.equal(await jobs.withinCooldown(job), true, 'a job that has never fired is ready');
+  await jobs.markFired('j-int');
+  assert.equal(await jobs.withinCooldown(job), false, 'and immediately after firing it is not');
+  assert.equal(await jobs.withinCooldown(job, Date.now() + jobs.DEFAULT_COOLDOWN_MS), true);
+  // A job may ask for no cooldown at all, but must say so.
+  assert.equal(await jobs.withinCooldown({ id: 'j-int', limits: { cooldownMs: 0 } }), true);
+}
+
+// 3. Only NEW speech reaches the triggers — the panel filters the delta before matching.
+{
+  const { readFileSync } = await import('node:fs');
+  const side = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  assert.match(side, /const freshSegments = segments\.filter\(\(sg\) => \(sg\.t \|\| 0\) > sinceTs\)/,
+    'the delta re-sends recent speech, so a matched line would match again on the next flush');
+  // And a triggered job is told what it was triggered BY — without it an "Interview" skill
+  // runs with no idea what was said.
+  assert.match(side, /async function meetingJobContext/, 'a meeting-triggered job gets the meeting');
+  assert.match(side, /WHAT TRIGGERED THIS/, 'including the line that fired it');
+  assert.match(side, /event\.type === 'meeting\.ended'/, 'and the whole transcript once it has ended');
+}
+
+console.log('jobs: the every-utterance report is covered');
+
+// ── a run has to be findable after the toast is gone ───────────────────────
+{
+  // Being away is the reason a job exists, so "it announced itself in a toast" is not a way
+  // to see what happened. Every run is recorded against its job, with the reason it fired
+  // and a way back to what it produced.
+  await jobs.logRun('j-int', { why: '“interview” said by Alex Rivera', convId: 'c1', ok: true, note: 'Summarised the answers' });
+  await jobs.logRun('j-int', { why: 'scheduled', convId: 'c2', ok: false, note: 'model unreachable' });
+  const hist = await jobs.runHistory('j-int');
+  assert.equal(hist.length, 2);
+  assert.equal(hist[0].convId, 'c2', 'newest first');
+  assert.equal(hist[0].ok, false, 'a failed run is kept — "it did nothing" needs an answer');
+  assert.match(hist[1].why, /interview/, 'and the reason it fired is what a chat transcript cannot tell you');
+
+  // Bounded, so a chatty job cannot grow without limit.
+  for (let i = 0; i < jobs.MAX_LOG_PER_JOB + 10; i++) await jobs.logRun('j-int', { why: `n${i}`, ok: true });
+  assert.equal((await jobs.runHistory('j-int')).length, jobs.MAX_LOG_PER_JOB);
+
+  // It travels with a backup, and dies with the job.
+  assert.ok((await jobs.exportJobs()).log['j-int']);
+  await jobs.removeJob('j-int');
+  assert.deepEqual(await jobs.runHistory('j-int'), [], 'orphaned history would be a quiet leak');
+}
+
+console.log('jobs: runs are findable after the fact');

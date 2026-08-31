@@ -12,10 +12,10 @@
 
 import { icon } from './icons.js';
 import {
-  listJobs, putJob, removeJob, setJobEnabled, lastRuns, whenNext, formatDuration,
+  listJobs, putJob, removeJob, setJobEnabled, lastRuns, whenNext, formatDuration, runHistory,
 } from './jobs.js';
 import {
-  timerTrigger, createTriggerRegistry, BUILTIN_TRIGGERS, meetingStartedTrigger,
+  timerTrigger, createTriggerRegistry, BUILTIN_TRIGGERS, meetingStartedTrigger, meetingEndedTrigger,
   personJoinedTrigger, phraseTrigger, topicTrigger, questionTrigger,
 } from './events/schedule.js';
 
@@ -23,6 +23,7 @@ const triggers = createTriggerRegistry(BUILTIN_TRIGGERS);
 let el = null;
 let onToast = () => {};
 let getSkills = () => [];
+let openConv = null;
 
 // The triggers worth offering in a form, in the order someone would think of them. The rest
 // of the registry stays available to code — this list is about what fits in a narrow panel
@@ -33,6 +34,9 @@ const WHEN_OPTIONS = [
   { id: 'weekly', label: 'Every week on…', kind: 'timer' },
   { id: 'once', label: 'Once, at…', kind: 'timer' },
   { id: meetingStartedTrigger.id, label: 'When a meeting starts', kind: 'event' },
+  // The one people ask for first — "when the call is over, do the write-up" — and the only
+  // meeting trigger whose job has the WHOLE transcript to work from.
+  { id: meetingEndedTrigger.id, label: 'When a meeting ends', kind: 'event' },
   { id: personJoinedTrigger.id, label: 'When someone joins', kind: 'event', field: 'names', placeholder: 'Alex Rivera, Jordan Blake (blank = anyone)' },
   { id: phraseTrigger.id, label: 'When a phrase is said', kind: 'event', field: 'any', placeholder: 'action item, follow up', required: true, speaker: true },
   { id: topicTrigger.id, label: 'When someone talks about…', kind: 'event', field: 'terms', placeholder: 'pricing, renewal', required: true, speaker: true },
@@ -236,8 +240,59 @@ export async function renderJobs() {
     body.className = 'mon-card-b';
     body.textContent = describe(job);
     card.appendChild(body);
+    card.appendChild(await historyOf(job));
     list.appendChild(card);
   }
+}
+
+/**
+ * What this job has actually done.
+ *
+ * A job announces itself in a toast, and a toast is exactly what someone is not there for —
+ * being away is the reason the job exists. Folded shut so the list stays a list, and every
+ * run that produced an answer opens it.
+ */
+async function historyOf(job) {
+  const runs = await runHistory(job.id);
+  const wrap = document.createElement('details');
+  wrap.className = 'mon-earlier job-runs';
+  const sum = document.createElement('summary');
+  sum.textContent = runs.length
+    ? `${runs.length} run${runs.length === 1 ? '' : 's'} · last ${timeAgo(runs[0].at)}`
+    : 'No runs yet';
+  wrap.appendChild(sum);
+  if (!runs.length) return wrap;
+  for (const run of runs) {
+    const row = document.createElement('div');
+    row.className = 'job-run';
+    const when = document.createElement('span');
+    when.className = 'mon-when';
+    when.textContent = new Date(run.at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const what = document.createElement('span');
+    what.className = 'job-run-why';
+    // The trigger reason first: "why did this run" is the question a surprising run raises,
+    // and it is the one thing a chat transcript cannot answer.
+    what.textContent = [run.why, run.note].filter(Boolean).join(' — ').slice(0, 180) || 'ran';
+    if (!run.ok) what.classList.add('job-run-bad');
+    row.append(what, when);
+    if (run.convId && openConv) {
+      const open = document.createElement('button');
+      open.className = 'mon-skill-btn';
+      open.textContent = 'Open';
+      open.onclick = () => { closeJobs(); openConv(run.convId); };
+      row.appendChild(open);
+    }
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+function timeAgo(at) {
+  const s = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86_400) return `${Math.round(s / 3600)}h ago`;
+  return new Date(at).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
 function describe(job) {
@@ -256,9 +311,10 @@ export function closeJobs() { el?.classList.add('hidden'); }
 export function jobsOpen() { return !!el && !el.classList.contains('hidden'); }
 
 /** Register the rail pane. The panel owns the rail; this owns everything behind the button. */
-export function wireJobsPane({ registerPane, toast = () => {}, skills = () => [] } = {}) {
+export function wireJobsPane({ registerPane, toast = () => {}, skills = () => [], openConversation = null } = {}) {
   onToast = toast;
   getSkills = skills;
+  openConv = openConversation;
   build();
   registerPane({
     id: 'jobs',
