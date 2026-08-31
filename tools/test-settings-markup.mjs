@@ -116,9 +116,53 @@ const workspace = html.match(/data-panel="workspace">([\s\S]*?)<section class="p
 assert.equal((workspace.match(/<details class="ws-section"/g) || []).length, 3, 'Notes, Meetings and History are collapsible sections');
 assert.equal((workspace.match(/<summary class="ws-heading"/g) || []).length, 3, 'each section heading is its summary');
 assert.equal((workspace.match(/<details/g) || []).length, (workspace.match(/<\/details>/g) || []).length, 'section details are balanced');
-assert.match(js, /el\.open = true; el\.scrollIntoView/, 'navigating to a section opens it first');
+assert.match(
+  js,
+  /for \(let n = node; n; n = n\.parentElement\) if \(n\.tagName === 'DETAILS'\) n\.open = true;/,
+  'navigating to a section opens it — and every section above it — first',
+);
 assert.match(js, /cp:settings:ws-collapsed/, 'collapse state is remembered');
 assert.match(js, /catch \{ \/\* private window/, 'and a blocked localStorage does not throw');
 assert.match(css, /details\.ws-section\[open\] > summary\.ws-heading::after/, 'the chevron reflects open/closed');
+// Privacy and Gateway are ONE tab. They answer the same question — what leaves this device —
+// and split across two tabs they duplicated the NER model catalog outright. The merge is only
+// safe while every old entry point still lands where it used to, so this block pins the three
+// things that could silently break: the deep-link, the sections, and the single catalog.
+const privacy = html.match(/data-panel="privacy">([\s\S]*?)<section class="panel/)?.[1] || '';
+assert.doesNotMatch(html, /data-tab="gateway"/, 'the Gateway tab button is gone — it is a section now');
+assert.match(html, /data-tab="privacy"[^>]*>[\s\S]{0,120}?Privacy &amp; Gateway/, 'the merged tab names both');
+assert.match(
+  js,
+  /gateway: \{ tab: 'privacy', section: 'pv-gateway' \}/,
+  'settings.html#gateway still resolves — to the Privacy tab, gateway section',
+);
+for (const id of ['pv-redaction', 'pv-boundary', 'pv-gateway', 'pv-models']) {
+  assert.match(privacy, new RegExp(`<details class="ws-section" id="${id}"`), `${id} is a collapsible section`);
+}
+assert.equal(
+  (privacy.match(/<summary class="ws-heading"/g) || []).length,
+  (privacy.match(/<details class="ws-section"/g) || []).length,
+  'every privacy section heading is its summary',
+);
+assert.equal(
+  (privacy.match(/<details/g) || []).length,
+  (privacy.match(/<\/details>/g) || []).length,
+  'privacy section details are balanced',
+);
+// One in-process NER, so one catalog. The Privacy detector links to it instead of rendering a
+// second copy that could show a different active model than the one actually loaded.
+assert.equal((html.match(/id="gw-models"/g) || []).length, 1, 'exactly one NER model catalog');
+assert.doesNotMatch(html, /id="priv-models"/, 'the duplicate NER catalog is gone');
+assert.doesNotMatch(js, /PRIV_NER/, 'and so is the context that rendered it');
+assert.match(privacy, /data-jump="pv-models"/, 'the detector links to the one catalog');
+assert.match(js, /function wireSectionJumps\(\)/, 'data-jump links are wired');
+// Nothing was dropped in the merge: every control the two tabs owned still exists.
+for (const id of ['gw-url', 'gw-check', 'gw-status', 'gw-token', 'gw-warm-search', 'gw-backup-key',
+  'gw-preview', 'gw-config', 'gw-tier', 'gw-det-backend', 'gw-dictionary', 'gw-dests', 'gw-tools-data',
+  'gw-stt-models', 'gw-diarize-models', 'gw-log', 'gw-logs', 'gw-origins', 'gw-pro-activate', 'gw-save',
+  'gw-test-run', 'internal-guard', 'internal-patterns', 'internal-ceiling', 'priv-mode', 'priv-applyto',
+  'priv-detection', 'priv-dictionary', 'priv-scope-chat', 'priv-tooldata', 'priv-flow-run']) {
+  assert.match(privacy, new RegExp(`id="${id}"`), `${id} survived the merge`);
+}
 
 console.log('settings markup tests passed');

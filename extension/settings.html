@@ -21,8 +21,7 @@
           <button class="tab" data-tab="mcp"><span class="tab-ico" data-icon="tools"></span> Tools</button>
           <button class="tab" data-tab="skills"><span class="tab-ico" data-icon="skills"></span> Skills</button>
           <button class="tab" data-tab="workspace"><span class="tab-ico" data-icon="folder"></span> Workspace</button>
-          <button class="tab" data-tab="privacy"><span class="tab-ico" data-icon="privacy"></span> Privacy</button>
-          <button class="tab" data-tab="gateway"><span class="tab-ico" data-icon="lock"></span> Gateway</button>
+          <button class="tab" data-tab="privacy"><span class="tab-ico" data-icon="privacy"></span> Privacy &amp; Gateway</button>
           <button class="tab" data-tab="activity"><span class="tab-ico" data-icon="history-clock"></span> Activity &amp; usage</button>
           <button class="tab" data-tab="plugins"><span class="tab-ico" data-icon="plug"></span> Plugins</button>
           <button class="tab" data-tab="license"><span class="tab-ico" data-icon="sparkles"></span> Account</button>
@@ -493,7 +492,8 @@ npx @chatpanel/bridge</code></pre>
 
         <!-- 1 · REDACTION (in the extension itself) -->
         <details class="ws-section" id="pv-redaction" open>
-        <summary class="ws-heading"><span class="inline-ico" data-icon="privacy"></span> Redaction — what a model actually sees</summary>
+        <summary class="ws-heading"><span class="inline-ico" data-icon="privacy"></span> Redaction — what a model actually sees
+          <span class="pv-badge" id="pv-redaction-badge"></span></summary>
         <div class="card">
           <div class="card-head">
             <h2>Redaction <span class="sub">— PII replaced before it reaches a model</span></h2>
@@ -621,7 +621,8 @@ npx @chatpanel/bridge</code></pre>
 
         <!-- 2 · DATA BOUNDARY -->
         <details class="ws-section" id="pv-boundary">
-        <summary class="ws-heading"><span class="inline-ico" data-icon="lock"></span> Data boundary — internal sites stay on this device</summary>
+        <summary class="ws-heading"><span class="inline-ico" data-icon="lock"></span> Data boundary — internal sites stay on this device
+          <span class="pv-badge" id="pv-boundary-badge"></span></summary>
         <div class="card">
           <div class="card-head">
             <h2>Internal sites <span class="sub">— content from these never leaves your machine</span></h2>
@@ -657,7 +658,8 @@ npx @chatpanel/bridge</code></pre>
 
         <!-- 3 · GATEWAY -->
         <details class="ws-section" id="pv-gateway">
-        <summary class="ws-heading"><span class="inline-ico" data-icon="plug"></span> Privacy Gateway — a local process that extends all of the above</summary>
+        <summary class="ws-heading"><span class="inline-ico" data-icon="plug"></span> Privacy Gateway — a local process that extends all of the above
+          <span class="pv-badge" id="pv-gateway-badge">checking…</span></summary>
 
         <div class="card">
           <div class="card-head">
@@ -695,6 +697,7 @@ npx @chatpanel/bridge</code></pre>
               <li>🔀 <strong>Model routing</strong> — send OpenCode · Pi · aider through your Codex / Claude Code login via the bridge, redacted on the way out and restored in the reply.</li>
               <li>🔎 <strong>Full-history search</strong> — index your chats &amp; meetings locally so on-device agents can search your whole corpus.</li>
             </ul>
+            <p class="muted tiny">Free &amp; open-source. Install it with the commands below, then this section manages all of it.</p>
           </div>
 
           <details class="gw-help">
@@ -738,12 +741,14 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
         </details><!-- /#gw-sec-history -->
 
         <div id="gw-config" class="hidden">
+          <div class="card gw-flow-card">
           <div class="gw-flow">
             <div class="gw-flow-box"><b>CLIENTS</b><span class="muted sm">OpenCode · Pi · aider<br>→ <code>:4320/v1</code></span></div>
             <div class="gw-flow-arrow">⟶</div>
             <div class="gw-flow-box gw-flow-mid"><b>CHATPANEL GATEWAY</b><span class="muted sm">redact → route → restore</span></div>
             <div class="gw-flow-arrow">⟶</div>
             <div class="gw-flow-box"><b>DESTINATIONS</b><span class="muted sm" id="gw-flow-dests">your APIs &amp; agents</span></div>
+          </div>
           </div>
 
           <!-- 3a · gateway-side redaction (its own engine + dictionary; separate from the

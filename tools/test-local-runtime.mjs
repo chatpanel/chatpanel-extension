@@ -31,7 +31,14 @@ assert.doesNotMatch(fn, /gateway.*not running.*error|✕ gateway/i, 'a stopped g
 // wired to render on tab open and on recheck
 assert.match(js, /renderLocalRuntime\(\); \/\/ the unified/, 'renders when the Agents tab opens');
 assert.match(js, /\$\('local-recheck'\)\.onclick = \(\) => renderLocalRuntime\(\{ recheck: true \}\)/, 'Recheck re-probes both');
-assert.match(js, /data-tab="gateway"\]\'\)\?\.click\(\)/, 'the gateway link switches tabs, does not navigate');
+// The Gateway is a SECTION of the Privacy tab now, not a tab of its own — the link still
+// moves within the page (opens that tab + expands the section), it never navigates away.
+assert.match(js, /openGatewaySection\(\)/, 'the gateway link jumps in-page, does not navigate');
+assert.match(
+  js,
+  /function openGatewaySection\(\) \{[\s\S]*?data-tab="privacy"[\s\S]*?jumpToSection\('pv-gateway'\)/,
+  'openGatewaySection opens the Privacy tab and expands the gateway section',
+);
 
 // styled: a running row gets the ok accent, off is neutral (not red)
 assert.match(css, /\.runtime-row\.on \{[^}]*--ok/, 'a running row uses the ok color');

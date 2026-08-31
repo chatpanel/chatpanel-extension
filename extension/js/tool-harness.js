@@ -77,6 +77,16 @@ export function placeholderToolNote({ toolData = 'real' } = {}) {
   return intro + remote + rules;
 }
 
+// Tools whose results come from the PUBLIC web rather than from the user's own machine or
+// accounts. Deliberately a short, explicit allowlist rather than a heuristic: being wrong in
+// the "public" direction would send real PII to a model, so a tool earns its place here only
+// when its output is public by construction. Page tools are NOT here — the user's open tab
+// may be an internal app.
+const PUBLIC_SOURCE_TOOLS = new Set(['web_search', 'web_fetch', 'fetch_url']);
+export function isPublicSourceTool(name) {
+  return PUBLIC_SOURCE_TOOLS.has(String(name || '').toLowerCase());
+}
+
 export function makeToolHarness({ vault = null, toolData = 'real', redactOpts = null, redactResults = true, remoteTools = null } = {}) {
   const on = !!vault;                       // privacy enabled for this turn?
   const redactRemote = toolData === 'redactRemote';
@@ -109,6 +119,19 @@ export function makeToolHarness({ vault = null, toolData = 'real', redactOpts = 
     // via a nested field the old string/{text}-only path skipped.
     toModelResult(name, raw) {
       if (!on || !redactResults || !redactOpts) return raw;
+      // PUBLIC RESULTS ARE NOT THE USER'S DATA.
+      //
+      // Redaction exists to stop the user's information LEAVING the device. Text coming back
+      // from a public web search never left it — the model's provider could fetch the same
+      // page itself — so rewriting it buys no privacy and actively corrupts facts: a
+      // dictionary pseudonym (Suresh → John) renamed a public actor inside search results,
+      // and the answer came back about "Mysore Seshaiah John Babu Naidu". The detectors
+      // (emails, phones, keys) also fire on unrelated strangers' details in fetched pages.
+      //
+      // So public-source results pass through intact. Everything local or private — history,
+      // meetings, notes, the user's own page, any MCP server — is redacted exactly as before,
+      // which is where a leak could actually happen.
+      if (isPublicSourceTool(name)) return raw;
       return redactResultShape(raw, vault, redactOpts);
     },
 

@@ -59,9 +59,10 @@ body {
 .tab.active::after { content: ""; position: absolute; left: 13px; right: 13px; bottom: -1px; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent); }
 .tab .tab-ico { font-size: 14px; opacity: .9; }
 
-/* Workspace tab — Notes / Meetings / History grouped as sections. A subtle
-   uppercase divider labels each group; scroll-margin lets deep-links (#notes,
-   #meetings, #history) land the section below the sticky tab bar. */
+/* Collapsible sections — Workspace (Notes / Meetings / History) and Privacy
+   (Redaction / Data boundary / Gateway). A subtle uppercase divider labels each
+   group; scroll-margin lets deep-links (#notes, #meetings, #history, #gateway)
+   land the section below the sticky tab bar. */
 .ws-section { scroll-margin-top: 64px; }
 .ws-section + .ws-section { margin-top: 8px; }
 /* Collapsible section. The heading is the summary; a chevron on the right rotates open. */
@@ -80,6 +81,52 @@ details.ws-section:not([open]) { padding-bottom: 4px; }
   color: var(--muted);
 }
 .ws-heading .inline-ico { font-size: 14px; opacity: .85; }
+
+/* Privacy tab — an overview strip that names the three layers and jumps to each,
+   so a tab with five collapsed sections still answers "where do I go" at a glance. */
+.pv-intro { padding-bottom: 16px; }
+.pv-map { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin-top: 2px; }
+.pv-map-item {
+  appearance: none; text-align: left; font: inherit; cursor: pointer; display: grid; gap: 3px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--field); color: var(--text); transition: border-color .12s ease, background .12s ease;
+}
+.pv-map-item:hover { border-color: var(--accent-line); background: var(--accent-weak); }
+.pv-map-n {
+  display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  border-radius: 50%; background: var(--accent); color: #fff; font-size: 10.5px; font-weight: 700;
+}
+.pv-map-item b { font-size: 13.5px; font-weight: 650; }
+.pv-map-opt {
+  margin-left: 6px; padding: 1px 6px; border-radius: 999px; font-size: 9.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .04em; vertical-align: middle;
+  color: var(--muted); background: rgba(127,127,127,.16);
+}
+.pv-map-d { font-size: 12px; line-height: 1.45; color: var(--muted); }
+/* State at a glance on a collapsed section heading: is redaction on, is the gateway up. */
+.pv-badge {
+  margin-left: 8px; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700;
+  letter-spacing: .03em; text-transform: none; white-space: nowrap;
+  color: var(--muted); background: rgba(127,127,127,.16); border: 1px solid transparent;
+}
+.pv-badge.on { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); border-color: color-mix(in srgb, var(--ok) 34%, transparent); }
+.pv-badge.warn { color: var(--danger); background: var(--danger-weak); border-color: color-mix(in srgb, var(--danger) 34%, transparent); }
+/* A <details> used as a sub-block inside a card (the two end-to-end testers). */
+summary.pv-sub-summary {
+  cursor: pointer; list-style: none; font-size: 11px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--accent); opacity: .9; margin-bottom: 4px;
+}
+summary.pv-sub-summary::-webkit-details-marker { display: none; }
+summary.pv-sub-summary::before { content: "▸ "; display: inline-block; transition: transform .15s ease; }
+details[open] > summary.pv-sub-summary::before { content: "▾ "; }
+summary.pv-sub-summary .sub { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--muted); }
+/* Gateway "Save to gateway" — the panel is long, so keep the button in reach from
+   any section above it rather than stranded at the bottom of a five-section scroll. */
+.gw-savebar {
+  position: sticky; bottom: 12px; z-index: 4; display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap; margin: 4px 0 18px; padding: 11px 14px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong); background: var(--elev); box-shadow: var(--shadow-lg);
+}
 
 /* Cards ------------------------------------------------------------------- */
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 22px; margin-bottom: 18px; box-shadow: var(--shadow); }
@@ -673,6 +720,10 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 .gw-cmd code { display:block; background:none; padding:0; font-family:var(--mono); font-size:12px;
   line-height:1.55; white-space:pre; color:var(--text); }
 .gw-flow { display:flex; align-items:stretch; gap:6px; margin:10px 0 14px; flex-wrap:wrap; }
+/* The routing diagram heads the gateway config — same card frame as everything below it,
+   so it reads as part of the page rather than three boxes floating on the background. */
+.gw-flow-card { padding: 14px 16px; }
+.gw-flow-card .gw-flow { margin: 0; }
 .gw-flow-box { flex:1 1 0; min-width:130px; display:flex; flex-direction:column; gap:3px;
   padding:10px 12px; border:1px solid #262b36; border-radius:10px; background:#171a22; text-align:center; }
 .gw-flow-box b { font-size:11px; letter-spacing:.04em; color:#e8eaed; }

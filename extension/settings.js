@@ -145,16 +145,11 @@ function wireTabs() {
     if (name === 'plugins') { renderPlugins(); loadRoutingForm(); renderRouting(); renderRoutingModels(); }
   };
   const exists = (name) => !!document.querySelector(`.tab[data-tab="${name}"]`);
-  // Notes/Meetings/History are merged into one "Workspace" tab as sections. Keep
-  // the old deep-links (#notes, #meetings, #history — used by notes.js/meetings.js
-  // and any stored last-tab) working by resolving them to the workspace tab and
-  // scrolling to the matching section.
-  const WS_ALIAS = { notes: 'ws-notes', meetings: 'ws-meetings', history: 'ws-history' };
 
-  // Remember which Workspace sections a person collapsed. A per-viewer convenience, so
-  // localStorage is the right home — every read and write guarded, because a private window
-  // or blocked site data throws rather than returning empty.
-  function wireWorkspaceSections() {
+  // Remember which collapsible sections a person closed (Workspace + Privacy). A per-viewer
+  // convenience, so localStorage is the right home — every read and write guarded, because a
+  // private window or blocked site data throws rather than returning empty.
+  function wireCollapsibleSections() {
     const KEY = 'cp:settings:ws-collapsed';
     let collapsed = new Set();
     try { collapsed = new Set(JSON.parse(localStorage.getItem(KEY) || '[]')); } catch { /* no store */ }
@@ -170,11 +165,9 @@ function wireTabs() {
     }
   }
   const showAlias = (name) => {
-    show('workspace');
-    const el = document.getElementById(WS_ALIAS[name]);
-    // A collapsed section is not a scroll target — open it first, or the link lands on a
-    // closed summary and the thing the user asked for is still hidden.
-    if (el) { el.open = true; el.scrollIntoView({ block: 'start' }); }
+    const a = TAB_ALIAS[name];
+    show(a.tab);
+    jumpToSection(a.section, { flash: false });
   };
   const select = (name) => {
     show(name);
@@ -190,11 +183,11 @@ function wireTabs() {
     select(t.dataset.tab);
     window.scrollTo({ top: 0 });
   }));
-  wireWorkspaceSections();
+  wireCollapsibleSections();
   // Priority: an explicit #hash (e.g. the Pro chip opens #license), else the
   // last-opened tab, else the default (API).
   const fromHash = (location.hash || '').replace('#', '');
-  if (fromHash && WS_ALIAS[fromHash]) {
+  if (fromHash && TAB_ALIAS[fromHash]) {
     showAlias(fromHash);
     return;
   }
@@ -204,11 +197,70 @@ function wireTabs() {
   }
   chrome.storage.local.get(K_SETTINGS_TAB).then((g) => {
     const last = g[K_SETTINGS_TAB];
-    if (last && WS_ALIAS[last]) show('workspace');
+    if (last && TAB_ALIAS[last]) show(TAB_ALIAS[last].tab);
     else if (last && exists(last)) show(last);
   });
 }
 const K_SETTINGS_TAB = 'chatpanel:settingsTab';
+
+// Tabs that used to exist and are now SECTIONS of another tab. Notes/Meetings/History
+// folded into Workspace; Gateway folded into Privacy. Old deep-links (#notes, #gateway,
+// used by notes.js/meetings.js and any stored last-tab) must keep landing on the thing
+// they name, so each alias resolves to a tab plus the section to open inside it.
+const TAB_ALIAS = {
+  notes: { tab: 'workspace', section: 'ws-notes' },
+  meetings: { tab: 'workspace', section: 'ws-meetings' },
+  history: { tab: 'workspace', section: 'ws-history' },
+  gateway: { tab: 'privacy', section: 'pv-gateway' },
+};
+
+// Land ON a section, not merely on the panel that contains it. Opens every collapsed
+// <details> above the target first — a closed summary hides the very control the link
+// promised. A target inside a container that is hidden for a reason (the gateway config
+// before the gateway connects) can't be scrolled to at all, so fall back to the nearest
+// visible ancestor section instead of scrolling nowhere.
+function jumpToSection(id, { flash = true } = {}) {
+  let el = id && document.getElementById(id);
+  if (!el) return;
+  const openAncestors = (node) => {
+    for (let n = node; n; n = n.parentElement) if (n.tagName === 'DETAILS') n.open = true;
+  };
+  openAncestors(el);
+  if (!el.getClientRects().length) {
+    const fb = el.closest('.hidden')?.parentElement?.closest('details.ws-section');
+    if (!fb) return;
+    openAncestors(fb);
+    el = fb;
+  }
+  el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  if (!flash) return;
+  el.classList.add('config-flash');
+  setTimeout(() => el.classList.remove('config-flash'), 1400);
+}
+
+// A collapsed section still has to say what state it is in — "is redaction on", "is the
+// gateway running" must be answerable without expanding three sections to find out.
+function setSectionBadge(id, text, tone = '') {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = `pv-badge${tone ? ' ' + tone : ''}${text ? '' : ' hidden'}`;
+}
+
+// "Go to the gateway" — it is a section of the Privacy tab now, not a tab of its own, so
+// every in-page link to it goes through here rather than clicking a tab that no longer exists.
+function openGatewaySection() {
+  document.querySelector('.tab[data-tab="privacy"]')?.click();
+  jumpToSection('pv-gateway');
+}
+
+// Cross-links inside a panel ("Manage NER models →", the Privacy overview chips) point at a
+// section id with data-jump, so adding one is markup-only.
+function wireSectionJumps() {
+  for (const b of document.querySelectorAll('[data-jump]')) {
+    b.addEventListener('click', (e) => { e.preventDefault(); jumpToSection(b.dataset.jump); });
+  }
+}
 
 // --------------------------------------------------------------------------
 // Notes tab — the notes editor's own preferences. Editor view + co-writer live
@@ -1709,7 +1761,11 @@ function renderGatewayMonitor(s) {
 async function refreshGateway() {
   const url = normalizeGatewayUrl($('gw-url').value);
   const status = $('gw-status');
-  if (!url) { status.textContent = 'Enter the gateway URL.'; status.className = 'status'; return; }
+  if (!url) {
+    status.textContent = 'Enter the gateway URL.'; status.className = 'status';
+    setSectionBadge('pv-gateway-badge', 'Not set', 'off');
+    return;
+  }
   status.textContent = 'Checking…'; status.className = 'status';
   gatewayState = await checkGateway(url);
   if (!gatewayState.ok) {
@@ -1717,10 +1773,16 @@ async function refreshGateway() {
     status.className = 'status err';
     $('gw-config').classList.add('hidden');
     $('gw-preview')?.classList.remove('hidden'); // show the "what you get" discovery panel
+    setSectionBadge('pv-gateway-badge', 'Not installed', 'off');
     return;
   }
   status.innerHTML = `✓ Connected — v${gatewayState.version} · backend: <strong>${gatewayState.backend}</strong> · ${gatewayState.pro?.unlocked ? 'Pro' : 'Free'}`;
   status.className = 'status ok';
+  setSectionBadge('pv-gateway-badge', `Running · v${gatewayState.version}`, 'on');
+  // Connected is enough to retire the "what the gateway adds, once it's running" pitch —
+  // it used to survive an admin-token failure, so the page read "✓ Connected" directly above
+  // a panel explaining what you'd get if you installed it.
+  $('gw-preview')?.classList.add('hidden');
   // Admin routes (GET /config) need the token because Chrome omits Origin on GET to a
   // permitted host. Seed any manually-entered token, then auto-handshake (a POST DOES
   // carry our extension Origin, so the gateway hands back the token) so most users never
@@ -1751,8 +1813,7 @@ async function refreshGateway() {
     }
     status.innerHTML = `✓ Connected — v${gatewayState.version} · backend: <strong>${gatewayState.backend}</strong> · ${gatewayState.pro?.unlocked ? 'Pro' : 'Free'}`;
     fillGatewayForm(cfg);
-    $('gw-preview')?.classList.add('hidden'); // connected — the real config replaces the preview
-    $('gw-config').classList.remove('hidden');
+    $('gw-config').classList.remove('hidden'); // the real config replaces the preview
     $('gw-token-row')?.classList.add('hidden'); // authorized — hide the manual token fallback
     $('gw-token-hint')?.classList.add('hidden');
     renderGatewayMonitor(gatewayState);
@@ -1766,6 +1827,7 @@ async function refreshGateway() {
       ? `✓ Connected, but the admin API needs a token. Update the gateway (v0.6.31+) so it authorizes automatically, or paste the token below.`
       : `✓ Connected, but config load failed: ${e.message}`;
     if (isAuth) { $('gw-token-row')?.classList.remove('hidden'); $('gw-token-hint')?.classList.remove('hidden'); } // reveal manual token field
+    setSectionBadge('pv-gateway-badge', isAuth ? 'Needs a token' : 'Config failed', 'warn');
   }
 }
 
@@ -1834,10 +1896,15 @@ function gatewayBaseUrl() {
 }
 function gatewayNerEndpoint() { return `${gatewayBaseUrl()}/ner`; }
 
-// NER-model UI is shared by both tabs; a context picks which DOM nodes + gateway
-// URL to use so the same render/refresh/select logic drives either one.
-const GW_NER = { url: () => normalizeGatewayUrl($('gw-url').value), models: 'gw-models', mstatus: 'gw-models-status', onHealth: (ner) => renderNerStatus(ner) };
-const PRIV_NER = { url: () => gatewayBaseUrl(), models: 'priv-models', mstatus: 'priv-models-status', onHealth: (ner) => renderPrivNerHealth(ner) };
+// There is ONE NER model catalog (Gateway → On-device models) because there is one
+// in-process NER. Both health lines describe it — the panel's detector line and the
+// gateway's — so a model switch refreshes both rather than leaving one stale.
+const GW_NER = {
+  url: () => normalizeGatewayUrl($('gw-url').value),
+  models: 'gw-models',
+  mstatus: 'gw-models-status',
+  onHealth: (ner) => { renderNerStatus(ner); renderPrivNerHealth(ner); },
+};
 
 // Render the NER model catalog (GET /ner/models): each model with its size + an
 // In use / Use / Download button. Buttons are wired here (the list is dynamic).
@@ -2491,6 +2558,21 @@ function wireGateway() {
   $('gw-test-preview').onclick = () => runGatewayTest(false);
   $('gw-logs-refresh').onclick = refreshGatewayLogs;
   $('gw-ner-check').onclick = checkNer;
+  // The gateway keeps its own dictionary (it redacts traffic the panel never sees), so the
+  // two lists are genuinely separate — but retyping yours is busywork. Merge, don't replace:
+  // appending only the lines that are missing can't destroy gateway-only entries.
+  const dictCopy = $('gw-dict-copy');
+  if (dictCopy) dictCopy.onclick = () => {
+    const box = $('gw-dictionary');
+    const from = ($('priv-dictionary')?.value || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (!box || !from.length) { toast('Your ChatPanel dictionary is empty — nothing to copy.'); return; }
+    const have = new Set(box.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
+    const added = from.filter((l) => !have.has(l));
+    if (!added.length) { toast('Already in the gateway dictionary.'); return; }
+    box.value = [...have, ...added].join('\n');
+    box.dispatchEvent(new Event('input', { bubbles: true })); // reuse the debounced auto-save
+    toast(`Copied ${added.length} entr${added.length === 1 ? 'y' : 'ies'} to the gateway.`);
+  };
   // Searchable model registries (Hugging Face) — browse & download, like MCP tools.
   for (const task of ['stt', 'ner']) {
     const ctx = MODEL_REG[task];
@@ -4399,6 +4481,7 @@ function renderPrefs() {
       // keeping their state, which says the same thing without destroying anything.
       const syncEnabled = () => {
         const off = !guard.checked;
+        setSectionBadge('pv-boundary-badge', off ? 'Off' : 'On', off ? 'off' : 'on');
         cat.classList.toggle('inert', off);
         for (const cb of boxes.values()) cb.disabled = off;
         pats.disabled = off;
@@ -4466,6 +4549,9 @@ function renderPrefs() {
   // The end-to-end flow tester works in BOTH "patterns + dictionary" and "AI
   // detection" modes — show it whenever redaction is on.
   $('priv-flow').classList.toggle('hidden', $('priv-mode').value === 'off');
+  const modeLabel = { off: 'Off', deterministic: 'Patterns', model: 'AI detection' };
+  setSectionBadge('pv-redaction-badge', modeLabel[$('priv-mode').value] || 'Off',
+    $('priv-mode').value === 'off' ? 'off' : 'on');
   populateFlowModel();
   renderFlowTools();
   populateDetTargets(det.targetId);
@@ -4521,7 +4607,7 @@ function updateDetVis() {
   // bundled has its own explanation in the NER block.
   const note = $('priv-det-agent-note');
   if (note) note.classList.toggle('hidden', b === 'off' || b === 'bundled');
-  if (b === 'bundled') { refreshNerModels(PRIV_NER); checkPrivNer(); }
+  if (b === 'bundled') checkPrivNer();
 }
 
 // Privacy → "Test end-to-end": run one prompt through the whole pipeline and show it
@@ -5103,13 +5189,14 @@ function wire() {
   $('add-endpoint').onclick = addEndpoint;
   $('add-agent').onclick = addBridgeAgent;
   $('local-recheck').onclick = () => renderLocalRuntime({ recheck: true });
-  // The "what the gateway adds" link jumps to the Gateway tab, it doesn't navigate away.
+  // The "what the gateway adds" link jumps to the Gateway section, it doesn't navigate away.
   $('local-runtime').addEventListener('click', (e) => {
     const a = e.target.closest('a.runtime-link');
     if (!a) return;
     e.preventDefault();
-    document.querySelector('.tab[data-tab="gateway"]')?.click();
+    openGatewaySection();
   });
+  wireSectionJumps();
   // Duplicated under each list so "add another" is in reach after scrolling past
   // the cards above it.
   $('add-endpoint-bottom').onclick = addEndpoint;
@@ -6328,13 +6415,13 @@ async function renderObservability() {
   // AGENT ACCESS — the cross-agent read log from the gateway.
   if (!obs) {
     accessEl.innerHTML = `<p class="muted tiny">The gateway isn't running, so there's no cross-agent access to show. Start it to let Codex, Claude Code and other CLIs search your history — and to see every read here. <a href="#" id="obs-gw-jump">Set up the gateway →</a></p>`;
-    $('obs-gw-jump')?.addEventListener('click', (e) => { e.preventDefault(); document.querySelector('.tab[data-tab="gateway"]')?.click(); });
+    $('obs-gw-jump')?.addEventListener('click', (e) => { e.preventDefault(); openGatewaySection(); });
     return;
   }
   const access = obs.access || [];
   if (!access.length) {
     accessEl.innerHTML = `<p class="muted tiny">No tool calls recorded since the gateway last started. This log is <b>in-memory</b> — it resets whenever the gateway restarts (e.g. an update), and it fills only when an agent actually runs a query, not just from being connected. Run a history search in a connected agent (Codex, Claude&nbsp;Code, OpenCode) and it appears here: which agent, which tool, when. <a href="#" id="obs-gw-jump">Manage connected agents →</a></p>`;
-    $('obs-gw-jump')?.addEventListener('click', (e) => { e.preventDefault(); document.querySelector('.tab[data-tab="gateway"]')?.click(); });
+    $('obs-gw-jump')?.addEventListener('click', (e) => { e.preventDefault(); openGatewaySection(); });
     return;
   }
   const rows = access.map((e) => `<tr class="${e.ok ? '' : 'obs-err'}">
