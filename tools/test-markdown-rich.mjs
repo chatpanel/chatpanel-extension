@@ -38,7 +38,7 @@ import { renderMarkdown } from '../extension/js/markdown.js';
 // non-svg fenced block is untouched (still a code block)
 {
   const h = renderMarkdown('```js\nconsole.log(1)\n```');
-  assert.match(h, /<pre><code class="lang-js">/);
+  assert.match(h, /<pre><code class="lang-js"/, 'a non-artifact fence stays a code block');
 }
 console.log('ok — images (https/data only) + inert SVG rendering, unsafe schemes refused');
 

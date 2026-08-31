@@ -1,5 +1,6 @@
 // Syntax highlighting: readable tokens, and — critically — it can never introduce markup.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { highlight, normalizeLang } from '../extension/js/highlight.js';
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -54,4 +55,17 @@ assert.equal(normalizeLang('brainfuck'), '', 'unknown languages are left alone')
 // Unknown language returns the input untouched
 assert.equal(highlight(esc('whatever <x>'), 'nope'), esc('whatever <x>'));
 
-console.log('ok — highlighting by language; escaped source stays escaped');
+// STREAMING: only a CLOSED block is highlighted. Re-highlighting a block that grows every
+// token rewrote its markup each frame and made the message flicker.
+{
+  const { renderMarkdown } = await import('../extension/js/markdown.js');
+  const open = renderMarkdown('```js\nconst a = 1');
+  const closed = renderMarkdown('```js\nconst a = 1\n```');
+  assert.ok(!/data-closed/.test(open), 'a still-streaming block is not marked closed');
+  assert.match(closed, /data-closed="1"/, 'a finished block is');
+  // The highlighter's own selector requires the flag.
+  const src = readFileSync(new URL('../extension/js/highlight.js', import.meta.url), 'utf8');
+  assert.match(src, /\[data-closed\]/, 'highlightCode only touches closed blocks');
+}
+
+console.log('ok — highlighting by language; escaped source stays escaped; streams do not flicker');

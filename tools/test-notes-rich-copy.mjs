@@ -21,7 +21,7 @@ const html = notes.includes('richHtmlForClipboard');
 assert.ok(html, 'there is a rich-html builder');
 const sample = renderMarkdown('| a | b |\n|---|---|\n| 1 | 2 |\n\n```\ncode\n```\n\n- bullet\n\n**bold**');
 assert.match(sample, /<table>/, 'tables render');
-assert.match(sample, /<pre><code>/, 'code renders as code');
+assert.match(sample, /<pre><code/, 'code renders as code');
 assert.match(sample, /<ul>/, 'bullets render');
 assert.match(sample, /<strong>bold<\/strong>/, 'bold renders');
 

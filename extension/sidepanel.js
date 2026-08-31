@@ -1799,7 +1799,7 @@ function enhanceCode(bubble) {
   }
   // Syntax colouring for fenced blocks that declared a language. Dynamic: a message with no
   // code never loads it, and a failure just leaves the block as plain (already escaped) text.
-  if (bubble?.querySelector?.('pre > code[class^="lang-"]:not([data-hl])')) {
+  if (bubble?.querySelector?.('pre > code[class^="lang-"][data-closed]:not([data-hl])')) {
     import('./js/highlight.js')
       .then(({ highlightCode }) => highlightCode(bubble))
       .catch(() => { /* plain text is a fine fallback */ });

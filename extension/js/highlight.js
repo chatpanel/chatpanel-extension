@@ -152,7 +152,9 @@ export function highlight(escapedSource, lang) {
 /** Highlight every <pre><code class="lang-…"> under `root`. Idempotent and never throws. */
 export function highlightCode(root) {
   if (!root || !root.querySelectorAll) return;
-  for (const code of root.querySelectorAll('pre > code[class^="lang-"]:not([data-hl])')) {
+  // [data-closed] only: a block whose fence has not closed yet is still being streamed, and
+  // re-highlighting it on every token is what made the message flicker.
+  for (const code of root.querySelectorAll('pre > code[class^="lang-"][data-closed]:not([data-hl])')) {
     try {
       const lang = (code.className.match(/lang-([\w+#-]+)/) || [])[1] || '';
       if (!normalizeLang(lang)) continue;

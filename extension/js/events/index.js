@@ -37,6 +37,7 @@ export { defineSearchEngine, reconcileEngines, attemptOrder, ENGINE_KINDS, Searc
 export { defineToolGroup, createToolGroupRegistry, ToolGroupError } from './tool-groups.js';
 export { toolNeedFor } from './tool-need.js';
 export { parseFlowchart, layoutFlowchart, renderFlowchartSvg } from './flowchart.js';
+export { fuseRRF, planQueries, multiSearch } from './rrf.js';
 export {
   ACCESS_LOG_VERSION, ACCESS_LOG_MAX, redactAccessArgs, makeAccessEvent,
   createAccessLog, makeStorageTier, formatBytes,
