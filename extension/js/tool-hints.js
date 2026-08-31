@@ -122,3 +122,27 @@ function inputNames(schema = {}) {
     .slice(0, 6)
     .map((name) => required.has(name) ? `${name}*` : name);
 }
+
+/**
+ * How to build something the user can KEEP.
+ *
+ * Nobody should have to know an API to ask for a timer. The user says "make me a pomodoro
+ * timer"; the model is the one that should know ChatPanel renders a single HTML file in a
+ * sandbox and offers to keep it, and that a widget which remembers anything must save it
+ * through `chatpanel.setState` — because nothing else in the sandbox persists.
+ *
+ * Kept short on purpose: it rides on every turn that could produce HTML, so it earns its
+ * tokens by being the difference between a widget that forgets on close and one that doesn't.
+ */
+export function widgetAuthoringSystem() {
+  return [
+    'Building small apps (widgets):',
+    'When the user asks for a small self-contained tool — a timer, calculator, converter, sticky note, tracker, checklist, dice, scoreboard — answer with ONE ```html block containing a complete, self-contained file (inline CSS/JS, no external requests). ChatPanel runs it in a sandbox and offers a "＋ Keep" button that saves it as a permanent widget in the user\'s panel.',
+    'If the widget should remember anything between visits — elapsed time, notes, a tally, settings — persist it with the ChatPanel widget API, which is injected automatically:',
+    '  await chatpanel.getState()      // returns what was saved, or null the first time',
+    '  await chatpanel.setState(value) // save any JSON value',
+    'Load state on start and save it whenever it changes. Do not use localStorage or cookies — the sandbox discards them; setState is the only thing that survives.',
+    'The sandbox has NO network access and no access to the user\'s data, so build the widget to work entirely offline unless the user has granted it a capability.',
+    'Keep it compact and readable at ~320px wide (the panel is narrow), and give it sensible defaults so it is useful the moment it appears.',
+  ].join('\n');
+}

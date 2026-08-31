@@ -1,3 +1,4 @@
+import { widgetAuthoringSystem } from './tool-hints.js';
 // Turn capability — the ONE place a "model turn" is armed with tools + PII
 // redaction, shared by every ChatPanel surface (the side panel, the Notes
 // dashboard, and anything that comes next).
@@ -172,10 +173,18 @@ export async function buildTurnTools({
   // The level-0 catalog rides along ONLY when discovery is active (no invoked skill) and
   // the model got a toolset it can call skill_open with. Ranked and capped in the helper.
   const catalogSystem = !skillRun && toolset && catalogEntries.length ? skillCatalogSystem(catalogEntries, { userText }) : '';
-  if (!toolset && skillSystem) return { specs: [], execute: async () => '', system: skillSystem };
-  if (toolset) {
-    toolset.system = [skillSystem, catalogSystem, toolset.system].filter(Boolean).join('\n\n');
+  // HOW TO BUILD SOMETHING THE USER CAN KEEP. Nobody should have to know an API to ask for a
+  // timer — the user says what they want, and the MODEL is the thing that should know
+  // ChatPanel renders a self-contained HTML file in a sandbox, offers to keep it, and that a
+  // widget which remembers anything has to save it through chatpanel.setState. Nothing else
+  // told the model any of that, so the whole surface was undiscoverable: a model that doesn't
+  // know it can emit a runnable widget writes a paragraph describing one instead.
+  const widgetSystem = widgetAuthoringSystem();
+  if (!toolset) {
+    const system = [skillSystem, widgetSystem].filter(Boolean).join('\n\n');
+    return { specs: [], execute: async () => '', system };
   }
+  toolset.system = [skillSystem, catalogSystem, widgetSystem, toolset.system].filter(Boolean).join('\n\n');
   // WHAT THE AGENT MAY STILL DO ON ITS OWN. Everything this harness says about the relayed
   // tools is a restriction — each written to stop a specific substitution — and read together
   // by an agent that also carries its own connectors they add up to "do not use your own
