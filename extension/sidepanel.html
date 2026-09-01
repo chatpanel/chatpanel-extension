@@ -2,7 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- viewport-fit=cover: draw under a phone's rounded corners / gesture bar, which the
+         .surface-tab rules then pad back out of with env(safe-area-inset-*).
+         interactive-widget=resizes-content: the on-screen keyboard SHRINKS the viewport
+         instead of sliding over it, so the composer stays visible while typing — the
+         default on Chromium is overlays-content, which hides the input you are using. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <!-- Match the browser chrome to the panel so a full-tab phone install reads as one app. -->
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#16181d" media="(prefers-color-scheme: dark)" />
     <title>ChatPanel</title>
     <link rel="stylesheet" href="icons.css" />
     <link rel="stylesheet" href="sidepanel.css" />

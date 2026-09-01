@@ -56,3 +56,20 @@ console.log('ok — images (https/data only) + inert SVG rendering, unsafe schem
   assert.ok(!/md-artifact-svg/.test(partialSvg), 'a half-written svg is not rendered as an image');
 }
 console.log('ok — rich rendering waits for the closing fence (no streaming flicker)');
+
+// A ```html block only becomes a RUNNABLE artifact when there is something to run. A bare
+// fragment used to arrive with the seven-button Preview | Run ▶ | Open ↗ toolbar and an empty
+// editor, and running it mounted a frame that showed nothing.
+{
+  const fragment = renderMarkdown('```html\n<div class="scrollArea"></div> <!-- a note -->\n```');
+  assert.ok(!/md-artifact-html/.test(fragment), 'a one-line fragment is not an artifact');
+  assert.match(fragment, /<pre><code class="lang-html" data-closed="1">/, 'it is a code block, so it gets highlighted like every other language');
+
+  const doc = renderMarkdown('```html\n<!DOCTYPE html>\n<body><canvas id="c"></canvas></body>\n```');
+  assert.match(doc, /md-artifact-html/, 'a document is');
+
+  // No <html>/<script>/<style>, but built enough to be worth previewing.
+  const built = renderMarkdown('```html\n<div class="card">\n  <h2>Title</h2>\n  <p>Body</p>\n</div>\n```');
+  assert.match(built, /md-artifact-html/, 'several elements over several lines is a thing you can look at');
+}
+console.log('ok — only runnable HTML becomes an artifact; fragments stay code blocks');

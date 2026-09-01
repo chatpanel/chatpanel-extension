@@ -13,6 +13,14 @@
 //     "it didn't load" report from Chromium-based Android browsers. So the panel page
 //     opens as a normal TAB, which every one of them supports.
 //
+// A tab fallback is only half of it, though: something has to RUN it. Chromium on
+// Android surfaces the extension as a ⋮-menu row that opens the action's popup, and
+// nothing else — a popup-less action's row is inert there, and the click never reaches
+// the onClicked listener below (on some forks the service worker is not even woken for
+// it). So the manifest declares action.default_popup = panel-launcher.html, which the
+// browser opens with no background script involved, and releaseActionPopup() takes that
+// popup back off on every engine that has a real panel to open instead.
+//
 // Callers should never branch on that. They call openSidePanel() and get the panel.
 //
 // USER-GESTURE RULE (the reason this module looks the way it does): the panel APIs
@@ -94,13 +102,34 @@ export async function setPanelOpensOnActionClick() {
   return true;
 }
 
+// The manifest's action.default_popup is there for ONE case: a browser whose only way to
+// invoke an extension is to open its popup (Chromium on Android). Everywhere else the
+// popup would be a pointless extra window in front of the panel — and worse, a declared
+// popup SUPPRESSES both the openPanelOnActionClick behavior and the onClicked event, so
+// leaving it in place would replace one dead toolbar button with another.
+//
+// So: hand the popup back wherever a real panel surface exists. Empty string, not null —
+// null means "reset to the manifest default" on Firefox, which is the opposite of this.
+// Called from wireActionToPanel(), i.e. on every service-worker wake, because Chromium
+// drops runtime action state on browser restart and reverts to the manifest.
+export function releaseActionPopup() {
+  if (panelSurface === 'tab') return false; // mobile: the popup IS the entry point
+  if (!api.action?.setPopup) return false;
+  try { api.action.setPopup({ popup: '' })?.catch?.(() => {}); } catch { /* older engine */ }
+  return true;
+}
+
 // The counterpart to setPanelOpensOnActionClick() for every browser that has no such
 // switch: Firefox (toggle the sidebar) and mobile (open the panel tab).
 //
 // MUST be called at the top level of the background script — an event page, like an MV3
-// service worker, only wakes for listeners registered synchronously on load. No-op on
-// Chromium desktop, where the declarative behavior covers it and onClicked never fires.
+// service worker, only wakes for listeners registered synchronously on load. On Chromium
+// desktop it only releases the popup: the declarative behavior covers the rest and
+// onClicked never fires there.
 export function wireActionToPanel() {
+  // First, unconditionally — a popup left in place on a desktop engine would swallow the
+  // click before either branch below could ever see it.
+  releaseActionPopup();
   if (hasSidePanelApi && api.sidePanel.setPanelBehavior) return false;
   if (!api.action?.onClicked) return false;
   api.action.onClicked.addListener(() => {

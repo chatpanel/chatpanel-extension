@@ -9,9 +9,12 @@
 //      wrapper, its parent chain, or any storage.
 //
 // Protocol (postMessage, both ways):
-//   panel  → sandbox : { type:'chatpanel:artifact', id, html }
+//   panel  → sandbox : { type:'chatpanel:artifact', id, html, widget, state }
 //   sandbox → panel  : { type:'chatpanel:artifact-ready', id, height }
 //                      { type:'chatpanel:artifact-error', id, message }
+//
+// `state` is the widget's saved state, sent WITH the mount rather than fetched on request,
+// because the storage shim below must be seeded before the artifact's first script runs.
 //
 // A WIDGET additionally gets a way to ask the panel for something (its own saved state, or a
 // capability the user granted it). The wrapper only RELAYS — it adds no authority of its own,
@@ -61,32 +64,78 @@
   // The widget client, injected only for widgets. Deliberately tiny and promise-shaped:
   //   chatpanel.getState() / setState(v) / invoke(capability, args)
   // It cannot reach the panel directly — every call goes to this wrapper, which relays.
-  var WIDGET_API = [
-    '<script>(function(){var n=0,waiting={};',
-    'function call(op,extra){var id="w"+(++n);var m={op:op,callId:id};',
-    'for(var k in extra)m[k]=extra[k];',
-    'return new Promise(function(res,rej){waiting[id]={res:res,rej:rej};',
-    'try{parent.postMessage({__cpWidgetCall:m},"*");}catch(e){rej(e);}});}',
-    'window.addEventListener("message",function(ev){var d=ev.data;',
-    'if(!d||!d.__cpWidgetResult)return;var r=d.__cpWidgetResult,w=waiting[r.callId];',
-    'if(!w)return;delete waiting[r.callId];',
-    'if(r.ok)w.res(r.value);else w.rej(new Error(r.error||"refused"));});',
-    'window.chatpanel={getState:function(){return call("state.get",{});},',
-    'setState:function(v){return call("state.set",{state:v});},',
-    'invoke:function(c,a){return call("invoke",{capability:c,args:a||{}});}};',
-    '})();<\/script>',
-  ].join('');
+  // The widget API, injected into EVERY artifact — preview, pop-out tab and kept widget
+  // alike. It used to go only to kept widgets, and that was the bug behind "chatpanel is not
+  // defined": the model is told (correctly) to persist through chatpanel.setState, so every
+  // widget it wrote failed in the preview the user judges it by, and could only be fixed by
+  // keeping a widget that visibly did not work.
+  //
+  // STORAGE IS SHIMMED, not just documented away. This frame is a unique opaque origin, so
+  // localStorage, sessionStorage, indexedDB and document.cookie do not merely get discarded —
+  // reading any of them THROWS SecurityError, which takes out whatever handler touched it.
+  // Any model that reaches for localStorage out of habit therefore produced a widget that
+  // died on its first click. Defining our own property shadows the throwing getter, so that
+  // habit now lands on a real store that persists through the same state channel.
+  function widgetApi(state) {
+    var seed = (state && typeof state === 'object' && state.__ls && typeof state.__ls === 'object')
+      ? state.__ls
+      : {};
+    return [
+      '<script>(function(){var n=0,waiting={};',
+      'function call(op,extra){var id="w"+(++n);var m={op:op,callId:id};',
+      'for(var k in extra)m[k]=extra[k];',
+      'return new Promise(function(res,rej){waiting[id]={res:res,rej:rej};',
+      'try{parent.postMessage({__cpWidgetCall:m},"*");}catch(e){rej(e);}});}',
+      'window.addEventListener("message",function(ev){var d=ev.data;',
+      'if(!d||!d.__cpWidgetResult)return;var r=d.__cpWidgetResult,w=waiting[r.callId];',
+      'if(!w)return;delete waiting[r.callId];',
+      'if(r.ok)w.res(r.value);else w.rej(new Error(r.error||"refused"));});',
+      'window.chatpanel={getState:function(){return call("state.get",{});},',
+      'setState:function(v){return call("state.set",{state:v});},',
+      'invoke:function(c,a){return call("invoke",{capability:c,args:a||{}});}};',
+      // Synchronous Storage over an asynchronous channel: seeded from the state delivered
+      // with this mount (so a reload reads back what was written), written through on a
+      // microtask so a burst of setItem costs one save.
+      'var M=', JSON.stringify(seed), ';var pending=0;',
+      'function flush(){pending=0;try{window.chatpanel.setState({__ls:M});}catch(e){}}',
+      'function save(){if(pending)return;pending=1;Promise.resolve().then(flush);}',
+      'function store(){return{',
+      'getItem:function(k){k=String(k);return Object.prototype.hasOwnProperty.call(M,k)?M[k]:null;},',
+      'setItem:function(k,v){M[String(k)]=String(v);save();},',
+      'removeItem:function(k){delete M[String(k)];save();},',
+      'clear:function(){M={};save();},',
+      'key:function(i){var ks=Object.keys(M);return i<ks.length?ks[i]:null;},',
+      'get length(){return Object.keys(M).length;}};}',
+      'try{Object.defineProperty(window,"localStorage",{value:store(),configurable:true,writable:true});',
+      'Object.defineProperty(window,"sessionStorage",{value:store(),configurable:true,writable:true});}catch(e){}',
+      '})();<\/script>',
+    ].join('');
+  }
 
   // A minimal document wrapper so a bare fragment (no <html>) still renders sensibly, and a
   // full document keeps its own <head>. We only append our bootstrap.
-  function buildDoc(html, widget) {
+  // The API goes FIRST, before the artifact's own scripts — appending it was the same bug in
+  // a new place. A widget reads `chatpanel` and `localStorage` while its first script runs,
+  // so an API defined at the end of the document arrives after the code that needed it
+  // ("chatpanel is not defined" on line one, then a SecurityError from storage). The height
+  // bootstrap keeps riding at the end: nothing reads it, it only observes.
+  function injectEarly(src, head) {
+    if (!head) return src;
+    var m = /<head[^>]*>/i.exec(src) || /<html[^>]*>/i.exec(src);
+    if (!m) return head + src;
+    var at = m.index + m[0].length;
+    return src.slice(0, at) + head + src.slice(at);
+  }
+
+  function buildDoc(html, widget, state) {
     var src = String(html || '');
+    var api = widget ? widgetApi(state) : '';
     var base = /<html[\s>]/i.test(src)
-      ? src
-      : '<!doctype html><html><head><meta charset="utf-8">'
+      ? injectEarly(src, api)
+      : '<!doctype html><html><head><meta charset="utf-8">' + api
         + '<style>html,body{margin:0;padding:8px;font:13px/1.45 system-ui,sans-serif;color:#181b20;background:#fff}'
         + 'canvas{max-width:100%}</style></head><body>' + src + '</body></html>';
-    return base + BOOTSTRAP + (widget ? WIDGET_API : '');
+    return base + BOOTSTRAP;
   }
 
   window.addEventListener('message', function (ev) {
@@ -125,7 +174,7 @@
         // before the content ever reports back.
         frame.style.height = '360px';
       }
-      frame.srcdoc = buildDoc(msg.html, msg.widget);      // mount (cross-origin: allow-scripts only)
+      frame.srcdoc = buildDoc(msg.html, msg.widget, msg.state); // mount (cross-origin: allow-scripts only)
       post({ type: 'chatpanel:artifact-ready', id: currentId, height: fill ? 0 : 360 });
     } catch (e) {
       post({ type: 'chatpanel:artifact-error', id: currentId, message: String((e && e.message) || e) });

@@ -1221,7 +1221,7 @@ function endpointCard(ep) {
     }
   };
   q('.ep-authmode').onchange = syncAuthMode;
-  q('.ep-provider').onchange = () => {
+  q('.ep-provider').onchange = async () => {
     const previous = q('.ep-provider').dataset.providerPreset;
     if (previous === 'custom') snapshotCustomDraft();
     const selected = readProviderPresetId();
@@ -1258,12 +1258,23 @@ function endpointCard(ep) {
         baseUrl: nowWebllm ? '' : rawConn().baseUrl,
         model: nowWebllm ? DEFAULT_WEBLLM_MODEL : '', models: [], modelOptions: [],
       };
-      const fresh = endpointCard(base);
+      // Rebuild the card around the STORED endpoint — `endpointCard(base)` bound the new
+      // card to a COPY that was never in settings.endpoints, so everything the user then did
+      // wrote into a detached object: Save reported "✓ Saved" while saveSettings persisted the
+      // untouched original, the list re-rendered as "New endpoint" with no model, and the side
+      // panel — which reads the settings, not the card — never saw a WebLLM endpoint at all,
+      // so no model was ever downloaded. `base` spreads `...ep` first, so it is a superset and
+      // assigning it back needs no key pruning.
+      Object.assign(ep, base);
+      const fresh = endpointCard(ep);
       // Rebuilt in place — carry the ordinal over (renderEndpoints owns it).
       const idx = node.querySelector('.card-index');
       const freshIdx = fresh.querySelector('.card-index');
       if (idx && freshIdx) { freshIdx.textContent = idx.textContent; freshIdx.title = idx.title; }
       node.replaceWith(fresh);
+      // Crossing the WebLLM boundary rewrote the endpoint's kind and model, so persist it now
+      // rather than leaving settings-in-memory ahead of storage until some other card saves.
+      await saveSettings(settings);
       return;
     }
     resetModelPickers();
@@ -2887,6 +2898,7 @@ function bridgeAgentCard(agent) {
   q('.ba-acmodel').value = agent.autocompleteModel || '';
   q('.ba-perm').value = agent.permissionMode || 'acceptEdits';
   q('.ba-local').checked = agent.useLocalConfig !== false;
+  q('.ba-mcpoff').value = agent.mcpDisabled || '';
   q('.ba-system').value = agent.systemPrompt || '';
   // Custom ("bring your own CLI") fields.
   q('.ba-command').value = agent.command || '';
@@ -2977,6 +2989,8 @@ function bridgeAgentCard(agent) {
     q('.ba-custom').classList.toggle('hidden', !isCustom);
     // local skills/MCP & per-agent system prompt only apply to the built-in CLIs.
     q('.ba-local').closest('.check').classList.toggle('hidden', isCustom);
+    // Skipping named MCP servers is a built-in-CLI feature — a custom CLI's config is its own.
+    node.querySelectorAll('.ba-mcpoff-row').forEach((el) => el.classList.toggle('hidden', isCustom));
     // Model fields show for every kind — a custom CLI passes the chosen model via
     // its configured "Pass model via" arg. Seed the picker with known ids for
     // built-ins; custom starts empty until "Load models" populates it.
@@ -3037,6 +3051,7 @@ function bridgeAgentCard(agent) {
       autocompleteModel: q('.ba-acmodel').value.trim(),
       permissionMode: q('.ba-perm').value,
       useLocalConfig: q('.ba-local').checked,
+      mcpDisabled: q('.ba-mcpoff').value.trim(),
       systemPrompt: q('.ba-system').value,
       command: q('.ba-command').value.trim(),
       args: q('.ba-args').value.trim(),

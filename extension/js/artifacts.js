@@ -70,7 +70,7 @@ function el(tag, cls, text) {
 // scripts, and a srcdoc child inherits that — so the artifact behaves exactly as it does in
 // a standalone file. We keep the opener handle to hand it the HTML (it can only postMessage
 // back; it is a separate opaque origin with no extension access).
-function openInTab(html) {
+function openInTab(html, box) {
   const url = sandboxUrl();
   if (!url) return false;
   let win;
@@ -80,18 +80,46 @@ function openInTab(html) {
   const onMsg = (ev) => {
     if (ev.source !== win) return;
     const m = ev.data;
+    if (m && m.type === 'chatpanel:widget-call' && m.call) {
+      const { callId } = m.call;
+      answerDraftCall(box, m.call).then(
+        (value) => { try { win.postMessage({ type: 'chatpanel:widget-result', callId, ok: true, value: value ?? null }, '*'); } catch { /* closed */ } },
+        (e) => { try { win.postMessage({ type: 'chatpanel:widget-result', callId, ok: false, error: String(e?.message || e) }, '*'); } catch { /* closed */ } },
+      );
+      return;
+    }
     if (!m || m.type !== 'chatpanel:sandbox-ready') return;
-    win.postMessage({ type: 'chatpanel:artifact', id, html, fill: true }, '*');
-    window.removeEventListener('message', onMsg);
+    win.postMessage({ type: 'chatpanel:artifact', id, html, fill: true, widget: true, state: box.value }, '*');
   };
   window.addEventListener('message', onMsg);
   // The page may have been ready before we attached; nudge it once it has loaded.
-  setTimeout(() => { try { win.postMessage({ type: 'chatpanel:artifact', id, html, fill: true }, '*'); } catch { /* closed */ } }, 400);
-  setTimeout(() => window.removeEventListener('message', onMsg), 10_000);
+  setTimeout(() => { try { win.postMessage({ type: 'chatpanel:artifact', id, html, fill: true, widget: true, state: box.value }, '*'); } catch { /* closed */ } }, 400);
   return true;
 }
 
-function mountPreview(host, html, onFail) {
+// A draft widget's state, before it has been Kept.
+//
+// An artifact in the chat gets the SAME `chatpanel` API a kept widget gets — otherwise the
+// preview is a worse environment than the real one, and the user judges the widget by the
+// preview. Its state lives here, in memory, for as long as the panel is open: a draft that
+// wrote junk while the model iterated should not leave rows in the store, but a vault you
+// just set a password on must still be unlocked one second later when you press Run again.
+// On Keep, whatever the draft accumulated is handed to the widget's real, persistent state.
+function draftBox() {
+  return { value: null };
+}
+
+// Answer a widget call from a draft. Deliberately narrower than widget-host.js: a draft has
+// no id, no grants and therefore no capabilities — only its own scratch state. `invoke` is
+// refused here rather than silently hanging, so the model sees a real error and adjusts.
+async function answerDraftCall(box, call) {
+  const op = call && call.op;
+  if (op === 'state.get') return box.value;
+  if (op === 'state.set') { box.value = call.state ?? null; return box.value; }
+  throw new Error('capabilities are only available once the widget is kept');
+}
+
+function mountPreview(host, html, onFail, box) {
   const url = sandboxUrl();
   if (!url) { onFail('sandbox unavailable'); return null; }
   const id = `a${++seq}`;
@@ -115,8 +143,16 @@ function mountPreview(host, html, onFail) {
     if (ev.source !== frame.contentWindow) return;
     const m = ev.data;
     if (!m || m.id && m.id !== id) return;
+    if (m.type === 'chatpanel:widget-call' && m.call) {
+      const { callId } = m.call;
+      answerDraftCall(box, m.call).then(
+        (value) => frame.contentWindow?.postMessage({ type: 'chatpanel:widget-result', callId, ok: true, value: value ?? null }, '*'),
+        (e) => frame.contentWindow?.postMessage({ type: 'chatpanel:widget-result', callId, ok: false, error: String(e?.message || e) }, '*'),
+      );
+      return;
+    }
     if (m.type === 'chatpanel:sandbox-ready') {
-      frame.contentWindow.postMessage({ type: 'chatpanel:artifact', id, html }, '*');
+      frame.contentWindow.postMessage({ type: 'chatpanel:artifact', id, html, widget: true, state: box.value }, '*');
     } else if (m.type === 'chatpanel:artifact-ready') {
       ready = true;
       if (m.height) frame.style.height = `${Math.max(120, Math.min(2000, Number(m.height) || 360))}px`;
@@ -127,7 +163,7 @@ function mountPreview(host, html, onFail) {
   window.addEventListener('message', onMsg);
   frame.addEventListener('load', () => {
     // Some hosts don't deliver the ready ping; ask anyway once loaded.
-    try { frame.contentWindow.postMessage({ type: 'chatpanel:artifact', id, html }, '*'); } catch { /* ignore */ }
+    try { frame.contentWindow.postMessage({ type: 'chatpanel:artifact', id, html, widget: true, state: box.value }, '*'); } catch { /* ignore */ }
   });
   setTimeout(() => { if (!ready) onFail('preview timed out'); }, READY_TIMEOUT_MS);
 
@@ -285,12 +321,22 @@ export function mountArtifacts(root) {
       editor.spellcheck = false;
       editor.setAttribute('aria-label', 'artifact source (editable)');
       editor.rows = Math.max(6, Math.min(24, original.split('\n').length + 1));
+      // `rows` is only the first guess. The source SOFT-WRAPS (a code block that scrolled
+      // sideways inside the scrolling message list made the text wobble under a trackpad), so
+      // a 17-line file can occupy 22 visual lines and the last of them was cut off. Measure
+      // once mounted and take the real height, up to about 24 lines — past that it is a long
+      // document and scrolling the editor is the right answer.
+      const fitEditor = () => {
+        editor.style.height = 'auto';
+        editor.style.height = `${Math.min(460, Math.max(120, editor.scrollHeight))}px`;
+      };
 
       const stage = el('div', 'artifact-stage');
       const src = node.querySelector('.artifact-src');
       if (src) src.remove(); // the editor replaces the static block
       node.insertBefore(bar, node.firstChild);
       node.append(editor, stage);
+      fitEditor(); // in the document now, so scrollHeight is real
 
       const currentHtml = () => editor.value;
       // An artifact that embeds an EXTERNAL site usually cannot work, and the failure is a
@@ -312,6 +358,9 @@ export function mountArtifacts(root) {
 
       let cleanup = null;
       let mountedSrc = null; // what the live frame is actually running
+      // Shared by the preview, the pop-out and Keep, so the widget you are looking at is the
+      // widget you get: what it saved while you were trying it out is what gets kept.
+      const box = draftBox();
 
       const showCode = () => {
         btnCode.classList.add('is-on'); btnPreview.classList.remove('is-on');
@@ -336,7 +385,7 @@ export function mountArtifacts(root) {
         if (force || !cleanup || mountedSrc !== html) {
           if (cleanup) cleanup();   // drop the old listener
           stage.textContent = '';   // and the old frame — a fresh document each run
-          cleanup = mountPreview(stage, html, fail);
+          cleanup = mountPreview(stage, html, fail, box);
           mountedSrc = html;
         }
       };
@@ -358,6 +407,7 @@ export function mountArtifacts(root) {
         editor.value = original;
         btnReset.disabled = true;
         status.textContent = '';
+        fitEditor();
         if (stage.style.display === 'block') showPreview({ force: true });
       });
       btnCopy.addEventListener('click', () => {
@@ -367,7 +417,7 @@ export function mountArtifacts(root) {
         }).catch(() => { status.textContent = 'Copy failed'; });
       });
       btnOpen.addEventListener('click', () => {
-        if (!openInTab(currentHtml())) status.textContent = 'Couldn’t open a tab — allow pop-ups for this page.';
+        if (!openInTab(currentHtml(), box)) status.textContent = 'Couldn’t open a tab — allow pop-ups for this page.';
       });
       showCode(); // default: the source. The user opts into running it.
     } catch { /* leave the code block untouched */ }

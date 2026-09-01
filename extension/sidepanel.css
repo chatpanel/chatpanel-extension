@@ -244,10 +244,32 @@ body.rail-collapsed { --rail-w: 0px; }
    conversation across the full width of a tablet or a landscape phone, which reads
    badly and puts the composer miles from the thread. Cap it and centre it instead —
    a phone in portrait is narrower than the cap, so it is unaffected. */
-html.surface-tab body { max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px var(--border, rgba(127,127,127,0.18)); }
+html.surface-tab body {
+  max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px var(--border, rgba(127,127,127,0.18));
+  /* dvh, not vh. A phone's URL bar hides and re-shows as you scroll and 100vh is the
+     LARGEST the viewport ever gets, so a 100vh column pushes the composer below the fold
+     on load — on a page whose thread scrolls, not the page itself, leaving the user with
+     no way to reach the input. dvh tracks what is actually visible. Paired with
+     interactive-widget=resizes-content (sidepanel.html) the keyboard shrinks it too. */
+  height: 100dvh;
+}
+/* The gesture bar and the rounded corners of a modern phone sit ON TOP of the two things
+   pinned to the bottom and the side. env() is 0 on every desktop, so this is inert there. */
+html.surface-tab .composer { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+html.surface-tab .rail { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+html.surface-tab .topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
+
 /* Touch targets: a phone has no hover and a fingertip is ~44px. */
 @media (pointer: coarse) {
   .rail-btn, .text-btn, .suggest-reload { min-height: 40px; }
+  .icon-btn, .tool-btn { min-width: 38px; min-height: 38px; }
+  /* Drag handles are a mouse affordance. With a finger they are invisible, unusable, and
+     they swallow the touch that was meant for the thing behind them — so take them out
+     rather than leave a dead 7px strip down the edge of every drawer. */
+  .composer-resize, .live-notes-resize { display: none; }
+  /* A drawer capped at 340px next to a 56px rail leaves a sliver of dead thread behind it
+     on a phone. Full-bleed reads as a screen, which is what it is on this surface. */
+  html.surface-tab .history, html.surface-tab .live-notes-drawer { width: 100%; max-width: none; }
 }
 
 /* The in-browser model can't start here (e.g. Firefox's WebGPU exposes fewer storage
@@ -288,7 +310,13 @@ html.surface-tab body { max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px 
 .bubble h1, .bubble h2, .bubble h3 { margin: 10px 0 6px; font-size: 1.05em; }
 .bubble ul, .bubble ol { margin: 4px 0 8px; padding-left: 20px; }
 .bubble code { font-family: var(--mono); font-size: .9em; background: rgba(127,127,127,.18); padding: 1px 5px; border-radius: 5px; }
-.bubble pre { background: #0d1117; color: #e6edf3; padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; position: relative; }
+/* Code blocks WRAP rather than scroll sideways. A horizontal scroller nested inside the
+   vertically-scrolling message list is what made a code block wobble left/right under a
+   trackpad: the block ate the gesture's horizontal component while the list moved down.
+   In a ~350px panel a sideways-scrolling line is unreadable anyway — you cannot see the
+   start and the end of it at once. pre-wrap keeps the indentation; `anywhere` breaks a
+   long unbreakable token (a URL, a base64 blob) instead of letting it overflow. */
+.bubble pre { background: #0d1117; color: #e6edf3; padding: 10px 12px; border-radius: 8px; margin: 8px 0; position: relative; white-space: pre-wrap; overflow-wrap: anywhere; }
 .bubble pre code { background: none; padding: 0; color: inherit; font-size: 12px; line-height: 1.5; }
 .msg.user .bubble pre { background: rgba(0,0,0,.25); }
 .bubble a { color: var(--accent); }
@@ -299,8 +327,12 @@ html.surface-tab body { max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px 
 .bubble th, .bubble td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
 .bubble thead th { background: rgba(127,127,127,.14); font-weight: 700; }
 .bubble tbody tr:nth-child(even) { background: rgba(127,127,127,.06); }
-.copy-code { position: absolute; top: 6px; right: 6px; font-size: 11px; background: rgba(255,255,255,.12); color: #cbd5e1; border: none; border-radius: 6px; padding: 3px 7px; cursor: pointer; }
-.copy-code:hover { background: rgba(255,255,255,.22); }
+/* Copy sits over the code, so it stays out of the way until you go looking for it —
+   the same reveal-on-hover the message actions use. Opaque enough to be readable on top
+   of whatever line it lands on. */
+.copy-code { position: absolute; top: 6px; right: 6px; font-size: 11px; background: rgba(13,17,23,.92); color: #cbd5e1; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 3px 7px; cursor: pointer; opacity: 0; transition: opacity .15s; }
+.bubble pre:hover .copy-code, .copy-code:focus-visible { opacity: 1; }
+.copy-code:hover { background: rgba(30,41,59,.96); }
 
 .msg-actions { display: flex; gap: 4px; margin: 4px; opacity: 0; transition: opacity .15s; }
 .msg:hover .msg-actions { opacity: 1; }
@@ -327,9 +359,6 @@ html.surface-tab body { max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px 
 .bubble .agent-steps > summary { cursor: pointer; padding: 6px 10px; color: var(--accent); font-weight: 600; list-style: none; }
 .bubble .agent-steps > summary::-webkit-details-marker { display: none; }
 .bubble .agent-steps[open] > summary { border-bottom: 1px solid var(--border); }
-.bubble /* Liveness that follows the work. Once steps appear the empty-state spinner is gone, and
-   a long tool call looked identical to a hung run; this sits under the last step, where
-   the eye already is, rather than only in the strip at the top. */
 /* Monitor findings accumulate as a meeting runs: newest open, the rest folded. */
 .mon-finding { position: relative; }
 .mon-finding + .mon-earlier { margin-top: 10px; }
@@ -852,10 +881,14 @@ html.surface-tab body { max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px 
 
 /* Interactive artifacts — Preview | Code | Open, with the sandboxed frame. */
 .md-artifact-html { border: 1px solid var(--line, #e4e7ec); border-radius: 10px; overflow: hidden; margin: 10px 0; }
-.artifact-bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--field, #f7f8fa); border-bottom: 1px solid var(--line, #e4e7ec); }
+/* The bar carries seven controls and the panel is ~350px wide, so it MUST wrap: without
+   flex-wrap the buttons shrank below their own text and every label broke into a
+   three-line stack ("Pre / vie / w"). */
+.artifact-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; background: var(--field, #f7f8fa); border-bottom: 1px solid var(--line, #e4e7ec); }
 .artifact-btn {
   font: inherit; font-size: 11.5px; padding: 3px 9px; border-radius: 6px; cursor: pointer;
   border: 1px solid var(--line, #e4e7ec); background: transparent; color: var(--muted, #646b76);
+  white-space: nowrap; flex: 0 0 auto;
 }
 .artifact-btn:hover { background: var(--card, #fff); color: var(--text, #181b20); }
 .artifact-btn.is-on { background: var(--accent-weak, rgba(91,91,240,.10)); color: var(--accent, #5b5bf0); border-color: var(--accent-line, rgba(91,91,240,.32)); font-weight: 600; }
@@ -868,8 +901,8 @@ html.surface-tab body { max-width: 820px; margin: 0 auto; box-shadow: 0 0 0 1px 
   display: block; width: 100%; box-sizing: border-box; margin: 0; padding: 10px 12px;
   border: 0; border-radius: 0; resize: vertical; background: var(--field, #f7f8fa);
   color: var(--text, #181b20); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px; line-height: 1.5; tab-size: 2; white-space: pre; overflow-wrap: normal;
-  overflow-x: auto; min-height: 120px;
+  font-size: 12px; line-height: 1.5; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere;
+  overflow-x: hidden; min-height: 120px;
 }
 .artifact-editor:focus { outline: 2px solid var(--accent-line, rgba(91,91,240,.32)); outline-offset: -2px; }
 .artifact-run { color: var(--accent, #5b5bf0); border-color: var(--accent-line, rgba(91,91,240,.32)); font-weight: 600; }

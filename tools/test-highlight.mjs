@@ -69,3 +69,19 @@ assert.equal(highlight(esc('whatever <x>'), 'nope'), esc('whatever <x>'));
 }
 
 console.log('ok — highlighting by language; escaped source stays escaped; streams do not flicker');
+
+// ENTITIES SURVIVE. The source is escaped, so a tag ends in the four characters `&gt;` — and
+// the attribute rule used to match the `gt` inside it and wrap it in a span, splitting the
+// entity across markup so the block displayed a literal `&gt;`. The `=` was swallowed the
+// same way, rendering `class="x"` as `class"x"`.
+{
+  const h = highlight(esc('<div class="scrollArea"></div>'), 'html');
+  assert.ok(!/&<span/.test(h), 'no span may start in the middle of an entity');
+  assert.match(h, /class<\/span>=/, 'the = between an attribute and its value is kept');
+  // Rendered back to text, the highlighted block reads exactly like the source.
+  const text = h.replace(/<\/?span[^>]*>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+  assert.equal(text, '<div class="scrollArea"></div>');
+}
+console.log('ok — markup highlighting keeps entities and attribute = intact');

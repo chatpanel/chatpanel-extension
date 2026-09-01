@@ -77,8 +77,13 @@ export function mountWidget(container, record, { invokeCapability = null } = {})
   };
   window.addEventListener('message', onMessage);
 
-  frame.addEventListener('load', () => {
-    post({ type: 'chatpanel:artifact', id: `widget:${manifest.id}`, html: manifest.html, widget: true });
+  frame.addEventListener('load', async () => {
+    // Fetched BEFORE the mount, not on request: the sandbox seeds its localStorage shim from
+    // this value synchronously, and a widget reads storage while its first script runs —
+    // long before an async round-trip could answer.
+    let state = null;
+    try { state = await getWidgetState(manifest.id); } catch { /* first run, or gone */ }
+    post({ type: 'chatpanel:artifact', id: `widget:${manifest.id}`, html: manifest.html, widget: true, state });
   });
 
   return {

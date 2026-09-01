@@ -82,6 +82,15 @@ import { TAB_SURFACE_QUERY } from './js/side-panel.js';
 if (new URLSearchParams(location.search).has(TAB_SURFACE_QUERY.split('=')[0])) {
   document.documentElement.classList.add('surface-tab');
 }
+
+// The panel is a full tab AND the input is a finger: a phone, or a tablet. Layout code
+// that has to size something in pixels asks this rather than sniffing the user agent.
+// A touch laptop stays on the desktop layout — it is the tab surface that changes what a
+// drawer means, not the pointer alone.
+function isTouchPanel() {
+  return document.documentElement.classList.contains('surface-tab')
+    && globalThis.matchMedia?.('(pointer: coarse)').matches === true;
+}
 import { assistPrompt } from './js/assist.js';
 // NB: page-tools.js + canvas-adapters.js (and their page-actions / draw.io / tldraw
 // transitive graph, ~130KB) are heavy and only needed when "Act on page" actually
@@ -1051,6 +1060,11 @@ async function init() {
   applyTheme();
   wireEvents();
   wireDrawerResize();
+
+  // Phone only, and dynamic: a desktop panel has no Back gesture to answer, so this never
+  // enters its module graph there. Not awaited — a drawer cannot be open on the first
+  // frame, so nothing is missed while it loads.
+  if (isTouchPanel()) import('./js/mobile-back.js').then((m) => m.armBackButton()).catch(() => {});
 
   // Load everything independent CONCURRENTLY — these are all local reads (getLicense
   // verifies the entitlement OFFLINE, no network), so serializing them only added
@@ -5299,6 +5313,13 @@ function closeMeetings() { clearInterval(meetingsView.liveTimer); $('meetings-dr
 function sizeDrawers() {
   const panelW = Math.round(($('panel-body') || document.body).getBoundingClientRect().width);
   if (panelW <= 1) { requestAnimationFrame(sizeDrawers); return; }
+  // On the full-tab mobile surface a drawer IS the screen. There is no pointer to drag its
+  // edge with (the handle is display:none under pointer:coarse), so a saved desktop width
+  // would be permanent — and the sliver of thread left behind it only steals taps meant for
+  // the drawer. Fill the column. This is the inline-width counterpart of the CSS rule that
+  // full-bleeds the history drawer; both are needed because applyDrawerWidth() sets
+  // style.width, which no stylesheet can override.
+  if (isTouchPanel()) { applyDrawerWidth(panelW); return; }
   const saved = parseInt(localStorage.getItem(DRAWER_WIDTH_KEY) || '', 10);
   const target = saved > 0
     ? Math.min(saved, panelW)

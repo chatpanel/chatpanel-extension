@@ -743,6 +743,10 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
     // Extra CLI flags the user added (e.g. opencode `--format json
     // --dangerously-skip-permissions`). Applies to any built-in or custom agent.
     extraArgs: agent.extraArgs || '',
+    // Servers in the CLI's OWN MCP config to leave out of the run. One that can't
+    // authenticate or can't be reached otherwise kills the whole turn, even when the
+    // turn never needed it; the bridge also drops such a server on its own and says so.
+    mcpDisabled: agent.mcpDisabled || '',
   };
   // "Bring your own" custom CLI (Pro) — carry the command spec plus the signed
   // entitlement token, which the bridge verifies OFFLINE before running anything.

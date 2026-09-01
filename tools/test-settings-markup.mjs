@@ -177,3 +177,22 @@ for (const id of ['gw-url', 'gw-check', 'gw-status', 'gw-token', 'gw-warm-search
 }
 
 console.log('settings markup tests passed');
+
+// Switching a card's Provider ACROSS the WebLLM boundary rebuilds the card, and it must
+// rebuild it around the STORED endpoint. Binding the fresh card to a copy meant every later
+// edit — including Save — wrote into an object that was not in settings.endpoints: the card
+// answered "✓ Saved" while saveSettings persisted the untouched original, so the endpoint
+// stayed "New endpoint" with no model and the side panel never saw a WebLLM endpoint at all
+// (hence "the model download seems not happening").
+{
+  const rebuild = js.match(/if \(nowWebllm !== nodeIsWebllm\) \{([\s\S]*?)\n {4}\}/)?.[1] || '';
+  assert.ok(rebuild, 'the WebLLM provider-boundary rebuild should exist');
+  // Code only — the comment above the fix names the old broken call on purpose.
+  const code = rebuild.replace(/\/\/.*$/gm, '');
+  assert.match(code, /Object\.assign\(ep, base\)/, 'the new kind/model is written back onto the stored endpoint');
+  assert.match(code, /endpointCard\(ep\)/, 'the rebuilt card is bound to the stored endpoint');
+  assert.doesNotMatch(code, /endpointCard\(base\)/, 'never bind a card to a detached copy — Save would write to nothing');
+  assert.match(code, /await saveSettings\(settings\)/, 'the switch is persisted, not left only in memory');
+}
+
+console.log('ok — a WebLLM provider switch rebuilds the card around the stored endpoint');

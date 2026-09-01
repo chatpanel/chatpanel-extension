@@ -69,4 +69,24 @@ assert.ok(!/contentEditable|contenteditable/.test(artifactCode), 'never a conten
 assert.match(artifacts, /const currentHtml = \(\) => editor\.value/, 'the edited value is read as text');
 assert.ok(!/innerHTML\s*=\s*(currentHtml|editor)/.test(artifacts), 'edited source is never injected into the panel');
 
-console.log('ok — artifacts run only in an opaque-origin sandbox; never same-origin, never in-panel, never blob:; editing stays text');
+// 8. The sandbox is an opaque origin, so localStorage/sessionStorage/indexedDB/cookies do not
+// quietly no-op — reading them THROWS SecurityError and kills whatever handler touched them.
+// Two consequences the widget surface depends on, both of which have already broken once:
+//
+//   a) the `chatpanel` API must reach EVERY artifact, not only a kept widget. It used to be
+//      appended for kept widgets alone, so a preview answered "chatpanel is not defined" for
+//      exactly the API the model is instructed to use — and the preview is what the user
+//      judges the widget by.
+assert.match(artifacts, /widget: true, state: box\.value/, 'the chat preview mounts as a widget, with its draft state');
+assert.match(artifacts, /answerDraftCall/, 'and the panel answers a draft widget its own state');
+assert.match(artifacts, /if \(box\.value != null\) await setWidgetState\(id, box\.value\)/, 'Keep carries the draft state onto the real widget');
+
+//   b) the API must be injected BEFORE the artifact's own scripts. A widget reads state while
+//      its first script runs, so an API appended at the end of the document arrives too late.
+assert.match(runner, /function injectEarly/, 'the runner has a head-injection path');
+assert.match(runner, /\? injectEarly\(src, api\)/, 'a full document gets the API in its <head>');
+assert.match(runner, /'<!doctype html><html><head><meta charset="utf-8">' \+ api/, 'and a fragment gets it before the body');
+assert.ok(!/BOOTSTRAP \+ \(widget \? widgetApi/.test(runner), 'the API is never appended after the artifact');
+assert.match(runner, /Object\.defineProperty\(window,"localStorage"/, 'localStorage is shimmed, not left to throw');
+
+console.log('ok — artifacts run only in an opaque-origin sandbox; never same-origin, never in-panel, never blob:; editing stays text; the widget API lands before the widget');

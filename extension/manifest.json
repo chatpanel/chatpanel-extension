@@ -67,7 +67,8 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Open ChatPanel (Cmd/Ctrl+I)"
+    "default_title": "Open ChatPanel (Cmd/Ctrl+I)",
+    "default_popup": "panel-launcher.html"
   },
   "commands": {
     "_execute_action": {

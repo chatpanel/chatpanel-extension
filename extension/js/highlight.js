@@ -108,13 +108,23 @@ function tokenize(src, lang) {
       if (m) {
         push(chunk.slice(0, m[0].length - m[1].length), 'pun');
         push(m[1], 'tag');
-        let inner = chunk.slice(m[0].length);
-        inner.replace(/([A-Za-z_:][\w:.-]*)(=)?|(&quot;[^&]*&quot;)|([\s\S])/g, (whole, attr, eq, str2, other) => {
-          if (attr) push(attr, eq ? 'atr' : 'atr');
-          else if (str2) push(str2, 'str');
-          else text += other || '';
-          return '';
-        });
+        const inner = chunk.slice(m[0].length);
+        // Order matters, and ENTITIES come before attribute names. The source is escaped, so
+        // a tag ends in the four characters `&gt;` — and a bare `[A-Za-z_:]…` rule happily
+        // matched the `gt` inside it, wrapping it in a span. That split the entity across
+        // markup, the browser stopped seeing it as one, and the block rendered a literal
+        // `&gt;`. The `=` of an attribute used to be swallowed the same way (it was matched
+        // and then never emitted), so `class="x"` displayed as `class"x"`.
+        inner.replace(
+          /(&quot;[^&]*&quot;|&#39;[^&]*&#39;)|(&(?:amp|lt|gt|quot|apos|nbsp|#\d+|#x[0-9a-fA-F]+);)|([A-Za-z_:][\w:.-]*)|([\s\S])/g,
+          (whole, str2, entity, attr, other) => {
+            if (str2) push(str2, 'str');
+            else if (entity) text += entity;   // one unit — never wrap it in a span
+            else if (attr) push(attr, 'atr');
+            else text += other || '';          // '=', '/', whitespace
+            return '';
+          },
+        );
         flush();
         i = stop; continue;
       }
