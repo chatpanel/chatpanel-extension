@@ -96,4 +96,38 @@ assert.match(
   'a deleted thread must be re-bound, so the rest of the call does not scatter again.',
 );
 
-console.log('ok — triggers fire independently, wait only when cut off, explain every skip, land in one thread, and can be edited');
+// ── a burst of questions is a batch, not one answer and twelve drops ─────────────
+// Reported from a real call: 13 questions asked, 1 answered, the rest logged
+// "skipped — fired moments ago (cooldown)" and never answered by anything.
+assert.match(jobs, /export const BATCHES/, 'answer-producing actions must be named as batching.');
+assert.match(jobs, /export const batches = \(job\)/, 'and the policy asked once, not per call site.');
+assert.ok(
+  /BATCHES = Object\.freeze\(\['skill', 'prompt'\]\)/.test(jobs),
+  'notify and monitor must NOT batch — one reminder is the whole point of a reminder.',
+);
+// The batching lives in ONE module so notes, chats and meetings cannot drift apart.
+const tt = read('js/text-triggers.js');
+assert.match(tt, /export const BATCH_MS = 6_000/, 'the window must be short — a late answer has been overtaken.');
+assert.match(tt, /export function queueMatch\(/, 'a trigger inside the window must be queued, never dropped.');
+assert.match(tt, /export async function flushBatch\(/, 'and the batch must fire on its own timer.');
+assert.match(tt, /export function freshText\(/, 'a re-read source must only ever match text it has not matched.');
+assert.ok(!/const BATCH_MS/.test(panel), 'the panel must not keep a second copy of the batching.');
+assert.match(panel, /tt\.queueMatch\(hit\.job, hit\.match/, 'the meeting path must use the shared pipeline.');
+// The ordering that matters: batching is checked BEFORE the cooldown can skip anything.
+const fireBody = fire.replace(/^\s*\/\/.*$/gm, '');
+assert.ok(
+  fireBody.indexOf('m.batches(hit.job)') < fireBody.indexOf('withinCooldown'),
+  'an answer-producing job must reach the batch before the cooldown gets to drop it.',
+);
+// Questions still asked while an answer is being written start the NEXT batch.
+assert.match(tt, /if \(b\.matches\.length && !b\.timer\)/, 'asks during a run must not be lost.');
+
+// The prompt names every question, and what was already answered.
+assert.match(panel, /WHAT TO ANSWER — every one of these was asked/, 'the batch must be stated as a list.');
+assert.match(panel, /Group the ones that are really the same question/, 'related asks must be grouped, not repeated.');
+assert.match(panel, /ALREADY ANSWERED EARLIER IN THIS MEETING/, 'a single-shot run must be told what it covered.');
+assert.match(panel, /async function recentlyAnswered\(/, 'and that must come from the run log.');
+assert.match(panel, /asked: m\.matchTexts\(/, 'each run must record the questions it answered.');
+assert.match(panel, /meetingId: event\?\.meetingId/, 'scoped to the meeting, so another call does not suppress answers.');
+
+console.log('ok — triggers fire independently, batch a burst instead of dropping it, wait only when cut off, explain every skip, land in one thread, and can be edited');

@@ -2491,6 +2491,9 @@ async function send() {
     scrollToBottomNow();
     await saveConversation(conv);
     refreshHistory();
+    // A standing job may be watching for what was just typed. Free unless something matches,
+    // and never in the way of the turn the user actually asked for.
+    fireTextTrigger('chat', conv.id, conv.title || 'Chat', userMsg.content);
 
     if (queued) {
       // Queue: the running response picks it up when it finishes. (Hit Stop to
@@ -3515,8 +3518,8 @@ async function jobs() {
 // Run the model half of one job. Deliberately built on the same pieces as a monitor turn —
 // one target resolution, one toolset, one redaction vault — rather than a second turn path
 // that would drift away from the guarded one.
-async function runJobTurn(job, { why = '', event = null, match = null, threadConvId = '' } = {}) {
-  const instruction = await jobInstruction(job, { why, event, match });
+async function runJobTurn(job, { why = '', event = null, match = null, matches = null, threadConvId = '' } = {}) {
+  const instruction = await jobInstruction(job, { why, event, match, matches });
   if (!instruction) return;
   // WHERE THE ANSWER LANDS. A job fired BY a meeting belongs in the thread that meeting is
   // being watched in — beside its running summary and its monitors — because a write-up
@@ -3606,10 +3609,16 @@ async function runJobTurn(job, { why = '', event = null, match = null, threadCon
     // Findable afterwards, not just announceable now. A toast you were not there to see is
     // the normal case for a job — that is what a job IS — so the run is recorded against the
     // job with the reason it fired and a way back to what it produced.
-    await (await jobs()).logRun(job.id, {
+    const m = await jobs();
+    await m.logRun(job.id, {
       why,
       convId: conv.id,
       ok: !failed,
+      // The questions this run covered, and which meeting they came from — the next run reads
+      // them back so it does not answer the same thing again off the same fifteen-minute
+      // window. Capped: a log entry is a breadcrumb, not a transcript.
+      meetingId: event?.meetingId || event?.sourceId || '',
+      asked: m.matchTexts(matches?.length ? matches : [match].filter(Boolean)).map((t) => t.slice(0, 160)),
       note: failed || assistant.content.slice(0, 140),
     }).catch(() => {});
   }
@@ -3690,7 +3699,7 @@ async function noteJobInThread(threadConvId, job, why = '') {
 
 // What to actually say to the model. A skill job names a skill the user already wrote, so
 // the skill stays the single definition of the work — the job only says when.
-async function jobInstruction(job, { why = '', event = null, match = null } = {}) {
+async function jobInstruction(job, { why = '', event = null, match = null, matches = null } = {}) {
   let prompt = '';
   if (job.action.kind === 'prompt') prompt = job.action.text || '';
   if (job.action.kind === 'skill') {
@@ -3705,7 +3714,9 @@ async function jobInstruction(job, { why = '', event = null, match = null } = {}
     prompt = skill.prompt;
   }
   if (!prompt) return '';
-  const context = await meetingJobContext(event, match);
+  const context = event?.meetingId
+    ? await meetingJobContext(event, match, { matches, jobId: job.id })
+    : await textJobContext(event, { matches, match, jobId: job.id });
   return context ? `${prompt}\n\n${context}` : prompt;
 }
 
@@ -3721,7 +3732,7 @@ async function jobInstruction(job, { why = '', event = null, match = null } = {}
  * one moment the whole thing exists). While a meeting runs, the recent window plus the
  * running summary — the same shape a monitor turn gets, for the same cost reasons.
  */
-async function meetingJobContext(event, match) {
+async function meetingJobContext(event, match, { matches = null, jobId = '' } = {}) {
   if (!event?.meetingId) return '';
   const ended = event.type === 'meeting.ended';
   try {
@@ -3729,15 +3740,35 @@ async function meetingJobContext(event, match) {
     if (!rec) return '';
     const transcript = meetingToText(rec, { sinceTs: ended ? 0 : Date.now() - 15 * 60_000 });
     const summary = await getLiveNotesText(event.meetingId).catch(() => '');
-    // The line as it FINISHED, not as it was when it matched. The captured segment is the
-    // partial one the trigger saw; the record now holds the completed version of it.
-    const settled = settledSegment(rec, match?.segment);
-    const said = settled?.text
-      ? `WHAT TRIGGERED THIS: ${settled.speaker || 'someone'} said “${settled.text.trim()}”`
-      : '';
+
+    // WHAT TO ACT ON, named explicitly and in full.
+    //
+    // Handing the model one triggering line plus fifteen minutes of transcript is why an
+    // answer read as a summary of the call: everything it needed was in there, and so was
+    // everything it did not. The batch is the actual ask, so it is stated as a list — as it
+    // FINISHED being said, not as the caption stood when the trigger matched.
+    const batch = (matches?.length ? matches : [match]).filter(Boolean);
+    const lines = batch
+      .map((b) => settledSegment(rec, b?.segment))
+      .filter((sg) => sg?.text)
+      .map((sg) => `- ${sg.speaker || 'someone'}: “${String(sg.text).trim()}”`);
+    const said = lines.length > 1
+      ? `WHAT TO ANSWER — every one of these was asked, in this order:\n${lines.join('\n')}\n\n`
+        + 'Group the ones that are really the same question and answer each group ONCE. '
+        + 'Answer what you can from the meeting; for anything the meeting does not settle, '
+        + 'say so in a line rather than restating the question back.'
+      : lines.length === 1
+        ? `WHAT TRIGGERED THIS:\n${lines[0]}`
+        : '';
+
+    // WHAT IT ALREADY SAID. Each run is single-shot, so without this the model re-answers
+    // whatever is still inside the fifteen-minute window every time it fires.
+    const done = jobId ? await recentlyAnswered(jobId, event.meetingId) : '';
+
     return [
       `MEETING: ${rec.title || event.title || 'Untitled'}${ended ? ' (just ended)' : ' (in progress)'}`,
       said,
+      done && `ALREADY ANSWERED EARLIER IN THIS MEETING — do not answer these again:\n${done}`,
       summary && `RUNNING SUMMARY:\n${summary}`,
       transcript && `${ended ? 'FULL TRANSCRIPT' : 'RECENT TRANSCRIPT'}:\n${transcript}`,
       'Ground everything in the meeting above. Say plainly what is not in it rather than inventing.',
@@ -3745,6 +3776,52 @@ async function meetingJobContext(event, match) {
   } catch {
     return ''; // a job that cannot read the meeting still runs, just without it
   }
+}
+
+/**
+ * What a job fired on outside a meeting.
+ *
+ * Same shape as the meeting version and for the same reasons — name every match, group the
+ * related ones, say what was already answered — minus everything that only a call has: no
+ * speakers, no running summary, no rolling transcript. The surrounding text is the
+ * conversation or the note itself, which the caller already has.
+ */
+async function textJobContext(event, { matches = null, match = null, jobId = '' } = {}) {
+  if (!event?.source) return '';
+  const batch = (matches?.length ? matches : [match]).filter(Boolean);
+  const lines = batch
+    .map((b) => String(b?.segment?.text || b?.why || '').trim())
+    .filter(Boolean)
+    .map((t) => `- “${t}”`);
+  if (!lines.length) return '';
+  const where = event.source === 'note' ? 'note' : 'chat';
+  const done = jobId ? await recentlyAnswered(jobId, event.sourceId) : '';
+  return [
+    `WRITTEN IN A ${where.toUpperCase()}${event.title ? `: ${event.title}` : ''}`,
+    lines.length > 1
+      ? `WHAT TO ANSWER — every one of these was written, in this order:\n${lines.join('\n')}\n\n`
+        + 'Group the ones that are really the same and answer each group ONCE. Answer what you '
+        + 'can; for anything you cannot settle, say so in a line rather than restating it back.'
+      : `WHAT TRIGGERED THIS:\n${lines[0]}`,
+    done && `ALREADY ANSWERED IN THIS ${where.toUpperCase()} — do not answer these again:\n${done}`,
+    `Be brief. This is being written into a live ${where} while someone is still working in it.`,
+  ].filter(Boolean).join('\n\n');
+}
+
+/** The questions this job has already answered in this meeting, newest first. */
+async function recentlyAnswered(jobId, sourceId, limit = 12) {
+  try {
+    const log = await (await jobs()).runHistory(jobId);
+    const asked = [];
+    for (const run of log) {
+      // `meetingId` is the historical name of this field; it holds whichever source the run
+      // came from, so a note's answers never suppress a meeting's and vice versa.
+      if (run.skipped || run.meetingId !== sourceId) continue;
+      for (const a of run.asked || []) if (!asked.includes(a)) asked.push(a);
+      if (asked.length >= limit) break;
+    }
+    return asked.slice(0, limit).map((a) => `- “${a}”`).join('\n');
+  } catch { return ''; }
 }
 
 /**
@@ -3781,6 +3858,7 @@ async function drainPendingJobs() {
     await runJobTurn(job, { why: 'scheduled' });
   }
 }
+
 
 const settle = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -3823,6 +3901,91 @@ async function waitForCompleteUtterance(meetingId, seg) {
   return best;
 }
 
+/**
+ * Run one job for a batch of triggers, in the meeting it came from.
+ *
+ * The batching itself is NOT here — it is `js/text-triggers.js`, so notes and chats inherit
+ * the same window and the same coalescing instead of growing their own. This is only the
+ * meeting-shaped half: let the newest line finish arriving, then answer in the meeting's
+ * own thread.
+ */
+async function runMeetingBatch(job, { matches, ctx }) {
+  const m = await jobs();
+  const last = matches[matches.length - 1];
+  if (last?.segment) last.segment = await waitForCompleteUtterance(ctx.event?.meetingId, last.segment);
+  await m.markFired(job.id);
+  await runJobTurn(job, {
+    why: matches.length > 1 ? `${matches.length} questions` : matches[0]?.why || '',
+    event: ctx.event,
+    match: last,
+    matches,
+    threadConvId: ctx.threadConvId,
+  });
+}
+
+/**
+ * Text written anywhere else — a chat message sent, a note being typed.
+ *
+ * The same jobs, the same matcher, the same batching as a meeting: a phrase worth acting on
+ * is worth acting on wherever it is written. What differs is only where the answer goes, and
+ * that is `runJob`.
+ *
+ * Fire-and-forget and fully guarded: matching is pure and costs nothing, a job scoped to
+ * meetings (which is every job stored before this existed) matches nothing here, and a
+ * failure must never disturb the typing that triggered it.
+ */
+async function fireTextTrigger(source, sourceId, title, text, { runJob = null } = {}) {
+  try {
+    const tt = await import('./js/text-triggers.js');
+    // Only what has not been matched before: a note is re-read whole on every keystroke.
+    const fresh = tt.freshText(source, sourceId, text);
+    if (!fresh.trim()) return;
+    const m = await jobs();
+    const { TEXT_DELTA } = await import('./js/events/schedule.js');
+    const event = {
+      type: TEXT_DELTA,
+      source,
+      sourceId,
+      title: title || '',
+      segments: [{ t: Date.now(), speaker: 'You', text: fresh }],
+    };
+    const { makeSelfMatcher, voiceSettings } = await import('./js/voice-commands.js');
+    const hits = await m.jobsForMeetingEvent(event, { isSelf: makeSelfMatcher(voiceSettings(state.settings?.ui?.voice)) });
+    for (const hit of hits) {
+      if (!(await m.withinLimits(hit.job))) { await m.logSkip(hit.job.id, m.SKIP_REASONS.limit); continue; }
+      if (!m.batches(hit.job)) {
+        // notify / monitor here would have nowhere sensible to land outside a call.
+        if (!(await m.withinCooldown(hit.job))) { await m.logSkip(hit.job.id, m.SKIP_REASONS.cooldown); continue; }
+        await m.countRun(hit.job.id);
+        await m.markFired(hit.job.id);
+        toast(`${hit.job.name} — ${hit.match.why}`, 4000);
+        continue;
+      }
+      await m.countRun(hit.job.id);
+      tt.queueMatch(hit.job, hit.match, {
+        event,
+        threadConvId: source === 'chat' ? sourceId : '',
+        runJob: runJob || runTextBatch,
+      });
+    }
+  } catch (e) {
+    console.warn('[jobs] text trigger failed', source, e);
+  }
+}
+
+/** Default landing place for a non-meeting batch: the conversation it came from. */
+async function runTextBatch(job, { matches, ctx }) {
+  const m = await jobs();
+  await m.markFired(job.id);
+  await runJobTurn(job, {
+    why: matches.length > 1 ? `${matches.length} matches` : matches[0]?.why || '',
+    event: ctx.event,
+    match: matches[matches.length - 1],
+    matches,
+    threadConvId: ctx.threadConvId,
+  });
+}
+
 // An in-meeting event: match it against the user's jobs and run what fires. The matching is
 // pure and free; only a match costs anything.
 async function fireMeetingTrigger(event, ctx) {
@@ -3841,9 +4004,20 @@ async function fireMeetingTrigger(event, ctx) {
       // Dedup per event, so a redelivered delta cannot run the same brief twice.
       const stamp = hit.match.segment?.t ?? eventStamp(event);
       if (!(await m.claimOccurrence(`${hit.job.id}@${event.type}@${stamp}`))) continue;
-      // A phrase said fifty times is not fifty jobs — but a job that stops for a reason has
-      // to say which one, or it looks identical to a trigger that never matched.
+      // The runaway ceiling still applies to everything: it is the one guard that exists to
+      // bound spend, not to bound noise.
       if (!(await m.withinLimits(hit.job))) { await m.logSkip(hit.job.id, m.SKIP_REASONS.limit); continue; }
+
+      // AN ANSWER-PRODUCING JOB NEVER DROPS A TRIGGER. It joins the batch, which runs a few
+      // seconds later with everything asked around it. Only jobs whose action is inherently
+      // once-per-burst — a reminder, a monitor — still take the cooldown as a skip.
+      if (m.batches(hit.job)) {
+        await m.countRun(hit.job.id);
+        const tt = await import('./js/text-triggers.js');
+        const b = tt.queueMatch(hit.job, hit.match, { event, threadConvId, runJob: runMeetingBatch });
+        if (b.matches.length > 1 || b.running) await m.logSkip(hit.job.id, m.SKIP_REASONS.batched);
+        continue;
+      }
       // A topic a meeting keeps returning to is one thing happening, not six.
       if (!(await m.withinCooldown(hit.job))) { await m.logSkip(hit.job.id, m.SKIP_REASONS.cooldown); continue; }
       await m.countRun(hit.job.id);
@@ -3860,7 +4034,8 @@ async function fireMeetingTrigger(event, ctx) {
         await m.logRun(hit.job.id, { why: hit.match.why, ok: true, note: `Started a monitor: ${hit.job.action.prompt}` });
         continue;
       }
-      // Only wait when the line is visibly unfinished — see waitForCompleteUtterance.
+      // Only wait when the line is visibly unfinished — see waitForCompleteUtterance. (A
+      // batched job does this once for the whole batch, in flushBatch.)
       if (event.type === 'meeting.transcript.delta' && hit.match.segment) {
         hit.match.segment = await waitForCompleteUtterance(event.meetingId, hit.match.segment);
       }

@@ -249,6 +249,42 @@ export function utteranceLooksComplete(text) {
   return !DANGLING_TAILS.has(last);
 }
 
+// ---------------------------------------------------------------------------
+// WHERE TEXT COMES FROM.
+//
+// A phrase worth acting on is a phrase worth acting on wherever it is written. The triggers
+// below were built for live captions, but nothing in them is about a meeting: they take
+// {speaker, text} arriving over time, which is equally a note being typed and a chat being
+// sent. So the SOURCE became a parameter instead of three copies of the matcher.
+//
+// `text.delta` is the source-agnostic event. `meeting.transcript.delta` stays a first-class
+// type — it is what the meeting pipeline already emits and what stored jobs were matched
+// against — and is read as source 'meeting'.
+//
+// DEFAULT IS MEETING-ONLY, and that is a compatibility guarantee, not a preference: every
+// job stored before this existed was created against a form that said "when a phrase is
+// said" in a call. Widening those silently would start running models over notes their
+// author never pointed them at.
+// ---------------------------------------------------------------------------
+export const TEXT_DELTA = 'text.delta';
+export const TRIGGER_SOURCES = Object.freeze(['meeting', 'note', 'chat']);
+export const TEXT_WATCHES = Object.freeze(['meeting.transcript.delta', TEXT_DELTA]);
+
+/** Which surface an event came from. A meeting delta says so by its type alone. */
+export function eventSource(event) {
+  if (event?.type === 'meeting.transcript.delta') return 'meeting';
+  const s = norm(event?.source);
+  return TRIGGER_SOURCES.includes(s) ? s : '';
+}
+
+/** May this job act on this surface? Absent `sources` means meetings only — see above. */
+export function sourceAllowed(sources, event) {
+  const from = eventSource(event);
+  if (!from) return false;
+  const want = (Array.isArray(sources) ? sources : []).map(norm).filter((x) => TRIGGER_SOURCES.includes(x));
+  return want.length ? want.includes(from) : from === 'meeting';
+}
+
 export const timerTrigger = defineTrigger({
   id: 'timer:schedule',
   label: 'On a schedule',
@@ -294,11 +330,12 @@ export const phraseTrigger = defineTrigger({
   id: 'meeting:phrase',
   label: 'When a phrase is said',
   kind: 'meeting',
-  watches: ['meeting.transcript.delta'],
+  watches: TEXT_WATCHES,
   matches: (event, params = {}, ctx = {}) => {
     // Both guards exist because their absence looks the same to a user: a trigger that fires
     // on everything. An empty list would match every line; a one- or two-letter phrase
     // effectively does too.
+    if (!sourceAllowed(params.sources, event)) return null;
     const any = (params.any || []).map(norm).filter((p) => p.length >= MIN_PHRASE_CHARS);
     if (!any.length) return null;
     for (const seg of event.segments || []) {
@@ -314,11 +351,12 @@ export const topicTrigger = defineTrigger({
   id: 'meeting:topic',
   label: 'When someone talks about something',
   kind: 'meeting',
-  watches: ['meeting.transcript.delta'],
+  watches: TEXT_WATCHES,
   // Looser than a phrase on purpose: "says something about pricing" should not require the
   // word "pricing" in the exact shape the job author typed. Term overlap over the window is
   // deterministic, explainable, and free — a model would be all three of the opposite.
   matches: (event, params = {}, ctx = {}) => {
+    if (!sourceAllowed(params.sources, event)) return null;
     const terms = (params.terms || []).map(norm).filter(Boolean);
     if (!terms.length) return null;
     const need = Math.max(1, Math.min(params.minHits || 1, terms.length));
@@ -337,8 +375,9 @@ export const questionTrigger = defineTrigger({
   id: 'meeting:question',
   label: 'When a question is asked',
   kind: 'meeting',
-  watches: ['meeting.transcript.delta'],
+  watches: TEXT_WATCHES,
   matches: (event, params = {}, ctx = {}) => {
+    if (!sourceAllowed(params.sources, event)) return null;
     for (const seg of event.segments || []) {
       // Other people by default: this exists for reacting to what someone ELSE asks (an
       // interview, a customer call). The job form offers the choice, so 'anyone' and 'me' are
@@ -453,6 +492,62 @@ export function nextWakeAt(jobs, { now, lastRun = {} } = {}) {
  * Which jobs an event fires. Returns matches; running them is the host's business, because
  * only the host knows what a skill costs and whether the user approved it.
  */
+/** More than this in one batch and the answer stops being an answer. */
+export const DEFAULT_COALESCE_MAX = 8;
+
+/**
+ * Fold several triggers of the SAME job into ONE run.
+ *
+ * A cooldown exists because a topic a meeting keeps returning to is one thing happening, not
+ * six — but for a job that ANSWERS something, dropping the second trigger drops a question
+ * nobody ever answers. Reported exactly that way: thirteen questions asked in a burst, one
+ * answered, the rest skipped with "fired moments ago (cooldown)" and never seen again.
+ *
+ * So the cooldown stops meaning "discard" and starts meaning "wait, and bring the rest with
+ * you". This is the pure half: which of the queued triggers survive into the batch.
+ *
+ * Identity is the SPOKEN LINE, not the match. A live caption is re-emitted as it grows, so
+ * the same sentence arrives several times at different lengths; keying on a normalized
+ * prefix collapses those without the segment ids having to agree, and the LONGEST version
+ * wins because it is the finished one.
+ *
+ * Over the cap the OLDEST go: a question the meeting has already moved past is worth less
+ * than the one just asked, and an unbounded batch is a prompt nobody can afford.
+ */
+export function coalesceMatches(matches = [], { max = DEFAULT_COALESCE_MAX } = {}) {
+  const rows = [];
+  for (const m of matches) {
+    const text = String(m?.segment?.text || m?.why || '').trim();
+    if (!text) continue;
+    const who = norm(m?.segment?.speaker);
+    const t = m?.segment?.t || 0;
+    const flat = text.toLowerCase().replace(/\s+/g, ' ');
+    // Same utterance if it starts at the same moment, or — when the caption carries no
+    // timestamp — if one text is a PREFIX of the other, which is precisely how a caption
+    // grows. A fixed-length key cannot do this: "why is the sky" and "why is the sky blue"
+    // differ inside any prefix long enough to tell two real questions apart.
+    // When BOTH carry a start time that is identity on its own, and prefix matching must not
+    // get a say: "question number 1" is a prefix of "question number 10", so an OR here
+    // silently merges two different asks.
+    const i = rows.findIndex((r) => r.who === who && (
+      (t && r.t) ? r.t === t : (r.flat.startsWith(flat) || flat.startsWith(r.flat))
+    ));
+    if (i >= 0) {
+      if (text.length > rows[i].text.length) rows[i] = { ...rows[i], match: m, text, flat };
+      continue;
+    }
+    rows.push({ who, t, match: m, text, flat });
+  }
+  return rows.slice(-Math.max(1, max)).map((r) => r.match);
+}
+
+/** The lines a batch is asking about, in the order they were said. For a prompt, and for a log. */
+export function matchTexts(matches = []) {
+  return coalesceMatches(matches, { max: Number.MAX_SAFE_INTEGER })
+    .map((m) => String(m?.segment?.text || m?.why || '').trim())
+    .filter(Boolean);
+}
+
 export function jobsForEvent(jobs, event, { registry, ctx = {}, admit = null } = {}) {
   const out = [];
   for (const job of jobs || []) {

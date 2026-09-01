@@ -17,7 +17,7 @@ import {
 } from './jobs.js';
 import {
   timerTrigger, createTriggerRegistry, BUILTIN_TRIGGERS, meetingStartedTrigger, meetingEndedTrigger,
-  personJoinedTrigger, phraseTrigger, topicTrigger, questionTrigger,
+  personJoinedTrigger, phraseTrigger, topicTrigger, questionTrigger, TRIGGER_SOURCES,
 } from './events/schedule.js';
 
 const triggers = createTriggerRegistry(BUILTIN_TRIGGERS);
@@ -50,6 +50,10 @@ const WHEN_OPTIONS = [
   { id: questionTrigger.id, label: 'When a question is asked', kind: 'event', speaker: true },
 ];
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+// WHERE a text trigger watches. Only the text triggers get the choice — a meeting starting,
+// or someone joining one, has nowhere else it could possibly happen.
+const SOURCE_LABELS = { meeting: 'in meetings', note: 'in notes', chat: 'in chats' };
+const TEXT_TRIGGERS = new Set([phraseTrigger.id, topicTrigger.id, questionTrigger.id]);
 
 function build() {
   if (el) return el;
@@ -79,6 +83,10 @@ function build() {
           <option value="anyone">anyone speaks</option>
           <option value="me">I speak</option>
         </select>
+        <!-- Absent on a stored job means meetings only, which is what every job created
+             before this control existed was pointed at. See sourceAllowed(). -->
+        <select id="job-where" class="mon-edit-every" hidden multiple size="3"
+                title="Where to watch — a phrase is worth acting on wherever it is written"></select>
         <select id="job-day" class="mon-edit-every" hidden></select>
         <input id="job-time" class="mon-edit-every" type="time" value="08:00" hidden />
       </div>
@@ -162,6 +170,7 @@ function wireForm() {
   const text = el.querySelector('#job-text');
   const param = el.querySelector('#job-param');
   const speaker = el.querySelector('#job-speaker');
+  const where = el.querySelector('#job-where');
   const day = el.querySelector('#job-day');
   const time = el.querySelector('#job-time');
   const hint = el.querySelector('#job-hint');
@@ -192,6 +201,10 @@ function wireForm() {
     when.innerHTML = '';
     for (const o of WHEN_OPTIONS) when.add(new Option(o.label, o.id));
     if (editing && !whenValueFor(editing)) when.add(new Option(`Keep: ${repeatLabel(editing) || 'as set'}`, '__keep'));
+    if (!where.options.length) {
+      for (const src of TRIGGER_SOURCES) where.add(new Option(SOURCE_LABELS[src] || src, src));
+      where.options[0].selected = true; // meetings, matching the contract's default
+    }
     if (keepWhen) when.value = keepWhen;
     if (!when.value) when.value = WHEN_OPTIONS[0].id;
 
@@ -202,6 +215,7 @@ function wireForm() {
     param.hidden = !opt?.field;
     param.placeholder = opt?.placeholder || '';
     speaker.hidden = !opt?.speaker;
+    where.hidden = !TEXT_TRIGGERS.has(opt?.id);
     day.hidden = opt?.id !== 'weekly';
     time.hidden = opt?.kind !== 'timer';
     add.textContent = editing ? 'Save changes' : 'Schedule it';
@@ -224,6 +238,8 @@ function wireForm() {
     const p = job.params || {};
     param.value = (p.any || p.terms || p.names || []).join(', ');
     speaker.value = p.speaker || 'others';
+    const want = new Set(Array.isArray(p.sources) && p.sources.length ? p.sources : ['meeting']);
+    for (const o of where.options) o.selected = want.has(o.value);
     day.value = String(job.schedule?.weekday ?? 1);
     time.value = timeValueFor(job);
     paint();
@@ -281,6 +297,9 @@ function wireForm() {
         params: {
           ...(opt.field ? { [opt.field]: values } : {}),
           ...(opt.speaker ? { speaker: speaker.value || 'others' } : {}),
+          // Only written for a trigger that can watch more than one place; elsewhere it
+          // would be a stored field that means nothing.
+          ...(TEXT_TRIGGERS.has(opt.id) ? { sources: selectedSources(where) } : {}),
         },
       }),
     };
@@ -302,6 +321,12 @@ function wireForm() {
     onToast(`${was ? 'Saved' : 'Scheduled'} “${spec.name}”`);
     renderJobs();
   };
+}
+
+/** The surfaces ticked, never empty — an empty list would read as "everywhere". */
+function selectedSources(where) {
+  const on = [...where.options].filter((o) => o.selected).map((o) => o.value);
+  return on.length ? on : ['meeting'];
 }
 
 export function scheduleFor(id, hour, minute, weekday) {

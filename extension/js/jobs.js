@@ -19,6 +19,7 @@
 import {
   defineJob, dueJobs, nextWakeAt, jobsForEvent, occurrenceKey, createTriggerRegistry,
   BUILTIN_TRIGGERS, timerTrigger, nextFireAt, utteranceLooksComplete,
+  coalesceMatches, matchTexts,
 } from './events/schedule.js';
 
 export const JOBS_KEY = 'chatpanel:jobs';        // id -> job
@@ -174,6 +175,7 @@ export async function logSkip(jobId, why) {
 export const SKIP_REASONS = Object.freeze({
   limit: 'hit its daily limit',
   cooldown: 'fired moments ago (cooldown)',
+  batched: 'held to answer together with the ones around it',
   window: 'waiting for the side panel to be open',
   missed: 'missed while the browser was closed',
   gone: 'its skill no longer exists',
@@ -374,7 +376,18 @@ export function whenNext(job, now = Date.now(), lastRun = 0) {
 
 // Re-exported so the panel reaches the shared predicate through the module it already
 // loads to run a job, instead of pulling events/schedule.js onto another import path.
-export { occurrenceKey, utteranceLooksComplete };
+export { occurrenceKey, utteranceLooksComplete, coalesceMatches, matchTexts };
+
+/**
+ * Which jobs BATCH their triggers instead of dropping the second one.
+ *
+ * An action that produces an answer must never discard a trigger: thirteen questions asked
+ * in a burst, one answered and twelve skipped "(cooldown)", is a feature that looks broken
+ * and is. `notify` and `monitor` are the opposite — one reminder is the whole point, and
+ * thirteen monitors on one topic is the runaway the cooldown exists to stop.
+ */
+export const BATCHES = Object.freeze(['skill', 'prompt']);
+export const batches = (job) => BATCHES.includes(job?.action?.kind);
 
 // ---------------------------------------------------------------------------
 // Backup
