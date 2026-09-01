@@ -3670,7 +3670,20 @@ function renderCowriter() {
     chip.className = `cw-sug cw-${s.role}`;
     chip.title = s.title || '';
     chip.innerHTML = `<span class="cw-ico">${iconForEmoji(s.icon) || escapeHtml(s.icon || '')}</span>${s.html}`;
-    chip.onclick = () => { s.apply(); boardSuggestions = boardSuggestions.filter((x) => x !== s); renderCowriter(); };
+    const drop = () => {
+      // Suppressed by KEY, so it stays gone: for a job chip the key is the questions
+      // themselves, which is what makes "don't answer this one" mean this one and not the job.
+      boardDismissed.add(s.key);
+      boardSuggestions = boardSuggestions.filter((x) => x !== s);
+      renderCowriter();
+    };
+    chip.onclick = (e) => {
+      if (e.altKey) { drop(); return; }   // same alt-click-to-refuse idiom the page offer uses
+      s.apply();
+      boardSuggestions = boardSuggestions.filter((x) => x !== s);
+      renderCowriter();
+    };
+    chip.oncontextmenu = (e) => { e.preventDefault(); drop(); };
     el.appendChild(chip);
   }
   if (cwSuggestions.length > 1) {
@@ -4612,7 +4625,142 @@ function observe() {
   // line affords nothing else (no outline/heading nudge, not a question to research).
   if (!aff && !isQuestion) maybeGoalDraft();
   if (swarmGear === 'focus') runFactcheck(); // the reasoning-tier member only runs in Focus
+  // Standing jobs, matched against what was just typed. Pure and free; it only ever offers.
+  scanJobTriggers();
 }
+// ── Scheduled jobs, watching what you type ──────────────────────────────────────
+//
+// The same jobs that watch a meeting ("when a question is asked, run the Interview skill")
+// watch a note, because nothing in the matching was ever about a meeting — it takes text
+// arriving over time, which is equally a note being typed. The shared contract made the
+// SOURCE a parameter; this is the note's half.
+//
+// OFFERED, NEVER AUTO-SPENT. observe() runs on a debounce off every keystroke, so a job that
+// fired by itself here would burn tokens on half-written sentences and write into a document
+// someone is still holding. It becomes a board chip instead — the same treatment the Writer's
+// drafts get, and the same one click to spend it. Dismissing the chip IS the per-question
+// disable: `boardDismissed` is keyed on the questions, so those never come back.
+const jobHits = new Map(); // jobId → { job, questions: [] }
+
+async function scanJobTriggers() {
+  if (!current) return;
+  try {
+    const [tt, sched, jobsMod] = await Promise.all([
+      import('./js/text-triggers.js'), import('./js/events/schedule.js'), import('./js/jobs.js'),
+    ]);
+    // Only text this note has not been matched on: the body is re-read whole on every pass.
+    const fresh = tt.freshText('note', current.id, bodyText());
+    if (!fresh.trim()) return;
+    const event = {
+      type: sched.TEXT_DELTA,
+      source: 'note',
+      sourceId: current.id,
+      title: current.title || 'Note',
+      segments: [{ t: Date.now(), speaker: 'You', text: fresh }],
+    };
+    const hits = await jobsMod.jobsForMeetingEvent(event, {});
+    for (const hit of hits) {
+      if (!jobsMod.batches(hit.job)) continue; // a reminder has nowhere to land in a note
+      const q = String(hit.match?.segment?.text || hit.match?.why || '').trim();
+      if (!q) continue;
+      const entry = jobHits.get(hit.job.id) || { job: hit.job, questions: [] };
+      if (!entry.questions.includes(q)) entry.questions.push(q);
+      jobHits.set(hit.job.id, entry);
+    }
+    renderJobChips(sched);
+  } catch { /* a standing job must never disturb typing */ }
+}
+
+function renderJobChips(sched) {
+  boardSuggestions = boardSuggestions.filter((x) => x.role !== 'job');
+  for (const [id, entry] of [...jobHits]) {
+    const qs = sched.matchTexts(entry.questions.map((text) => ({ segment: { text } })));
+    if (!qs.length) { jobHits.delete(id); continue; }
+    // Keyed on the QUESTIONS, so dismissing this chip suppresses exactly these — and a
+    // different question later still offers itself.
+    const key = `job:${id}:${qs.join('|').slice(0, 120)}`;
+    if (boardDismissed.has(key)) continue;
+    const label = qs.length > 1 ? `${qs.length} questions` : qs[0].slice(0, 48) + (qs[0].length > 48 ? '…' : '');
+    boardSuggestions.push({
+      role: 'job',
+      icon: '⏱',
+      key,
+      html: `${escapeHtml(entry.job.name)} <span class="cw-hand">— ${escapeHtml(label)}</span>`,
+      title: `Run “${entry.job.name}” on what you just wrote · alt-click (or right-click) to skip these`,
+      apply: () => { jobHits.delete(id); runJobOnNote(entry.job, qs); },
+    });
+  }
+  renderCowriter();
+}
+
+/**
+ * Spend it: run the job's skill (or instruction) and write the answer into the note.
+ *
+ * Deliberately the SAME path an @agent mention takes — one note-job runner, one activity
+ * trace, one version label — rather than a second way to put model output in a document.
+ * The answer lands at the end with the questions quoted above it, which is the readable
+ * Q&A trail the mention flow already established.
+ */
+async function runJobOnNote(job, questions) {
+  if (!current || noteHasBlockingJob(current.id)) { toast('Wait for the current run to finish'); return; }
+  let deps;
+  try { deps = await agentDeps(); } catch { toast('Agent unavailable'); return; }
+  const settings = await deps.getSettings();
+  const license = await deps.getLicense();
+  const targetAgent = deps.getTarget(settings, settings.activeAgentId);
+  if (!targetAgent) { toast('No agent configured'); return; }
+  if (!deps.canUseAgent(license, settings, targetAgent)) { toast(`${targetAgent.name || 'That agent'} needs ChatPanel Pro`); return; }
+  const prompt = job.action?.kind === 'skill'
+    ? (settings.skills || []).find((sk) => sk.id === job.action.skillId)?.prompt || ''
+    : job.action?.text || '';
+  if (!prompt) { toast(`“${job.name}” points at a skill that no longer exists`, 5000); return; }
+  const body = bodyText();
+  const head = body.endsWith('\n') ? body : `${body}\n`;
+  const asked = questions.map((q) => `> ${q}`).join('\n');
+  const numbered = questions.map((q, i) => `${i + 1}. ${q}`).join('\n');
+  const instruction = [
+    prompt,
+    'ANSWER THESE, from the note below. Group the ones that are really the same and answer '
+      + 'each group ONCE; say plainly what the note does not settle rather than restating the question.',
+    numbered,
+    `THE NOTE:\n${body.slice(-6000)}`,
+  ].join('\n\n');
+  setStatus(`Running “${job.name}”…`);
+  setSideTab('activity');
+  await runNoteJob({
+    deps,
+    settings,
+    license,
+    targetAgent,
+    resolved: deps.resolveTarget(targetAgent, settings),
+    head,
+    tail: '',
+    commandText: '',
+    noteId: current.id,
+    cmdLabel: job.name,
+    systemPrompt: 'You are answering questions the user wrote in their own note. Output clean '
+      + 'GitHub-flavored markdown, no preamble or meta commentary. Be brief — this is going into '
+      + 'a document someone is still writing.',
+    instruction,
+    armToolset: true,
+    maxTokens: 1600,
+    answerPrefix: `\n${asked}\n\n**${job.name}:**\n\n`,
+    versionLabel: `${job.name} · job`,
+  });
+  // Recorded like every other run, so the Jobs pane can say what it did and where.
+  try {
+    const m = await import('./js/jobs.js');
+    await m.countRun(job.id);
+    await m.logRun(job.id, {
+      why: `${questions.length} in a note`,
+      ok: true,
+      meetingId: current.id,
+      asked: questions.map((q) => q.slice(0, 160)),
+      note: `Answered in “${current.title || 'note'}”`,
+    });
+  } catch { /* the answer is in the note either way */ }
+}
+
 let lastAutoDraft = '';
 function autoDraft(aff) {
   const key = `${aff.kind}:${aff.at}`;

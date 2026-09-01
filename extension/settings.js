@@ -56,7 +56,7 @@ import { WEBLLM_ALL_MODELS, WEBLLM_RECOMMENDED, DEFAULT_WEBLLM_MODEL, deleteMode
 import { webgpuSupport } from './js/webgpu-support.js';
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
-import { localStorageHealth } from './js/storage-health.js';
+import { localStorageHealth, localBytesInUse } from './js/storage-health.js';
 import { checkGateway, getGatewayConfig, getGatewayLogs, getGatewayObservability, clearGatewayHistory, setGatewayConfig, ensureGatewayEntitlement, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
 import { createVault, redactText } from './js/pii-redact.js';
 import { detectEntities } from './js/pii-detect.js';
@@ -6504,7 +6504,7 @@ function obsAgo(ts) {
   const h = Math.round(m / 60); if (h < 48) return `${h}h ago`;
   return `${Math.round(h / 24)}d ago`;
 }
-function obsTierCard(fmt, { tier, label, present, records, bytes, newest, note }) {
+function obsTierCard(fmt, { tier, label, present, records, bytes, newest, note, aside }) {
   const state = present ? 'on' : 'off';
   const dot = `<span class="obs-dot ${state}"></span>`;
   const metric = present && records != null
@@ -6518,6 +6518,7 @@ function obsTierCard(fmt, { tier, label, present, records, bytes, newest, note }
     ${metric}
     <div class="obs-tier-sub sub">${escapeHtml(sub.join(' · ') || note || '')}</div>
     ${present && sub.length && note ? `<div class="obs-tier-note tiny muted">${escapeHtml(note)}</div>` : (!present ? `<div class="obs-tier-note tiny muted">${escapeHtml(note || '')}</div>` : '')}
+    ${aside ? `<div class="obs-tier-note tiny muted">${escapeHtml(aside)}</div>` : ''}
   </div>`;
 }
 async function renderObservability() {
@@ -6534,6 +6535,14 @@ async function renderObservability() {
   ]);
 
   // HOT — the browser stores on this device.
+  //
+  // Measure chrome.storage.local, because that is where the records counted below live.
+  // navigator.storage.estimate() reports the origin's quota-managed pools instead (Cache
+  // Storage, IndexedDB) — the in-browser model weights and the event log — which contain
+  // none of them. Reporting that as the hot size showed a 1 GB model download as a
+  // gigabyte of history sitting next to a record count it had nothing to do with. It is
+  // still worth showing, as its own line, so the disk it uses stays visible.
+  const hotBytes = await localBytesInUse().catch(() => 0);
   let est = {}; try { est = (await navigator.storage?.estimate?.()) || {}; } catch { /* not exposed */ }
   const [convs, mtgs, nts] = await Promise.all([
     store.getIndex?.().catch(() => []) || [],
@@ -6551,8 +6560,11 @@ async function renderObservability() {
   const hot = {
     tier: 'Hot', label: 'Browser · this device', present: true,
     records: (convs?.length || 0) + (mtgs?.length || 0) + (nts?.length || 0),
-    bytes: est.usage ?? null, newest: hotNewest,
+    bytes: hotBytes || null, newest: hotNewest,
     note: `${convs?.length || 0} chats · ${mtgs?.length || 0} meetings · ${nts?.length || 0} notes`,
+    aside: est.usage
+      ? `Plus ${formatBytes(est.usage)} of browser cache — in-browser model weights and the event log. Not history, and not part of a backup.`
+      : '',
   };
 
   // WARM — the local gateway mirror. /v1/observability is admin-gated, and Chrome omits
