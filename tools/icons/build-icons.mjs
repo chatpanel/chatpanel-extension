@@ -24,6 +24,7 @@ const ALIAS = {
   notes:'notebook-pen', note:'notebook-pen', 'note-new':'square-pen', edit:'pencil', rename:'pencil',
   upgrade:'sparkles', assist:'sparkles', improve:'sparkles', ai:'sparkles', magic:'sparkles',
   close:'x', clear:'x', expand:'maximize-2', caret:'chevron-down',
+  'move-up':'chevron-up', 'move-down':'chevron-down', 'send-now':'zap', 'steer':'zap',
   recording:'mic', mic:'mic', back:'arrow-left', send:'arrow-up', stop:'square',
   chat:'message-square', ask:'message-square', meetings:'users', people:'users', participants:'users',
   attach:'paperclip', 'save-version':'plus', add:'plus', skills:'graduation-cap',

@@ -1239,8 +1239,12 @@ async function startConversation(existing) {
 }
 
 // Is the conversation currently on screen mid-response?
+// What to call the send-now chord in a tooltip. Mac keyboards say ⌘; everything else
+// says Ctrl, and a tooltip naming the wrong key is worse than none.
+const MOD_LABEL = /Mac|iPhone|iPad/.test(navigator.userAgent || '') ? '⌘' : 'Ctrl';
+
 function isActiveStreaming() {
-  return state.streams.has(state.conv.id);
+  return state.streams.has(state.conv?.id);
 }
 
 // Parse a leading "/command args" into its skill (or null). The caller applies
@@ -1553,7 +1557,15 @@ function renderMessages() {
     renderSuggestions();
   } else {
     empty.classList.add('hidden');
-    for (const m of state.conv.messages) root.appendChild(renderMessage(m));
+    // The queue is ONE card at the end rather than a run of dimmed bubbles: you cannot
+    // reorder, drop or jump a list whose shape you cannot see.
+    const queued = new Set(visibleQueue(state.conv).map((e) => e.id));
+    for (const m of state.conv.messages) {
+      if (queued.has(m.id)) continue;
+      root.appendChild(renderMessage(m));
+    }
+    const card = queueCard(state.conv);
+    if (card) root.appendChild(card);
   }
   scrollToBottomNow();
 }
@@ -2220,7 +2232,7 @@ function maybeWarmSync({ immediate = false } = {}) {
   }, immediate ? 1500 : 5000);
 }
 
-async function send() {
+async function send({ steer = false } = {}) {
   // If the user hits Send/Enter before the cold first-run init finishes, wait for it
   // rather than throwing on an unset conversation/state (the fresh-install race).
   if (!composerReady) await composerReadyPromise;
@@ -2487,7 +2499,9 @@ async function send() {
     renderContextBar();
 
     $('empty').classList.add('hidden');
-    $('messages').appendChild(renderMessage(userMsg));
+    // A queued message belongs in the queue card, not in a bubble of its own.
+    if (queued) { await primeQueue(); refreshQueueCard(); }
+    else $('messages').appendChild(renderMessage(userMsg));
     scrollToBottomNow();
     await saveConversation(conv);
     refreshHistory();
@@ -2496,9 +2510,10 @@ async function send() {
     fireTextTrigger('chat', conv.id, conv.title || 'Chat', userMsg.content);
 
     if (queued) {
-      // Queue: the running response picks it up when it finishes. (Hit Stop to
-      // answer it now instead — i.e. steer.)
-      toast('Queued — sends after the current reply');
+      // Queue: the running response picks it up when it finishes — unless the user
+      // says otherwise, from the card (⚡ / drop / reorder) or with the send-now chord.
+      if (steer) sendQueueNow(userMsg.id);
+      else toast(`Queued — ${MOD_LABEL}+Enter sends it now`);
       return;
     }
 
@@ -2537,15 +2552,200 @@ function makeAssistant(agent) {
   };
 }
 
-// After a response finishes, answer any messages the user queued while it ran.
-// Several consecutive queued messages are answered together in one turn.
-function maybeDrainQueue(conv) {
-  if (state.streams.has(conv.id)) return;
-  const last = conv.messages[conv.messages.length - 1];
-  if (!last || last.role !== 'user') return;
-  for (let i = conv.messages.length - 1; i >= 0 && conv.messages[i].role === 'user'; i--) {
-    conv.messages[i].queued = false;
+// ---------------------------------------------------------------------------
+// THE SEND QUEUE — what you typed while the reply was still coming.
+//
+// Queueing on its own is a one-way street: you can add to it and then only wait. The
+// three things people actually want are to STEER (this one first, now), to DROP (the
+// reply answered it — don't spend a turn on it) and to REORDER. The model for all
+// three is shared — @chatpanel/events/queue.js owns what counts as queued and what a
+// reorder may legally do — so a phone or the gateway inherits the same answers rather
+// than growing their own. Only the drawing and the abort are the panel's.
+//
+// Loaded on demand: nothing can be queued until a reply is already streaming, so this
+// never belongs on the panel's first paint. Every path that can create or consume a
+// queue awaits it first, so it is always in hand by the time a card is drawn.
+let queueApi = null;
+let queueApiLoading = null;
+function primeQueue() {
+  if (queueApi) return Promise.resolve(queueApi);
+  queueApiLoading ||= import('./js/events/queue.js').then((m) => (queueApi = m));
+  return queueApiLoading;
+}
+
+/**
+ * The queue as the user can see and act on it — only while a reply is actually in
+ * flight. The moment one ends the queue is DRAINED rather than displayed, so a card
+ * outside a stream would offer controls over something already sent.
+ */
+function visibleQueue(conv) {
+  if (!queueApi || !conv || !state.streams.has(conv.id)) return [];
+  return queueApi.pendingQueue(conv.messages);
+}
+
+// Apply a queue transform IN PLACE. The shared model is pure and hands back a new
+// array; a running turn holds `conv` and reads `conv.messages` when it compacts or
+// drains, so swapping the reference under it is the kind of bug that only ever shows
+// up mid-answer. Returns false when nothing changed — the caller skips the redraw.
+function applyQueueChange(conv, next) {
+  if (!next || next === conv.messages) return false;
+  conv.messages.splice(0, conv.messages.length, ...next);
+  return true;
+}
+
+function queueCard(conv) {
+  const queue = visibleQueue(conv);
+  if (!queue.length) return null;
+
+  const card = document.createElement('div');
+  card.className = 'msg queue-card'; // `.msg` so a full re-render sweeps it up with the rest
+
+  const head = document.createElement('div');
+  head.className = 'queue-head';
+  const title = document.createElement('span');
+  title.className = 'queue-title';
+  title.innerHTML = `${icon('queued')} Queued · ${queue.length}`;
+  const hint = document.createElement('span');
+  hint.className = 'queue-hint';
+  // Short on purpose: at panel widths a longer sentence just becomes an ellipsis, and
+  // for two or more the ORDER is the fact worth spending the space on.
+  hint.textContent = queue.length > 1 ? 'sent in this order' : 'sent when this reply ends';
+  head.append(title, hint);
+  if (queue.length > 1) {
+    const all = document.createElement('button');
+    all.className = 'queue-now-all';
+    all.innerHTML = `${icon('send-now')} Send now`;
+    all.title = 'Stop the current reply and answer the whole queue now';
+    all.onclick = (e) => { e.stopPropagation(); sendQueueNow(); };
+    head.appendChild(all);
   }
+
+  const list = document.createElement('ol');
+  list.className = 'queue-list';
+  for (const entry of queue) list.appendChild(queueRow(entry, queue.length));
+
+  card.append(head, list);
+  return card;
+}
+
+function queueRow({ message, position }, total) {
+  const li = document.createElement('li');
+  li.className = 'q-item';
+  li.dataset.id = message.id;
+
+  const pos = document.createElement('span');
+  pos.className = 'q-pos';
+  pos.textContent = String(position + 1);
+
+  const body = document.createElement('div');
+  body.className = 'q-body';
+  const text = document.createElement('div');
+  text.className = 'q-text';
+  // Two lines, then a fade — long enough to recognise which question this is, short
+  // enough that three queued messages don't bury the answer they were typed over.
+  text.textContent = message.content || '(attachments only)';
+  text.title = message.content || '';
+  body.appendChild(text);
+  if (message.attachments?.length) {
+    const att = document.createElement('div');
+    att.className = 'q-att';
+    att.innerHTML = `${icon('attach')} ${escapeAttr(message.attachments.map((a) => a.title || a.url || 'attachment').join(', '))}`;
+    body.appendChild(att);
+  }
+
+  const acts = document.createElement('div');
+  acts.className = 'q-acts';
+  acts.append(
+    queueBtn('now', 'send-now', 'Send now — stops the current reply and answers this first', () => sendQueueNow(message.id)),
+    queueBtn('up', 'move-up', 'Move up', () => nudgeQueued(message.id, -1), position === 0),
+    queueBtn('down', 'move-down', 'Move down', () => nudgeQueued(message.id, 1), position === total - 1),
+    queueBtn('drop', 'close', 'Remove — don’t send this', () => dropQueued(message.id)),
+  );
+
+  li.append(pos, body, acts);
+  return li;
+}
+
+function queueBtn(act, iconName, title, onClick, disabled = false) {
+  const b = document.createElement('button');
+  b.className = `q-btn q-${act}`;
+  b.dataset.act = act;
+  b.innerHTML = icon(iconName);
+  b.title = title;
+  b.setAttribute('aria-label', title);
+  b.disabled = disabled;
+  b.onclick = (e) => { e.stopPropagation(); onClick(); };
+  return b;
+}
+
+// Redraw just the card, and put focus back where the user left it: reordering is
+// several clicks in a row, and a button that vanishes under the cursor after each one
+// turns a keyboard action into mouse work.
+function refreshQueueCard(focus) {
+  const root = $('messages');
+  root.querySelector('.queue-card')?.remove();
+  const card = queueCard(state.conv);
+  if (!card) return;
+  root.appendChild(card);
+  if (!focus) return;
+  const btn = card.querySelector(`.q-item[data-id="${CSS.escape(focus.id)}"] .q-btn[data-act="${focus.act}"]`);
+  if (btn && !btn.disabled) btn.focus();
+}
+
+async function nudgeQueued(id, delta) {
+  await primeQueue();
+  const conv = state.conv;
+  if (!applyQueueChange(conv, queueApi.moveQueued(conv.messages, id, delta))) return;
+  refreshQueueCard({ id, act: delta < 0 ? 'up' : 'down' });
+  await saveConversation(conv);
+}
+
+async function dropQueued(id) {
+  await primeQueue();
+  const conv = state.conv;
+  if (!applyQueueChange(conv, queueApi.dequeue(conv.messages, id))) return;
+  refreshQueueCard();
+  toast('Removed from the queue');
+  await saveConversation(conv);
+}
+
+/**
+ * Send now — the escape hatch from "queued", for the thought that was the whole point
+ * of typing over the answer.
+ *
+ * No engine we speak to takes new input into a run already in flight (the bridge hands
+ * a CLI its prompt and closes stdin; an HTTP stream has no upstream channel), so this
+ * is promote-then-interrupt: the partial answer stays in the transcript as context and
+ * the next turn opens with the message the user wanted read first. That is genuinely
+ * "taken into account immediately" — it just costs the rest of a reply that was, by the
+ * user's own action, going the wrong way. With no id it simply sends the queue as it
+ * stands.
+ */
+async function sendQueueNow(id) {
+  await primeQueue();
+  const conv = state.conv;
+  if (id) applyQueueChange(conv, queueApi.promoteQueued(conv.messages, id));
+  if (!queueApi.pendingQueue(conv.messages).length) return;
+  refreshQueueCard();
+  await saveConversation(conv);
+  if (state.streams.has(conv.id)) {
+    toast('Sending now — stopping the current reply');
+    stopStream(); // its finally drains the queue, steered message first
+  } else {
+    maybeDrainQueue(conv);
+  }
+}
+
+// After a response finishes, answer any messages the user queued while it ran.
+// Several consecutive queued messages are answered together in one turn, in the order
+// the QUEUE is in — which after a steer or a reorder is not the order they were typed.
+async function maybeDrainQueue(conv) {
+  if (state.streams.has(conv.id)) return;
+  await primeQueue();
+  if (state.streams.has(conv.id)) return; // a new turn may have started while that loaded
+  const queue = queueApi.pendingQueue(conv.messages);
+  if (!queue.length) return;
+  for (const { message } of queue) message.queued = false;
   const agent = agentForConv(conv);
   const assistant = makeAssistant(agent);
   conv.messages.push(assistant);
@@ -3179,7 +3379,16 @@ async function resendEdited(m, text) {
 // turn. Stop lives in the activity strip. (Kept as a function since several
 // places call it; the composer stop button stays hidden.)
 function updateComposerUI() {
-  $('btn-send').classList.remove('hidden');
+  const btn = $('btn-send');
+  btn.classList.remove('hidden');
+  // The same button does two different things depending on whether a reply is running,
+  // and only one of them is "send". Say which, and say how to override it — read
+  // defensively, the composer is live before the first conversation exists.
+  const queueing = state.streams.has(state.conv?.id);
+  btn.classList.toggle('queueing', queueing);
+  const label = queueing ? `Queue — sends after the current reply (${MOD_LABEL}+Enter sends it now)` : 'Send';
+  btn.title = label;
+  btn.setAttribute('aria-label', queueing ? 'Queue message' : 'Send');
   $('btn-stop').classList.add('hidden');
   syncPageActBtn();
   renderMcpToolsBtn();
@@ -8216,7 +8425,7 @@ function wireDrawerResize() {
 // Events
 // --------------------------------------------------------------------------
 function wireEvents() {
-  $('btn-send').onclick = send;
+  $('btn-send').onclick = () => send();
   $('btn-stop').onclick = stopStream;
   $('btn-new').onclick = () => startConversation();
   $('btn-copy-chat').onclick = () => copyChatAsMarkdown();
@@ -8273,6 +8482,13 @@ function wireEvents() {
     }
     if (e.key === 'Escape' && acSuggestion) {
       clearPromptSuggest();
+      return;
+    }
+    // Type over a running reply and send it NOW: queue it, then interrupt. The plain
+    // Enter below still queues, which is the right default — this is the deliberate one.
+    if (e.key === 'Enter' && !e.shiftKey && (e.metaKey || e.ctrlKey) && isActiveStreaming()) {
+      e.preventDefault();
+      send({ steer: true });
       return;
     }
     if (e.key === 'Enter' && !e.shiftKey && state.settings.ui.sendOnEnter) {
