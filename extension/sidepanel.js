@@ -1585,9 +1585,17 @@ function renderMessage(m) {
   // typed. Role isn't user/assistant, so chatMessages() keeps it out of the model payload.
   if (m.role === 'job') {
     const row = document.createElement('div');
-    row.className = 'msg watch-log';
+    row.className = 'msg watch-log job-log';
     row.dataset.id = m.id;
-    row.innerHTML = `${icon('timer')} ${escapeAttr(String(m.content ?? ''))} · ${escapeAttr(timeLabel(m.ts))}`;
+    const text = String(m.content ?? '');
+    // The time leads on a job row, unlike every other row, for one reason: the reason is
+    // clamped and a trailing timestamp is the first thing a burst of questions pushes out of
+    // sight. A log line that cannot say WHEN is worth less than one that cannot say all of WHY.
+    row.innerHTML = `${icon('timer')} ${escapeAttr(timeLabel(m.ts))} · ${escapeAttr(text)}`;
+    // The row names the questions now, so it can run long. It is clamped to a few lines so a
+    // burst cannot push the answer it explains off the screen — and a clamp with no way to
+    // read the rest is a truncation with extra steps, so the whole reason is on hover.
+    row.title = `${timeLabel(m.ts)} · ${text}`;
     return row;
   }
 
@@ -3753,7 +3761,10 @@ async function runJobTurn(job, { why = '', event = null, match = null, matches =
     // The instruction carries the whole transcript, so it stays OUT of the thread — stored,
     // it would be re-sent on every later turn. What goes in is the CAUSE: one dim row naming
     // the job and why it fired, so the answer under it is not an answer to nothing.
-    const note = { id: uid(), role: 'job', kind: 'job-log', jobId: job.id, content: `${job.name}${why ? ` — ${why}` : ''}`, ts: now };
+    // THE CAUSE FIRST, the job second. The reason now carries the question that was asked,
+    // and that is what explains the answer below it; the job's name is provenance — useful,
+    // but not the thing to spend the first line on (and the first thing the clamp drops).
+    const note = { id: uid(), role: 'job', kind: 'job-log', jobId: job.id, content: `${why ? `${why} — ` : ''}${job.name}`, ts: now };
     conv.messages.push(note);
     nameThreadForMeeting(conv, { event, job });
     if (showing()) { $('empty')?.classList.add('hidden'); $('messages').appendChild(renderMessage(note)); }
@@ -4124,7 +4135,9 @@ async function runMeetingBatch(job, { matches, ctx }) {
   if (last?.segment) last.segment = await waitForCompleteUtterance(ctx.event?.meetingId, last.segment);
   await m.markFired(job.id);
   await runJobTurn(job, {
-    why: matches.length > 1 ? `${matches.length} questions` : matches[0]?.why || '',
+    // What was ASKED, not how many things were. "3 questions" is the one part the reader can
+    // already see — three answers are about to appear under it; which three, they cannot.
+    why: m.matchSummary(matches, { noun: 'questions' }),
     event: ctx.event,
     match: last,
     matches,
@@ -4187,7 +4200,7 @@ async function runTextBatch(job, { matches, ctx }) {
   const m = await jobs();
   await m.markFired(job.id);
   await runJobTurn(job, {
-    why: matches.length > 1 ? `${matches.length} matches` : matches[0]?.why || '',
+    why: m.matchSummary(matches),
     event: ctx.event,
     match: matches[matches.length - 1],
     matches,

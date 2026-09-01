@@ -19,7 +19,7 @@
 import {
   defineJob, dueJobs, nextWakeAt, jobsForEvent, occurrenceKey, createTriggerRegistry,
   BUILTIN_TRIGGERS, timerTrigger, nextFireAt, utteranceLooksComplete,
-  coalesceMatches, matchTexts,
+  coalesceMatches, matchTexts, matchSummary, clipText,
 } from './events/schedule.js';
 
 export const JOBS_KEY = 'chatpanel:jobs';        // id -> job
@@ -376,7 +376,7 @@ export function whenNext(job, now = Date.now(), lastRun = 0) {
 
 // Re-exported so the panel reaches the shared predicate through the module it already
 // loads to run a job, instead of pulling events/schedule.js onto another import path.
-export { occurrenceKey, utteranceLooksComplete, coalesceMatches, matchTexts };
+export { occurrenceKey, utteranceLooksComplete, coalesceMatches, matchTexts, matchSummary, clipText };
 
 /**
  * Which jobs BATCH their triggers instead of dropping the second one.

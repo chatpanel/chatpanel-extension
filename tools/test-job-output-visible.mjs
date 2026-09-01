@@ -65,6 +65,52 @@ assert.match(
 );
 assert.match(js, /function nameThreadForMeeting/, 'A thread a job writes into must not be filed as "New chat".');
 
+// ── and the row must say WHAT it fired on ────────────────────────────────────────
+// It read "Answer the question the best way possible with the informati — question from
+// Alex": an instruction severed mid-word, and no sign of the question being answered.
+const panel = read('js/jobs-panel.js');
+assert.match(
+  js,
+  /why: m\.matchSummary\(matches, \{ noun: 'questions' \}\)/,
+  'A burst must be summarized by the questions themselves, not by how many there were.',
+);
+assert.match(js, /why: m\.matchSummary\(matches\)/, 'Text-surface batches must be summarized the same way.');
+assert.doesNotMatch(js, /\$\{matches\.length\} questions/, 'A bare count is what this replaced.');
+assert.match(js, /row\.title = `\$\{timeLabel\(m\.ts\)\} · \$\{text\}`/, 'The clamped job row must carry its whole reason on hover.');
+assert.match(
+  js,
+  /\$\{icon\('timer'\)\} \$\{escapeAttr\(timeLabel\(m\.ts\)\)\} · /,
+  'The time must lead the job row, or a burst of questions clamps it away.',
+);
+assert.match(css, /\.msg\.job-log/, 'The job row must be clamped, or a burst of questions buries the answer.');
+assert.match(panel, /clipText\(text, JOB_NAME_CHARS\)/, 'A job named after its instruction must be clipped at a word.');
+assert.match(
+  panel,
+  /was\.name === actionTextFor\(was\)\.slice\(0, JOB_NAME_CHARS\)/,
+  'A job named by the OLD hard slice must still count as derived, or an edit keeps the severed name.',
+);
+
+// The shared model is what makes those two true — assert against the vendored copy the panel
+// actually loads, since a green package test says nothing about a stale vendored file.
+const { clipText, matchSummary, questionTrigger, jobsForEvent, createTriggerRegistry, BUILTIN_TRIGGERS } =
+  await import('../extension/js/events/schedule.js');
+{
+  const long = 'Answer the question the best way possible with the information in the meeting';
+  assert.equal(clipText(long, 60), 'Answer the question the best way possible with the…');
+  const [hit] = jobsForEvent(
+    [{ id: 'j', name: 'n', enabled: true, trigger: questionTrigger.id, params: {}, action: { kind: 'prompt', text: 'x' } }],
+    { type: 'meeting.transcript.delta', segments: [{ t: 1, speaker: 'Alex Rivera', text: 'which credential did you use for the shared bucket' }] },
+    { registry: createTriggerRegistry(BUILTIN_TRIGGERS) },
+  );
+  assert.match(hit.match.why, /which credential did you use/, 'the row must name the question, not just the asker');
+  const burst = matchSummary(
+    [1, 2, 3].map((i) => ({ segment: { t: i, speaker: 'Alex Rivera', text: `question ${i} about the bucket` } })),
+    { noun: 'questions' },
+  );
+  assert.match(burst, /^3 questions: /);
+  assert.ok(burst.includes('question 2'), 'every question in a burst must be named');
+}
+
 // ── deleting a widget ────────────────────────────────────────────────────────────
 // The button existed and drew nothing: 'trash' is not an icon name (the alias is 'delete').
 const paths = JSON.parse(icons.match(/export const ICON_PATHS = (\{[\s\S]*?\});\n/)[1]);
@@ -81,4 +127,4 @@ assert.ok(
 assert.match(widgets, /confirmDelete/, 'Widget deletion must confirm through confirm-modal.js.');
 assert.match(css, /\.widget-row-del/, 'The row delete must be styled (and visible without hover).');
 
-console.log('ok — a job that ran is in the chat list and in its meeting thread; widgets can be deleted');
+console.log('ok — a job that ran is in the chat list, in its thread, and says what it fired on');

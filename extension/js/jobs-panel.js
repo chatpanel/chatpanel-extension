@@ -17,10 +17,13 @@ import {
 } from './jobs.js';
 import {
   timerTrigger, createTriggerRegistry, BUILTIN_TRIGGERS, meetingStartedTrigger, meetingEndedTrigger,
-  personJoinedTrigger, phraseTrigger, topicTrigger, questionTrigger, TRIGGER_SOURCES,
+  personJoinedTrigger, phraseTrigger, topicTrigger, questionTrigger, TRIGGER_SOURCES, clipText,
 } from './events/schedule.js';
 
 const triggers = createTriggerRegistry(BUILTIN_TRIGGERS);
+// How much of its own instruction a job named after it carries. Long enough to tell two jobs
+// apart in a list, short enough to be a name rather than a paragraph.
+const JOB_NAME_CHARS = 60;
 // The job being edited, or null when the form is creating. The form IS the editor: a second
 // one would drift, and the reason jobs felt uneditable is that there was only ever the first.
 let editing = null;
@@ -277,10 +280,18 @@ function wireForm() {
     // The name follows the work when the work has a name of its own, and follows the words
     // when it was derived from them. A reminder named by voice ("Timer — tea") keeps its name
     // when its body is edited, instead of being renamed to its own message.
-    const derived = !was || was.name === actionTextFor(was).slice(0, 60) || was.action?.kind === 'skill';
+    // A name derived from the instruction is CLIPPED at a word, not sliced at a character:
+    // the old cut produced "Answer the question the best way possible with the informati",
+    // which every thread row and every toast then repeated. The legacy comparison stays so a
+    // job named by the old rule is still recognised as derived and gets renamed on edit.
+    const derivedName = (text) => clipText(text, JOB_NAME_CHARS);
+    const derived = !was
+      || was.name === derivedName(actionTextFor(was))
+      || was.name === actionTextFor(was).slice(0, JOB_NAME_CHARS)
+      || was.action?.kind === 'skill';
     const name = skill ? skill.name
       : keepAction ? was.name
-        : derived ? instruction.slice(0, 60) || was?.name || 'Job'
+        : derived ? derivedName(instruction) || was?.name || 'Job'
           : was.name;
 
     const spec = {

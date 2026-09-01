@@ -45,7 +45,12 @@ export const ALL_TYPES = Object.freeze(
   Object.entries(EVENT_TYPES).flatMap(([fam, kinds]) => kinds.map((k) => `${fam}.${k}`)),
 );
 
-export const ACTOR_KINDS = Object.freeze(['user', 'rule', 'schedule', 'model', 'agent']);
+// 'channel' is a message arriving from a paired external surface — Telegram, WhatsApp — that
+// drives a turn the same way a person pressing send does. It is turn-independent for the same
+// reason 'schedule' and 'agent' are: nobody is sitting in the panel when it fires, so consent
+// and reach have to be settled at pairing time, not at the keystroke. The actor.id carries the
+// surface and the sender, e.g. 'telegram:8412…'. See chatpanel-channels for the invoker.
+export const ACTOR_KINDS = Object.freeze(['user', 'rule', 'schedule', 'model', 'agent', 'channel']);
 export const SCOPE_KINDS = Object.freeze(['global', 'site', 'tab', 'session', 'agent']);
 export const CLASSES = Object.freeze(['R', 'M', 'L', 'C', 'A', 'X', 'H']);
 export const EFFECTS = Object.freeze(['pure', 'idempotent', 'replay-safe', 'non-replayable']);

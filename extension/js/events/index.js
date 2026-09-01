@@ -68,6 +68,7 @@ export {
   timerTrigger, meetingStartedTrigger, meetingEndedTrigger, personJoinedTrigger,
   phraseTrigger, topicTrigger, questionTrigger, voiceCommandTrigger,
   defineJob, dueJobs, jobsForEvent, occurrenceKey,
+  clipText, matchSummary,
 } from './schedule.js';
 export { defineMeetingAnalyzer, createAnalyzerRegistry, CADENCES, AnalyzerError } from './meeting-analyzers.js';
 export {

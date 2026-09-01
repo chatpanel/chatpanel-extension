@@ -36,7 +36,12 @@ export class ScheduleError extends Error {
 }
 
 export const SCHEDULE_KINDS = Object.freeze(['once', 'interval', 'daily', 'weekly']);
-export const TRIGGER_KINDS = Object.freeze(['timer', 'meeting', 'voice', 'data']);
+// 'channel' is the plug-in point for external messaging surfaces (Telegram/WhatsApp). A
+// message arriving in a paired chat is an event like any other, so it can START a job the user
+// already created and approved — "when I text the bot, run my daily brief" — and can do nothing
+// else, exactly like a phrase spoken in a meeting. The trigger definition itself lives in the
+// chatpanel-channels package; this enum is what lets it declare kind:'channel'.
+export const TRIGGER_KINDS = Object.freeze(['timer', 'meeting', 'voice', 'data', 'channel']);
 /** What a job does when it fires. `skill` is the headline: the instruction IS a skill. */
 export const JOB_ACTIONS = Object.freeze(['skill', 'prompt', 'monitor', 'notify']);
 /** What to do about occurrences that passed while nothing was running. */
@@ -164,6 +169,25 @@ const norm = (s) => String(s || '').trim().toLowerCase();
 export const MIN_PHRASE_CHARS = 3;
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Shorten text a person is meant to READ.
+ *
+ * A hard `slice` lands mid-word — "…with the informati" — and reads as a bug in whatever
+ * wrote it rather than as an abbreviation. Backing up to the last word boundary costs
+ * nothing and is the whole difference. Exported because three places shorten the same kinds
+ * of strings (a trigger's reason, a batch summary, a job named after its own instruction)
+ * and three hard slices is how they drift apart.
+ */
+export function clipText(text, max = 120) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const at = cut.lastIndexOf(' ');
+  // Only back up when there is a boundary worth backing up TO. A single long token — a URL,
+  // an id — has none, and shrinking it to nothing helps nobody.
+  return `${(at > max * 0.6 ? cut.slice(0, at) : cut).replace(/[\s,;:.!?—-]+$/, '')}…`;
+}
 
 /**
  * Whole-word containment, not `includes`.
@@ -389,7 +413,13 @@ export const questionTrigger = defineTrigger({
       if (!speakerAllowed(params.speaker || 'anyone', seg.speaker, ctx)) continue;
       const text = String(seg.text || '').trim();
       if (text.length < 8) continue; // "what?" is not a question worth waking a model for
-      if (text.includes('?') || QUESTION.test(text)) return { why: `question from ${seg.speaker || 'someone'}`, segment: seg };
+      // The QUESTION itself, not only who asked it. Every sibling trigger names what it
+      // fired on — the phrase, the spoken command, the people who joined — and "question
+      // from Alex" leaves the answer under it looking like an answer to nothing. This
+      // string is the row in the thread, the toast, and the line in the job's run log.
+      if (text.includes('?') || QUESTION.test(text)) {
+        return { why: `question from ${seg.speaker || 'someone'}: “${clipText(text, 100)}”`, segment: seg };
+      }
     }
     return null;
   },
@@ -546,6 +576,31 @@ export function matchTexts(matches = []) {
   return coalesceMatches(matches, { max: Number.MAX_SAFE_INTEGER })
     .map((m) => String(m?.segment?.text || m?.why || '').trim())
     .filter(Boolean);
+}
+
+/**
+ * One line saying what a batch of matches actually fired on.
+ *
+ * "3 questions" is a count, and a count is exactly the part the reader already knows — three
+ * answers are about to appear underneath it. What they cannot recover is WHICH three, so the
+ * questions themselves are the summary and the number is the prefix.
+ *
+ * `noun` is the plural word for what these are ('questions', 'matches'), since the trigger
+ * that produced them is not carried on a match.
+ */
+export function matchSummary(matches = [], { noun = 'matches', max = 3, chars = 180 } = {}) {
+  const list = (matches || []).filter(Boolean);
+  if (!list.length) return '';
+  // One match already has a human reason written by its own trigger — that reason is better
+  // than anything a generic formatter can say about it.
+  if (list.length === 1) return String(list[0].why || '') || clipText(list[0]?.segment?.text, chars);
+  const texts = matchTexts(list);
+  if (!texts.length) return `${list.length} ${noun}`;
+  const shown = texts.slice(0, max);
+  const per = Math.max(40, Math.floor(chars / shown.length));
+  const rest = texts.length - shown.length;
+  return `${texts.length} ${noun}: ${shown.map((t) => `“${clipText(t, per)}”`).join(' · ')}`
+    + (rest > 0 ? ` +${rest} more` : '');
 }
 
 export function jobsForEvent(jobs, event, { registry, ctx = {}, admit = null } = {}) {
