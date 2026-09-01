@@ -30,6 +30,12 @@ export const meetingKey = (id) => `chatpanel:meeting:${id}`;
 // never races the content-script's single-writer ownership of the meeting record.
 const notesKey = (id) => `chatpanel:meetingNotes:${id}`;
 const topicsKey = (id) => `chatpanel:meetingTopics:${id}`;
+// WHICH CHAT THIS MEETING'S WORK LIVES IN. The panel opens a fresh conversation every time it
+// is opened, so "the thread this meeting is in" cannot be "whatever chat is on screen" — a
+// job that fired before a reload filed its answer in a chat nobody will look at again, and
+// the run log was the only place the whole meeting appeared. One binding, made once, for the
+// life of the meeting. Panel-owned, like notes and topics: the content script never sees it.
+const threadKey = (id) => `chatpanel:meetingThread:${id}`;
 
 // Size ceilings so one long meeting can't balloon storage. Transcripts are kept as
 // a rolling tail: when a record exceeds these, the OLDEST segments are dropped
@@ -212,14 +218,14 @@ export async function getLatestSessionRecord(platform, key) {
 }
 
 export async function deleteMeeting(id) {
-  await chrome.storage.local.remove([meetingKey(id), notesKey(id), topicsKey(id), monitorsKey(id)]);
+  await chrome.storage.local.remove([meetingKey(id), notesKey(id), topicsKey(id), monitorsKey(id), threadKey(id)]);
   const index = (await getMeetingIndex()).filter((e) => e.id !== id);
   await saveIndex(index);
 }
 
 export async function clearAllMeetings() {
   const index = await getMeetingIndex();
-  await chrome.storage.local.remove(index.flatMap((e) => [meetingKey(e.id), notesKey(e.id), topicsKey(e.id), monitorsKey(e.id)]));
+  await chrome.storage.local.remove(index.flatMap((e) => [meetingKey(e.id), notesKey(e.id), topicsKey(e.id), monitorsKey(e.id), threadKey(e.id)]));
   await saveIndex([]);
 }
 
@@ -334,6 +340,24 @@ export async function saveMeetingTopics(id, topics) {
 }
 export async function getMeetingTopics(id) {
   return (await readStoredJSON(topicsKey(id))) || null;
+}
+
+/**
+ * The conversation a meeting's unattended work belongs in.
+ *
+ * A plain id rather than a record: the conversation itself is stored by store.js, and keeping
+ * a second copy of it here is how two stores start disagreeing. Encrypted like every other
+ * meeting-scoped key — which chat you were in during which call is itself something to keep.
+ */
+export async function getMeetingThread(id) {
+  if (!id) return '';
+  const got = await readStoredJSON(threadKey(id));
+  return typeof got === 'string' ? got : (got?.convId || '');
+}
+
+export async function setMeetingThread(id, convId) {
+  if (!id || !convId) return;
+  await chrome.storage.local.set({ [threadKey(id)]: await encryptJSON({ convId }) });
 }
 
 // --------------------------------------------------------------------------

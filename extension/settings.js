@@ -23,6 +23,8 @@ import { fullRedactionUsage } from './js/pii-usage.js';
 import { sanitizeUnicode } from './js/sanitize.js';
 import { PAGE_MODES, migratePageActions, listSites, forgetSite, denySite } from './js/page-policy.js';
 import { narrowToolset, isLocalToolSpec } from './js/tool-select.js';
+// A leaf with nothing behind it — the same arithmetic the history drawer pages with.
+import { paginateEntries } from './js/paginate.js';
 import { DEFAULT_AUTO_TOOL_CAP } from './js/tool-policy.js';
 import {
   applyOAuthPreset,
@@ -6616,16 +6618,50 @@ async function renderObservability() {
     $('obs-gw-jump')?.addEventListener('click', (e) => { e.preventDefault(); openGatewaySection(); });
     return;
   }
-  const rows = access.map((e) => `<tr class="${e.ok ? '' : 'obs-err'}">
+  obsAccessRows = access;
+  renderAgentAccess();
+}
+
+// ---------------------------------------------------------------------------
+// Agent access — the cross-agent read log, a page at a time.
+//
+// An agent that is actually being used produces hundreds of these, and the whole log was
+// rendered into one table: a wall you scroll past to reach everything below it, and a DOM
+// that grows without limit while the page is open. The rows are already newest-first, so a
+// page of them is the useful part and the rest is history.
+// ---------------------------------------------------------------------------
+const OBS_ACCESS_PAGE_SIZE = 25;
+let obsAccessRows = [];
+let obsAccessPage = 1;
+
+function renderAgentAccess() {
+  const accessEl = $('obs-access');
+  if (!accessEl) return;
+  // Clamped, not reset: a refresh (or new reads arriving) must not throw you back to page 1,
+  // and a page that no longer exists resolves to the last one that does.
+  const pageData = paginateEntries(obsAccessRows, { page: obsAccessPage, pageSize: OBS_ACCESS_PAGE_SIZE });
+  obsAccessPage = pageData.page;
+  const rows = pageData.items.map((e) => `<tr class="${e.ok ? '' : 'obs-err'}">
     <td class="obs-when" title="${new Date(e.ts).toLocaleString()}">${obsAgo(e.ts)}</td>
     <td class="obs-client">${escapeHtml(e.client || 'unknown')}</td>
     <td><code class="obs-tool">${escapeHtml(e.tool || '')}</code></td>
     <td class="obs-note sub">${escapeHtml(e.note || (e.ok ? '' : (e.error || 'failed')))}</td>
   </tr>`).join('');
+  const pager = pageData.total > OBS_ACCESS_PAGE_SIZE
+    ? `<div class="obs-pager">
+        <button id="obs-access-prev" class="btn" type="button"${pageData.hasPrev ? '' : ' disabled'}>‹ Newer</button>
+        <span class="sub">${pageData.start}–${pageData.end} of ${pageData.total}</span>
+        <button id="obs-access-next" class="btn" type="button"${pageData.hasNext ? '' : ' disabled'}>Older ›</button>
+      </div>`
+    : '';
   accessEl.innerHTML = `<div class="obs-table-wrap"><table class="obs-table">
     <thead><tr><th>When</th><th>Agent</th><th>Tool</th><th>Detail</th></tr></thead>
     <tbody>${rows}</tbody></table></div>
-    <p class="tiny muted" style="margin-top:6px">Newest first · ${access.length} recent read(s) · the query text is never logged.</p>`;
+    ${pager}
+    <p class="tiny muted" style="margin-top:6px">Newest first · ${pageData.total} recent read(s) · the query text is never logged.</p>`;
+  // Re-render only: the rows are already in memory, so paging never asks the gateway again.
+  $('obs-access-prev')?.addEventListener('click', () => { obsAccessPage -= 1; renderAgentAccess(); });
+  $('obs-access-next')?.addEventListener('click', () => { obsAccessPage += 1; renderAgentAccess(); });
 }
 
 async function renderActivity() {

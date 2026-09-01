@@ -321,15 +321,22 @@ async function runDueJobs() {
   const jobs = await import('./js/jobs.js');
   const due = await jobs.dueNow();
   for (const entry of due) {
-    if (entry.skipped) { await jobs.recordRun(entry.job.id, entry.at); continue; }
+    if (entry.skipped) {
+      await jobs.recordRun(entry.job.id, entry.at);
+      await jobs.logSkip(entry.job.id, jobs.SKIP_REASONS.missed);
+      continue;
+    }
     if (!(await jobs.claimOccurrence(entry.key))) continue; // the panel got there first
     await jobs.recordRun(entry.job.id, entry.at);
     // The ceiling every job has whether or not its author set one — a misconfigured
     // schedule must cost a day's worth of runs, not a month's.
-    if (!(await jobs.withinLimits(entry.job))) continue;
+    if (!(await jobs.withinLimits(entry.job))) { await jobs.logSkip(entry.job.id, jobs.SKIP_REASONS.limit); continue; }
     await jobs.countRun(entry.job.id);
     if (jobs.needsWindow(entry.job)) {
       await jobs.addPending({ key: entry.key, jobId: entry.job.id, at: entry.at });
+      // Queued, not run. Saying so is the difference between "it is late" and "it is broken":
+      // a model turn needs a window, and the panel may not be open for hours.
+      await jobs.logSkip(entry.job.id, jobs.SKIP_REASONS.window);
       flashBadge('•', '#5b5bf0');
       chrome.runtime.sendMessage({ type: 'CP_JOBS_DUE' }).catch(() => { /* no panel open */ });
       continue;

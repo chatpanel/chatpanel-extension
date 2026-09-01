@@ -59,6 +59,8 @@ import {
   saveMeetingTopics,
   deleteMeeting,
   markMeetingEnded,
+  getMeetingThread,
+  setMeetingThread,
 } from './js/store-meetings.js';
 import {
   getMeetingMonitors,
@@ -1566,6 +1568,17 @@ function renderMessage(m) {
     return row;
   }
 
+  // A job that fired inside this thread. Same compact treatment as a watch row, and for the
+  // same reason: it explains the answer below it without pretending to be a message someone
+  // typed. Role isn't user/assistant, so chatMessages() keeps it out of the model payload.
+  if (m.role === 'job') {
+    const row = document.createElement('div');
+    row.className = 'msg watch-log';
+    row.dataset.id = m.id;
+    row.innerHTML = `${icon('timer')} ${escapeAttr(String(m.content ?? ''))} · ${escapeAttr(timeLabel(m.ts))}`;
+    return row;
+  }
+
   // Live-meeting running summary — ONE self-updating card the scribe refreshes
   // (Phase 2). Role isn't user/assistant, so it's auto-excluded from the model
   // payload (messagesForModel) — it's a view for the user, not chat history.
@@ -3053,6 +3066,10 @@ async function retryFrom(assistantMsg) {
   const conv = state.conv;
   const idx = conv.messages.indexOf(assistantMsg);
   if (idx < 0) return;
+  // A job's answer is not a reply to the message above it — there is no message above it.
+  // Re-running the JOB is what "retry" means here, and it rebuilds the instruction from the
+  // meeting as it stands now rather than replaying the half-spoken line that triggered it.
+  if (assistantMsg.job?.jobId) { await retryJobAnswer(assistantMsg, idx); return; }
   // Drop this assistant turn and re-run from the prior user message.
   conv.messages.splice(idx, 1);
   const agent = currentAgent();
@@ -3068,6 +3085,23 @@ async function retryFrom(assistantMsg) {
   conv.messages.push(assistant);
   renderMessages();
   runStream(agent, assistant, conv);
+}
+
+/** Run a job again, in place of the answer it gave last time. An explicit click, so no
+ *  cooldown and no daily ceiling: those exist to bound what runs unattended. */
+async function retryJobAnswer(prev, idx) {
+  const spec = prev.job;
+  const conv = state.conv;
+  const job = await (await jobs()).getJob(spec.jobId);
+  if (!job) { toast('That job no longer exists — nothing to re-run', 4000); return; }
+  conv.messages.splice(idx, 1);
+  renderMessages();
+  await runJobTurn(job, {
+    why: spec.why ? `${spec.why} (re-run)` : 're-run',
+    event: spec.event,
+    match: spec.match,
+    threadConvId: conv.id,
+  });
 }
 
 // Edit a previously-sent user message in place: turn the bubble into a textarea
@@ -3481,15 +3515,57 @@ async function jobs() {
 // Run the model half of one job. Deliberately built on the same pieces as a monitor turn —
 // one target resolution, one toolset, one redaction vault — rather than a second turn path
 // that would drift away from the guarded one.
-async function runJobTurn(job, { why = '', event = null, match = null } = {}) {
+async function runJobTurn(job, { why = '', event = null, match = null, threadConvId = '' } = {}) {
   const instruction = await jobInstruction(job, { why, event, match });
   if (!instruction) return;
-  const conv = await createConversation({ agentId: state.settings.activeAgentId, title: job.name });
+  // WHERE THE ANSWER LANDS. A job fired BY a meeting belongs in the thread that meeting is
+  // being watched in — beside its running summary and its monitors — because a write-up
+  // filed in a chat nobody opened is a write-up nobody got. Everything else gets its own
+  // conversation, which is what makes an unattended run findable at all.
+  // From memory if it is open, from storage otherwise. The panel starts a NEW chat every
+  // time it opens, so the bound thread is usually not the one on screen — reading only the
+  // cache is what scattered a single meeting's answers across a chat per panel session.
+  let thread = threadConvId
+    ? state.convCache.get(threadConvId) || (await getConversation(threadConvId).catch(() => null))
+    : null;
+  if (thread) state.convCache.set(thread.id, thread);
+  const conv = thread || (await createConversation({ agentId: state.settings.activeAgentId, title: job.name }));
+  // The thread was deleted out from under the meeting. Re-bind to the replacement so the
+  // rest of the call collects in one place instead of scattering again.
+  if (!thread && threadConvId && event?.meetingId) setMeetingThread(event.meetingId, conv.id).catch(() => {});
+  // A function, not a captured boolean: the user may switch chats mid-run, and touching the
+  // DOM of a conversation that is no longer on screen writes into someone else's transcript.
+  const showing = () => conv.id === state.conv?.id;
   const now = Date.now();
-  conv.messages.push({ id: uid(), role: 'user', content: instruction, ts: now, hidden: true });
-  const assistant = { id: uid(), role: 'assistant', content: '', ts: now, pending: true };
+  if (thread) {
+    // The instruction carries the whole transcript, so it stays OUT of the thread — stored,
+    // it would be re-sent on every later turn. What goes in is the CAUSE: one dim row naming
+    // the job and why it fired, so the answer under it is not an answer to nothing.
+    const note = { id: uid(), role: 'job', kind: 'job-log', jobId: job.id, content: `${job.name}${why ? ` — ${why}` : ''}`, ts: now };
+    conv.messages.push(note);
+    nameThreadForMeeting(conv, { event, job });
+    if (showing()) { $('empty')?.classList.add('hidden'); $('messages').appendChild(renderMessage(note)); }
+  } else {
+    conv.messages.push({ id: uid(), role: 'user', content: instruction, ts: now, hidden: true });
+  }
+  // WHAT PRODUCED THIS, kept on the message. A job turn is single-shot — the instruction is
+  // not in the thread — so without this a retry re-ran a turn with nothing in it and the
+  // model had nothing to answer. Trimmed to what a rebuild needs: the segments themselves are
+  // re-read from the meeting, which is also why a retry gets the FINISHED sentence.
+  const assistant = {
+    id: uid(), role: 'assistant', content: '', ts: now, pending: true,
+    job: {
+      jobId: job.id,
+      why,
+      event: event ? { type: event.type, meetingId: event.meetingId || '', title: event.title || '' } : null,
+      match: match?.segment ? { why: match.why, segment: match.segment } : null,
+    },
+  };
   conv.messages.push(assistant);
+  if (thread && showing()) { $('messages').appendChild(renderMessage(assistant)); scrollToBottom(); }
   let failed = '';
+  let raf = 0;
+  const flush = () => { raf = 0; if (showing()) { updateBubble(assistant); scrollToBottom(); } };
   try {
     const resolved = resolveTarget(agentForConv(conv), state.settings);
     const tools = await toolsetFor(resolved, { userText: instruction, pageTools: false });
@@ -3502,15 +3578,31 @@ async function runJobTurn(job, { why = '', event = null, match = null } = {}) {
       settings: state.settings,
       tools,
       redaction,
-      onDelta: (d) => { out += d; },
+      onDelta: (d) => {
+        out += d;
+        // Streamed, not batched: an answer landing in the thread you are looking at has to
+        // arrive the way every other answer in it does.
+        if (thread) { assistant.content = out; if (!raf) raf = requestAnimationFrame(flush); }
+      },
     });
     assistant.content = out.trim() || '(no output)';
   } catch (e) {
     assistant.content = `⚠ ${e?.message || 'failed'}`;
+    assistant.error = true;
     failed = e?.message || 'failed';
   } finally {
+    if (raf) cancelAnimationFrame(raf);
     assistant.pending = false;
+    if (thread && showing()) {
+      const node = $('messages').querySelector(`.msg[data-id="${assistant.id}"]`);
+      if (node) node.replaceWith(renderMessage(assistant));
+      scrollToBottom();
+    }
     await saveConversation(conv).catch(() => {});
+    // The chat list is a COPY of the index held by this window; saving updated storage, not
+    // it. Without this the job's chat only appeared after something else happened to refresh
+    // — which is what "it ran but it isn't in my history" was.
+    refreshHistory();
     // Findable afterwards, not just announceable now. A toast you were not there to see is
     // the normal case for a job — that is what a job IS — so the run is recorded against the
     // job with the reason it fired and a way back to what it produced.
@@ -3521,7 +3613,79 @@ async function runJobTurn(job, { why = '', event = null, match = null } = {}) {
       note: failed || assistant.content.slice(0, 140),
     }).catch(() => {});
   }
+  // Already on screen, in the thread — a toast offering to open what you are reading is noise.
+  if (thread && showing()) return;
   toastAction(`${job.name} ran${why ? ` — ${why}` : ''}`, 'Open', () => openConversation(conv.id), 6000);
+}
+
+/**
+ * Name a thread a job just wrote into.
+ *
+ * saveConversation titles a chat from its first USER message, and a meeting thread often has
+ * none — you watched the call, you never typed. Left alone, the write-up files itself in the
+ * history list as "New chat", which is the same as losing it.
+ */
+function nameThreadForMeeting(conv, { event = null, job = null } = {}) {
+  if (conv.title && conv.title !== 'New chat') return;
+  conv.title = event?.title || state.liveMeeting?.title || job?.name || conv.title;
+}
+
+/**
+ * Put the meeting's own thread on screen, or make this chat it.
+ *
+ * The panel opens a BRAND-NEW conversation every time it launches, so mid-call the chat in
+ * front of you is usually not the one the meeting's earlier work went into — which is exactly
+ * how four runs in the Jobs pane became two answers in the thread. An empty scratch chat has
+ * nothing to lose, so it gives way to the real one; a chat you have typed in does not, and
+ * the work still collects in the bound thread either way.
+ */
+async function attachMeetingThread(meetingId) {
+  if (!meetingId) return;
+  const bound = await meetingThread(meetingId, state.conv?.id || '');
+  if (!bound || bound === state.conv?.id) return;
+  if (!state.conv?.messages?.length) await openConversation(bound);
+}
+
+/**
+ * The one conversation a meeting's unattended work goes to.
+ *
+ * Resolved once and remembered: the panel opens a fresh chat on every launch, so without a
+ * binding a call spread across as many chats as the panel had sessions — every run visible in
+ * the Jobs pane, most of them in a chat the user would never open again.
+ */
+async function meetingThread(meetingId, fallbackConvId = '') {
+  if (!meetingId) return '';
+  try {
+    const bound = await getMeetingThread(meetingId);
+    if (bound) return bound;
+  } catch { /* unreadable binding → fall through and make one */ }
+  if (!fallbackConvId) return '';
+  setMeetingThread(meetingId, fallbackConvId).catch(() => {});
+  return fallbackConvId;
+}
+
+/**
+ * Record in the meeting's own thread that a job fired.
+ *
+ * Used by the actions that produce no turn of their own — a notify job's whole output is the
+ * announcement, and an announcement that only ever existed as a toast is indistinguishable
+ * from a trigger that never fired.
+ */
+async function noteJobInThread(threadConvId, job, why = '') {
+  const conv = threadConvId
+    ? state.convCache.get(threadConvId) || (await getConversation(threadConvId).catch(() => null))
+    : null;
+  if (!conv) return;
+  state.convCache.set(conv.id, conv);
+  const note = { id: uid(), role: 'job', kind: 'job-log', jobId: job.id, content: `${job.name}${why ? ` — ${why}` : ''}`, ts: Date.now() };
+  conv.messages.push(note);
+  nameThreadForMeeting(conv, { job });
+  if (conv.id === state.conv?.id) {
+    $('empty')?.classList.add('hidden');
+    $('messages').appendChild(renderMessage(note));
+    scrollToBottom();
+  }
+  saveConversation(conv).then(refreshHistory).catch(() => {});
 }
 
 // What to actually say to the model. A skill job names a skill the user already wrote, so
@@ -3533,6 +3697,9 @@ async function jobInstruction(job, { why = '', event = null, match = null } = {}
     const skill = (state.settings?.skills || []).find((sk) => sk.id === job.action.skillId);
     if (!skill?.prompt) {
       toast(`“${job.name}” points at a skill that no longer exists`, 5000);
+      // The one silent failure that looks most like "the scheduler is broken": the job fires
+      // on time, every time, and produces nothing because what it points at was deleted.
+      await (await jobs()).logSkip(job.id, (await jobs()).SKIP_REASONS.gone);
       return '';
     }
     prompt = skill.prompt;
@@ -3562,8 +3729,11 @@ async function meetingJobContext(event, match) {
     if (!rec) return '';
     const transcript = meetingToText(rec, { sinceTs: ended ? 0 : Date.now() - 15 * 60_000 });
     const summary = await getLiveNotesText(event.meetingId).catch(() => '');
-    const said = match?.segment?.text
-      ? `WHAT TRIGGERED THIS: ${match.segment.speaker || 'someone'} said “${match.segment.text.trim()}”`
+    // The line as it FINISHED, not as it was when it matched. The captured segment is the
+    // partial one the trigger saw; the record now holds the completed version of it.
+    const settled = settledSegment(rec, match?.segment);
+    const said = settled?.text
+      ? `WHAT TRIGGERED THIS: ${settled.speaker || 'someone'} said “${settled.text.trim()}”`
       : '';
     return [
       `MEETING: ${rec.title || event.title || 'Untitled'}${ended ? ' (just ended)' : ' (in progress)'}`,
@@ -3577,6 +3747,22 @@ async function meetingJobContext(event, match) {
   }
 }
 
+/**
+ * The finished version of the line a trigger matched.
+ *
+ * Matched on the same start time, kept only if it grew: a caption is re-emitted as it is
+ * spoken, so the segment the trigger saw is a prefix of the one now on the record. Falls back
+ * to what was matched, which is never worse than what it replaces.
+ */
+function settledSegment(rec, seg) {
+  if (!seg) return null;
+  const rows = rec?.segments || rec?.transcript || [];
+  if (!Array.isArray(rows)) return seg;
+  const same = rows.filter((r) => r && (r.t || 0) === (seg.t || 0));
+  const best = same.reduce((a, b) => (String(b?.text || '').length > String(a?.text || '').length ? b : a), seg);
+  return String(best?.text || '').length >= String(seg.text || '').length ? best : seg;
+}
+
 // Occurrences the worker left for a window. Drained on panel open and when it tells us.
 async function drainPendingJobs() {
   const m = await jobs();
@@ -3585,17 +3771,68 @@ async function drainPendingJobs() {
     await m.clearPending(entry.key);
     const job = await m.getJob(entry.jobId);
     if (!job?.enabled) continue;
-    if (!(await m.withinLimits(job))) { toast(`“${job.name}” hit its daily limit`, 4000); continue; }
+    if (!(await m.withinLimits(job))) {
+      toast(`“${job.name}” hit its daily limit`, 4000);
+      await m.logSkip(job.id, m.SKIP_REASONS.limit);
+      continue;
+    }
     await m.countRun(job.id);
     if (job.action.kind === 'monitor') { await addMonitor({ kind: 'qa', prompt: job.action.prompt }); continue; }
     await runJobTurn(job, { why: 'scheduled' });
   }
 }
 
+const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Bounds on waiting for the rest of a sentence. A caption flush is ~4s, so a step of 2.5s
+// catches growth without spinning, and 20s is the point at which whatever else was said has
+// moved on and waiting longer buys nothing.
+const UTTERANCE_STEP_MS = 2_500;
+const UTTERANCE_MAX_MS = 20_000;
+
+/**
+ * Let a half-spoken trigger line finish arriving — and ONLY then.
+ *
+ * A live caption is delivered while it is still being said and grows across flushes, so the
+ * segment a trigger matched is often a prefix: "the product is just amazing because", with
+ * the reason — the only part worth acting on — still unsaid. Firing speed is not the problem
+ * and a blanket delay would make it one, so a line that already reads as finished returns
+ * immediately and costs nothing.
+ *
+ * The claim, the daily ceiling and the cooldown are all taken BEFORE this, so a redelivered
+ * caption still cannot double-fire while we wait. Only the read waits.
+ *
+ * Gives up early when the caption stops growing: the speaker moved on, and the rest of the
+ * thought is not coming.
+ */
+async function waitForCompleteUtterance(meetingId, seg) {
+  if (!meetingId || !seg) return seg;
+  const { utteranceLooksComplete } = await jobs();
+  if (utteranceLooksComplete(seg.text)) return seg;
+  let best = seg;
+  let stalls = 0;
+  const deadline = Date.now() + UTTERANCE_MAX_MS;
+  while (Date.now() < deadline) {
+    await settle(UTTERANCE_STEP_MS);
+    const rec = await getMeeting(meetingId).catch(() => null);
+    const next = settledSegment(rec, seg) || best;
+    if (String(next.text || '').length > String(best.text || '').length) { best = next; stalls = 0; }
+    else if (++stalls >= 2) break;
+    if (utteranceLooksComplete(best.text)) break;
+  }
+  return best;
+}
+
 // An in-meeting event: match it against the user's jobs and run what fires. The matching is
 // pure and free; only a match costs anything.
 async function fireMeetingTrigger(event, ctx) {
+  // Read BEFORE the first await. On `meeting.ended` the live meeting is cleared a few lines
+  // after this is called, so a fallback that asked later would find none.
+  const onScreen = event?.meetingId && state.liveMeeting?.id === event.meetingId ? state.conv?.id || '' : '';
   try {
+    // The meeting's OWN thread first — bound once, for the life of the call. The chat on
+    // screen is only the fallback, and only for a meeting that has no binding yet.
+    const threadConvId = event?.meetingId ? (await meetingThread(event.meetingId, onScreen)) : '';
     const m = await jobs();
     const voice = state.settings?.ui?.voice;
     const { makeSelfMatcher, voiceSettings } = await import('./js/voice-commands.js');
@@ -3604,13 +3841,17 @@ async function fireMeetingTrigger(event, ctx) {
       // Dedup per event, so a redelivered delta cannot run the same brief twice.
       const stamp = hit.match.segment?.t ?? eventStamp(event);
       if (!(await m.claimOccurrence(`${hit.job.id}@${event.type}@${stamp}`))) continue;
-      if (!(await m.withinLimits(hit.job))) continue; // a phrase said fifty times is not fifty jobs
+      // A phrase said fifty times is not fifty jobs — but a job that stops for a reason has
+      // to say which one, or it looks identical to a trigger that never matched.
+      if (!(await m.withinLimits(hit.job))) { await m.logSkip(hit.job.id, m.SKIP_REASONS.limit); continue; }
       // A topic a meeting keeps returning to is one thing happening, not six.
-      if (!(await m.withinCooldown(hit.job))) continue;
+      if (!(await m.withinCooldown(hit.job))) { await m.logSkip(hit.job.id, m.SKIP_REASONS.cooldown); continue; }
       await m.countRun(hit.job.id);
       await m.markFired(hit.job.id);
       if (hit.job.action.kind === 'notify') {
         toast(`${hit.job.name} — ${hit.match.why}`, 5000);
+        // And in the thread, because a toast lasts five seconds and a meeting lasts an hour.
+        noteJobInThread(threadConvId, hit.job, `${hit.match.why}${hit.job.action.body ? ` · ${hit.job.action.body}` : ''}`);
         await m.logRun(hit.job.id, { why: hit.match.why, ok: true, note: hit.job.action.body || '' });
         continue;
       }
@@ -3619,7 +3860,11 @@ async function fireMeetingTrigger(event, ctx) {
         await m.logRun(hit.job.id, { why: hit.match.why, ok: true, note: `Started a monitor: ${hit.job.action.prompt}` });
         continue;
       }
-      await runJobTurn(hit.job, { why: hit.match.why, event, match: hit.match });
+      // Only wait when the line is visibly unfinished — see waitForCompleteUtterance.
+      if (event.type === 'meeting.transcript.delta' && hit.match.segment) {
+        hit.match.segment = await waitForCompleteUtterance(event.meetingId, hit.match.segment);
+      }
+      await runJobTurn(hit.job, { why: hit.match.why, event, match: hit.match, threadConvId });
     }
   } catch (e) {
     // A job that fails must never disturb the meeting — but it must not vanish either. The
@@ -3665,7 +3910,7 @@ let meetingStartAnnounced = null;
 // The meetings that were live on the previous pass, so one leaving can be noticed. Their
 // title/platform ride along because by the time we notice, the entry is already gone.
 let prevLive = new Map();
-const voiceSeen = new Map();    // meetingId → newest segment ts already scanned
+const deltaSeen = new Map();    // meetingId → newest segment ts already scanned (both readers)
 const voiceReported = new Set(); // command keys already surfaced (refusals repeat otherwise)
 
 // ACTED-ON COMMANDS, ON DISK.
@@ -3770,29 +4015,36 @@ async function onMeetingDelta(meetingId, segments) {
   // Only the meeting this conversation is actually attached to: acting on a call the user
   // is not looking at is how automation surprises people.
   if (state.liveMeeting?.id !== meetingId) return;
+  const sinceTs = deltaSeen.get(meetingId) || 0;
+  // Advance the watermark on the LAST line seen, whether or not it held anything — the scan
+  // is what is being deduped here, not the command (the rule engine does that). Minus one, so
+  // the line still being spoken is re-scanned as it grows: something that arrives half-said
+  // must get a second chance when the sentence completes.
+  const newest = segments.reduce((max, sg) => Math.max(max, sg.t || 0), sinceTs);
+  deltaSeen.set(meetingId, Math.max(0, newest - 1));
+
+  // Jobs the user bound to what is SAID — a phrase, a topic, a question.
+  //
+  // FIRST, AND ON ITS OWN. This used to sit inside the spoken-command path, below both the
+  // `voice.enabled === false` return and an `await voiceRuntime()`. Two separate features
+  // shared one switch: turning spoken commands off silently stopped every meeting-triggered
+  // job, and a failed voice import took them down with it — in both cases indistinguishable
+  // from a trigger that simply does not work.
+  //
+  // NEW lines only. The delta re-sends recent speech (deliberately: a caption grows as it is
+  // spoken), so handing the whole window to the triggers made an already-matched line match
+  // again on the next flush — which is half of "it runs on every utterance". The other half
+  // was substring matching, fixed in the shared trigger.
+  const freshSegments = segments.filter((sg) => (sg.t || 0) > sinceTs);
+  if (freshSegments.length) {
+    fireMeetingTrigger({ type: 'meeting.transcript.delta', meetingId, segments: freshSegments });
+  }
+
   const voice = state.settings?.ui?.voice;
   if (voice && voice.enabled === false) return;
   try {
     const { vc, engine, actions } = await voiceRuntime();
-    const sinceTs = voiceSeen.get(meetingId) || 0;
     const commands = vc.scanDelta({ segments, voice, meetingId, sinceTs, now: Date.now() });
-    // Advance the watermark on the LAST line seen, whether or not it held a command — the
-    // scan is what is being deduped here, not the command (the rule engine does that).
-    const newest = segments.reduce((max, sg) => Math.max(max, sg.t || 0), sinceTs);
-    // Minus one, so the line still being spoken is re-scanned as it grows: a command that
-    // arrives half-finished must get a second chance when the sentence completes.
-    voiceSeen.set(meetingId, Math.max(0, newest - 1));
-    // Jobs the user bound to what is SAID — a phrase, a topic, a question. Same delta,
-    // same free matching pass; only a match costs anything.
-    //
-    // NEW lines only. The delta re-sends recent speech (deliberately: a caption grows as it
-    // is spoken), so handing the whole window to the triggers made an already-matched line
-    // match again on the next flush — which is half of "it runs on every utterance". The
-    // other half was substring matching, fixed in the shared trigger.
-    const freshSegments = segments.filter((sg) => (sg.t || 0) > sinceTs);
-    if (freshSegments.length) {
-      fireMeetingTrigger({ type: 'meeting.transcript.delta', meetingId, segments: freshSegments });
-    }
     if (!commands.length) return;
     // Anything already acted on stays acted on, across panel reloads and across the user
     // deleting what it produced.
@@ -5574,7 +5826,10 @@ async function renderScribeIndicator(liveOpt) {
     renderContextBar();
     // A different meeting just became the live one (start / attach / boot) — restore any
     // active monitors saved for it that aren't in this conversation yet.
-    if (state.liveMeeting?.id) hydrateMonitorsForMeeting(state.liveMeeting.id);
+    if (state.liveMeeting?.id) {
+      hydrateMonitorsForMeeting(state.liveMeeting.id);
+      attachMeetingThread(state.liveMeeting.id);
+    }
     // THE EVENT "when a meeting starts" WAITS FOR. The trigger existed and was selectable,
     // but nothing ever emitted `meeting.started` — only transcript deltas — so a job bound to
     // it could be created and could never run. This is the one place that knows a meeting has
@@ -7066,7 +7321,9 @@ const historyView = { mode: 'smart', page: 1, renderToken: 0 };
 
 async function refreshHistory() {
   state.index = await getIndex();
-  if (!$('history').classList.contains('hidden')) await renderHistory();
+  // With the filter, not without it: re-rendering unfiltered while the search box still shows
+  // a query is a list that stops matching what it says it is showing.
+  if (!$('history').classList.contains('hidden')) await renderHistory($('history-search')?.value || '');
 }
 
 function renderHistoryPager(pageData) {
@@ -8016,7 +8273,9 @@ function wireEvents() {
   $('btn-history').onclick = () => {
     $('history').classList.remove('hidden');
     historyView.page = 1;
-    renderHistory($('history-search').value);
+    // refreshHistory, not renderHistory: anything saved since this window last looked — a job
+    // that ran, a chat saved by another surface — is in storage, not in `state.index`.
+    refreshHistory();
   };
   $('history-close').onclick = () => { historyView.renderToken += 1; $('history').classList.add('hidden'); };
   $('history-expand').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('history.html') });

@@ -974,6 +974,11 @@ html.surface-tab .topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
 .widget-row:hover { background: var(--bg-soft); }
 .widget-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .widget-row-pin { color: var(--accent); flex: 0 0 auto; }
+/* Always drawn, not hover-only: on a touch screen there is no hover, and a delete nobody can
+   find is the same as no delete at all. Dim until you reach for it. */
+.widget-row-del { flex: 0 0 auto; opacity: .45; }
+.widget-row-del:hover, .widget-row:hover .widget-row-del { opacity: 1; }
+.icon-btn.danger:hover { color: var(--danger); }
 .widget-mount { padding: 8px; }
 /* The widget itself is cross-origin; it reports its own height and the host sizes the frame. */
 .widget-frame { width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
@@ -991,6 +996,10 @@ html.surface-tab .topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
 .widget-perms { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg-soft); }
 .widget-perm-what { flex: 1; font-size: 11.5px; color: var(--text-dim); }
 
+/* Why a job has not done what you expected — the answer, before you expand anything. */
+.job-why { font-size: 11.5px; color: var(--text-dim); margin-top: 4px; font-style: italic; }
+/* A skip is the scheduler declining on purpose. Dim, never the red an error gets. */
+.job-run-skip { color: var(--text-dim); }
 /* What a job has done, folded shut under its card. */
 .job-runs > summary { cursor: pointer; font-size: 11.5px; color: var(--text-dim); margin-top: 6px; }
 .job-run { display: flex; align-items: baseline; gap: 6px; padding: 4px 0; border-top: 1px solid var(--border); font-size: 11.5px; }

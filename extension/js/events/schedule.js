@@ -195,6 +195,60 @@ function speakerAllowed(want, speaker, ctx) {
   return true;
 }
 
+/**
+ * Words a sentence does not end on.
+ *
+ * Not a grammar: a short list of the tails that mean "the speaker is mid-thought". A caption
+ * ending on one of these is a line that has not finished arriving.
+ */
+export const DANGLING_TAILS = Object.freeze(new Set([
+  // conjunctions and subordinators — the reason, the contrast, the condition all come AFTER
+  'and', 'or', 'but', 'so', 'because', 'cause', 'cos', 'since', 'although', 'though', 'while',
+  'whereas', 'unless', 'until', 'if', 'when', 'whenever', 'that', 'which', 'who', 'whom',
+  'whose', 'than', 'as', 'like',
+  // prepositions and particles
+  'to', 'of', 'in', 'on', 'at', 'by', 'for', 'from', 'with', 'without', 'about', 'into',
+  'onto', 'over', 'under', 'between', 'through', 'during', 'against', 'per',
+  // determiners that must be followed by something. Only the ones that genuinely cannot end
+  // a sentence — 'this', 'some' and 'both' all can ("take both"), so they are not here.
+  'a', 'an', 'the', 'my', 'our', 'your', 'their', 'its',
+  // auxiliaries and copulas left hanging
+  'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am', 'do', 'does', 'did', 'have', 'has',
+  'had', 'will', 'would', 'can', 'could', 'should', 'shall', 'may', 'might', 'must',
+  // fillers a speaker trails off on. Pronouns are NOT here: "we should ship it" is a whole
+  // thought, and treating every object pronoun as a trailing word made the common case wait.
+  'um', 'uh', 'er',
+]));
+
+/**
+ * Does this line read as a FINISHED thought?
+ *
+ * A live caption is delivered while it is still being spoken and GROWS across flushes, so a
+ * trigger that matched can be holding half a sentence: "the product is just amazing because"
+ * — with the reason, the only part worth acting on, still unsaid. The caller uses this to
+ * decide whether to read the transcript now or wait for the rest of it.
+ *
+ * DEFAULT TRUE, deliberately. Speech-to-text frequently emits no punctuation at all, so
+ * requiring a full stop would make every job wait every time — and the complaint this exists
+ * to fix is about missing context, not about speed. Only a line that ends the way an
+ * unfinished one ends is treated as unfinished.
+ *
+ * Pure and synchronous, like every other predicate in this file: the waiting is the caller's
+ * problem, and it is the only part that needs a platform.
+ */
+export function utteranceLooksComplete(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  // Sentence-final punctuation, optionally inside a closing quote or bracket.
+  if (/[.!?…]["'\u2019\u201d)\]]*$/.test(t)) return true;
+  // A comma, dash or colon at the end is a speaker who is explicitly not done.
+  if (/[,;:\-\u2013\u2014]$/.test(t)) return false;
+  const tokens = t.toLowerCase().match(/[\p{L}\p{N}']+/gu) || [];
+  const last = tokens[tokens.length - 1];
+  if (!last) return true;
+  return !DANGLING_TAILS.has(last);
+}
+
 export const timerTrigger = defineTrigger({
   id: 'timer:schedule',
   label: 'On a schedule',

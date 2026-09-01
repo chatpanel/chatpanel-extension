@@ -18,7 +18,7 @@
 
 import {
   defineJob, dueJobs, nextWakeAt, jobsForEvent, occurrenceKey, createTriggerRegistry,
-  BUILTIN_TRIGGERS, timerTrigger, nextFireAt,
+  BUILTIN_TRIGGERS, timerTrigger, nextFireAt, utteranceLooksComplete,
 } from './events/schedule.js';
 
 export const JOBS_KEY = 'chatpanel:jobs';        // id -> job
@@ -143,6 +143,41 @@ export async function logRun(jobId, entry) {
   log[jobId] = list.slice(0, MAX_LOG_PER_JOB);
   await write(LOG_KEY, log);
 }
+
+/**
+ * Why a job did NOT run.
+ *
+ * Every guard below — the ceiling, the cooldown, a missed window, "no panel is open" — was a
+ * bare `continue`. From the outside all four are identical to a trigger that does not work,
+ * which is exactly how it gets reported: "it just isn't firing." A skip is not a failure and
+ * not a run, so it is neither counted as one nor coloured like one.
+ *
+ * Repeats COLLAPSE onto the newest entry rather than stacking: a cooldown skip recurs on
+ * every caption flush, and thirty identical rows would bury the run above them. The count is
+ * the useful part — "skipped 30× — cooldown" says more than thirty rows do.
+ */
+export async function logSkip(jobId, why) {
+  const log = await read(LOG_KEY);
+  const list = Array.isArray(log[jobId]) ? log[jobId] : [];
+  const head = list[0];
+  if (head && head.skipped && head.why === why) {
+    head.at = Date.now();
+    head.n = (head.n || 1) + 1;
+  } else {
+    list.unshift({ at: Date.now(), skipped: true, why });
+  }
+  log[jobId] = list.slice(0, MAX_LOG_PER_JOB);
+  await write(LOG_KEY, log);
+}
+
+/** The reasons a run can be withheld, worded for the person reading the Jobs pane. */
+export const SKIP_REASONS = Object.freeze({
+  limit: 'hit its daily limit',
+  cooldown: 'fired moments ago (cooldown)',
+  window: 'waiting for the side panel to be open',
+  missed: 'missed while the browser was closed',
+  gone: 'its skill no longer exists',
+});
 
 export async function runHistory(jobId) {
   const log = await read(LOG_KEY);
@@ -337,7 +372,9 @@ export function whenNext(job, now = Date.now(), lastRun = 0) {
   try { return nextFireAt(job.schedule, Math.max(now, lastRun)); } catch { return null; }
 }
 
-export { occurrenceKey };
+// Re-exported so the panel reaches the shared predicate through the module it already
+// loads to run a job, instead of pulling events/schedule.js onto another import path.
+export { occurrenceKey, utteranceLooksComplete };
 
 // ---------------------------------------------------------------------------
 // Backup

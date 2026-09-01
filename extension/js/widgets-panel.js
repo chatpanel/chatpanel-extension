@@ -10,6 +10,8 @@
 // Widgets entry for the rest.
 
 import { listWidgets, deleteWidget, pinWidget, getWidget, saveWidget } from './widgets-store.js';
+// Already on the panel's graph — the drawer itself is dynamic, so this adds nothing to first paint.
+import { icon } from './icons.js';
 import { mountWidget } from './widget-host.js';
 
 // No cap. The rail scrolls, so pinning as many as you like is the user's call rather than
@@ -148,12 +150,33 @@ async function openOne(id) {
     onChange?.();
   };
   $('widget-delete').onclick = async () => {
-    if (!confirm(`Delete "${rec.manifest.name}"? Its saved state goes with it. This cannot be undone.`)) return;
+    if (!(await confirmRemove(rec.manifest.name))) return;
     await deleteWidget(id);
     showList();
     await renderWidgetsList();
     onChange?.();
   };
+}
+
+/**
+ * Ask before removing one. `confirm()` is not reliable inside a side panel — the old prompt
+ * could be clicked and simply do nothing — so this uses the same DOM modal the rest of the
+ * panel deletes through, loaded on first use so nobody pays for it until they delete.
+ */
+async function confirmRemove(name) {
+  const { confirmDelete } = await import('./confirm-modal.js');
+  return confirmDelete({
+    title: 'Delete this widget?',
+    body: `“${name}” and everything it has saved — a running timer, a sticky note's text — go with it. This cannot be undone.`,
+    confirmLabel: 'Delete widget',
+  });
+}
+
+async function removeWidget(id, name) {
+  if (!(await confirmRemove(name))) return;
+  await deleteWidget(id);
+  await renderWidgetsList();
+  onChange?.(); // it may have been pinned — the rail must lose the button too
 }
 
 export async function renderWidgetsList() {
@@ -169,12 +192,25 @@ export async function renderWidgetsList() {
     return;
   }
   for (const rec of all) {
-    const row = document.createElement('button');
-    row.type = 'button';
+    const id = rec.manifest.id;
+    // A div, not a button: it now carries a button of its own, and a button inside a button
+    // is invalid HTML that browsers resolve by dropping one of them.
+    const row = document.createElement('div');
     row.className = 'widget-row';
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
     row.innerHTML = `<span class="widget-row-name"></span>${rec.pinned ? '<span class="widget-row-pin">★</span>' : ''}`;
     row.querySelector('.widget-row-name').textContent = rec.manifest.name;
-    row.onclick = () => openOne(rec.manifest.id);
+    row.onclick = () => openOne(id);
+    row.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openOne(id); } };
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'icon-btn danger widget-row-del';
+    del.title = `Delete “${rec.manifest.name}”`;
+    del.setAttribute('aria-label', `Delete ${rec.manifest.name}`);
+    del.innerHTML = icon('delete');
+    del.onclick = (e) => { e.stopPropagation(); removeWidget(id, rec.manifest.name); };
+    row.appendChild(del);
     list.appendChild(row);
   }
 }

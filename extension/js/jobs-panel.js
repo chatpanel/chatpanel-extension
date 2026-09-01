@@ -13,6 +13,7 @@
 import { icon } from './icons.js';
 import {
   listJobs, putJob, removeJob, setJobEnabled, lastRuns, whenNext, formatDuration, runHistory,
+  recordRun, DEFAULT_MAX_PER_DAY,
 } from './jobs.js';
 import {
   timerTrigger, createTriggerRegistry, BUILTIN_TRIGGERS, meetingStartedTrigger, meetingEndedTrigger,
@@ -20,6 +21,12 @@ import {
 } from './events/schedule.js';
 
 const triggers = createTriggerRegistry(BUILTIN_TRIGGERS);
+// The job being edited, or null when the form is creating. The form IS the editor: a second
+// one would drift, and the reason jobs felt uneditable is that there was only ever the first.
+let editing = null;
+// Bound by wireForm, which owns the field references. Null until the drawer is built.
+let loadIntoForm = null;
+let stopEditing = () => { editing = null; };
 let el = null;
 let onToast = () => {};
 let getSkills = () => [];
@@ -77,6 +84,7 @@ function build() {
       </div>
       <div class="job-row">
         <button id="job-add" class="mon-add-btn" type="button">Schedule it</button>
+        <button id="job-cancel" class="mon-skill-btn" type="button" hidden>Cancel</button>
         <span id="job-hint" class="mon-edit-lab"></span>
       </div>
     </div>
@@ -115,6 +123,39 @@ function repeatLabel(job) {
 
 // The form. Deliberately two selects and at most two fields: a job is "do THIS when THAT",
 // and anything needing more than that is better said to the model directly.
+// The action kinds this form can express. A job whose action it cannot (a live monitor
+// started by voice) is still editable — its action is offered back as "keep", so editing when
+// it runs never silently rewrites what it does.
+const FORM_ACTIONS = ['skill', 'prompt', 'notify'];
+
+/** Which WHEN option a stored job corresponds to, or '' when the form cannot express it. */
+export function whenValueFor(job) {
+  if (!job) return '';
+  if (job.trigger !== timerTrigger.id) return WHEN_OPTIONS.some((o) => o.id === job.trigger) ? job.trigger : '';
+  const s = job.schedule || {};
+  if (s.kind === 'once') return 'once';
+  if (s.kind === 'weekly') return 'weekly';
+  if (s.kind === 'daily') return s.weekdaysOnly ? 'weekdays' : 'daily';
+  return ''; // an interval schedule — spoken into existence, not offered in the form
+}
+
+const hhmm = (h, m) => `${String(h).padStart(2, '0')}:${String(m || 0).padStart(2, '0')}`;
+
+function timeValueFor(job) {
+  const s = job?.schedule || {};
+  if (s.kind === 'once' && s.at) { const d = new Date(s.at); return hhmm(d.getHours(), d.getMinutes()); }
+  if (Number.isInteger(s.hour)) return hhmm(s.hour, s.minute);
+  return '08:00';
+}
+
+/** The words a job's action is stored as, back in the box the user typed them into. */
+function actionTextFor(job) {
+  const a = job?.action || {};
+  if (a.kind === 'prompt') return a.text || '';
+  if (a.kind === 'notify') return a.body || a.title || '';
+  return '';
+}
+
 function wireForm() {
   const what = el.querySelector('#job-what');
   const when = el.querySelector('#job-when');
@@ -124,65 +165,141 @@ function wireForm() {
   const day = el.querySelector('#job-day');
   const time = el.querySelector('#job-time');
   const hint = el.querySelector('#job-hint');
+  const add = el.querySelector('#job-add');
+  const cancel = el.querySelector('#job-cancel');
 
   for (const [i, d] of DAYS.entries()) day.add(new Option(d, String(i)));
   day.value = '1';
-  for (const o of WHEN_OPTIONS) when.add(new Option(o.label, o.id));
 
   const paint = () => {
     // A skill is the point — the job says WHEN and the skill stays the definition of the
     // work — so skills come first and a free-text instruction is the fallback.
     const skills = getSkills();
-    const keep = what.value;
+    const keepWhat = what.value;
     what.innerHTML = '';
     for (const sk of skills) what.add(new Option(`Run “${sk.name}”`, `skill:${sk.id}`));
     what.add(new Option('Custom instruction…', 'prompt'));
-    if (keep) what.value = keep;
+    // The action a timer or a reminder has. Both are usually created by talking, and both
+    // were uneditable here because the form could only make the other two.
+    what.add(new Option('Just notify me…', 'notify'));
+    if (editing && !FORM_ACTIONS.includes(editing.action?.kind)) {
+      what.add(new Option(`Keep: ${describe(editing)}`.slice(0, 60), '__keep'));
+    }
+    if (keepWhat) what.value = keepWhat;
     if (!what.value) what.value = skills.length ? `skill:${skills[0].id}` : 'prompt';
-    const opt = WHEN_OPTIONS.find((o) => o.id === when.value) || WHEN_OPTIONS[0];
-    text.hidden = what.value !== 'prompt';
-    param.hidden = !opt.field;
-    param.placeholder = opt.placeholder || '';
-    speaker.hidden = !opt.speaker;
-    day.hidden = opt.id !== 'weekly';
-    time.hidden = opt.kind !== 'timer';
-    hint.textContent = skills.length ? '' : 'Tip: write a skill in Settings → Skills to run it on a schedule.';
+
+    const keepWhen = when.value;
+    when.innerHTML = '';
+    for (const o of WHEN_OPTIONS) when.add(new Option(o.label, o.id));
+    if (editing && !whenValueFor(editing)) when.add(new Option(`Keep: ${repeatLabel(editing) || 'as set'}`, '__keep'));
+    if (keepWhen) when.value = keepWhen;
+    if (!when.value) when.value = WHEN_OPTIONS[0].id;
+
+    const opt = WHEN_OPTIONS.find((o) => o.id === when.value) || null;
+    const freeText = what.value === 'prompt' || what.value === 'notify';
+    text.hidden = !freeText;
+    text.placeholder = what.value === 'notify' ? 'What to say when it fires' : 'What to do';
+    param.hidden = !opt?.field;
+    param.placeholder = opt?.placeholder || '';
+    speaker.hidden = !opt?.speaker;
+    day.hidden = opt?.id !== 'weekly';
+    time.hidden = opt?.kind !== 'timer';
+    add.textContent = editing ? 'Save changes' : 'Schedule it';
+    cancel.hidden = !editing;
+    hint.textContent = editing
+      ? `Editing “${editing.name}”`
+      : (skills.length ? '' : 'Tip: write a skill in Settings → Skills to run it on a schedule.');
   };
   what.onchange = paint;
   when.onchange = paint;
+
+  // Load a stored job back into the form. Everything the form can express is filled in;
+  // anything it cannot is offered back as "keep" rather than quietly replaced.
+  loadIntoForm = (job) => {
+    editing = job;
+    const a = job.action || {};
+    what.value = a.kind === 'skill' ? `skill:${a.skillId}` : FORM_ACTIONS.includes(a.kind) ? a.kind : '__keep';
+    when.value = whenValueFor(job) || '__keep';
+    text.value = actionTextFor(job);
+    const p = job.params || {};
+    param.value = (p.any || p.terms || p.names || []).join(', ');
+    speaker.value = p.speaker || 'others';
+    day.value = String(job.schedule?.weekday ?? 1);
+    time.value = timeValueFor(job);
+    paint();
+    // A skill the job points at may have been deleted; the select then has no such option and
+    // would silently fall back to the first skill. Say so instead of rewriting the job.
+    if (a.kind === 'skill' && what.value !== `skill:${a.skillId}`) {
+      onToast(`“${a.skillName || 'That skill'}” no longer exists — pick what this job should run`, 5000);
+    }
+    el.querySelector('.job-new')?.scrollIntoView({ block: 'nearest' });
+    (text.hidden ? when : text).focus();
+  };
+
+  stopEditing = () => { editing = null; text.value = ''; param.value = ''; paint(); };
+  cancel.onclick = () => { stopEditing(); renderJobs(); };
+
   paint();
 
-  el.querySelector('#job-add').onclick = async () => {
-    const opt = WHEN_OPTIONS.find((o) => o.id === when.value) || WHEN_OPTIONS[0];
+  add.onclick = async () => {
+    const was = editing;
+    const keepAction = what.value === '__keep' && was;
+    const keepWhen = when.value === '__keep' && was;
+    const opt = keepWhen ? null : WHEN_OPTIONS.find((o) => o.id === when.value) || WHEN_OPTIONS[0];
     const skills = getSkills();
     const skill = what.value.startsWith('skill:') ? skills.find((sk) => `skill:${sk.id}` === what.value) : null;
     const instruction = text.value.trim();
-    if (!skill && !instruction) { onToast('Say what the job should do'); return; }
+    if (!keepAction && !skill && !instruction) { onToast('Say what the job should do'); return; }
     const values = param.value.split(',').map((v) => v.trim()).filter(Boolean);
-    if (opt.required && !values.length) { onToast(`Add at least one ${opt.field === 'terms' ? 'topic' : 'phrase'}`); return; }
+    if (opt?.required && !values.length) { onToast(`Add at least one ${opt.field === 'terms' ? 'topic' : 'phrase'}`); return; }
     const [h, m] = (time.value || '08:00').split(':').map(Number);
+
+    const action = keepAction ? was.action
+      : skill ? { kind: 'skill', skillId: skill.id, skillName: skill.name }
+        : what.value === 'notify' ? { kind: 'notify', title: was?.action?.title || was?.name || 'ChatPanel', body: instruction }
+          : { kind: 'prompt', text: instruction };
+    // The name follows the work when the work has a name of its own, and follows the words
+    // when it was derived from them. A reminder named by voice ("Timer — tea") keeps its name
+    // when its body is edited, instead of being renamed to its own message.
+    const derived = !was || was.name === actionTextFor(was).slice(0, 60) || was.action?.kind === 'skill';
+    const name = skill ? skill.name
+      : keepAction ? was.name
+        : derived ? instruction.slice(0, 60) || was?.name || 'Job'
+          : was.name;
+
     const spec = {
-      id: `job_${Date.now().toString(36)}`,
-      name: skill ? skill.name : instruction.slice(0, 60),
-      trigger: opt.kind === 'timer' ? timerTrigger.id : opt.id,
-      schedule: opt.kind !== 'timer' ? null : scheduleFor(opt.id, h, m, Number(day.value)),
-      params: {
-        ...(opt.field ? { [opt.field]: values } : {}),
-        ...(opt.speaker ? { speaker: speaker.value || 'others' } : {}),
-      },
-      action: skill ? { kind: 'skill', skillId: skill.id, skillName: skill.name } : { kind: 'prompt', text: instruction },
-      createdAt: Date.now(),
+      // Spread first so everything the form does not own — enabled, limits, onMissed, source,
+      // approval — survives an edit instead of being reset to defaults.
+      ...(was || {}),
+      id: was ? was.id : `job_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      action,
+      createdAt: was ? was.createdAt : Date.now(),
+      ...(keepWhen ? {} : {
+        trigger: opt.kind === 'timer' ? timerTrigger.id : opt.id,
+        schedule: opt.kind !== 'timer' ? null : scheduleFor(opt.id, h, m, Number(day.value)),
+        params: {
+          ...(opt.field ? { [opt.field]: values } : {}),
+          ...(opt.speaker ? { speaker: speaker.value || 'others' } : {}),
+        },
+      }),
     };
     // Validated by the shared contract on the way in, so a job that cannot run cannot be
     // saved — and the reason is shown rather than swallowed.
     try {
       await putJob(spec);
     } catch (e) {
-      onToast(`Couldn’t schedule that — ${e.message}`);
+      onToast(`Couldn’t ${was ? 'save' : 'schedule'} that — ${e.message}`);
       return;
     }
-    text.value = ''; param.value = '';
-    onToast(`Scheduled “${spec.name}”`);
+    // Moving a job's time means "from now on", not "you missed today's". The watermark is
+    // what dueJobs measures missed occurrences against, so leaving it behind would fire the
+    // job the instant you finished editing it — which reads as a bug, not a schedule.
+    if (was && JSON.stringify(was.schedule) !== JSON.stringify(spec.schedule)) {
+      await recordRun(spec.id, Date.now());
+    }
+    stopEditing();
+    onToast(`${was ? 'Saved' : 'Scheduled'} “${spec.name}”`);
     renderJobs();
   };
 }
@@ -224,6 +341,13 @@ export async function renderJobs() {
     when.textContent = job.enabled ? [whenLabel(job, runs), repeatLabel(job)].filter(Boolean).join(' · ') : 'paused';
     // Pausing is not deleting: a weekly job you do not want THIS week is the common case,
     // and making the user re-create it is how a scheduler loses its jobs.
+    // Editing was the missing verb. Everything else about a job could be changed by deleting
+    // it and typing it again — which is how a scheduler loses the job you meant to adjust.
+    const edit = document.createElement('button');
+    edit.className = 'mon-card-min';
+    edit.innerHTML = icon('edit');
+    edit.title = 'Edit this job';
+    edit.onclick = () => loadIntoForm?.(job);
     const pause = document.createElement('button');
     pause.className = 'mon-card-min';
     pause.innerHTML = icon(job.enabled ? 'stop' : 'play');
@@ -234,13 +358,21 @@ export async function renderJobs() {
     del.innerHTML = icon('close');
     del.title = 'Delete';
     del.onclick = async () => { await removeJob(job.id); onToast(`Removed “${job.name}”`); renderJobs(); };
-    head.append(name, when, pause, del);
+    head.append(name, when, edit, pause, del);
     card.appendChild(head);
     const body = document.createElement('div');
     body.className = 'mon-card-b';
     body.textContent = describe(job);
     card.appendChild(body);
-    card.appendChild(await historyOf(job));
+    const log = await runHistory(job.id);
+    const why = statusLine(job, log);
+    if (why) {
+      const note = document.createElement('div');
+      note.className = 'job-why';
+      note.textContent = why;
+      card.appendChild(note);
+    }
+    card.appendChild(historyOf(job, log));
     list.appendChild(card);
   }
 }
@@ -252,13 +384,14 @@ export async function renderJobs() {
  * being away is the reason the job exists. Folded shut so the list stays a list, and every
  * run that produced an answer opens it.
  */
-async function historyOf(job) {
-  const runs = await runHistory(job.id);
+function historyOf(job, entries) {
+  const runs = entries;
+  const ran = runs.filter((r) => !r.skipped);
   const wrap = document.createElement('details');
   wrap.className = 'mon-earlier job-runs';
   const sum = document.createElement('summary');
   sum.textContent = runs.length
-    ? `${runs.length} run${runs.length === 1 ? '' : 's'} · last ${timeAgo(runs[0].at)}`
+    ? `${ran.length} run${ran.length === 1 ? '' : 's'} · last activity ${timeAgo(runs[0].at)}`
     : 'No runs yet';
   wrap.appendChild(sum);
   if (!runs.length) return wrap;
@@ -272,8 +405,13 @@ async function historyOf(job) {
     what.className = 'job-run-why';
     // The trigger reason first: "why did this run" is the question a surprising run raises,
     // and it is the one thing a chat transcript cannot answer.
-    what.textContent = [run.why, run.note].filter(Boolean).join(' — ').slice(0, 180) || 'ran';
-    if (!run.ok) what.classList.add('job-run-bad');
+    what.textContent = run.skipped
+      ? `skipped${run.n > 1 ? ` ${run.n}×` : ''} — ${run.why}`
+      : [run.why, run.note].filter(Boolean).join(' — ').slice(0, 180) || 'ran';
+    // A skip is not a failure: it is the scheduler declining on purpose, and colouring it red
+    // would make a working ceiling look like a broken job.
+    if (run.skipped) what.classList.add('job-run-skip');
+    else if (!run.ok) what.classList.add('job-run-bad');
     row.append(what, when);
     if (run.convId && openConv) {
       const open = document.createElement('button');
@@ -285,6 +423,24 @@ async function historyOf(job) {
     wrap.appendChild(row);
   }
   return wrap;
+}
+
+/**
+ * The one line worth reading when a job has not done what you expected.
+ *
+ * Three separate questions get asked as one — "is it off?", "did something stop it?", "does
+ * it even need me here?" — so all three are answered in the same place, newest cause first.
+ */
+function statusLine(job, log) {
+  if (!job.enabled) return 'Paused — it will not run until you resume it.';
+  const head = log[0];
+  if (head?.skipped) return `Last time: skipped ${timeAgo(head.at)} — ${head.why}${head.n > 1 ? ` (${head.n}×)` : ''}`;
+  const t = triggers.get(job.trigger);
+  // Standing facts, not failures — but each is a reason a job "did nothing" that no amount of
+  // staring at the job itself explains.
+  if (t && t.kind === 'meeting') return 'Fires during a live meeting, and only while the side panel is open.';
+  if (job.action?.kind !== 'notify') return 'Needs a model, so it runs when the side panel is next open.';
+  return '';
 }
 
 function timeAgo(at) {

@@ -91,7 +91,9 @@ console.log(`ok — every meeting trigger has an emitter, on every client (${wat
 
   // The form offers the choice for every speech trigger, and saves it.
   assert.match(panelSrc, /id="job-speaker"/, 'the form has a whose-speech control');
-  assert.match(panelSrc, /speaker\.hidden = !opt\.speaker/, 'shown only for triggers that listen to speech');
+  // `opt` is null when an edited job keeps a schedule the form cannot express, hence the
+  // optional chain — the control is still shown for speech triggers and nothing else.
+  assert.match(panelSrc, /speaker\.hidden = !opt\??\.speaker/, 'shown only for triggers that listen to speech');
   assert.match(panelSrc, /opt\.speaker \? \{ speaker: speaker\.value \|\| 'others' \}/, 'and it reaches the saved job');
   for (const t of ['questionTrigger', 'phraseTrigger', 'topicTrigger']) {
     assert.ok(new RegExp(`${t}\\.id.*speaker: true`).test(panelSrc), `${t} offers the choice`);

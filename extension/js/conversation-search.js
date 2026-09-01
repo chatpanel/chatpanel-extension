@@ -62,22 +62,6 @@ export function rankConversationEntries(entries = [], query = '', conversationsB
     .map((r) => r.entry);
 }
 
-export function paginateEntries(entries = [], { page = 1, pageSize = 25 } = {}) {
-  const size = Math.max(1, Number(pageSize) || 25);
-  const total = entries.length;
-  const totalPages = Math.max(1, Math.ceil(total / size));
-  const currentPage = Math.min(Math.max(1, Number(page) || 1), totalPages);
-  const startIndex = (currentPage - 1) * size;
-  const items = entries.slice(startIndex, startIndex + size);
-  return {
-    items,
-    page: currentPage,
-    pageSize: size,
-    total,
-    totalPages,
-    start: total ? startIndex + 1 : 0,
-    end: startIndex + items.length,
-    hasPrev: currentPage > 1,
-    hasNext: currentPage < totalPages,
-  };
-}
+// Moved to paginate.js — a leaf with no index behind it — and re-exported here so every
+// existing importer keeps working. One implementation, two callers.
+export { paginateEntries } from './paginate.js';
