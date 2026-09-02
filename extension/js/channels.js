@@ -150,11 +150,11 @@ async function bridgeVersion(conn) {
  * missing gateway is not an error — it is the normal case for someone who has only installed
  * the bridge, and the picker simply shows agents.
  */
-export async function channelTargets({ bridgeAgents = [], gatewayUrl = '' } = {}) {
+export async function channelTargets({ bridgeAgents = [], gatewayUrl = '', destinations = [] } = {}) {
   const agents = bridgeAgents
     .filter((a) => a.available)
     .map((a) => ({ kind: 'agent', id: a.id, label: a.label || a.id }));
-  if (!gatewayUrl) return { agents, models: [], gateway: false };
+  if (!gatewayUrl) return { agents, providers: [], models: [], gateway: false };
   try {
     // The gateway's /v1 data plane is open to local callers by design, so there is no token
     // to hold here. Short timeout: a gateway that is not running must cost the settings page
@@ -162,17 +162,41 @@ export async function channelTargets({ bridgeAgents = [], gatewayUrl = '' } = {}
     const res = await fetch(`${String(gatewayUrl).replace(/\/+$/, '')}/v1/models`, {
       signal: AbortSignal.timeout(2500),
     });
-    if (!res.ok) return { agents, models: [], gateway: false };
+    if (!res.ok) return { agents, providers: [], models: [], gateway: false };
     const body = await res.json().catch(() => ({}));
-    const seen = new Set(agents.map((a) => a.id));
-    const models = (body?.data || [])
+    const all = (body?.data || []).filter((m) => m?.id);
+    const agentIds = new Set(agents.map((a) => a.id));
+
+    // ONE ENTRY PER PROVIDER, FIRST. Publishing an endpoint makes the gateway list every model
+    // that provider offers — 624 of them here — and a flat list of 624 is not a picker, it is
+    // a haystack with the answer already in it: the model the user actually configured. So the
+    // provider's own choice is promoted to the top, and the rest stays available underneath.
+    //
+    // The configured destinations are authoritative when the caller can read them (the
+    // settings page holds the gateway's admin token). Without them, fall back to the first
+    // model each provider reported — aggregateModels lists configured models before probed
+    // ones, so this is right in practice and merely unlucky rather than wrong if it is not.
+    const firstByOwner = new Map();
+    for (const m of all) {
+      const owner = m.owned_by || '';
+      if (owner && !agentIds.has(m.id) && !firstByOwner.has(owner)) firstByOwner.set(owner, m.id);
+    }
+    const configured = destinations.filter((d) => d && d.type === 'api' && d.id);
+    const providers = (configured.length
+      ? configured.map((d) => ({ id: (d.models || []).find(Boolean) || firstByOwner.get(d.id), owner: d.id }))
+      : [...firstByOwner.entries()].map(([owner, id]) => ({ id, owner })))
+      .filter((p) => p.id)
+      .map((p) => ({ kind: 'model', id: p.id, label: `${p.owner} — ${p.id}` }));
+
+    const promoted = new Set(providers.map((p) => p.id));
+    const models = all
       // An agent the gateway also exposes is already in the list under its own name; showing
       // it twice makes the user choose between two spellings of one thing.
-      .filter((m) => m?.id && !seen.has(m.id))
-      .map((m) => ({ kind: 'model', id: m.id, label: m.id, owner: m.owned_by || '' }));
-    return { agents, models, gateway: true };
+      .filter((m) => !agentIds.has(m.id) && !promoted.has(m.id))
+      .map((m) => ({ kind: 'model', id: m.id, label: m.owned_by ? `${m.id}  (${m.owned_by})` : m.id }));
+    return { agents, providers, models, gateway: true };
   } catch {
-    return { agents, models: [], gateway: false };
+    return { agents, providers: [], models: [], gateway: false };
   }
 }
 

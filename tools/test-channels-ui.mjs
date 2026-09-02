@@ -141,12 +141,24 @@ assert.match(js, /escapeHtml\(p\.actorId\)/, 'and the id it is keyed on must sti
 assert.match(client, /export async function channelTargets/, 'one place that answers "what can answer"');
 assert.match(client, /\/v1\/models/, 'the gateway knows its own destinations — ask it');
 assert.match(client, /AbortSignal\.timeout/, 'a gateway that is not running must not hang the settings page');
-assert.match(client, /return \{ agents, models: \[\], gateway: false \}/,
+assert.match(client, /return \{ agents, providers: \[\], models: \[\], gateway: false \}/,
   'no gateway is the NORMAL case for a bridge-only install, not an error');
-assert.match(client, /!seen\.has\(m\.id\)/,
+assert.match(client, /!agentIds\.has\(m\.id\) && !promoted\.has\(m\.id\)/,
   'an agent the gateway also exposes must not appear twice under two spellings');
 assert.match(js, /group\('Agents — on this machine', agents\)/, 'the two kinds fail differently — group them');
-assert.match(js, /group\('Models — via the gateway', models\)/);
+assert.match(js, /group\('Your providers — via the gateway', providers\)/);
+// Publishing one endpoint makes the gateway list EVERY model that provider offers — 624 on a
+// real machine. A flat list of 624 is not a picker; it is a haystack containing the one model
+// the user configured. So the provider's own choice is promoted and the catalogue sits below.
+assert.match(client, /const providers = \(configured\.length/, 'one entry per provider, not per model');
+assert.match(client, /const promoted = new Set\(providers\.map/, 'a promoted model must not also appear in the tail');
+assert.match(js, /group\(`All models \(\$\{models\.length\}\)`, models\)/,
+  'the long tail stays available, at the bottom, with its size on the label');
+const order = ['Agents — on this machine', 'Your providers — via the gateway', 'All models'];
+const at = order.map((label) => js.indexOf(label));
+assert.ok(at.every((i) => i > 0), 'every group must exist');
+assert.deepEqual([...at].sort((a, b) => a - b), at,
+  'agents and providers come before the catalogue — that ordering IS the fix');
 assert.match(js, /\(unavailable\)/,
   'a configured target that is currently offline must still show as the selection');
 assert.match(js, /kind === 'model' \? \{ model: id \} : \{ agent: id \}/, 'one choice, one field');

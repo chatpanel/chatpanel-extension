@@ -6074,9 +6074,21 @@ async function renderChannels() {
   // gateway" fail in different ways and the user should be able to tell which they picked.
   const agentSel = $('ch-agent');
   const { channelTargets } = await channelsMod();
-  const { agents, models, gateway: gatewayReachable } = await channelTargets({
+  // The configured destinations are what the user actually set up, so they decide which model
+  // represents each provider. Best-effort: without the admin token channelTargets falls back
+  // to what /v1/models reported, and the picker still works.
+  let gwDests = [];
+  const gwUrlForChannels = normalizeGatewayUrl(settings.gatewayUrl || '');
+  if (gwUrlForChannels) {
+    try {
+      await handshakeGatewayToken(gwUrlForChannels);
+      gwDests = (await getGatewayConfig(gwUrlForChannels))?.destinations || [];
+    } catch { /* no gateway, or no admin access — the fallback covers it */ }
+  }
+  const { agents, providers, models, gateway: gatewayReachable } = await channelTargets({
     bridgeAgents: bridgeState?.agents || [],
     gatewayUrl: settings.gatewayUrl || '',
+    destinations: gwDests,
   });
   agentSel.innerHTML = '';
   const group = (label, items) => {
@@ -6086,13 +6098,18 @@ async function renderChannels() {
     for (const it of items) g.append(new Option(it.label, `${it.kind}:${it.id}`));
     agentSel.append(g);
   };
+  // Order is the whole point here: the things a person actually picks — an agent on this
+  // machine, or a provider they configured — sit at the top, and the provider's full catalogue
+  // (624 models on this machine) goes underneath where it is available but not in the way.
   group('Agents — on this machine', agents);
-  group('Models — via the gateway', models);
+  group('Your providers — via the gateway', providers);
   // Only when a gateway is actually there to publish to. Offering this without one would be a
   // dead option, and telling someone to install a second component to answer a text is exactly
   // the onboarding we said we would not have.
-  const toPublish = gatewayReachable ? publishableEndpoints(models.map((m) => m.id)) : [];
+  const known = [...providers, ...models].map((m) => m.id);
+  const toPublish = gatewayReachable ? publishableEndpoints(known) : [];
   group('Your APIs — one tap to enable', toPublish);
+  group(`All models (${models.length})`, models);
   const current = st.settings.model ? `model:${st.settings.model}` : `agent:${st.settings.agent}`;
   // A target that is configured but not currently offered (the gateway is down, an agent was
   // uninstalled) must still show as the selection — silently switching what answers is worse
