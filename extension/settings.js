@@ -1498,6 +1498,7 @@ async function addEndpoint() {
 // --------------------------------------------------------------------------
 function renderBridge() {
   $('bridge-url').value = settings.bridgeUrl || '';
+  $('bridge-token').value = settings.bridgeToken || '';
   renderBridgeAgents();
   renderLocalRuntime(); // the unified "ChatPanel local" status atop this tab
 }
@@ -2811,22 +2812,24 @@ function renderBridgeUpdate() {
     btn.onclick = async () => {
       btn.disabled = true;
       btn.textContent = 'Updating…';
-      const r = await updateBridge(settings.bridgeUrl);
+      // The download-swap-restart-wait dance lives in js/bridge-update.js so the Channels
+      // card can offer the same button instead of only naming the version it needs.
+      const { updateBridgeAndWait } = await import('./js/bridge-update.js');
+      const r = await updateBridgeAndWait(settings.bridgeUrl, {
+        onStatus: (phase) => {
+          el.textContent = phase === 'restarting'
+            ? 'Bridge is updating and restarting…' : 'Downloading the new bridge…';
+        },
+      });
       if (!r.ok) {
         el.textContent = `✕ Bridge update failed: ${r.error || 'unknown'}`;
         el.className = 'status err';
         return;
       }
-      el.textContent = 'Bridge is updating and restarting…';
-      // The bridge restarts (connection drops); poll until it's back on the new version.
-      await new Promise((res) => setTimeout(res, 4000));
-      for (let i = 0; i < 8; i++) {
-        bridgeState = await checkBridge(settings.bridgeUrl);
-        if (bridgeState.ok && bridgeState.version === r.to) break;
-        await new Promise((res) => setTimeout(res, 1500));
-      }
+      bridgeState = await checkBridge(settings.bridgeUrl);
       renderBridgeAgents();
       renderBridgeUpdate();
+      renderChannels().catch(() => {}); // the card that sent them here should stop complaining
     };
     el.appendChild(btn);
   } else {
@@ -5439,6 +5442,13 @@ function wire() {
   };
 
   $('bridge-test').onclick = testBridge;
+  $('bridge-token').onchange = async () => {
+    settings.bridgeToken = $('bridge-token').value.trim();
+    await saveSettings(settings);
+    // The token exists to make the Channels card work, so prove it did — re-reading the
+    // status here is the difference between "saved" and "saved and it helped".
+    renderChannels().catch(() => {});
+  };
   $('bridge-url').onchange = async () => {
     settings.bridgeUrl = $('bridge-url').value.trim();
     await saveSettings(settings);
@@ -5902,6 +5912,11 @@ function setStatus(el, text, cls = '') {
 // --------------------------------------------------------------------------
 let channelsApi = null;
 const channelsMod = () => (channelsApi ||= import('./js/channels.js'));
+// URL + optional token together: the channels client takes one connection, so a token typed
+// into the Bridge card reaches every channels request without six call sites remembering it.
+const bridgeConn = () => ({ url: settings.bridgeUrl, token: settings.bridgeToken || '' });
+// The paired list as of the last render — the baseline watchPairing() diffs against.
+let chLastPaired = [];
 let channelsBusy = false;
 
 function chError(id, msg) {
@@ -5911,13 +5926,104 @@ function chError(id, msg) {
   el.classList.toggle('hidden', !msg);
 }
 
+// The card that DETECTS a too-old bridge is where the fix belongs. Naming a version and
+// pointing at another tab is how "update it" becomes a support thread — especially for the
+// non-technical user this whole screen is aimed at. So: a button when the bridge can update
+// itself, the exact command when it cannot, and the install lines when there is nothing
+// running to update at all.
+async function renderChannelsFix(st) {
+  const box = $('ch-fix');
+  if (!box) return;
+  box.innerHTML = '';
+  box.classList.remove('hidden');
+
+  const { bridgeInstallCommands, updateBridgeAndWait } = await import('./js/bridge-update.js');
+  // The Channels tab can be opened before the Agents tab has ever rendered, so `bridgeState`
+  // may be empty even though a bridge is running. Ask once rather than telling someone with a
+  // healthy bridge to go install one.
+  if (st.code !== 'no-bridge' && !bridgeState?.ok) bridgeState = await checkBridge(settings.bridgeUrl);
+  const reachable = st.code !== 'no-bridge' && bridgeState?.ok;
+  const up = reachable ? bridgeState.update : null;
+
+  const say = (text, cls = 'status') => {
+    const el = document.createElement('div');
+    el.className = cls;
+    el.textContent = text;
+    box.appendChild(el);
+    return el;
+  };
+  const commands = (list) => {
+    const pre = document.createElement('pre');
+    pre.appendChild(document.createTextNode(
+      list.map(({ label, cmd }) => `# ${label}\n${cmd}`).join('\n\n'),
+    ));
+    box.appendChild(pre);
+  };
+
+  // A standalone binary can replace itself. Offer that first — it is one click and no terminal.
+  // Deliberately NOT gated on `up.updateAvailable`: that flag comes from a 6-hour cached check
+  // that can be stale (or was answered by a rate-limited GitHub), while the update itself
+  // re-checks with `force`. A button that does nothing is better than a fix we hid.
+  if (reachable && up?.canSelfUpdate) {
+    const line = say(up.updateAvailable && up.latest
+      ? `v${up.latest} is ready to install. `
+      : 'This bridge can update itself. ');
+    const btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.textContent = 'Update bridge now';
+    btn.onclick = async () => {
+      btn.disabled = true;
+      const r = await updateBridgeAndWait(settings.bridgeUrl, {
+        onStatus: (phase) => { btn.textContent = phase === 'restarting' ? 'Restarting…' : 'Downloading…'; },
+      });
+      if (!r.ok) {
+        btn.disabled = false;
+        btn.textContent = 'Update bridge now';
+        say(`✕ Update failed: ${r.error || 'unknown'}. Install it by hand instead:`, 'status err');
+        commands(bridgeInstallCommands());
+        return;
+      }
+      bridgeState = await checkBridge(settings.bridgeUrl);
+      renderBridgeUpdate();
+      renderBridgeAgents();
+      renderChannels().catch(() => {}); // re-reads status; the card clears itself on success
+    };
+    line.appendChild(btn);
+    return;
+  }
+
+  // An npm install updates through npm — the bridge cannot swap a file it does not own.
+  if (reachable && up?.npmCommand) {
+    say('This bridge was installed with npm, so update it there:');
+    commands(bridgeInstallCommands({ npmCommand: up.npmCommand }));
+    return;
+  }
+
+  // Either nothing is running, or it is too old to report how it was installed. Both end in
+  // the same place: run one of these, then press Re-check.
+  say(reachable
+    ? 'Update the bridge with the same command you installed it with:'
+    : 'Start or install the bridge, then re-check:');
+  commands(bridgeInstallCommands());
+  const again = document.createElement('button');
+  again.className = 'btn';
+  again.textContent = 'Re-check';
+  again.onclick = async () => {
+    again.disabled = true;
+    again.textContent = 'Checking…';
+    bridgeState = await checkBridge(settings.bridgeUrl);
+    await renderChannels();
+  };
+  box.appendChild(again);
+}
+
 async function renderChannels() {
   const badge = $('ch-badge');
   if (!badge) return;
   const { channelStatus } = await channelsMod();
   let st;
   try {
-    st = await channelStatus(settings.bridgeUrl);
+    st = await channelStatus(bridgeConn());
   } catch (e) {
     st = { supported: false, reason: e.message };
   }
@@ -5933,11 +6039,14 @@ async function renderChannels() {
     badge.className = 'pv-badge warn';
     unsupported.textContent = st.reason;
     unsupported.classList.remove('hidden');
+    stopPairWatch(); // nothing to wait for while the bridge cannot answer
+    renderChannelsFix(st).catch(() => {});
     setup.classList.add('hidden');
     live.classList.add('hidden');
     return;
   }
   unsupported.classList.add('hidden');
+  $('ch-fix')?.classList.add('hidden');
 
   if (!st.configured) {
     badge.textContent = 'not connected';
@@ -5968,12 +6077,16 @@ async function renderChannels() {
   agentSel.value = st.settings.agent;
   $('ch-privacy').value = st.settings.privacy;
 
-  renderPairedPhones(st.paired || []);
+  chLastPaired = st.paired || [];
+  renderPairedPhones(chLastPaired).catch(() => {});
 }
 
-function renderPairedPhones(paired) {
+async function renderPairedPhones(paired) {
   const root = $('ch-paired');
   root.textContent = '';
+  // Reused, not re-written: notes-util is dependency-free and already owns "how long ago".
+  // Imported at the call site so a settings page that never opens Channels doesn't carry it.
+  const { relTime } = await import('./js/notes-util.js');
   if (!paired.length) {
     const empty = document.createElement('p');
     empty.className = 'muted tiny';
@@ -5986,7 +6099,14 @@ function renderPairedPhones(paired) {
     row.className = 'ch-row';
     const who = document.createElement('span');
     who.className = 'ch-who';
-    who.innerHTML = `${icon('who')} <code>${escapeHtml(p.actorId)}</code>`;
+    // Lead with the name the platform gave, because that is what a person recognises and this
+    // list exists to be recognised — deciding whether to revoke one is the only thing you do
+    // here. The id stays alongside: it is what authorization is actually keyed on, and two
+    // phones can carry the same first name. Both are escaped; the label is remote text.
+    const when = p.at ? ` · paired ${relTime(p.at)}` : '';
+    who.innerHTML = p.label
+      ? `${icon('who')} <b>${escapeHtml(p.label)}</b> <code>${escapeHtml(p.actorId)}</code><span class="muted tiny">${escapeHtml(when)}</span>`
+      : `${icon('who')} <code>${escapeHtml(p.actorId)}</code><span class="muted tiny">${escapeHtml(when)}</span>`;
     const reach = document.createElement('span');
     reach.className = 'muted tiny';
     // Say what the tier MEANS. "trusted" is a word; "can read, cannot write or browse" is a
@@ -6005,11 +6125,97 @@ function renderPairedPhones(paired) {
         body: 'It stops being able to drive anything on its very next message. You can pair it again with a new code.',
       }))) return;
       const { unpairPhone } = await channelsMod();
-      try { await unpairPhone(settings.bridgeUrl, p.actorId); toast('Unpaired'); } catch (e) { toast(e.message, 4000); }
+      try { await unpairPhone(bridgeConn(), p.actorId); toast('Unpaired'); } catch (e) { toast(e.message, 4000); }
       renderChannels();
     };
     row.append(who, reach, off);
     root.append(row);
+  }
+}
+
+// A pairing code is a live thing and this screen knows neither of the two events that end it:
+// the phone talks to the BRIDGE, not to this page. So the page sat there showing a QR that had
+// already been used, under a promise of "10 minutes" that never counted down, while the list
+// below went on saying no phone was paired until someone happened to reload.
+//
+// One watcher fixes all three: tick the clock every second, ask the bridge who is paired every
+// few seconds, and stop on whichever comes first. Polling rather than a push because the bridge
+// has no channel to this page — and it only runs while a live code is on screen, so it is
+// bounded by the code's own ten minutes rather than being a background poll.
+let pairWatch = null;
+
+function stopPairWatch() {
+  if (pairWatch) clearInterval(pairWatch.timer);
+  pairWatch = null;
+}
+
+const mmss = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+
+function watchPairing(expiresAt) {
+  stopPairWatch();
+  const known = new Set((chLastPaired || []).map((p) => p.actorId));
+  const deadline = Number(expiresAt) || (Date.now() + 10 * 60_000);
+  const countdown = $('ch-pair-countdown');
+  let ticks = 0;
+  let checking = false;
+
+  const expire = () => {
+    stopPairWatch();
+    // Hide the code rather than leaving a dead QR on screen looking like the thing to scan.
+    $('ch-pair-live')?.classList.add('hidden');
+    $('ch-pair-expired')?.classList.remove('hidden');
+  };
+
+  const timer = setInterval(async () => {
+    const left = deadline - Date.now();
+    if (countdown) countdown.textContent = `expires in ${mmss(left)}`;
+    if (left <= 0) return expire();
+
+    // Every third tick: has the phone redeemed it? A burned code is as dead as an expired one.
+    ticks += 1;
+    if (ticks % 3 || checking) return;
+    checking = true;
+    try {
+      const { channelStatus } = await channelsMod();
+      const st = await channelStatus(bridgeConn());
+      const fresh = (st.paired || []).find((p) => !known.has(p.actorId));
+      if (fresh) {
+        stopPairWatch();
+        $('ch-pair-out').classList.add('hidden');
+        toast(`Paired ${fresh.label || fresh.actorId}`);
+        await renderChannels();
+      }
+    } catch { /* the bridge blinked; the next tick tries again */ } finally {
+      checking = false;
+    }
+  }, 1000);
+
+  pairWatch = { timer, deadline };
+  if (countdown) countdown.textContent = `expires in ${mmss(deadline - Date.now())}`;
+}
+
+// The QR for a pairing link. Drawn locally (js/qr.js) — a code that enrolls a phone against
+// this machine must not be handed to a third-party chart service to render, and the CSP would
+// refuse the script anyway. Imported at the call site: nobody pays for an encoder until they
+// press Pair.
+async function renderPairQr(link) {
+  const box = $('ch-pair-qr');
+  if (!box) return;
+  box.textContent = '';
+  try {
+    const { qrSvg } = await import('./js/qr.js');
+    // EC M with a 4-module quiet zone: enough redundancy for a phone camera at an angle,
+    // without pushing a link this short to a denser version than it needs.
+    box.innerHTML = qrSvg(link, { level: 'M', quiet: 4, size: 168, label: 'Scan to pair this phone' });
+  } catch (e) {
+    // Never let a drawing failure hide the link — that is the part that actually pairs.
+    const note = document.createElement('span');
+    note.className = 'ch-qr-fail';
+    note.textContent = `Could not draw the QR (${e.message}). Use the link below.`;
+    box.appendChild(note);
   }
 }
 
@@ -6028,7 +6234,7 @@ function wireChannels() {
     chError('ch-error', '');
     try {
       const { connectChannel } = await channelsMod();
-      await connectChannel(settings.bridgeUrl, { token });
+      await connectChannel(bridgeConn(), { token });
       // Typed once, kept nowhere: the field is cleared the moment the bridge has it.
       input.value = '';
       toast('Connected');
@@ -6047,10 +6253,14 @@ function wireChannels() {
     chError('ch-error-live', '');
     try {
       const { pairPhone } = await channelsMod();
-      const { code, link } = await pairPhone(settings.bridgeUrl);
+      const { code, link, expiresAt } = await pairPhone(bridgeConn());
       $('ch-pair-link').textContent = link;
       $('ch-pair-code').textContent = `/pair ${code}`;
+      await renderPairQr(link);
+      $('ch-pair-live').classList.remove('hidden');
+      $('ch-pair-expired').classList.add('hidden');
       $('ch-pair-out').classList.remove('hidden');
+      watchPairing(expiresAt);
     } catch (e) {
       chError('ch-error-live', e.message);
     }
@@ -6066,7 +6276,7 @@ function wireChannels() {
   const push = async (patch) => {
     try {
       const { updateChannel } = await channelsMod();
-      await updateChannel(settings.bridgeUrl, patch);
+      await updateChannel(bridgeConn(), patch);
       toast('Saved');
       renderChannels();
     } catch (e) { chError('ch-error-live', e.message); }
@@ -6082,7 +6292,8 @@ function wireChannels() {
     }))) return;
     try {
       const { disconnectChannel } = await channelsMod();
-      await disconnectChannel(settings.bridgeUrl, { forget: true });
+      stopPairWatch(); // the code it was waiting on dies with the connection
+      await disconnectChannel(bridgeConn(), { forget: true });
       toast('Disconnected');
       $('ch-pair-out').classList.add('hidden');
       renderChannels();

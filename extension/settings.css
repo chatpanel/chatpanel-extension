@@ -1221,3 +1221,11 @@ hr.sep { border: none; border-top: 1px solid var(--border); margin: 16px 0 14px;
 .ch-row .muted { flex: 1; min-width: 0; }
 .ch-settings { margin-top: 18px; }
 .ch-danger { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+/* Pairing: the QR beside the link, stacking on a narrow settings pane. The plate is white in
+   both themes because a scanner needs the contrast — an inverted QR reads as no QR. */
+.ch-pair-grid { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.ch-pair-alt { flex: 1 1 260px; min-width: 0; }
+.ch-qr { background: #fff; padding: 10px; border-radius: 10px; line-height: 0; flex: 0 0 auto; }
+.ch-qr svg { display: block; width: 168px; height: 168px; }
+.ch-qr .ch-qr-fail { display: block; line-height: 1.4; font-size: 12px; color: #b45309; max-width: 168px; }

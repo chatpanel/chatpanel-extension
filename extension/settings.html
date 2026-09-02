@@ -115,6 +115,27 @@ npx @chatpanel/bridge</code></pre>
             <input id="bridge-url" type="text" placeholder="http://127.0.0.1:4319" />
             <button id="bridge-test" class="btn">Test</button>
           </div>
+          <div class="row">
+            <label>Bridge token <span class="sub">— only for a bridge on another machine</span></label>
+            <input id="bridge-token" type="password" placeholder="leave empty for the bridge on this machine" autocomplete="off" spellcheck="false" />
+          </div>
+          <p class="muted sm" id="bridge-token-help">
+            <strong>Leave this empty</strong> if the bridge runs on this machine — it recognises
+            the extension on sight and needs no token. Fill it in only when the bridge runs
+            <strong>somewhere else</strong>, or when the Channels tab says the bridge refused the
+            request. The bridge writes a token for itself on first run, readable only by your
+            user account. Print it and paste it above:
+          </p>
+          <pre id="bridge-token-cmds"><code># macOS / Linux
+cat ~/.chatpanel/bridge-token
+
+# Windows (PowerShell)
+Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
+          <p class="muted sm">
+            Stored encrypted, the same way your API keys are, and sent only to the Bridge URL
+            above. Anyone holding it can drive the agents on that machine, so treat it like a
+            password — clear the field to stop sending it.
+          </p>
           <div id="bridge-status" class="status"></div>
           <div id="bridge-update" class="status hidden"></div>
           <div id="bridge-agents"></div>
@@ -1121,6 +1142,9 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
 
           <!-- The bridge is absent or too old: nothing on this screen is fixable by typing. -->
           <p id="ch-unsupported" class="muted hidden"></p>
+          <!-- The fix, offered rather than described: an Update button when the bridge can
+               update itself, the install commands when it cannot (or is not running). -->
+          <div id="ch-fix" class="hidden"></div>
 
           <!-- SETUP: two steps, one of them a paste. -->
           <div id="ch-setup" class="hidden">
@@ -1158,14 +1182,31 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
               <span class="muted tiny">Each phone is enrolled once, with a code that expires.</span>
             </div>
             <div id="ch-pair-out" class="ch-pair-out hidden">
-              <p class="muted">Open this on the phone you want to pair — it enrolls in one tap:</p>
-              <div class="ch-link-row">
-                <code id="ch-pair-link"></code>
-                <button id="ch-pair-copy" class="btn sm" type="button">Copy link</button>
+              <div id="ch-pair-live">
+              <p class="muted">Scan this with the phone you want to pair — it enrolls in one tap:</p>
+              <!-- The QR is the point of this screen: the code is read on one device and has to
+                   reach another, and it expires in ten minutes. The link stays for the case where
+                   the phone is already the device you are reading on. -->
+              <div class="ch-pair-grid">
+                <div id="ch-pair-qr" class="ch-qr" aria-live="polite"></div>
+                <div class="ch-pair-alt">
+                  <p class="muted tiny">Or open the link on that phone:</p>
+                  <div class="ch-link-row">
+                    <code id="ch-pair-link"></code>
+                    <button id="ch-pair-copy" class="btn sm" type="button">Copy link</button>
+                  </div>
+                </div>
               </div>
               <p class="muted tiny">
                 Not on that phone? Message the bot and send <code id="ch-pair-code"></code>. Single use,
-                expires in 10 minutes.
+                <span id="ch-pair-countdown">expires in 10:00</span>.
+              </p>
+                <p id="ch-pair-waiting" class="muted tiny">Waiting for the phone to scan…</p>
+              </div>
+              <!-- A used or expired code must stop being displayed: a QR that no longer works is
+                   worse than no QR, because it looks like the thing to try. -->
+              <p id="ch-pair-expired" class="muted hidden">
+                That code has expired. Press <b>Pair a phone</b> for a fresh one.
               </p>
             </div>
 

@@ -32,6 +32,9 @@ export function defaultSettings() {
   return {
     version: 9,
     bridgeUrl: 'http://127.0.0.1:4319',
+    // Optional. The bridge authenticates the extension by Origin; this is only for the setups
+    // that cannot carry one. Sealed at rest like an API key — see SECRET_FIELDS.
+    bridgeToken: '',
     // Fresh-install target is the ZERO-SETUP in-browser model — it works on the very
     // first message with no API key, no local bridge/gateway, nothing to run (a small
     // model downloads once and runs on WebGPU). This is what lets a brand-new user (or
@@ -476,10 +479,17 @@ if (typeof chrome !== 'undefined') {
 // blob) so a lost/rotated key costs only these fields, not the entire config.
 const SECRET_ARRAYS = ['endpoints', 'mcpServers']; // arrays whose entries carry secrets
 const SECRET_ENTRY_FIELDS = ['apiKey', 'headers'];  // API keys + MCP auth headers
+// Top-level scalars that are credentials in their own right. The bridge token grants every
+// privileged route on the local bridge, so it is sealed exactly like an endpoint's API key
+// rather than sitting in cleartext next to the URL it belongs to.
+const SECRET_FIELDS = ['bridgeToken'];
 
 async function transformSecrets(settings, fn) {
   if (!settings || typeof settings !== 'object') return settings;
   const out = { ...settings };
+  for (const f of SECRET_FIELDS) {
+    if (f in settings && settings[f] != null && settings[f] !== '') out[f] = await fn(settings[f]);
+  }
   for (const arr of SECRET_ARRAYS) {
     if (!Array.isArray(settings[arr])) continue;
     out[arr] = await Promise.all(settings[arr].map(async (item) => {

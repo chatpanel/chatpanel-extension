@@ -13,7 +13,24 @@
 // 0600. It is never stored in extension storage, never echoed back by /channels, and never
 // logged — so a compromised profile does not hand over the bot.
 
-const base = (bridgeUrl) => (bridgeUrl || 'http://127.0.0.1:4319').replace(/\/+$/, '');
+// Every entry point takes a CONNECTION: either a bare URL string (what the panel has always
+// passed) or `{ url, token }` when the user has supplied a bridge token by hand.
+const connUrl = (conn) => (typeof conn === 'string' ? conn : conn?.url) || 'http://127.0.0.1:4319';
+const connToken = (conn) => (typeof conn === 'string' ? '' : String(conn?.token || '').trim());
+const base = (conn) => connUrl(conn).replace(/\/+$/, '');
+
+// The first bridge on which channels actually WORK from the panel — which is NOT the release
+// that added the route. 0.11.0 served /channels but as a privileged GET, and the panel can
+// never satisfy that (see call() below), so it answered every settings page with "forbidden".
+// A floor is the oldest bridge that works, not the oldest that has the code.
+//
+// It has to be a number, too: "too old" on its own is unactionable, because the bridge ships
+// on its own version line and reaches a machine by two different routes (npm package vs
+// standalone binary), so the user cannot tell whether an update would help or whether they
+// already ran one. Name the floor, and name what they are on. Bump this ONLY when a channels
+// change genuinely requires a newer bridge — it is a compatibility floor, not a "latest"
+// marker (the Tesla rule: an older bridge is allowed to keep working).
+export const MIN_BRIDGE_VERSION = '0.11.1';
 
 /**
  * One request. Two failures are worth telling apart and both are common:
@@ -22,12 +39,23 @@ const base = (bridgeUrl) => (bridgeUrl || 'http://127.0.0.1:4319').replace(/\/+$
  *    just cannot do this yet, and saying "update it" is the whole of the fix. The Tesla rule
  *    cuts both ways: a new panel must degrade against an old bridge instead of erroring.
  */
-async function call(bridgeUrl, path, { method = 'GET', body } = {}) {
+async function call(conn, path, { method = 'GET', body } = {}) {
+  // A GET from this panel reaches the bridge ANONYMOUS, and no header we add here changes
+  // that. The extension holds `<all_urls>`, so its fetches bypass CORS entirely — no preflight
+  // ever fires — and the Fetch spec attaches `Origin` only to requests whose method is not GET
+  // or HEAD. Hence the asymmetry: every POST below is recognised by the bridge, and the status
+  // GET is not. The fix belongs on the bridge (GET /channels must not be a privileged route,
+  // and is not from v0.11.1), NOT in a cleverer request here.
+  const headers = body ? { 'content-type': 'application/json' } : {};
+  // The fallback for the one case Origin genuinely cannot cover: a bridge on another machine.
+  // Sent only when the user has actually entered a token.
+  const token = connToken(conn);
+  if (token) headers.authorization = `Bearer ${token}`;
   let res;
   try {
-    res = await fetch(`${base(bridgeUrl)}${path}`, {
+    res = await fetch(`${base(conn)}${path}`, {
       method,
-      headers: body ? { 'content-type': 'application/json' } : undefined,
+      headers,
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
@@ -36,12 +64,19 @@ async function call(bridgeUrl, path, { method = 'GET', body } = {}) {
     throw err;
   }
   if (res.status === 404) {
-    const err = new Error('This bridge is too old for channels — update it (Settings → API → Bridge).');
+    const err = new Error(`This bridge is too old for channels — it needs v${MIN_BRIDGE_VERSION} or newer (Settings → Agents → Bridge).`);
     err.code = 'unsupported';
     throw err;
   }
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
+    // 403 here is not a broken server, it is a bridge too old to recognise the panel on a GET
+    // — the same "update it" story as the 404, so channelStatus() tells it the same way.
+    if (res.status === 403) {
+      const err = new Error('The bridge refused this request.');
+      err.code = 'forbidden';
+      throw err;
+    }
     const err = new Error(json.error || `HTTP ${res.status}`);
     err.code = 'refused';
     throw err;
@@ -49,43 +84,85 @@ async function call(bridgeUrl, path, { method = 'GET', body } = {}) {
   return json;
 }
 
+/** a.b.c → sortable tuple. Anything unparseable sorts lowest, so an unknown version reads as
+ *  "too old" rather than silently passing a floor it was never checked against. */
+const verTuple = (v) => String(v || '').split('.').map((n) => parseInt(n, 10) || 0);
+function olderThan(a, b) {
+  const [x, y] = [verTuple(a), verTuple(b)];
+  for (let i = 0; i < 3; i += 1) {
+    if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0);
+  }
+  return false;
+}
+
 /**
  * What the screen renders. Returns `{ supported: false, reason }` rather than throwing for the
  * two "nothing you typed is wrong" cases, so a settings page can show a calm sentence instead
  * of an error where a status badge should be.
  */
-export async function channelStatus(bridgeUrl) {
+export async function channelStatus(conn) {
   try {
-    return { supported: true, ...(await call(bridgeUrl, '/channels')) };
+    return { supported: true, ...(await call(conn, '/channels')) };
   } catch (e) {
-    if (e.code === 'no-bridge' || e.code === 'unsupported') return { supported: false, reason: e.message, code: e.code };
+    if (e.code === 'no-bridge') return { supported: false, reason: e.message, code: e.code };
+    if (e.code === 'unsupported' || e.code === 'forbidden') {
+      // Name the version it IS, not only the one it needs. /health is unprivileged and carries
+      // the same number the Bridge card shows, so the sentence can be checked against reality
+      // instead of taken on faith. One request, only on a path that has already failed.
+      const running = await bridgeVersion(conn);
+      const stale = !running || olderThan(running, MIN_BRIDGE_VERSION);
+      const where = 'Settings → Agents → Bridge';
+      return {
+        supported: false,
+        code: e.code,
+        running,
+        required: MIN_BRIDGE_VERSION,
+        reason: stale
+          ? `${running ? `This bridge is v${running}, and channels` : 'Channels'} need v${MIN_BRIDGE_VERSION} or newer. Update it under ${where}.`
+          // Version is fine but it still refused: the bridge cannot see who is calling, which
+          // is what the token is for (typically a bridge on another machine).
+          : `The bridge refused this request. Paste its token under ${where} → Bridge token.`,
+      };
+    }
     throw e;
   }
 }
 
+/** The running bridge's version, or '' if it cannot be read. Never throws — the caller is
+ *  already on a failure path and a second failure there must not replace a useful sentence. */
+async function bridgeVersion(conn) {
+  try {
+    const res = await fetch(`${base(conn)}/health`);
+    if (!res.ok) return '';
+    return String((await res.json())?.version || '');
+  } catch {
+    return '';
+  }
+}
+
 /** Verify a BotFather token and start polling. Throws with a sentence the user can act on. */
-export function connectChannel(bridgeUrl, { token, agent, privacy, tier } = {}) {
-  return call(bridgeUrl, '/channels/connect', { method: 'POST', body: { token, agent, privacy, tier } });
+export function connectChannel(conn, { token, agent, privacy, tier } = {}) {
+  return call(conn, '/channels/connect', { method: 'POST', body: { token, agent, privacy, tier } });
 }
 
 /** A one-time enrollment code + the t.me link that redeems it in a single tap. */
-export function pairPhone(bridgeUrl) {
-  return call(bridgeUrl, '/channels/pair', { method: 'POST', body: {} });
+export function pairPhone(conn) {
+  return call(conn, '/channels/pair', { method: 'POST', body: {} });
 }
 
 /** Revoke one phone. It stops being able to drive anything on its very next message. */
-export function unpairPhone(bridgeUrl, actorId) {
-  return call(bridgeUrl, '/channels/unpair', { method: 'POST', body: { actorId } });
+export function unpairPhone(conn, actorId) {
+  return call(conn, '/channels/unpair', { method: 'POST', body: { actorId } });
 }
 
 /** Which agent answers, and how much of what you type is restored in the reply. */
-export function updateChannel(bridgeUrl, patch) {
-  return call(bridgeUrl, '/channels/settings', { method: 'POST', body: patch });
+export function updateChannel(conn, patch) {
+  return call(conn, '/channels/settings', { method: 'POST', body: patch });
 }
 
 /** Stop polling. `forget` also deletes the stored bot token and every pairing. */
-export function disconnectChannel(bridgeUrl, { forget = false } = {}) {
-  return call(bridgeUrl, '/channels/disconnect', { method: 'POST', body: { forget } });
+export function disconnectChannel(conn, { forget = false } = {}) {
+  return call(conn, '/channels/disconnect', { method: 'POST', body: { forget } });
 }
 
 /** "telegram:12345" → "12345", for display. The prefix is the platform, not part of the id. */

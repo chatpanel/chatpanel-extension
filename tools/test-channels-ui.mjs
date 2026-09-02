@@ -37,6 +37,106 @@ assert.doesNotMatch(client, /chrome\.storage|localStorage|sessionStorage/, 'the 
 // The Tesla rule in the direction that actually bites: a NEW panel meets an OLD bridge.
 assert.match(client, /res\.status === 404/, 'a bridge that predates channels must be told apart from a broken one');
 assert.match(client, /too old for channels/, 'and the message must name the fix');
+// "Too old" without a number sends the user to run an update that may already be current —
+// the bridge ships on its own version line and reaches this machine by two different routes.
+assert.match(client, /MIN_BRIDGE_VERSION = '\d+\.\d+\.\d+'/, 'the compatibility floor must be a stated version, not folklore');
+assert.match(client, /need v\$\{MIN_BRIDGE_VERSION\} or newer/, 'the sentence must name the version channels require');
+assert.match(client, /\/health/, 'and the version the bridge is actually on, so the claim can be checked');
+
+// ── the extension must stay recognisable to its own bridge ───────────────────────
+// The panel holds <all_urls>, so its fetches bypass CORS and Origin rides only on non-GET
+// methods: a status GET arrives anonymous no matter what headers we set. 0.11.0 shipped
+// GET /channels as a privileged route and the card could only ever say the bridge refused
+// it. The floor therefore has to be the release that de-privileged it, not the one that
+// added the route.
+assert.match(client, /MIN_BRIDGE_VERSION = '0\.11\.1'/,
+  'the floor is the first bridge on which channels actually work from the panel');
+assert.match(client, /Fetch spec attaches `Origin` only to requests whose method is not GET/,
+  'the reason a GET cannot be authenticated must stay written down, or it gets "fixed" again');
+assert.doesNotMatch(client, /const headers = \{ 'content-type': 'application\/json' \};/,
+  'a content-type on a bodyless GET buys nothing here — no preflight fires at all');
+assert.match(client, /if \(token\) headers\.authorization = `Bearer \$\{token\}`/,
+  'a hand-entered bridge token is the fallback for a bridge on another machine');
+assert.match(client, /e\.code === 'unsupported' \|\| e\.code === 'forbidden'/,
+  'a 403 from an old bridge is the same "update it" story as a 404, not a raw error');
+
+// ── every sentence must point at the tab the field is actually on ────────────────
+// The Bridge card lives under Agents. "Settings → API → Bridge" sent the user hunting.
+assert.doesNotMatch(client, /API → Bridge/, 'the Bridge card is not on the API tab');
+assert.match(client, /Settings → Agents → Bridge/, 'name the tab the field is really on');
+const agentsPanel = html.slice(html.indexOf('data-panel="agents"'), html.indexOf('data-panel="mcp"'));
+assert.ok(agentsPanel.includes('id="bridge-token"'),
+  'the token field must be on the Agents tab, which is what the message tells the user');
+
+// ── the token has somewhere to go, and visible instructions for finding it ───────
+assert.match(html, /id="bridge-token"/, 'the token needs a field, not a support thread');
+assert.match(html, /type="password"/, 'a credential field must not render in cleartext');
+assert.match(html, /cat ~\/\.chatpanel\/bridge-token/, 'say where the token actually is on disk');
+assert.match(html, /Get-Content/, 'and on Windows, where the path is different');
+assert.doesNotMatch(html.slice(html.indexOf('id="bridge-token"'), html.indexOf('id="bridge-status"')),
+  /<details/, 'the instructions must be on the page, not folded away behind a summary');
+assert.match(js, /settings\.bridgeToken = /, 'the field must persist what is typed into it');
+assert.match(js, /bridgeConn\(\)/, 'every channels call takes url+token together, not just the url');
+
+// ── the card that finds the problem must also offer the fix ─────────────────────
+// "This bridge is v0.11.0, update it under Settings → Agents → Bridge" is a correct
+// sentence and still leaves a non-technical user hunting on another tab. The button that
+// performs the update belongs on the screen that detected the need for it.
+assert.match(html, /id="ch-fix"/, 'the Channels card needs somewhere to put the fix');
+assert.match(js, /renderChannelsFix/, 'and something to put there');
+assert.match(js, /Update bridge now/, 'a self-updating bridge is one click, not a terminal');
+assert.match(js, /Re-check/, 'after installing by hand, the user must be able to retry in place');
+
+const upd = read('js/bridge-update.js');
+assert.match(upd, /export async function updateBridgeAndWait/, 'update+restart+wait is one capability');
+assert.match(upd, /export function bridgeInstallCommands/, 'one copy of the install commands, not one per screen');
+assert.match(upd, /dl\.chatpanel\.net\/bridge\/install\.sh/, 'the documented installer, not an invented one');
+// The swap succeeding but the restart being slow is not a failure — reporting it as one
+// sends the user to reinstall something that is already updated.
+assert.match(upd, /slow: true/, 'a slow restart must not be reported as a failed update');
+// Deliberately not gated on updateAvailable: that flag comes from a 6h cache that can be
+// stale or rate-limited, while the update itself re-checks with force.
+assert.doesNotMatch(js.slice(js.indexOf('renderChannelsFix'), js.indexOf('async function renderChannels()')),
+  /up\?\.updateAvailable &&\s*up\?\.canSelfUpdate/, 'do not hide the button behind a cached flag');
+assert.doesNotMatch(js, /for \(let i = 0; i < 8; i\+\+\) \{/, 'the poll loop must not be duplicated per card');
+
+// ── the pairing code has to cross to another device ─────────────────────────────
+// It is read on a laptop, it has to reach a phone, and it expires in ten minutes — retyping
+// it is the failure mode. So the link is drawn as a QR, locally: a code that enrols a phone
+// against this machine must not be posted to a third-party chart renderer, and the CSP would
+// block the script regardless.
+assert.match(html, /id="ch-pair-qr"/, 'the pairing output needs a QR, not only a link');
+assert.match(js, /renderPairQr/, 'and something to draw it');
+assert.match(js, /await import\('\.\/js\/qr\.js'\)/, 'drawn locally, and only once someone presses Pair');
+assert.doesNotMatch(js, /chart\.googleapis|qrserver|api\.qrcode/, 'a pairing code must not leave the machine to be rendered');
+assert.match(html, /id="ch-pair-link"/, 'the link stays — the phone may be the device you are reading on');
+// A drawing failure must not take the link with it.
+assert.match(js, /ch-qr-fail/, 'if the QR cannot be drawn, the link must still be usable');
+
+// ── a live code, and a screen that knows when it stops being live ───────────────
+// The phone talks to the bridge, not to this page, so nothing here learns that a code was
+// redeemed or expired. It showed a used QR under a "10 minutes" promise that never counted
+// down, while the list below said no phone was paired until someone reloaded.
+assert.match(js, /function watchPairing/, 'a live code needs a watcher');
+assert.match(js, /expires in \$\{mmss/, 'the ten minutes must actually count down');
+assert.match(js, /ch-pair-expired/, 'an expired code must say so');
+assert.match(js, /ch-pair-live'\)\?\.classList\.add\('hidden'\)/, 'and the dead QR must come off the screen');
+assert.match(js, /\$\('ch-pair-out'\)\.classList\.add\('hidden'\)/, 'a redeemed code must stop being displayed too');
+assert.match(js, /toast\(`Paired \$\{fresh\.label \|\| fresh\.actorId\}`\)/, 'and the screen must say which phone it enrolled');
+assert.match(js, /function stopPairWatch/, 'the watcher must be stoppable');
+for (const site of ['disconnectChannel', 'renderChannelsFix']) {
+  assert.ok(js.includes('stopPairWatch()'), `${site} path must be able to stop it`);
+}
+assert.match(html, /id="ch-pair-countdown"/, 'the countdown needs somewhere to render');
+
+// The label is remote text arriving in the owner's screen; it renders escaped, next to the id
+// that authorization is actually keyed on (two phones can share a first name).
+assert.match(js, /escapeHtml\(p\.label\)/, 'a display name from Telegram must be escaped');
+assert.match(js, /escapeHtml\(p\.actorId\)/, 'and the id it is keyed on must still be shown');
+
+const store = read('js/store.js');
+assert.match(store, /const SECRET_FIELDS = \['bridgeToken'\]/,
+  'the bridge token grants every privileged route — seal it like an API key');
 assert.match(client, /isn’t running/, 'an absent bridge is not a typo the user can fix in this form');
 assert.match(js, /if \(!st\.supported\)/, 'the screen must hide its controls rather than let them fail on click');
 
