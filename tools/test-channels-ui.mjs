@@ -134,6 +134,23 @@ assert.match(html, /id="ch-pair-countdown"/, 'the countdown needs somewhere to r
 assert.match(js, /escapeHtml\(p\.label\)/, 'a display name from Telegram must be escaped');
 assert.match(js, /escapeHtml\(p\.actorId\)/, 'and the id it is keyed on must still be shown');
 
+// ── a phone should reach what the user configured, not a subset ─────────────────
+// The bridge runs CLI agents; the user's OpenAI/Anthropic/local endpoints live in the
+// gateway. Listing only the first made the feature look broken for anyone who had set up
+// providers rather than CLIs.
+assert.match(client, /export async function channelTargets/, 'one place that answers "what can answer"');
+assert.match(client, /\/v1\/models/, 'the gateway knows its own destinations — ask it');
+assert.match(client, /AbortSignal\.timeout/, 'a gateway that is not running must not hang the settings page');
+assert.match(client, /return \{ agents, models: \[\], gateway: false \}/,
+  'no gateway is the NORMAL case for a bridge-only install, not an error');
+assert.match(client, /!seen\.has\(m\.id\)/,
+  'an agent the gateway also exposes must not appear twice under two spellings');
+assert.match(js, /group\('Agents — on this machine', agents\)/, 'the two kinds fail differently — group them');
+assert.match(js, /group\('Models — via the gateway', models\)/);
+assert.match(js, /\(unavailable\)/,
+  'a configured target that is currently offline must still show as the selection');
+assert.match(js, /kind === 'model' \? \{ model: id \} : \{ agent: id \}/, 'one choice, one field');
+
 const store = read('js/store.js');
 assert.match(store, /const SECRET_FIELDS = \['bridgeToken'\]/,
   'the bridge token grants every privileged route — seal it like an API key');

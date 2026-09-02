@@ -140,6 +140,42 @@ async function bridgeVersion(conn) {
   }
 }
 
+/**
+ * Every target a channel can answer from: the CLI agents this bridge runs, plus — when a
+ * gateway is configured — the destinations it routes to (API providers, and the same agents
+ * through its own bridge backend).
+ *
+ * Two sources rather than one because they are two different machines' worth of truth: the
+ * bridge knows what is installed here, the gateway knows what the user configured there. A
+ * missing gateway is not an error — it is the normal case for someone who has only installed
+ * the bridge, and the picker simply shows agents.
+ */
+export async function channelTargets({ bridgeAgents = [], gatewayUrl = '' } = {}) {
+  const agents = bridgeAgents
+    .filter((a) => a.available)
+    .map((a) => ({ kind: 'agent', id: a.id, label: a.label || a.id }));
+  if (!gatewayUrl) return { agents, models: [], gateway: false };
+  try {
+    // The gateway's /v1 data plane is open to local callers by design, so there is no token
+    // to hold here. Short timeout: a gateway that is not running must cost the settings page
+    // a moment, not a spinner.
+    const res = await fetch(`${String(gatewayUrl).replace(/\/+$/, '')}/v1/models`, {
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!res.ok) return { agents, models: [], gateway: false };
+    const body = await res.json().catch(() => ({}));
+    const seen = new Set(agents.map((a) => a.id));
+    const models = (body?.data || [])
+      // An agent the gateway also exposes is already in the list under its own name; showing
+      // it twice makes the user choose between two spellings of one thing.
+      .filter((m) => m?.id && !seen.has(m.id))
+      .map((m) => ({ kind: 'model', id: m.id, label: m.id, owner: m.owned_by || '' }));
+    return { agents, models, gateway: true };
+  } catch {
+    return { agents, models: [], gateway: false };
+  }
+}
+
 /** Verify a BotFather token and start polling. Throws with a sentence the user can act on. */
 export function connectChannel(conn, { token, agent, privacy, tier } = {}) {
   return call(conn, '/channels/connect', { method: 'POST', body: { token, agent, privacy, tier } });

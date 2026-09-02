@@ -6068,13 +6068,34 @@ async function renderChannels() {
 
   // Which agent answers. Only agents this bridge actually has — offering one that is not
   // installed is a setting that silently fails on the phone, where nobody can see why.
+  // Two sources, one picker: the agents this bridge runs, and — if a gateway is configured —
+  // every destination it routes to, which is where the user's API providers actually live.
+  // Grouped rather than merged, because "a CLI on this machine" and "an API key in the
+  // gateway" fail in different ways and the user should be able to tell which they picked.
   const agentSel = $('ch-agent');
-  const available = (bridgeState?.agents || []).filter((a) => a.available);
+  const { channelTargets } = await channelsMod();
+  const { agents, models } = await channelTargets({
+    bridgeAgents: bridgeState?.agents || [],
+    gatewayUrl: settings.gatewayUrl || '',
+  });
   agentSel.innerHTML = '';
-  for (const a of (available.length ? available : [{ id: st.settings.agent, label: st.settings.agent }])) {
-    agentSel.append(new Option(a.label || a.id, a.id));
+  const group = (label, items) => {
+    if (!items.length) return;
+    const g = document.createElement('optgroup');
+    g.label = label;
+    for (const it of items) g.append(new Option(it.label, `${it.kind}:${it.id}`));
+    agentSel.append(g);
+  };
+  group('Agents — on this machine', agents);
+  group('Models — via the gateway', models);
+  const current = st.settings.model ? `model:${st.settings.model}` : `agent:${st.settings.agent}`;
+  // A target that is configured but not currently offered (the gateway is down, an agent was
+  // uninstalled) must still show as the selection — silently switching what answers is worse
+  // than showing something unavailable.
+  if (current && ![...agentSel.options].some((o) => o.value === current)) {
+    agentSel.append(new Option(`${st.settings.model || st.settings.agent} (unavailable)`, current));
   }
-  agentSel.value = st.settings.agent;
+  agentSel.value = current;
   $('ch-privacy').value = st.settings.privacy;
 
   chLastPaired = st.paired || [];
@@ -6281,7 +6302,13 @@ function wireChannels() {
       renderChannels();
     } catch (e) { chError('ch-error-live', e.message); }
   };
-  $('ch-agent').onchange = () => push({ agent: $('ch-agent').value });
+  $('ch-agent').onchange = () => {
+    const [kind, ...rest] = String($('ch-agent').value).split(':');
+    const id = rest.join(':');
+    // One choice: the service clears whichever field was not sent, so a stale target cannot
+    // win over the one just picked.
+    push(kind === 'model' ? { model: id } : { agent: id });
+  };
   $('ch-privacy').onchange = () => push({ privacy: $('ch-privacy').value });
 
   $('ch-disconnect').onclick = async () => {
