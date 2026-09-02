@@ -33,9 +33,11 @@ export class RouterError extends Error {
 }
 
 /** Where a request may go. Ordered: each level permits everything below it. */
-export const REACH = Object.freeze(['device', 'trusted', 'any']);
-
-const reachRank = (r) => Math.max(0, REACH.indexOf(r));
+// The reach vocabulary lives in reach.js so a zero-dependency consumer (the bridge) can take
+// the ladder without taking the router. Re-exported here because every existing caller reaches
+// for it through the router — that import must keep working.
+export { REACH, reachRank } from './reach.js';
+import { REACH, reachRank } from './reach.js';
 
 /**
  * Declare a model a request can be routed to.

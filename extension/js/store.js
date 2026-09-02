@@ -850,6 +850,16 @@ export async function clearAllConversations() {
 // --------------------------------------------------------------------------
 const BACKUP_TYPE = 'chatpanel-backup';
 
+// The stores in js/backup-payload.js are handed in, never imported here (first paint on one
+// side, the service worker's ban on dynamic import() on the other). Missing them is a wiring
+// mistake, so say so instead of writing a backup that silently omits the user's memory: a
+// backup you discover is incomplete at restore time is worse than one that refused to run.
+function requireBackupExtras(extras, fn) {
+  if (!extras || typeof extras.exportMemories !== 'function') {
+    throw new Error(`${fn}() needs backupExtras — import js/backup-payload.js and pass it.`);
+  }
+}
+
 // Bundle every conversation (full message bodies) into a single serializable
 // object suitable for download.
 export async function exportConversations() {
@@ -905,31 +915,28 @@ export async function importConversations(data, { mode = 'merge' } = {}) {
 // decrypted on export and re-encrypted under the destination's own key on
 // import). All client-side; nothing is uploaded. NOTE: this file contains
 // secrets (API keys, MCP auth, OAuth tokens) — treat it like a password.
-export async function exportAllData() {
+export async function exportAllData(extras) {
+  requireBackupExtras(extras, 'exportAllData');
   const conv = await exportConversations();
   const meetings = await exportMeetings();
   const notes = await exportNotes(); // v5 — user notes as a third first-class source
   const notesConfig = await exportNotesConfig(); // v6 — Notes UI + co-writer config (localStorage)
   // v7 — memory. Small, but the most expensive thing to lose: it is what the user TAUGHT
   // ChatPanel, and unlike a chat or a note there is no way to reconstruct it from anywhere else.
+  // v8 — widgets, jobs and the vault, which arrived after v7 and a restore would otherwise
+  // silently drop.
   //
-  // Imported HERE, not at module top: store.js is on the side panel's first-paint graph, and a
-  // static import dragged store-memory + the shared memory contract (37.8 KB) onto every cold
-  // start to serve a function that only runs when someone takes a backup.
-  const { exportMemories } = await import('./store-memory.js');
-  const memories = await exportMemories();
+  // All four arrive through `extras` rather than a static import: store.js is on the side
+  // panel's first-paint graph and they are ~137 KB it must not pay for a button nobody has
+  // pressed. They are not `await import()`ed here either — this function runs in the service
+  // worker on the auto-backup alarm, where that throws. See js/backup-payload.js.
+  const memories = await extras.exportMemories();
   const settings = await getSettings();
   const oauthTokens = await exportOAuthTokens(); // endpoint sign-ins (v4) — see SECURITY note above
-  // v8 — the three stores that arrived after v7 and would otherwise be silently dropped by a
-  // restore. Dynamic for the same first-paint reason as the memory import above: none of
-  // this belongs on the side panel's cold start to serve a button nobody has pressed yet.
-  const [{ exportWidgets }, { exportJobs }, { exportVault }] = await Promise.all([
-    import('./widgets-store.js'), import('./jobs.js'), import('./vault.js'),
-  ]);
   const [widgets, jobs, vault] = await Promise.all([
-    exportWidgets().catch(() => null),
-    exportJobs().catch(() => null),
-    exportVault().catch(() => null),
+    extras.exportWidgets().catch(() => null),
+    extras.exportJobs().catch(() => null),
+    extras.exportVault().catch(() => null),
   ]);
   return {
     type: BACKUP_TYPE,
@@ -957,15 +964,15 @@ export async function exportAllData() {
 // Drive sync can opt out of machine-local configuration and OAuth credentials so
 // a work device cannot silently reconfigure a personal device (or vice versa).
 export async function importAllData(data, {
-  mode = 'merge', includeSettings = true, includeOAuthTokens = includeSettings,
+  mode = 'merge', includeSettings = true, includeOAuthTokens = includeSettings, extras,
 } = {}) {
+  requireBackupExtras(extras, 'importAllData');
   const conversations = await importConversations(data, { mode }); // validates the file
   const meetings = await importMeetings(data.meetings, { mode });
   const notes = await importNotes(data.notes, { mode }); // v5+; older backups have no notes
   // v7+. Merge reconciles rather than appends, so restoring the same backup twice is a no-op
-  // instead of doubling every memory. Dynamic for the same first-paint reason as the export.
-  const { importMemories } = await import('./store-memory.js');
-  const memories = await importMemories(data.memories, { mode });
+  // instead of doubling every memory.
+  const memories = await extras.importMemories(data.memories, { mode });
   // v6+: Notes UI + co-writer config (localStorage). Older backups have none.
   if (includeSettings && data.notesConfig && typeof data.notesConfig === 'object') {
     await importNotesConfig(data.notesConfig, { mode });
@@ -989,18 +996,9 @@ export async function importAllData(data, {
   let widgets = 0;
   let jobs = 0;
   let vault = false;
-  if (data.widgets) {
-    const { importWidgets } = await import('./widgets-store.js');
-    widgets = await importWidgets(data.widgets, { mode }).catch(() => 0);
-  }
-  if (includeSettings && data.jobs) {
-    const { importJobs } = await import('./jobs.js');
-    jobs = await importJobs(data.jobs, { mode }).catch(() => 0);
-  }
-  if (includeOAuthTokens && data.vault) {
-    const { importVault } = await import('./vault.js');
-    vault = await importVault(data.vault, { mode }).catch(() => false);
-  }
+  if (data.widgets) widgets = await extras.importWidgets(data.widgets, { mode }).catch(() => 0);
+  if (includeSettings && data.jobs) jobs = await extras.importJobs(data.jobs, { mode }).catch(() => 0);
+  if (includeOAuthTokens && data.vault) vault = await extras.importVault(data.vault, { mode }).catch(() => false);
   return { conversations, meetings, notes, memories, settings, widgets, jobs, vault };
 }
 

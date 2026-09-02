@@ -14,6 +14,20 @@ import { persistMeeting, getLatestSessionRecord, markMeetingEnded, getMeetingInd
 import { captureToInbox } from './js/store-notes.js';
 import { runScheduledBackupIfDue, syncBackupAlarm, BACKUP_ALARM } from './js/auto-backup.js';
 import { getSettings } from './js/store.js';
+// STATIC, all three, and not by preference: this is a service worker, and `import()` inside
+// one throws
+//   TypeError: import() is disallowed on ServiceWorkerGlobalScope by the HTML specification
+// The scheduler and warm sync were both lazy here for cold-start reasons that were real but
+// unattainable — a module a worker can only reach through import() is a module it cannot
+// reach at all, so the alarms fired into a rejected promise and nothing ran. The cost is
+// paid at worker startup instead; the side panel's first paint is untouched, because none
+// of this is on its graph. Anything added here must be static for the same reason.
+import * as jobs from './js/jobs.js';
+import { syncHistoryToGateway, syncMemoryWithGateway } from './js/warm-sync.js';
+import * as memoryStore from './js/store-memory.js';
+// The backup's late stores. auto-backup.js takes them as an argument rather than importing
+// them, because it is also on the settings page's first paint — see js/backup-payload.js.
+import { backupExtras } from './js/backup-payload.js';
 
 const REVALIDATE_ALARM = 'chatpanel-revalidate-license';
 const WARM_SYNC_ALARM = 'chatpanel-warm-sync';   // coalesced background push of history → local gateway
@@ -237,7 +251,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
   // Re-arm the daily auto-backup alarm if the user had it enabled (alarms can be
   // dropped on update). syncBackupAlarm() is a no-op when the feature is off.
-  syncBackupAlarm().then(() => runScheduledBackupIfDue()).catch(() => {});
+  syncBackupAlarm().then(() => runScheduledBackupIfDue({ extras: backupExtras })).catch(() => {});
 });
 
 // --------------------------------------------------------------------------
@@ -258,12 +272,11 @@ async function runWarmSyncIfEnabled() {
   try { ws = (await getSettings())?.ui?.warmSearch; } catch { return; }
   if (!ws?.enabled || !ws.url) return; // gateway off — nothing to do
   try {
-    const { syncHistoryToGateway, syncMemoryWithGateway } = await import('./js/warm-sync.js');
     await syncHistoryToGateway(ws.url);
     // Memory rides the same pass, but it is a two-way merge, not a push: an agent that called
     // `remember` over MCP wrote to the gateway, and that has to come home or the panel does
     // not know what the terminal was told.
-    await syncMemoryWithGateway(ws.url);
+    await syncMemoryWithGateway(ws.url, { store: memoryStore });
   } catch (e) { console.debug('[chatpanel] bg warm sync', e?.message || e); }
 }
 
@@ -280,7 +293,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // fails open, so calling it liberally is safe.
 chrome.runtime.onStartup.addListener(() => {
   revalidate().catch(() => {});
-  syncBackupAlarm().then(() => runScheduledBackupIfDue()).catch(() => {});
+  syncBackupAlarm().then(() => runScheduledBackupIfDue({ extras: backupExtras })).catch(() => {});
   runWarmSyncIfEnabled().catch(() => {}); // catch up anything written while the browser was closed
   // A laptop that was shut at 8pm missed this morning's brief. Run what the job's own
   // onMissed policy says to run, and re-arm — an alarm does not survive a browser restart.
@@ -289,7 +302,7 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === REVALIDATE_ALARM) revalidate().catch(() => {});
   else if (a.name === BACKUP_ALARM) {
-    runScheduledBackupIfDue().finally(() => syncBackupAlarm()).catch(() => {});
+    runScheduledBackupIfDue({ extras: backupExtras }).finally(() => syncBackupAlarm()).catch(() => {});
   }
   else if (a.name === MEETING_HB_ALARM) meetingHeartbeat().catch(() => {});
   else if (a.name === WARM_SYNC_ALARM) runWarmSyncIfEnabled().catch(() => {});
@@ -305,8 +318,10 @@ chrome.alarms.onAlarm.addListener((a) => {
 // settings, a licence, redaction and often a tool loop, none of which belong in a worker
 // that can be killed mid-sentence.
 //
-// Everything is loaded dynamically: a browser where nobody has created a job must not pay
-// for the scheduler on every service-worker cold start.
+// The scheduler is imported statically (see the note at the top of this file): a worker
+// cannot lazily reach a module, so a browser where nobody has created a job pays the
+// scheduler's parse on cold start. jobs.js is self-contained and small; a job that never
+// fires is not.
 // --------------------------------------------------------------------------
 const jobsPort = {
   schedule(atMs) {
@@ -318,7 +333,6 @@ const jobsPort = {
 };
 
 async function runDueJobs() {
-  const jobs = await import('./js/jobs.js');
   const due = await jobs.dueNow();
   for (const entry of due) {
     if (entry.skipped) {
@@ -382,7 +396,7 @@ chrome.notifications?.onClicked?.addListener?.((id) => {
 // Jobs are created in the panel; the worker owns the alarm, so it re-arms when they change.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local' || !changes['chatpanel:jobs']) return;
-  import('./js/jobs.js').then((m) => m.armWake(jobsPort)).catch(() => {});
+  jobs.armWake(jobsPort).catch(() => {});
 });
 
 // Open the panel and hand it the click target. The panel listens for

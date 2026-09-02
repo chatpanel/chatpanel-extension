@@ -1200,3 +1200,24 @@ input.locked, textarea.locked, select.locked, button.locked, .btn.locked { opaci
 
 /* Section break inside a settings card. */
 hr.sep { border: none; border-top: 1px solid var(--border); margin: 16px 0 14px; }
+
+/* Channels — message your own agent from your phone.
+   Two steps and a link: everything a non-technical person has to do lives on this screen, and
+   the only thing they type is a token they pasted from Telegram. */
+.ch-steps { margin: 14px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 14px; font-size: 13px; }
+.ch-steps li { line-height: 1.5; }
+.ch-step-act { display: flex; align-items: center; gap: 8px; margin-top: 7px; flex-wrap: wrap; }
+.ch-step-act input { flex: 1 1 260px; min-width: 0; }
+.ch-error { margin: 12px 0 0; font-size: 12.5px; color: var(--danger); }
+.ch-bot { display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; font-size: 14px; font-weight: 600; }
+.ch-pair { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0 0; }
+.ch-pair-out { margin: 12px 0 0; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent-weak); }
+.ch-pair-out p { margin: 0 0 6px; }
+.ch-link-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ch-link-row code { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; font-size: 12.5px; }
+.ch-h3 { margin: 20px 0 8px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.ch-row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px; margin-bottom: 6px; }
+.ch-who { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.ch-row .muted { flex: 1; min-width: 0; }
+.ch-settings { margin-top: 18px; }
+.ch-danger { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }

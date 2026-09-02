@@ -8,6 +8,10 @@
 
 import { loadHistorySources } from './history-rag.js';
 import { isLoopbackHost } from './net.js';
+// Static: warm sync runs on an alarm in the service worker, where `import()` throws. It is
+// off every first-paint graph, so there is nothing to keep it off. `store` stays injectable
+// for the tests.
+import * as memoryStore from './store-memory.js';
 
 // Decrypted history may ONLY be POSTed to a loopback gateway. This is the hard
 // privacy boundary of warm sync: the corpus is plaintext in flight, so a
@@ -150,9 +154,7 @@ export async function syncMemoryWithGateway(gatewayUrl, {
   if (!isLoopbackGateway(gatewayUrl)) {
     return { ok: false, skipped: true, error: 'gateway url is not loopback — refusing to send memory off-box' };
   }
-  // Imported at the call site: warm sync runs on an alarm in the service worker, and the
-  // memory store must not sit on any module's static graph (see store.js).
-  const mem = store || await import('./store-memory.js');
+  const mem = store || memoryStore;
   try {
     const mine = await mem.getMemories();
     const res = await fetchImpl(`${String(gatewayUrl).replace(/\/$/, '')}/v1/memory/sync`, {

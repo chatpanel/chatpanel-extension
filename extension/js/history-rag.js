@@ -13,6 +13,10 @@ import {
   searchHistorySources,
 } from './history-rag-core.js';
 import { rankHistorySources } from './search-engine.js';
+// Static: history-rag is reachable from the service worker (warm sync), where `import()`
+// throws — and a silently-skipped manifest read there would sync sources the user had
+// switched off. It is on no first-paint graph, so there is nothing to keep it off.
+import { declarePlugins, pluginManifest } from './plugins.js';
 import { searchGateway, fuseHistoryResults, capHotSources } from './warm-query.js';
 import { registerSource, loadFromSources, listSources } from './source-registry.js';
 
@@ -342,14 +346,12 @@ registerSource({ kind: 'note', label: 'Notes', reads: ['notes'], load: loadNoteS
 // Declared so the Plugins page lists them beside everything else. The id is namespaced
 // because `note` as a bare id would collide with any future plugin of that name, and a
 // collision here silently disables the wrong thing.
-import('./plugins.js')
-  .then(({ declarePlugins }) => declarePlugins(listSources().map((sc) => ({
-    id: `source:${sc.kind}`,
-    kind: 'source',
-    label: sc.label,
-    description: `Search your ${sc.label.toLowerCase()} when answering.`,
-  }))))
-  .catch(() => {});
+declarePlugins(listSources().map((sc) => ({
+  id: `source:${sc.kind}`,
+  kind: 'source',
+  label: sc.label,
+  description: `Search your ${sc.label.toLowerCase()} when answering.`,
+}))).catch(() => {});
 
 export async function loadHistorySources({ includeChats = true, includeMeetings = false, includeNotes = true, include } = {}) {
   const cacheable = wireSourceCache();
@@ -357,12 +359,11 @@ export async function loadHistorySources({ includeChats = true, includeMeetings 
   if (cacheable && _srcCache.at && Date.now() - _srcCache.at > SRC_CACHE_TTL_MS) releaseSrcCache();
   // One loop over the registry, in registration order, so chats/meetings/notes come back
   // exactly as before and a fourth source needs no edit here.
-  // The global switch from the Plugins page. Imported here rather than passed down through
+  // The global switch from the Plugins page. Read here rather than passed down through
   // every caller: a source being switched off is a fact about the installation, not about
   // this particular search, and threading it through six signatures would say otherwise.
   let admit = null;
   try {
-    const { pluginManifest } = await import('./plugins.js');
     const manifest = await pluginManifest();
     admit = (src) => manifest.isEnabled(`source:${src.kind}`);
   } catch { /* manifest unavailable — every source stays available, which is the safe default */ }

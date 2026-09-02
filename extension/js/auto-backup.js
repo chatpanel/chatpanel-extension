@@ -218,11 +218,17 @@ export async function coalesceBackupRun(start) {
 // Run one backup. `force` is the explicit "Back up now" path. The scheduled path
 // is admitted only once per local calendar day by scheduledBackupDue(). Returns a
 // small status object and never throws.
+//
+// `options.extras` is the backup's late stores (js/backup-payload.js), passed in rather than
+// imported: this module is on the settings page's first paint AND on the service worker's
+// graph, and those two pull in opposite directions — the page must not load ~137 KB it may
+// never use, and the worker cannot `import()` at all. Each caller supplies it the way its
+// own context allows.
 export function runAutoBackup(options = {}) {
   return coalesceBackupRun(() => runAutoBackupOnce(options));
 }
 
-async function runAutoBackupOnce({ force = false, now = new Date() } = {}) {
+async function runAutoBackupOnce({ force = false, now = new Date(), extras } = {}) {
   try {
     const license = await getLicense();
     if (!can(license, 'autoBackup')) {
@@ -237,7 +243,7 @@ async function runAutoBackupOnce({ force = false, now = new Date() } = {}) {
     if (!force && !scheduledBackupDue(state, now)) return { ok: true, skipped: true, reason: 'not-due' };
 
     // Export + stable content hash.
-    const data = await exportAllData();
+    const data = await exportAllData(extras);
     if (!data.count && !data.meetingsCount && !data.notesCount) return { ok: false, reason: 'empty' };
     const hash = await sha256Hex(stableBackupJson(data));
 
@@ -296,10 +302,10 @@ async function runAutoBackupOnce({ force = false, now = new Date() } = {}) {
   }
 }
 
-export async function runScheduledBackupIfDue({ now = new Date() } = {}) {
+export async function runScheduledBackupIfDue({ now = new Date(), extras } = {}) {
   const state = await getBackupState();
   if (!scheduledBackupDue(state, now)) return { ok: true, skipped: true, reason: 'not-due' };
-  return runAutoBackup({ force: false, now });
+  return runAutoBackup({ force: false, now, extras });
 }
 
 // Next local occurrence of `hour`:00 (0–23). A one-shot absolute alarm is

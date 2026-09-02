@@ -123,6 +123,7 @@ async function init() {
   renderLicense();
   wireGateway();
   renderGateway();
+  wireChannels(); // rendering is lazy (on tab open); binding is not, so no button is ever dead
   wireUsage();
   refreshBridgeState();
   loadMcpRegistry({ reset: true });
@@ -146,6 +147,7 @@ function wireTabs() {
     // actually shown, so a user who never opens Activity never pays for it.
     if (name === 'activity') { renderObservability(); renderUsage(); renderActivity(); }
     if (name === 'plugins') { renderPlugins(); loadRoutingForm(); renderRouting(); renderRoutingModels(); }
+    if (name === 'channels') renderChannels();
   };
   const exists = (name) => !!document.querySelector(`.tab[data-tab="${name}"]`);
 
@@ -5580,10 +5582,14 @@ function wireBackup() {
   } = {}) => {
     if (isEncryptedBackup(data)) data = await decryptBackup(data, password || $('backup-password').value);
     const mode = modeOverride || ($('backup-replace').checked ? 'replace' : 'merge');
+    // At the call site, not the module top: the four late stores are ~137 KB that a
+    // settings page which never restores a backup should not load. See js/backup-payload.js.
+    const { backupExtras } = await import('./js/backup-payload.js');
     const { conversations, meetings, notes, settings: settingsRestored } = await importAllData(data, {
       mode,
       includeSettings: !historyOnly,
       includeOAuthTokens: !historyOnly,
+      extras: backupExtras,
     });
     const parts = [`${conversations.imported} conversation${conversations.imported === 1 ? '' : 's'}`];
     if (meetings.imported) parts.push(`${meetings.imported} meeting${meetings.imported === 1 ? '' : 's'}`);
@@ -5856,7 +5862,10 @@ function wireAutoBackup(restoreBackupData) {
     await syncPass();
     if (!pw?.value) return setStatus(status, '✕ Enter a backup encryption password first.', 'err');
     await saveDriveConfig();
-    const res = await runAutoBackup({ force: true });
+    // At the call site (see js/backup-payload.js): the settings page must not carry the
+    // backup's late stores on first paint just because it can take a backup.
+    const { backupExtras } = await import('./js/backup-payload.js');
+    const res = await runAutoBackup({ force: true, extras: backupExtras });
     if (res.ok) {
       const parts = [`${res.count} conversation${res.count === 1 ? '' : 's'}`];
       if (res.meetingsCount) parts.push(`${res.meetingsCount} meeting${res.meetingsCount === 1 ? '' : 's'}`);
@@ -5877,6 +5886,208 @@ function setStatus(el, text, cls = '') {
   el.classList.add('status');
   el.classList.remove('ok', 'err');
   if (cls) el.classList.add(cls);
+}
+
+// --------------------------------------------------------------------------
+// Channels — message your own agent from your phone.
+//
+// This screen is a REMOTE CONTROL for the bridge, which is where the adapter actually lives
+// (the loop has to run while the browser is closed, and an MV3 service worker is suspended
+// within seconds). Everything here is one call to js/channels.js, loaded on demand: someone who
+// never opens this tab never pays for it.
+//
+// The bot token is typed here and immediately forgotten here. It goes to the bridge, which
+// verifies it with Telegram and writes it 0600 — it is never put in extension storage and never
+// comes back from /channels, so this page cannot leak what it does not keep.
+// --------------------------------------------------------------------------
+let channelsApi = null;
+const channelsMod = () => (channelsApi ||= import('./js/channels.js'));
+let channelsBusy = false;
+
+function chError(id, msg) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = msg || '';
+  el.classList.toggle('hidden', !msg);
+}
+
+async function renderChannels() {
+  const badge = $('ch-badge');
+  if (!badge) return;
+  const { channelStatus } = await channelsMod();
+  let st;
+  try {
+    st = await channelStatus(settings.bridgeUrl);
+  } catch (e) {
+    st = { supported: false, reason: e.message };
+  }
+
+  const setup = $('ch-setup');
+  const live = $('ch-live');
+  const unsupported = $('ch-unsupported');
+
+  // Nothing on this screen is fixable by typing when the bridge is absent or too old. Say the
+  // one sentence that IS the fix, and hide the controls rather than letting them fail on click.
+  if (!st.supported) {
+    badge.textContent = 'unavailable';
+    badge.className = 'pv-badge warn';
+    unsupported.textContent = st.reason;
+    unsupported.classList.remove('hidden');
+    setup.classList.add('hidden');
+    live.classList.add('hidden');
+    return;
+  }
+  unsupported.classList.add('hidden');
+
+  if (!st.configured) {
+    badge.textContent = 'not connected';
+    badge.className = 'pv-badge';
+    setup.classList.remove('hidden');
+    live.classList.add('hidden');
+    return;
+  }
+
+  badge.textContent = st.running ? 'connected' : 'stopped';
+  badge.className = `pv-badge ${st.running ? 'on' : 'warn'}`;
+  setup.classList.add('hidden');
+  live.classList.remove('hidden');
+
+  $('ch-bot-name').textContent = st.bot?.username ? `@${st.bot.username}` : 'your bot';
+  const run = $('ch-run');
+  run.textContent = st.running ? 'polling' : (st.error || 'stopped');
+  run.className = `pv-badge ${st.running ? 'on' : 'warn'}`;
+
+  // Which agent answers. Only agents this bridge actually has — offering one that is not
+  // installed is a setting that silently fails on the phone, where nobody can see why.
+  const agentSel = $('ch-agent');
+  const available = (bridgeState?.agents || []).filter((a) => a.available);
+  agentSel.innerHTML = '';
+  for (const a of (available.length ? available : [{ id: st.settings.agent, label: st.settings.agent }])) {
+    agentSel.append(new Option(a.label || a.id, a.id));
+  }
+  agentSel.value = st.settings.agent;
+  $('ch-privacy').value = st.settings.privacy;
+
+  renderPairedPhones(st.paired || []);
+}
+
+function renderPairedPhones(paired) {
+  const root = $('ch-paired');
+  root.textContent = '';
+  if (!paired.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted tiny';
+    empty.textContent = 'No phone is paired yet. Until one is, the bot refuses every message it receives.';
+    root.append(empty);
+    return;
+  }
+  for (const p of paired) {
+    const row = document.createElement('div');
+    row.className = 'ch-row';
+    const who = document.createElement('span');
+    who.className = 'ch-who';
+    who.innerHTML = `${icon('who')} <code>${escapeHtml(p.actorId)}</code>`;
+    const reach = document.createElement('span');
+    reach.className = 'muted tiny';
+    // Say what the tier MEANS. "trusted" is a word; "can read, cannot write or browse" is a
+    // permission the person can actually consent to.
+    reach.textContent = p.reach === 'any'
+      ? 'full access — reads, writes and shell'
+      : p.reach === 'device' ? 'conversation only — no files'
+        : 'can read your files · cannot write, run commands or browse';
+    const off = document.createElement('button');
+    off.className = 'btn sm';
+    off.textContent = 'Unpair';
+    off.onclick = async () => {
+      const { confirmDelete } = await import('./js/confirm-modal.js');
+      if (!(await confirmDelete({
+        title: 'Unpair this phone?',
+        body: 'It stops being able to drive anything on its very next message. You can pair it again with a new code.',
+      }))) return;
+      const { unpairPhone } = await channelsMod();
+      try { await unpairPhone(settings.bridgeUrl, p.actorId); toast('Unpaired'); } catch (e) { toast(e.message, 4000); }
+      renderChannels();
+    };
+    row.append(who, reach, off);
+    root.append(row);
+  }
+}
+
+function wireChannels() {
+  const connect = $('ch-connect');
+  if (!connect) return; // older markup — nothing to wire
+
+  connect.onclick = async () => {
+    const input = $('ch-token');
+    const token = (input.value || '').trim();
+    if (!token) return chError('ch-error', 'Paste the token @BotFather gave you.');
+    if (channelsBusy) return;
+    channelsBusy = true;
+    connect.disabled = true;
+    connect.textContent = 'Checking with Telegram…';
+    chError('ch-error', '');
+    try {
+      const { connectChannel } = await channelsMod();
+      await connectChannel(settings.bridgeUrl, { token });
+      // Typed once, kept nowhere: the field is cleared the moment the bridge has it.
+      input.value = '';
+      toast('Connected');
+      await renderChannels();
+      $('ch-pair')?.click(); // the next thing they need is a code — don't make them find it
+    } catch (e) {
+      chError('ch-error', e.message);
+    } finally {
+      channelsBusy = false;
+      connect.disabled = false;
+      connect.textContent = 'Connect';
+    }
+  };
+
+  $('ch-pair').onclick = async () => {
+    chError('ch-error-live', '');
+    try {
+      const { pairPhone } = await channelsMod();
+      const { code, link } = await pairPhone(settings.bridgeUrl);
+      $('ch-pair-link').textContent = link;
+      $('ch-pair-code').textContent = `/pair ${code}`;
+      $('ch-pair-out').classList.remove('hidden');
+    } catch (e) {
+      chError('ch-error-live', e.message);
+    }
+  };
+
+  $('ch-pair-copy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText($('ch-pair-link').textContent || '');
+      toast('Link copied — open it on your phone');
+    } catch { toast('Copy failed — select the link and copy it'); }
+  };
+
+  const push = async (patch) => {
+    try {
+      const { updateChannel } = await channelsMod();
+      await updateChannel(settings.bridgeUrl, patch);
+      toast('Saved');
+      renderChannels();
+    } catch (e) { chError('ch-error-live', e.message); }
+  };
+  $('ch-agent').onchange = () => push({ agent: $('ch-agent').value });
+  $('ch-privacy').onchange = () => push({ privacy: $('ch-privacy').value });
+
+  $('ch-disconnect').onclick = async () => {
+    const { confirmDelete } = await import('./js/confirm-modal.js');
+    if (!(await confirmDelete({
+      title: 'Disconnect Telegram?',
+      body: 'This stops polling, deletes the bot token stored on this machine, and unpairs every phone. Your bot itself still exists — reconnect any time by pasting its token again.',
+    }))) return;
+    try {
+      const { disconnectChannel } = await channelsMod();
+      await disconnectChannel(settings.bridgeUrl, { forget: true });
+      toast('Disconnected');
+      $('ch-pair-out').classList.add('hidden');
+      renderChannels();
+    } catch (e) { chError('ch-error-live', e.message); }
+  };
 }
 
 function toast(text, ms = 2600) {

@@ -21,6 +21,7 @@
           <button class="tab" data-tab="mcp"><span class="tab-ico" data-icon="tools"></span> Tools</button>
           <button class="tab" data-tab="skills"><span class="tab-ico" data-icon="skills"></span> Skills</button>
           <button class="tab" data-tab="workspace"><span class="tab-ico" data-icon="folder"></span> Workspace</button>
+          <button class="tab" data-tab="channels"><span class="tab-ico" data-icon="chat"></span> Channels</button>
           <button class="tab" data-tab="privacy"><span class="tab-ico" data-icon="privacy"></span> Privacy &amp; Gateway</button>
           <button class="tab" data-tab="activity"><span class="tab-ico" data-icon="history-clock"></span> Activity &amp; usage</button>
           <button class="tab" data-tab="plugins"><span class="tab-ico" data-icon="plug"></span> Plugins</button>
@@ -1096,6 +1097,104 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
       </section>
 
       <!-- USAGE -->
+      <!-- CHANNELS — message your own agent from your phone. The bridge hosts the adapter
+           (a loop that must run while the browser is closed); this screen only drives it. -->
+      <section class="panel hidden" data-panel="channels">
+        <div class="card">
+          <div class="card-head">
+            <h2>Telegram <span class="sub">— message your agent from your phone</span></h2>
+            <div class="card-actions"><span id="ch-badge" class="pv-badge">checking…</span></div>
+          </div>
+          <p class="muted">
+            Text your own machine. Your agent answers in Telegram — read a file, check a project,
+            ask what changed — while the browser is closed. Nothing is hosted by us: the
+            <strong>bridge on this machine</strong> does the polling, and your bot token stays on
+            this machine in a file only you can read.
+          </p>
+          <p class="muted tiny">
+            Telegram is a third party and its bot chats are <strong>not</strong> end-to-end encrypted, so
+            ChatPanel redacts what it sends: personal details you type are placeholdered on the way to the
+            model, and any credential the agent surfaces from a file is masked on the way back out. A paired
+            phone can <strong>read</strong> your files and <strong>cannot</strong> write, run shell commands
+            or reach the web.
+          </p>
+
+          <!-- The bridge is absent or too old: nothing on this screen is fixable by typing. -->
+          <p id="ch-unsupported" class="muted hidden"></p>
+
+          <!-- SETUP: two steps, one of them a paste. -->
+          <div id="ch-setup" class="hidden">
+            <ol class="ch-steps">
+              <li>
+                <strong>Create your bot</strong> — open <b>@BotFather</b>, send <code>/newbot</code>, pick any
+                name, and copy the token it replies with.
+                <div class="ch-step-act">
+                  <a class="btn" href="https://t.me/BotFather" target="_blank" rel="noreferrer noopener">
+                    <span class="inline-ico" data-icon="external-link"></span> Open BotFather
+                  </a>
+                </div>
+              </li>
+              <li>
+                <strong>Paste the token here</strong> — ChatPanel checks it with Telegram before storing it.
+                <div class="ch-step-act">
+                  <input id="ch-token" type="password" placeholder="123456789:AAE…" autocomplete="off" spellcheck="false" />
+                  <button id="ch-connect" class="btn primary" type="button">Connect</button>
+                </div>
+              </li>
+            </ol>
+            <p id="ch-error" class="ch-error hidden"></p>
+          </div>
+
+          <!-- CONNECTED -->
+          <div id="ch-live" class="hidden">
+            <div class="ch-bot">
+              <span class="inline-ico" data-icon="bot"></span>
+              <span id="ch-bot-name"></span>
+              <span id="ch-run" class="pv-badge"></span>
+            </div>
+
+            <div class="ch-pair">
+              <button id="ch-pair" class="btn primary" type="button">Pair a phone</button>
+              <span class="muted tiny">Each phone is enrolled once, with a code that expires.</span>
+            </div>
+            <div id="ch-pair-out" class="ch-pair-out hidden">
+              <p class="muted">Open this on the phone you want to pair — it enrolls in one tap:</p>
+              <div class="ch-link-row">
+                <code id="ch-pair-link"></code>
+                <button id="ch-pair-copy" class="btn sm" type="button">Copy link</button>
+              </div>
+              <p class="muted tiny">
+                Not on that phone? Message the bot and send <code id="ch-pair-code"></code>. Single use,
+                expires in 10 minutes.
+              </p>
+            </div>
+
+            <h3 class="ch-h3">Paired phones</h3>
+            <div id="ch-paired"></div>
+
+            <div class="row half ch-settings">
+              <div>
+                <label for="ch-agent">Agent that answers</label>
+                <select id="ch-agent"></select>
+              </div>
+              <div>
+                <label for="ch-privacy">What comes back to Telegram</label>
+                <select id="ch-privacy">
+                  <option value="standard">My own details, restored (recommended)</option>
+                  <option value="strict">Placeholders only — nothing personal leaves</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="ch-danger">
+              <button id="ch-disconnect" class="btn" type="button">Disconnect</button>
+              <span class="muted tiny">Stops polling, deletes the stored bot token, and unpairs every phone.</span>
+            </div>
+            <p id="ch-error-live" class="ch-error hidden"></p>
+          </div>
+        </div>
+      </section>
+
       <section class="panel hidden" data-panel="activity">
         <div class="card" id="obs-card">
           <div class="card-head">
