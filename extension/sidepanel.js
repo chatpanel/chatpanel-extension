@@ -3230,6 +3230,9 @@ async function maybeExtractMeetingTopics(id) {
       { context: topicSourcesForMeeting(rec, notes), sourceId: id },
     );
     await saveMeetingTopics(id, makeTopicIndex({ hash, targetId: usedTargetId || targetId, items, fallback }));
+    // Topics outrank participants/date, so a meeting named "Call with Alex" a moment ago
+    // can now be named after what it was about.
+    nameEndedMeeting(id);
   } finally {
     topicJobs.delete(key);
   }
@@ -5961,6 +5964,22 @@ async function openMeetings() {
   $('meetings-list-view').classList.remove('hidden');
   $('meetings-search').value = '';
   await renderMeetingsList('');
+  backfillMeetingTitlesOnce();
+}
+
+// The back catalogue: meetings that ended before automatic naming existed. Once per
+// panel session — the pass is idempotent, but re-walking the index on every open is waste.
+let meetingTitlesBackfilled = false;
+async function backfillMeetingTitlesOnce() {
+  if (meetingTitlesBackfilled) return;
+  meetingTitlesBackfilled = true;
+  try {
+    const { backfillMeetingTitles } = await import('./js/meeting-autotitle.js');
+    const renamed = await backfillMeetingTitles(await getMeetingIndex());
+    if (renamed && !$('meetings-drawer')?.classList.contains('hidden')) {
+      await renderMeetingsList($('meetings-search')?.value || '');
+    }
+  } catch { /* captured titles stand */ }
 }
 function closeMeetings() { clearInterval(meetingsView.liveTimer); $('meetings-drawer').classList.add('hidden'); renderRail(); }
 
@@ -6020,10 +6039,32 @@ async function renderMeetingsList(query) {
     row.className = 'meeting-row';
     const main = document.createElement('button');
     main.className = 'meeting-row-main';
+    const tagRow = (e.tags || []).length
+      ? `<div class="hi-tags">${e.tags.slice(0, 3).map((t) => `<span class="hi-tag">#${escHtml(t)}</span>`).join('')}</div>`
+      : '';
     main.innerHTML =
       `<div class="meeting-row-title">${PLATFORM_ICON[e.platform] || '🎙'} ${escHtml(e.title || 'Meeting')}</div>` +
-      `<div class="meeting-row-meta">${escHtml(meta)}</div>`;
+      `<div class="meeting-row-meta">${escHtml(meta)}</div>${tagRow}`;
     main.onclick = () => openStoredMeeting(e.id);
+    // Rename from the LIST, not only after opening the meeting: the list is where a bad
+    // title is actually noticed, and making someone open a call to fix its name is the
+    // reason nobody ever fixes it.
+    const ren = miniBtn(icon('rename'), async () => {
+      const titleEl = main.querySelector('.meeting-row-title');
+      if (!titleEl) return;
+      const { renameMeetingInline } = await import('./js/meeting-labels.js');
+      renameMeetingInline(titleEl, {
+        id: e.id,
+        title: e.title,
+        onRenamed: (next) => {
+          if (meetingsView.rec?.id === e.id) { meetingsView.rec.title = next; paintMeetingViewTitle(); }
+          toast('Renamed');
+        },
+        onDone: () => renderMeetingsList($('meetings-search').value),
+      });
+    });
+    ren.title = 'Rename meeting';
+    ren.className = 'mini-btn meeting-row-act';
     const del = miniBtn('✕', async () => {
       if (!(await confirmDelete({
         title: 'Delete this meeting?',
@@ -6035,9 +6076,12 @@ async function renderMeetingsList(query) {
       toast('Meeting deleted');
     });
     del.title = 'Delete meeting';
-    del.className = 'mini-btn meeting-row-del';
+    del.className = 'mini-btn meeting-row-act meeting-row-del';
+    const acts = document.createElement('div');
+    acts.className = 'meeting-row-acts';
+    acts.append(ren, del);
     row.appendChild(main);
-    row.appendChild(del);
+    row.appendChild(acts);
     list.appendChild(row);
   }
 }
@@ -6063,8 +6107,8 @@ async function openStoredMeeting(id) {
   await loadMeetingVersions();
   meetingsView.generating = false;
   meetingsView.live = rec.status !== 'ended';
-  $('meeting-view-title').textContent =
-    `${PLATFORM_ICON[rec.platform] || '🎙'} ${rec.title || 'Meeting'}${meetingsView.live ? ' · live' : ''}`;
+  paintMeetingViewTitle();
+  renderMeetingTags().catch(() => { /* chips are a nicety — the meeting still opens */ });
   $('meetings-list-view').classList.add('hidden');
   $('meeting-view').classList.remove('hidden');
   // "Sync now" only makes sense for a still-live meeting (pull the latest transcript
@@ -6073,6 +6117,45 @@ async function openStoredMeeting(id) {
   switchMeetingTab('summary');
   // Live meeting → keep the view fresh (transcript + summary) while open.
   if (meetingsView.live) meetingsView.liveTimer = setInterval(refreshLiveMeetingView, 5000);
+}
+
+// Rename the meeting being viewed. Same control as everywhere else, loaded on click.
+async function startMeetingRename() {
+  const rec = meetingsView.rec;
+  const el = $('meeting-view-title');
+  if (!rec || !el) return;
+  const { renameMeetingInline } = await import('./js/meeting-labels.js');
+  renameMeetingInline(el, {
+    id: rec.id,
+    title: rec.title,
+    onRenamed: (next) => {
+      rec.title = next;
+      renderMeetingsList($('meetings-search').value);
+      toast('Renamed');
+    },
+    onDone: paintMeetingViewTitle,
+  });
+}
+
+function paintMeetingViewTitle() {
+  const rec = meetingsView.rec;
+  if (!rec) return;
+  $('meeting-view-title').textContent =
+    `${PLATFORM_ICON[rec.platform] || '🎙'} ${rec.title || 'Meeting'}${meetingsView.live ? ' · live' : ''}`;
+}
+
+// The meeting's tag chips — the shared control, so a tag added here is the one the
+// dashboards filter by.
+async function renderMeetingTags() {
+  const host = $('meeting-tags');
+  const rec = meetingsView.rec;
+  if (!host || !rec) return;
+  const { mountMeetingTags } = await import('./js/meeting-labels.js');
+  await mountMeetingTags(host, {
+    id: rec.id,
+    tags: rec.tags,
+    onChange: (next) => { rec.tags = next; renderMeetingsList($('meetings-search').value); },
+  });
 }
 
 // Re-read the currently-viewed live meeting from storage and re-render (called on a
@@ -6182,6 +6265,21 @@ function askAboutMeeting() {
   attachMeetingToChat(rec, meetingsView.notes || '');
 }
 
+// Name a just-ended meeting, then refresh anything showing the old title. Best-effort:
+// a meeting that captured fine must never look broken because naming it failed.
+async function nameEndedMeeting(id) {
+  try {
+    const { autoTitleMeeting } = await import('./js/meeting-autotitle.js');
+    const out = await autoTitleMeeting(id);
+    if (!out) return;
+    if (meetingsView.rec?.id === id) { meetingsView.rec.title = out.title; paintMeetingViewTitle(); }
+    if (state.liveMeeting?.id === id) state.liveMeeting.title = out.title;
+    if (!$('meetings-drawer')?.classList.contains('hidden')) {
+      renderMeetingsList($('meetings-search')?.value || '');
+    }
+  } catch { /* the captured title stands */ }
+}
+
 // Slim "N meetings recording" strip, shown from any non-meeting tab.
 async function renderScribeIndicator(liveOpt) {
   let live = liveOpt;
@@ -6201,7 +6299,9 @@ async function renderScribeIndicator(liveOpt) {
   for (const e of live) {
     if (e.persistedAt && now - e.persistedAt < ZOMBIE_MS) fresh.push(e);
     else {
-      markMeetingEnded(e.id).then(() => maybeExtractMeetingTopics(e.id)).catch(() => {});
+      markMeetingEnded(e.id)
+        .then(() => { maybeExtractMeetingTopics(e.id); nameEndedMeeting(e.id); })
+        .catch(() => {});
     }
   }
   live = fresh;
@@ -6218,6 +6318,9 @@ async function renderScribeIndicator(liveOpt) {
   for (const [id, meta] of prevLive) {
     if (liveNow.has(id)) continue;
     fireMeetingTrigger({ type: 'meeting.ended', meetingId: id, title: meta.title || '', platform: meta.platform || '' });
+    // …and NAME it: the tab called it "Zoom Meeting", the list should say what it was
+    // about. Deterministic, no model — see js/meeting-autotitle.js.
+    nameEndedMeeting(id);
   }
   prevLive = new Map(fresh.map((e) => [e.id, { title: e.title, platform: e.platform }]));
 
@@ -7773,9 +7876,12 @@ async function renderHistory(filter = '') {
     item.className = 'history-item' + (e.id === state.conv.id ? ' active' : '');
     const main = document.createElement('div');
     main.className = 'hi-main';
+    const tagRow = (e.tags || []).length
+      ? `<div class="hi-tags">${e.tags.slice(0, 3).map((t) => `<span class="hi-tag">#${escapeAttr(t)}</span>`).join('')}</div>`
+      : '';
     main.innerHTML = `<div class="hi-title">${escapeAttr(e.title)}</div><div class="hi-meta">${relTime(
       e.updatedAt,
-    )} · ${e.msgs} msgs</div>`;
+    )} · ${e.msgs} msgs</div>${tagRow}`;
     if (state.streams.has(e.id)) {
       const dot = document.createElement('span');
       dot.className = 'dot on';
@@ -7801,37 +7907,25 @@ async function openConversation(id) {
   $('history').classList.add('hidden');
 }
 
-// Inline rename (window.prompt is unreliable in side panels).
-function startRename(e, itemEl) {
+// Inline rename (window.prompt is unreliable in side panels). The mechanics are the
+// SHARED control, dynamic-imported: a click is not first paint.
+async function startRename(e, itemEl) {
   const titleEl = itemEl.querySelector('.hi-title');
   if (!titleEl) return;
-  const input = document.createElement('input');
-  input.className = 'hi-rename';
-  input.value = e.title;
-  input.onclick = (ev) => ev.stopPropagation();
-  let done = false;
-  const commit = async () => {
-    if (done) return;
-    done = true;
-    const name = input.value.trim() || e.title;
-    await renameConversation(e.id, name);
-    const c = state.convCache.get(e.id);
-    if (c) c.title = name;
-    if (state.conv.id === e.id) state.conv.title = name;
-    refreshHistory();
-  };
-  input.onkeydown = (ev) => {
-    ev.stopPropagation();
-    if (ev.key === 'Enter') commit();
-    else if (ev.key === 'Escape') {
-      done = true;
+  const { editTitleInline } = await import('./js/editable-title.js');
+  editTitleInline(titleEl, {
+    value: e.title,
+    placeholder: 'Name this chat…',
+    className: 'hi-rename',
+    onCommit: async (name) => {
+      await renameConversation(e.id, name);
+      const c = state.convCache.get(e.id);
+      if (c) c.title = name;
+      if (state.conv.id === e.id) state.conv.title = name;
       refreshHistory();
-    }
-  };
-  input.onblur = commit;
-  titleEl.replaceWith(input);
-  input.focus();
-  input.select();
+    },
+    onDone: () => refreshHistory(),
+  });
 }
 
 // Confirm first (a DOM modal — native confirm() is unreliable in side panels), then
@@ -8742,6 +8836,7 @@ function wireEvents() {
   $('meeting-copy').onclick = () => copyMeetingActive();
   $('meeting-download').onclick = () => downloadMeetingActive();
   $('meeting-ask').onclick = () => askAboutMeeting();
+  $('meeting-rename').onclick = () => startMeetingRename();
   $('scribe-indicator').onclick = () => openMeetings();
   $('history-clear').onclick = async (e) => {
     e.stopPropagation();

@@ -62,6 +62,8 @@ a { color: var(--accent); text-decoration: none; }
 .mitem.active { background: var(--accent-weak); }
 .mitem .t { font-weight: 600; font-size: 13.5px; display: flex; align-items: center; gap: 7px; margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mitem .meta { color: var(--muted); font-size: 11.5px; display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
+.mitem-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.mitem-tag { color: var(--accent); background: var(--accent-weak); border-radius: 5px; padding: 0 5px; font-size: 10.5px; font-weight: 550; }
 .mitem .snip { color: var(--muted); font-size: 11.5px; margin-top: 5px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .mitem .snip mark { background: rgba(251,191,36,.3); color: inherit; border-radius: 3px; }
 
@@ -78,7 +80,24 @@ a { color: var(--accent); text-decoration: none; }
 .detail { overflow-y: auto; padding: 22px 26px 40px; }
 .empty { color: var(--muted); font-size: 14px; display: grid; place-items: center; height: 100%; text-align: center; }
 .dhead { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.dhead-main { min-width: 0; flex: 1; }
 .dhead h2 { margin: 0; font-size: 21px; font-weight: 680; letter-spacing: -.01em; }
+/* Title row: the name, then the two ways to change it. The buttons stay invisible until
+   the row is hovered or one of them is focused — a rename affordance shouldn't compete
+   with the title for attention, but it must be reachable by keyboard. */
+.dtitle { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.dtitle h2 { overflow: hidden; text-overflow: ellipsis; }
+.icon-act {
+  appearance: none; border: 0; background: none; cursor: pointer; padding: 4px; border-radius: 7px;
+  color: var(--faint); line-height: 0; opacity: 0; transition: opacity .12s, color .12s;
+}
+.dtitle:hover .icon-act, .icon-act:focus-visible { opacity: 1; }
+.icon-act:hover { color: var(--accent); background: var(--accent-weak); }
+.icon-act:disabled { cursor: default; opacity: .5; }
+.icon-act.busy { opacity: 1; color: var(--accent); animation: cp-pulse 1s ease-in-out infinite; }
+.icon-act svg { width: 15px; height: 15px; }
+@keyframes cp-pulse { 50% { opacity: .35; } }
+.dtags { margin-top: 9px; }
 .dhead .sub { color: var(--muted); font-size: 13px; margin-top: 6px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
 .dhead .sub .stat { display: inline-flex; align-items: center; gap: 5px; }
 .dactions { display: flex; gap: 8px; flex: 0 0 auto; }

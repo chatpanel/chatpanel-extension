@@ -7,6 +7,7 @@ import {
   getMeetingIndex, getMeeting, getMeetingNotes, saveMeetingNotes,
   getMeetingNoteVersions, setActiveMeetingNote, deleteMeetingNoteVersion,
   deleteMeeting, clearAllMeetings, meetingToMarkdown, meetingToText, persistMeeting, PLATFORMS, getMeetingTopics, saveMeetingTopics,
+  setMeetingTitle, setMeetingTags, getMeetingMeta,
 } from './js/store-meetings.js';
 import { getSettings, getTarget } from './js/store.js';
 import { openSidePanel } from './js/side-panel.js';
@@ -22,6 +23,9 @@ import { contentHash, insightTopicItemsFromNotes, makeTopicIndex, topicDisplayFo
 import { MEETING_INSIGHT_SECTIONS, composeMeetingInsightNotes, meetingInsightPrompt } from './js/meeting-insights.js';
 import { parseTranscriptText, repairImportedTranscriptDate, repairTranscriptParticipants } from './js/meeting-transcript-import.js';
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
+import { mountTagEditor, mountTagFilter } from './js/tag-bar.js';
+import { editTitleInline } from './js/editable-title.js';
+import { parseTagQuery, formatTagQuery, tagFacets, toggleTag, tagsSearchText, filterByTags } from './js/events/tags.js';
 
 const $ = (id) => document.getElementById(id);
 const PLATFORM_ICON = { zoom: '📹', meet: '📹', teams: '🟦', webex: '🟢', imported: '📄' };
@@ -35,6 +39,8 @@ let current = null;        // selected store entry (+ .tab)
 let mode = 'smart';        // search mode: smart | keyword
 let winId = null;          // this window — to open the side panel within a gesture
 let graphDrawToken = 0;
+let tagFilterBar = null;   // the facet row above the list
+let detailTags = null;     // the open meeting's tag editor
 
 // Corpus dashboard (all meetings): Stats / Topic graph / Related. Opened by the
 // header "Graph" button; replaces the older graph-only view. `isOpen` supersedes
@@ -142,16 +148,74 @@ function makeSnippet(d, terms) {
   return html;
 }
 
+// The tag terms in the search box ARE the filter — clicking a facet writes `tag:x`
+// into the box (see toggleTagFilter). One piece of state, always visible, and the
+// power-user syntax and the click do exactly the same thing.
+function tagFilterState() {
+  return parseTagQuery($('m-search')?.value || '');
+}
+
 function searchResults(q) {
-  const query = (q || '').trim();
+  const { include, exclude, text } = parseTagQuery(q || '');
+  const query = text.trim();
   const byDate = (arr) => arr.sort((a, b) => (b.d.rec.startedAt || 0) - (a.d.rec.startedAt || 0));
-  if (!query) return byDate([...store.values()].map((d) => ({ d })));
+  const pool = filterByTags([...store.values()], { include, exclude }, (d) => d.entry.tags || d.rec.tags);
+  if (!query) return byDate(pool.map((d) => ({ d })));
   if (mode === 'keyword') {
     const ql = query.toLowerCase();
-    return byDate([...store.values()].filter((d) => d.text.toLowerCase().includes(ql)).map((d) => ({ d, snippet: makeSnippet(d, [ql]) })));
+    return byDate(pool.filter((d) => d.text.toLowerCase().includes(ql)).map((d) => ({ d, snippet: makeSnippet(d, [ql]) })));
   }
   const qterms = tokenize(query);
-  return bm25Search(bm25, query).map((r) => ({ d: store.get(r.id), score: r.score, snippet: makeSnippet(store.get(r.id), qterms) })).filter((r) => r.d);
+  const allowed = new Set(pool.map((d) => d.entry.id));
+  return bm25Search(bm25, query)
+    .filter((r) => allowed.has(r.id))
+    .map((r) => ({ d: store.get(r.id), score: r.score, snippet: makeSnippet(store.get(r.id), qterms) }))
+    .filter((r) => r.d);
+}
+
+// Toggle one tag in the query, leaving the free-text part alone.
+function toggleTagFilter(tag) {
+  const box = $('m-search');
+  if (!box) return;
+  const { include, exclude, text } = parseTagQuery(box.value);
+  box.value = formatTagQuery({ include: toggleTag(include, tag), exclude, text });
+  onSearchChanged();
+}
+
+function clearTagFilter() {
+  const box = $('m-search');
+  if (!box) return;
+  box.value = parseTagQuery(box.value).text;
+  onSearchChanged();
+}
+
+function onSearchChanged() {
+  renderList();
+  if (dash.isOpen && dash.tab === 'graph') dash.rerender();
+  else if (current?.tab === 'topic-graph') renderTopicGraph();
+}
+
+// Every tag in use, with counts — the facet row. Selected tags survive even at zero
+// so a filter that empties the list can always be undone.
+function meetingTagFacets() {
+  const { include } = tagFilterState();
+  return tagFacets([...store.values()], (d) => d.entry.tags || d.rec.tags, { selected: include });
+}
+
+function renderTagFilterBar() {
+  const host = $('m-tagfilter');
+  if (!host) return;
+  const facets = meetingTagFacets();
+  const selected = tagFilterState().include;
+  if (!tagFilterBar) {
+    tagFilterBar = mountTagFilter(host, {
+      facets, selected, label: 'Tags',
+      onToggle: toggleTagFilter,
+      onClear: clearTagFilter,
+    });
+  } else {
+    tagFilterBar.update({ facets, selected });
+  }
 }
 
 // --- list ------------------------------------------------------------------
@@ -160,18 +224,24 @@ function renderList() {
   const results = searchResults(q);
   $('m-count').textContent = index.length ? `· ${index.length}` : '';
   $('m-clear-all')?.classList.toggle('hidden', !index.length); // only offer clear-all when there's something to clear
+  renderTagFilterBar();
   const host = $('m-items');
   if (!results.length) {
-    host.innerHTML = `<div class="list-empty">${index.length ? 'No matches.' : 'No meetings yet. Join a Zoom / Meet / Teams / Webex call with captions on and ChatPanel records the transcript.'}</div>`;
+    const filtering = tagFilterState().include.length;
+    host.innerHTML = `<div class="list-empty">${index.length
+      ? (filtering ? 'No meetings with those tags.' : 'No matches.')
+      : 'No meetings yet. Join a Zoom / Meet / Teams / Webex call with captions on and ChatPanel records the transcript.'}</div>`;
     return;
   }
   host.innerHTML = results.map(({ d, snippet }) => {
     const e = d.entry;
     const live = e.status && e.status !== 'ended';
     const dur = live ? '<span class="pill live">● live</span>' : (fmtDuration(e.startedAt, e.endedAt) ? `<span class="pill">${esc(fmtDuration(e.startedAt, e.endedAt))}</span>` : '');
+    const tags = (e.tags || []).slice(0, 3).map((t) => `<span class="mitem-tag">#${esc(t)}</span>`).join('');
     return `<div class="mitem${current && current.entry.id === e.id ? ' active' : ''}" data-id="${esc(e.id)}">
       <div class="t"><span>${platIcon(e.platform)}</span> ${esc(e.title || 'Untitled meeting')}</div>
       <div class="meta"><span>${esc(platLabel(e.platform))}</span><span>·</span><span>${esc(fmtDateShort(e.startedAt))}</span>${dur}</div>
+      ${tags ? `<div class="mitem-tags">${tags}</div>` : ''}
       ${snippet ? `<div class="snip">${snippet}</div>` : ''}
     </div>`;
   }).join('');
@@ -247,14 +317,19 @@ function renderDetail() {
 
   c.innerHTML = `
     <div class="dhead">
-      <div>
-        <h2>${esc(rec.title || 'Untitled meeting')}</h2>
+      <div class="dhead-main">
+        <div class="dtitle">
+          <h2 id="m-title">${esc(rec.title || 'Untitled meeting')}</h2>
+          <button class="icon-act" id="m-rename" type="button" title="Rename this meeting" aria-label="Rename this meeting">${icon('rename')}</button>
+          <button class="icon-act" id="m-ai-name" type="button" title="Suggest a name from the summary" aria-label="Suggest a name">${icon('sparkles')}</button>
+        </div>
         <div class="sub">
           <span class="stat">${platIcon(rec.platform)} ${esc(platLabel(rec.platform))}</span>
           <span class="stat">${icon('calendar')} ${esc(fmtDate(rec.startedAt))}</span>
           ${live ? '<span class="stat"><span class="pill live">● live</span></span>' : (fmtDuration(rec.startedAt, rec.endedAt) ? `<span class="stat">${icon('timer')} ${esc(fmtDuration(rec.startedAt, rec.endedAt))}</span>` : '')}
           ${ppl ? `<span class="stat">${icon('users')} ${ppl} participant${ppl === 1 ? '' : 's'}</span>` : ''}
         </div>
+        <div class="dtags" id="m-tags"></div>
       </div>
       <div class="dactions">
         <button class="btn" id="m-gen" type="button">${icon('sparkles')} ${parsed.hasAny ? 'Regenerate' : 'Generate insights'}</button>
@@ -290,6 +365,17 @@ function renderDetail() {
   $('m-ask').onclick = askAboutMeeting;
   $('m-export').onclick = exportMeeting;
   $('m-delete').onclick = removeMeeting;
+  $('m-rename').onclick = startTitleEdit;
+  $('m-ai-name').onclick = suggestTitleWithAI;
+  const h2 = $('m-title');
+  if (h2) { h2.title = 'Double-click to rename'; h2.style.cursor = 'text'; h2.ondblclick = startTitleEdit; }
+  detailTags = mountTagEditor($('m-tags'), {
+    tags: rec.tags || [],
+    suggestions: meetingTagFacets(),
+    emptyHint: '',
+    onSelect: (tag) => toggleTagFilter(tag),
+    onChange: (next) => applyTags(current.entry.id, next),
+  });
   if (tab === 'transcript') renderTranscript();
   else if (tab === 'participants') renderParticipants();
   else if (tab === 'topic-graph') renderTopicGraph();
@@ -724,11 +810,12 @@ function searchableMeetingText(rec, notes = '', people = peopleOf(rec), entry = 
     entry.title || '',
     rec.title || '',
     entry.meetingKey || rec.meetingKey || '',
+    tagsSearchText(entry.tags?.length ? entry.tags : rec.tags),
     notes || '',
     peopleText,
     transcriptText,
     chatText,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 // --- generate insights (uses the configured ChatPanel agent/model) ---------
@@ -850,10 +937,138 @@ async function generateInsights(d) {
   }
   delete d.insightDraft;
   refreshDoc(d);
+  // A summary is the best deterministic name there is, and it only just arrived — so a
+  // meeting still called "Zoom Meeting" gets named by the insights the user just asked
+  // for, without a second model call.
+  const named = await import('./js/meeting-autotitle.js')
+    .then((m) => m.autoTitleMeeting(d.entry.id, { rec: d.rec, notes: d.notes, topics: null }))
+    .catch(() => null);
+  if (named) {
+    d.rec.title = named.title;
+    d.entry.title = named.title;
+    d.entry.titleSource = named.source;
+    const idxEntry = index.find((e) => e.id === d.entry.id);
+    if (idxEntry) { idxEntry.title = named.title; idxEntry.titleSource = named.source; }
+    refreshDoc(d);
+  }
   rebuildIndexes();          // related insights / graph reflect the new notes
   if (current === d) renderDetail();
   renderList();
   toast(errorCount ? `Insights saved (${errorCount} section${errorCount === 1 ? '' : 's'} failed).` : 'Insights generated.');
+}
+
+// --- naming & filing (rename, AI name, tags) -------------------------------
+
+// One place that lands a new title: storage, the in-memory doc, the index entry the
+// list renders from, and the search index that carries the title as a term. Missing any
+// one of those is how a rename "doesn't take" until reload.
+async function applyTitle(id, title, { source = 'user' } = {}) {
+  const d = store.get(id);
+  if (!d || !title) return;
+  await setMeetingTitle(id, title, { source });
+  d.rec.title = title;
+  d.entry.title = title;
+  d.entry.titleSource = source;
+  const idxEntry = index.find((e) => e.id === id);
+  if (idxEntry) { idxEntry.title = title; idxEntry.titleSource = source; }
+  refreshDoc(d);
+  rebuildIndexes();
+  renderList();
+  if (current === d) renderDetail();
+}
+
+function startTitleEdit() {
+  const el = $('m-title');
+  if (!el || !current) return;
+  const id = current.entry.id;
+  editTitleInline(el, {
+    value: current.rec.title || '',
+    placeholder: 'Name this meeting…',
+    onCommit: (next) => { applyTitle(id, next, { source: 'user' }).then(() => toast('Renamed')); },
+  });
+}
+
+// The model hop, on demand. The deterministic pass already named this meeting when it
+// ended; this is "you can do better than that", and it reads the summary when there is
+// one — which is both the cheapest and the best source.
+async function suggestTitleWithAI() {
+  if (!current) return;
+  const id = current.entry.id;
+  const settings = await getSettings();
+  const agent = getTarget(settings, settings.activeAgentId);
+  if (!agent) { toast('No active model/agent — configure one in Settings → API/Agents.'); return; }
+  const btn = $('m-ai-name');
+  if (btn) { btn.disabled = true; btn.classList.add('busy'); }
+  try {
+    const { retitleMeetingWithModel } = await import('./js/meeting-title.js');
+    const out = await retitleMeetingWithModel(id, {
+      force: true, // the user asked for it — don't skip because the title is passable
+      complete: ({ prompt, maxTokens }) => modelComplete({ agent, settings, prompt, maxTokens, sourceId: id }),
+    });
+    if (!out) { toast('Couldn’t find a better name — rename it yourself with the pencil.'); return; }
+    const d = store.get(id);
+    if (d) { d.rec.title = out.title; d.entry.title = out.title; d.entry.titleSource = 'model'; refreshDoc(d); }
+    const idxEntry = index.find((e) => e.id === id);
+    if (idxEntry) { idxEntry.title = out.title; idxEntry.titleSource = 'model'; }
+    rebuildIndexes();
+    renderList();
+    if (current?.entry.id === id) renderDetail();
+    toast(`Named “${out.title}”`);
+  } catch {
+    toast('Couldn’t reach the model to name this meeting.');
+  } finally {
+    if (btn) { btn.disabled = false; btn.classList.remove('busy'); }
+  }
+}
+
+// The provider seam js/meeting-title.js asks for: prompt in, text out. Everything about
+// WHICH model that is stays here, in the client, where the settings live.
+async function modelComplete({ agent, settings, prompt, maxTokens, sourceId }) {
+  let out = '';
+  await streamChat({
+    agent: { ...agent, systemPrompt: 'You answer with the requested text and nothing else.', temperature: 0.3, maxTokens },
+    messages: [{ role: 'user', content: prompt }],
+    settings,
+    usage: { surface: 'meeting', sourceId, background: true },
+    onDelta: (delta) => { out += delta; },
+    onEvent: () => {},
+  });
+  return out;
+}
+
+async function applyTags(id, tags) {
+  const d = store.get(id);
+  if (!d) return;
+  const next = await setMeetingTags(id, tags);
+  d.entry.tags = next;
+  d.rec.tags = next;
+  const idxEntry = index.find((e) => e.id === id);
+  if (idxEntry) idxEntry.tags = next;
+  refreshDoc(d);
+  rebuildIndexes();
+  renderList();
+  detailTags?.update(next, meetingTagFacets());
+}
+
+// The back catalogue: meetings captured before automatic naming existed. Deterministic,
+// no model, no extra reads — the records, notes and topics are already in `store`.
+async function backfillTitles() {
+  const { backfillMeetingTitles } = await import('./js/meeting-autotitle.js');
+  const details = new Map([...store.entries()].map(([id, d]) => [id, { rec: d.rec, notes: d.notes, topics: null }]));
+  const renamed = await backfillMeetingTitles([...store.values()].map((d) => d.entry), {
+    detailsById: details,
+    onRenamed: (id, out) => {
+      const d = store.get(id);
+      if (!d) return;
+      d.rec.title = out.title;
+      d.entry.title = out.title;
+      d.entry.titleSource = out.source;
+      const idxEntry = index.find((e) => e.id === id);
+      if (idxEntry) { idxEntry.title = out.title; idxEntry.titleSource = out.source; }
+      refreshDoc(d);
+    },
+  });
+  if (renamed) { rebuildIndexes(); renderList(); if (current) renderDetail(); }
 }
 
 // --- import existing transcripts (.md / .txt) ------------------------------
@@ -949,7 +1164,7 @@ async function boot() {
   renderList();
 
   $('m-items').addEventListener('click', (e) => { const it = e.target.closest('.mitem'); if (it?.dataset.id) select(it.dataset.id); });
-  $('m-search').oninput = () => { renderList(); if (dash.isOpen && dash.tab === 'graph') dash.rerender(); else if (current?.tab === 'topic-graph') renderTopicGraph(); };
+  $('m-search').oninput = onSearchChanged;
   $('m-modes').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-mode]'); if (!b) return;
     mode = b.dataset.mode;
@@ -985,5 +1200,7 @@ async function boot() {
   } else {
     dash.open();
   }
+  // After first paint — naming the back catalogue must not delay the list appearing.
+  setTimeout(() => { backfillTitles().catch(() => {}); }, 0);
 }
 boot();

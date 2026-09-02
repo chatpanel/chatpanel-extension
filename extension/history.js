@@ -4,7 +4,7 @@
 // Reads the same local storage the side panel uses; nothing leaves the device.
 import {
   getIndex, getConversation, deleteConversation, conversationToMarkdown,
-  getSettings, getTarget,
+  getSettings, getTarget, renameConversation, setConversationTags,
 } from './js/store.js';
 import { buildIndex, bm25Search, buildGraph, tokenize } from './js/meeting-index.js';
 import { drawGraph } from './js/graph-view.js';
@@ -14,6 +14,9 @@ import { initialHistoryView } from './js/history-state.js';
 import { renderMarkdown } from './js/markdown.js';
 import { topicDisplayForSource } from './js/topic-extraction.js';
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
+import { mountTagEditor, mountTagFilter } from './js/tag-bar.js';
+import { editTitleInline } from './js/editable-title.js';
+import { parseTagQuery, formatTagQuery, tagFacets, toggleTag, tagsSearchText, filterByTags } from './js/events/tags.js';
 
 const $ = (id) => document.getElementById(id);
 const GRAPH_RENDER_LIMIT = 150;
@@ -27,6 +30,8 @@ let current = null;        // selected store entry (+ .tab)
 let mode = 'smart';        // smart | keyword
 let winId = null;          // this window — to open the side panel within a gesture
 let graphDrawToken = 0;
+let tagFilterBar = null;   // the facet row above the list
+let detailTags = null;     // the open chat's tag editor
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -82,6 +87,7 @@ function agentLabel(conv) {
 const docText = (entry, conv) => [
   entry?.title || '',
   conv.title || '',
+  tagsSearchText(entry?.tags?.length ? entry.tags : conv.tags),
   ...(conv.messages || []).map((m) => `${m.role === 'user' ? 'You' : (m.agentName || 'Assistant')}: ${m.content || ''}`),
 ].join('\n');
 
@@ -174,32 +180,89 @@ function makeSnippet(d, terms) {
   for (const t of terms) if (t.length > 1) html = html.replace(new RegExp(`(${reEsc(t)})`, 'ig'), '<mark>$1</mark>');
   return html;
 }
+// Tag terms live IN the search box (`tag:design`), so the pills and the typed syntax are
+// one piece of state — see meetings.js, which does exactly the same.
+function tagFilterState() {
+  return parseTagQuery($('h-search')?.value || '');
+}
+
 function searchResults(q) {
-  const query = (q || '').trim();
+  const { include, exclude, text } = parseTagQuery(q || '');
+  const query = text.trim();
   const byDate = (arr) => arr.sort((a, b) => (b.d.entry.updatedAt || 0) - (a.d.entry.updatedAt || 0));
-  if (!query) return byDate([...store.values()].map((d) => ({ d })));
+  const pool = filterByTags([...store.values()], { include, exclude }, (d) => d.entry.tags || d.conv.tags);
+  if (!query) return byDate(pool.map((d) => ({ d })));
   if (mode === 'keyword') {
     const ql = query.toLowerCase();
-    return byDate([...store.values()].filter((d) => d.text.toLowerCase().includes(ql)).map((d) => ({ d, snippet: makeSnippet(d, [ql]) })));
+    return byDate(pool.filter((d) => d.text.toLowerCase().includes(ql)).map((d) => ({ d, snippet: makeSnippet(d, [ql]) })));
   }
   const qterms = tokenize(query);
-  return bm25Search(bm25, query).map((r) => ({ d: store.get(r.id), score: r.score, snippet: makeSnippet(store.get(r.id), qterms) })).filter((r) => r.d);
+  const allowed = new Set(pool.map((d) => d.entry.id));
+  return bm25Search(bm25, query)
+    .filter((r) => allowed.has(r.id))
+    .map((r) => ({ d: store.get(r.id), score: r.score, snippet: makeSnippet(store.get(r.id), qterms) }))
+    .filter((r) => r.d);
+}
+
+function toggleTagFilter(tag) {
+  const box = $('h-search');
+  if (!box) return;
+  const { include, exclude, text } = parseTagQuery(box.value);
+  box.value = formatTagQuery({ include: toggleTag(include, tag), exclude, text });
+  onSearchChanged();
+}
+
+function clearTagFilter() {
+  const box = $('h-search');
+  if (!box) return;
+  box.value = parseTagQuery(box.value).text;
+  onSearchChanged();
+}
+
+function onSearchChanged() {
+  renderList();
+  if (dash.isOpen && dash.tab === 'graph') dash.rerender();
+}
+
+function chatTagFacets() {
+  const { include } = tagFilterState();
+  return tagFacets([...store.values()], (d) => d.entry.tags || d.conv.tags, { selected: include });
+}
+
+function renderTagFilterBar() {
+  const host = $('h-tagfilter');
+  if (!host) return;
+  const facets = chatTagFacets();
+  const selected = tagFilterState().include;
+  if (!tagFilterBar) {
+    tagFilterBar = mountTagFilter(host, {
+      facets, selected, label: 'Tags', onToggle: toggleTagFilter, onClear: clearTagFilter,
+    });
+  } else {
+    tagFilterBar.update({ facets, selected });
+  }
 }
 
 // --- list ------------------------------------------------------------------
 function renderList() {
   const results = searchResults($('h-search').value);
   $('h-count').textContent = index.length ? `· ${index.length}` : '';
+  renderTagFilterBar();
   const host = $('h-items');
   if (!results.length) {
-    host.innerHTML = `<div class="list-empty">${index.length ? 'No matches.' : 'No chats yet.'}</div>`;
+    const filtering = tagFilterState().include.length;
+    host.innerHTML = `<div class="list-empty">${index.length
+      ? (filtering ? 'No chats with those tags.' : 'No matches.')
+      : 'No chats yet.'}</div>`;
     return;
   }
   host.innerHTML = results.map(({ d, snippet }) => {
     const e = d.entry;
+    const tags = (e.tags || d.conv.tags || []).slice(0, 3).map((t) => `<span class="mitem-tag">#${esc(t)}</span>`).join('');
     return `<div class="mitem${current && current.entry.id === e.id ? ' active' : ''}" data-id="${esc(e.id)}">
       <div class="t"><span>${icon('chat')}</span> ${esc(e.title || 'Untitled chat')}</div>
       <div class="meta"><span>${esc(d.agent)}</span><span>·</span><span>${esc(relTime(e.updatedAt))}</span><span class="pill">${e.msgs || (d.conv.messages || []).length} msgs</span></div>
+      ${tags ? `<div class="mitem-tags">${tags}</div>` : ''}
       ${snippet ? `<div class="snip">${snippet}</div>` : ''}
     </div>`;
   }).join('');
@@ -232,13 +295,17 @@ function renderDetail() {
 
   c.innerHTML = `
     <div class="dhead">
-      <div>
-        <h2>${esc(conv.title || 'Untitled chat')}</h2>
+      <div class="dhead-main">
+        <div class="dtitle">
+          <h2 id="h-title">${esc(conv.title || 'Untitled chat')}</h2>
+          <button class="icon-act" id="h-rename" type="button" title="Rename this chat" aria-label="Rename this chat">${icon('rename')}</button>
+        </div>
         <div class="sub">
           <span class="stat">${icon('bot')} ${esc(agent)}</span>
           <span class="stat">${icon('calendar')} ${esc(fmtDate(conv.createdAt || current.entry.updatedAt))}</span>
           <span class="stat">${icon('history-clock')} ${esc(relTime(current.entry.updatedAt))}</span>
         </div>
+        <div class="dtags" id="h-tags"></div>
       </div>
       <div class="dactions">
         <button class="btn" id="h-open" type="button">${icon('chat')} Open in panel</button>
@@ -263,6 +330,15 @@ function renderDetail() {
   $('h-open').onclick = openInPanel;
   $('h-export').onclick = exportChat;
   $('h-delete').onclick = removeChat;
+  $('h-rename').onclick = startTitleEdit;
+  const h2 = $('h-title');
+  if (h2) { h2.title = 'Double-click to rename'; h2.style.cursor = 'text'; h2.ondblclick = startTitleEdit; }
+  detailTags = mountTagEditor($('h-tags'), {
+    tags: current.entry.tags || conv.tags || [],
+    suggestions: chatTagFacets(),
+    onSelect: (tag) => toggleTagFilter(tag),
+    onChange: (next) => applyTags(current.entry.id, next),
+  });
   if (tab === 'related') renderRelated();
   else if (tab === 'topic-graph') renderHistoryTopicGraph();
   else renderThread();
@@ -443,6 +519,51 @@ function renderChatRelated(host) {
   renderRelatedCards(host, cards, 'No connections found yet — chat more to link topics.');
 }
 
+// --- naming & filing -------------------------------------------------------
+
+// Chats could already be renamed in the side panel; this is the same action where the
+// chat is actually being read. One place lands it: storage, the in-memory doc, the index
+// entry the list renders from, and the search index that carries the title as a term.
+async function applyTitle(id, title) {
+  const d = store.get(id);
+  if (!d || !title) return;
+  await renameConversation(id, title);
+  d.conv.title = title;
+  d.entry.title = title;
+  const idxEntry = index.find((e) => e.id === id);
+  if (idxEntry) idxEntry.title = title;
+  d.text = docText(d.entry, d.conv);
+  rebuildIndexes();
+  renderList();
+  if (current === d) renderDetail();
+  toast('Renamed');
+}
+
+function startTitleEdit() {
+  const el = $('h-title');
+  if (!el || !current) return;
+  const id = current.entry.id;
+  editTitleInline(el, {
+    value: current.conv.title || '',
+    placeholder: 'Name this chat…',
+    onCommit: (next) => { applyTitle(id, next); },
+  });
+}
+
+async function applyTags(id, tags) {
+  const d = store.get(id);
+  if (!d) return;
+  const next = await setConversationTags(id, tags);
+  d.conv.tags = next;
+  d.entry.tags = next;
+  const idxEntry = index.find((e) => e.id === id);
+  if (idxEntry) idxEntry.tags = next;
+  d.text = docText(d.entry, d.conv);
+  rebuildIndexes();
+  renderList();
+  detailTags?.update(next, chatTagFacets());
+}
+
 // --- actions ---------------------------------------------------------------
 function searchTopic(topic) {
   mode = 'keyword';
@@ -539,7 +660,7 @@ async function boot() {
   renderList();
 
   $('h-items').addEventListener('click', (e) => { const it = e.target.closest('.mitem'); if (it?.dataset.id) select(it.dataset.id); });
-  $('h-search').oninput = () => { renderList(); if (dash.isOpen && dash.tab === 'graph') dash.rerender(); };
+  $('h-search').oninput = onSearchChanged;
   $('h-modes').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-mode]'); if (!b) return;
     mode = b.dataset.mode === 'keyword' ? 'keyword' : 'smart';

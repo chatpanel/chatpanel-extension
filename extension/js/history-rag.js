@@ -125,10 +125,14 @@ export function conversationSource(entry, conv) {
   const title = entry?.title || conv?.title || 'Chat';
   const date = entry?.updatedAt || conv?.updatedAt || conv?.createdAt || 0;
   const agentName = conv?.messages?.find((m) => m.role === 'assistant' && m.agentName)?.agentName || '';
+  const tags = Array.isArray(entry?.tags) && entry.tags.length ? entry.tags : (conv?.tags || []);
   const lines = [`CHAT: ${title}`];
   const contentLines = [];
   if (date) lines.push(`Date: ${new Date(date).toLocaleString()}`);
   if (entry?.agentId || conv?.agentId) lines.push(`Agent: ${entry?.agentId || conv?.agentId}`);
+  // The user's own filing, indexed like a note's — "what did we decide in the #pricing
+  // chats" has to reach the same tags the dashboards filter by.
+  if (tags.length) lines.push(`Tags: ${tags.join(', ')}`);
   lines.push('');
 
   for (const m of conv?.messages || []) {
@@ -149,7 +153,7 @@ export function conversationSource(entry, conv) {
     url: localDashboardUrl('chat', id),
     text: lines.join('\n').trim(),
     contentText: contentLines.join('\n').trim(),
-    meta: { id, agentId: entry?.agentId || conv?.agentId || '', agentName, terms: conv?.topics?.items || [] },
+    meta: { id, agentId: entry?.agentId || conv?.agentId || '', agentName, tags, terms: [...(conv?.topics?.items || []), ...tags] },
   };
 }
 
@@ -161,10 +165,12 @@ export function meetingSource(entry, rec, notes = '', topics = null, monitors = 
   const date = normalized.startedAt || entry?.startedAt || 0;
   const transcript = meetingToText(normalized);
   const people = peopleOfMeeting(normalized);
+  const tags = Array.isArray(entry?.tags) && entry.tags.length ? entry.tags : (normalized.tags || []);
   const lines = [`MEETING: ${title}`];
   const contentLines = [];
   if (date) lines.push(`Date: ${new Date(date).toLocaleString()}`);
   if (normalized.platform) lines.push(`Platform: ${normalized.platform}`);
+  if (tags.length) lines.push(`Tags: ${tags.join(', ')}`);
   if (notes) {
     const summary = limitText(notes, 12000);
     lines.push('', 'SUMMARY:', summary);
@@ -185,7 +191,7 @@ export function meetingSource(entry, rec, notes = '', topics = null, monitors = 
     .filter(Boolean);
 
   const insightTerms = insightTopicItemsFromNotes(notes, 15);
-  const terms = [...(insightTerms.length ? insightTerms : (topics?.items || [])), ...monitorTerms];
+  const terms = [...(insightTerms.length ? insightTerms : (topics?.items || [])), ...monitorTerms, ...tags];
   return {
     id: `meeting:${id}`,
     type: 'meeting',
@@ -194,7 +200,7 @@ export function meetingSource(entry, rec, notes = '', topics = null, monitors = 
     url: localDashboardUrl('meeting', id),
     text: lines.join('\n').trim(),
     contentText: contentLines.join('\n').trim(),
-    meta: { id, platform: normalized.platform || '', people, terms },
+    meta: { id, platform: normalized.platform || '', people, tags, terms },
   };
 }
 

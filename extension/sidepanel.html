@@ -47,7 +47,7 @@
     <aside id="history" class="history hidden">
       <div class="history-head">
         <div class="history-search-row">
-          <input id="history-search" type="search" placeholder="Search chats…" />
+          <input id="history-search" type="search" placeholder="Search chats — or tag:design" />
           <button id="history-expand" class="icon-btn" title="Open full chat-history dashboard" aria-label="Open full view" data-icon="expand"></button>
           <button id="history-close" class="icon-btn" aria-label="Close" data-icon="close"></button>
         </div>
@@ -115,7 +115,7 @@
           <button id="meetings-expand" class="icon-btn" title="Open full meetings dashboard" aria-label="Open full view" data-icon="expand"></button>
           <button id="meetings-close" class="icon-btn" title="Close" aria-label="Close" data-icon="close"></button>
         </div>
-        <input id="meetings-search" class="live-notes-search" type="search" placeholder="Search meetings…" />
+        <input id="meetings-search" class="live-notes-search" type="search" placeholder="Search meetings — or tag:design" />
         <div id="meetings-modes" class="meetings-modes" role="tablist" aria-label="Meeting search mode">
           <button data-mode="smart" class="active" type="button" title="Ranked search across titles, notes, transcripts, chat, and participants">Best match</button>
           <button data-mode="keyword" type="button" title="Literal text match across titles, notes, transcripts, chat, and participants">Exact text</button>
@@ -127,6 +127,7 @@
           <button id="meeting-back" class="icon-btn" title="Back to list" aria-label="Back" data-icon="back"></button>
           <span id="meeting-view-title" class="live-notes-title">Meeting</span>
           <span id="meeting-view-status" class="live-notes-status"></span>
+          <button id="meeting-rename" class="icon-btn" title="Rename this meeting" aria-label="Rename this meeting" data-icon="rename"></button>
           <button id="meeting-ask" class="icon-btn" title="Ask about this meeting" aria-label="Ask" data-icon="ask"></button>
           <button id="meeting-sync" class="icon-btn hidden" title="Sync transcript from the meeting tab now" aria-label="Sync transcript" data-icon="refresh"></button>
           <button id="meeting-download" class="icon-btn" title="Download this tab" aria-label="Download" data-icon="download"></button>
@@ -138,6 +139,7 @@
           <button id="mv-tab-transcript" class="ln-tab" role="tab">Transcript</button>
           <button id="mv-tab-monitors" class="ln-tab" role="tab">Monitors</button>
         </div>
+        <div id="meeting-tags" class="mv-tags"></div>
         <input id="meeting-search" class="live-notes-search hidden" type="search" placeholder="Search transcript…" />
         <div id="meeting-summary" class="live-notes-body"></div>
         <div id="meeting-transcript" class="live-notes-body live-notes-transcript hidden"></div>

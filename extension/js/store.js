@@ -13,6 +13,8 @@ import { exportNotes, importNotes } from './store-notes.js';
 import { exportNotesConfig, importNotesConfig } from './notes-config.js';
 import { exportOAuthTokens, importOAuthTokens } from './oauth.js';
 import { sealJSON, openJSON } from './secret-crypto.js';
+// Shared vocabulary: a tag typed on a chat has to BE the tag typed on a note.
+import { normalizeTags, sameTags } from './events/tags.js';
 
 const K_SETTINGS = 'chatpanel:settings';
 const K_INDEX = 'chatpanel:convIndex';
@@ -809,6 +811,8 @@ function indexEntry(conv) {
     agentId: conv.agentId,
     updatedAt: conv.updatedAt,
     msgs: conv.messages.length,
+    // In the index so a list filters and counts tags without loading any body.
+    tags: normalizeTags(conv.tags),
   };
 }
 
@@ -822,6 +826,7 @@ export async function saveConversation(conv) {
     const first = conv.messages.find((m) => m.role === 'user');
     conv.title = titleFrom(first.content);
   }
+  conv.tags = normalizeTags(conv.tags);
   conv.updatedAt = Date.now();
   await chrome.storage.local.set({ [convKey(conv.id)]: conv });
   const index = await getIndex();
@@ -840,6 +845,18 @@ export async function renameConversation(id, title) {
   if (!conv) return;
   conv.title = title;
   await saveConversation(conv);
+}
+
+// Replace a chat's tags; returns the list as STORED. A no-op write is skipped —
+// saveConversation re-stamps updatedAt, and nothing should jump the list for no change.
+export async function setConversationTags(id, tags) {
+  const conv = await getConversation(id);
+  if (!conv) return [];
+  const next = normalizeTags(tags);
+  if (sameTags(conv.tags, next)) return normalizeTags(conv.tags);
+  conv.tags = next;
+  await saveConversation(conv);
+  return next;
 }
 
 export async function deleteConversation(id) {

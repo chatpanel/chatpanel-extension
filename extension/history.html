@@ -24,11 +24,12 @@
     </header>
     <div class="layout">
       <aside class="mlist">
-        <input id="h-search" class="search" type="search" placeholder="Search all chats — messages, titles…" />
+        <input id="h-search" class="search" type="search" placeholder="Search chats — or tag:design" />
         <div class="seg" id="h-modes">
           <button data-mode="smart" class="active" type="button" title="BM25 full-text relevance">Best match</button>
           <button data-mode="keyword" type="button" title="Exact substring match">Exact text</button>
         </div>
+        <div id="h-tagfilter" hidden></div>
         <div id="h-items"></div>
       </aside>
       <main class="detail">

@@ -95,3 +95,13 @@ export { SOURCE_TRUST, SkillSourceError, defineSkillSource, createSkillSourceReg
 export { SKILL_MANIFEST_VERSION, SKILL_CONTEXTS, SKILL_HISTORY_SCOPES, SKILL_MCP_MODES, SKILL_TRUST, SKILL_FILE_KINDS, SKILL_UPCASTERS, SkillManifestError, isSafeSkillPath, originOf, trustOf, skillFiles, needsBridge, declaredAccess, originLabel, sameSkillOrigin, skillIsStale, validateSkill, upcastSkill, upcastSkills, normalizeSkill } from './skill-manifest.js';
 export { SKILL_VARS, SKILL_VAR_NAMES, skillVar, skillVarPattern, parseSkillVars, lintSkillPrompt, suggestSkillVar, substituteSkillVars, skillVarGuidance, SkillVarError } from './skill-vars.js';
 export { outlineOf, parseListItem, continueList, indentSelection, toggleWrap, toggleLinePrefix, toggleTask, toggleLink, docStats, selectionStats } from './markdown-authoring.js';
+export {
+  MAX_TAG_LENGTH, MAX_TAGS, normalizeTag, normalizeTags, hasTag, addTag, removeTag, toggleTag,
+  sameTags, formatTag, parseTagQuery, hasTagTerms, formatTagQuery, matchesTagFilter, filterByTags,
+  tagFacets, suggestExistingTags, tagsSearchText,
+} from './tags.js';
+export {
+  UNTITLED_MEETING, MAX_TITLE_LENGTH, TITLE_RULES_VERSION, cleanTitle, isGenericTitle, titleFromSummary, titleFromTopics,
+  titleFromParticipants, titleFromDate, deriveMeetingTitle, shouldAutoTitle, isBetterTitleSource,
+  meetingTitlePrompt, parseTitleResponse,
+} from './titles.js';

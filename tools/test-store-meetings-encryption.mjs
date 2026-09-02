@@ -49,7 +49,9 @@ storage.set(meetingKey('m1'), record);
 storage.set(notesKey, 'Plaintext notes fallback');
 
 assert.deepEqual(await getMeetingIndex(), [{ id: 'm1', title: record.title, platform: record.platform }]);
-assert.deepEqual(await getMeeting('m1'), record);
+// A read carries the effective LABELLING (title/tags + who named it), overlaid from the
+// panel-owned meta key — the stored record itself is untouched, which line 58 asserts.
+assert.deepEqual(await getMeeting('m1'), { ...record, titleSource: 'capture', tags: [] });
 assert.equal(await getMeetingNotes('m1'), 'Plaintext notes fallback');
 
 assert.equal(isEncrypted(storage.get(K_MINDEX)), true, 'Plaintext meeting index should be repaired to encrypted storage.');

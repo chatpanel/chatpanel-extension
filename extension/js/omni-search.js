@@ -20,6 +20,7 @@
 import { loadHistorySources, historySourcesVersion, invalidateHistorySourceCache } from './history-rag.js';
 import { rankHistorySources } from './search-engine.js';
 import { buildGraph, topTerms } from './meeting-index.js';
+import { parseTagQuery, matchesTagFilter } from './events/tags.js';
 import { icon } from './icons.js';
 
 const TYPE_META = {
@@ -104,10 +105,16 @@ function dedupeBySource(results) {
 }
 
 async function runQuery(query) {
-  const q = query.trim();
-  const sources = await ensureCorpus();
+  // `tag:design`, `#design`, `-tag:done` narrow the corpus BEFORE ranking — the same
+  // syntax the three list pages use, so a filter learned in one place works in ⌘K too.
+  // Notes, chats and meetings all carry their tags in source.meta.tags.
+  const { include, exclude, text } = parseTagQuery(query);
+  const hasTags = include.length > 0 || exclude.length > 0;
+  const q = text.trim();
+  const all = await ensureCorpus();
+  const sources = hasTags ? all.filter((s) => matchesTagFilter(s.meta?.tags, { include, exclude })) : all;
   if (!q) {
-    // Empty query → most-recent across all sources, grouped.
+    // No free text → most-recent within whatever the tags selected, grouped.
     return sources
       .slice()
       .sort((a, b) => (b.date || 0) - (a.date || 0))
@@ -117,7 +124,9 @@ async function runQuery(query) {
   const ranked = await rankHistorySources(
     sources, q,
     { mode: mode === 'exact' ? 'exact' : 'best', includeMeetings: true, scope: 'all', limit: 30, recency: true },
-    { version: corpusVersion },
+    // A tag filter changes the document SET, so the cached index built for the full
+    // corpus must not be reused for it — that would rank documents the filter removed.
+    { version: hasTags ? `${corpusVersion}:${include.join('+')}:${exclude.join('+')}` : corpusVersion },
   );
   return dedupeBySource(ranked).sort((a, b) => (b.score || 0) - (a.score || 0));
 }
@@ -300,7 +309,7 @@ function build() {
     <div class="omni-modal" role="dialog" aria-label="Search everything" aria-modal="true">
       <div class="omni-search-row">
         <span class="omni-search-ico">${icon('search')}</span>
-        <input class="omni-input" type="text" placeholder="Search notes, chats & meetings…" autocomplete="off" spellcheck="false" aria-label="Search everything" />
+        <input class="omni-input" type="text" placeholder="Search notes, chats &amp; meetings — or tag:design" autocomplete="off" spellcheck="false" aria-label="Search everything" />
         <span class="omni-count"></span>
         <button class="omni-graph-toggle" type="button" title="Toggle connection graph" aria-label="Toggle connection graph">${icon('graph')}</button>
         <kbd class="omni-esc">esc</kbd>

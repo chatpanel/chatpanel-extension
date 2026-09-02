@@ -21,6 +21,12 @@ import { monitorsKey } from './store-monitors.js';
 // so importing them eagerly costs nothing and can't cycle.
 import { getLicense, isPro, FREE_LIMITS } from './license.js';
 import { usageCount, bumpUsage } from './usage-counters.js';
+// The tag vocabulary is a shared contract, not a local helper — the same rules have to
+// hold in the gateway and in any other client. It is STATIC because every write goes
+// through it. The naming LADDER (events/titles.js) deliberately does not live here: it
+// is 13 KB that nothing needs in order to paint, so it sits behind js/meeting-autotitle.js
+// and is loaded where a title is actually derived.
+import { normalizeTags, sameTags } from './events/tags.js';
 
 export const MEETING_SCHEMA_VERSION = 1;
 
@@ -36,6 +42,11 @@ const topicsKey = (id) => `chatpanel:meetingTopics:${id}`;
 // the run log was the only place the whole meeting appeared. One binding, made once, for the
 // life of the meeting. Panel-owned, like notes and topics: the content script never sees it.
 const threadKey = (id) => `chatpanel:meetingThread:${id}`;
+// WHAT THE USER CALLS THIS MEETING, and how they filed it — { title, titleSource, tags }.
+// Panel-owned, like notes and topics: the content script re-sends the WHOLE record on
+// every flush, so a rename stored on the record would be reverted by the next heartbeat.
+// Reads overlay it (applyMeetingMeta), so no consumer needs to know it lives here.
+const metaKey = (id) => `chatpanel:meetingMeta:${id}`;
 
 // Size ceilings so one long meeting can't balloon storage. Transcripts are kept as
 // a rolling tail: when a record exceeds these, the OLDEST segments are dropped
@@ -108,6 +119,69 @@ async function readStoredJSON(key) {
   return value;
 }
 
+// --------------------------------------------------------------------------
+// Title & tags — the user's own labelling, kept out of the capture record
+// --------------------------------------------------------------------------
+
+// { title?, titleSource?, tags? } — always an object, so callers needn't guard.
+export async function getMeetingMeta(id) {
+  const m = id ? await readStoredJSON(metaKey(id)) : null;
+  return m && typeof m === 'object' && !Array.isArray(m) ? m : {};
+}
+
+async function writeMeetingMeta(id, patch) {
+  const meta = { ...(await getMeetingMeta(id)), ...patch, updatedAt: Date.now() };
+  await chrome.storage.local.set({ [metaKey(id)]: await encryptJSON(meta) });
+  return meta;
+}
+
+// Overlay the user's title/tags onto a record or index entry — applied on every read.
+function applyMeetingMeta(target, meta) {
+  if (!target) return target;
+  const m = meta || {};
+  return {
+    ...target,
+    title: m.title || target.title || '',
+    titleSource: m.titleSource || target.titleSource || 'capture',
+    tags: normalizeTags(m.tags ?? target.tags),
+  };
+}
+
+// Rename. `source` records WHO named it: 'user' (which no automatic pass may overwrite)
+// or a derivation source. Writes the index entry too, so lists render without a meta read.
+export async function setMeetingTitle(id, title, { source = 'user', rules } = {}) {
+  // A defensive trim; a DERIVED title arrives already cleaned by events/titles.js.
+  const clean = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (!id || !clean) return null;
+  // `rules` records WHICH version of the naming rules produced an automatic title, so a
+  // later fix to those rules can re-derive it instead of leaving it frozen.
+  await writeMeetingMeta(id, { title: clean, titleSource: source, ...(rules ? { titleRules: rules } : {}) });
+  const index = await getMeetingIndex();
+  const entry = index.find((e) => e.id === id);
+  if (entry) {
+    entry.title = clean;
+    entry.titleSource = source;
+    await saveIndex(index);
+  }
+  return clean;
+}
+
+// Replace a meeting's tags. Returns the stored (normalized) list.
+export async function setMeetingTags(id, tags) {
+  if (!id) return [];
+  const next = normalizeTags(tags);
+  const meta = await getMeetingMeta(id);
+  if (sameTags(meta.tags, next)) return normalizeTags(meta.tags);
+  await writeMeetingMeta(id, { tags: next });
+  const index = await getMeetingIndex();
+  const entry = index.find((e) => e.id === id);
+  if (entry) {
+    entry.tags = next;
+    await saveIndex(index);
+  }
+  return next;
+}
+
 // Thrown by callers that gate a NEW capture up front (mirrors NoteLimitError).
 export class MeetingLimitError extends Error {
   constructor(limit) {
@@ -151,11 +225,16 @@ export async function persistMeeting(rec, { enforceLimit = true } = {}) {
     if (reached) return { blocked: true, limit: true };
   }
   await chrome.storage.local.set({ [meetingKey(capped.id)]: await encryptJSON(capped) });
+  // The record is the content script's; the LABEL is the user's — so a mid-call
+  // heartbeat rewrites the transcript without reverting a rename.
+  const meta = await getMeetingMeta(capped.id);
   const entry = {
     id: capped.id,
     platform: capped.platform,
     meetingKey: capped.meetingKey, // lets a restart resume the SAME session (no fragments)
-    title: capped.title,
+    title: meta.title || capped.title,
+    titleSource: meta.titleSource || 'capture',
+    tags: normalizeTags(meta.tags),
     startedAt: capped.startedAt,
     endedAt: capped.endedAt,
     status: capped.status,
@@ -204,7 +283,9 @@ export async function getMeetingIndex() {
 }
 
 export async function getMeeting(id) {
-  return (await readStoredJSON(meetingKey(id))) || null;
+  const rec = (await readStoredJSON(meetingKey(id))) || null;
+  if (!rec) return null;
+  return applyMeetingMeta(rec, await getMeetingMeta(id));
 }
 
 // The most-recently-active record for a platform+meetingKey — so a (re)started
@@ -218,14 +299,14 @@ export async function getLatestSessionRecord(platform, key) {
 }
 
 export async function deleteMeeting(id) {
-  await chrome.storage.local.remove([meetingKey(id), notesKey(id), topicsKey(id), monitorsKey(id), threadKey(id)]);
+  await chrome.storage.local.remove([meetingKey(id), notesKey(id), topicsKey(id), monitorsKey(id), threadKey(id), metaKey(id)]);
   const index = (await getMeetingIndex()).filter((e) => e.id !== id);
   await saveIndex(index);
 }
 
 export async function clearAllMeetings() {
   const index = await getMeetingIndex();
-  await chrome.storage.local.remove(index.flatMap((e) => [meetingKey(e.id), notesKey(e.id), topicsKey(e.id), monitorsKey(e.id), threadKey(e.id)]));
+  await chrome.storage.local.remove(index.flatMap((e) => [meetingKey(e.id), notesKey(e.id), topicsKey(e.id), monitorsKey(e.id), threadKey(e.id), metaKey(e.id)]));
   await saveIndex([]);
 }
 
@@ -372,7 +453,14 @@ export async function exportMeetings() {
   for (const e of index) {
     const record = await getMeeting(e.id);
     if (!record) continue;
-    meetings.push({ record, notes: await getMeetingNotes(e.id), topics: await getMeetingTopics(e.id) });
+    // `record` carries the title/tags already (getMeeting overlays them); titleSource has
+    // to travel too, or a restored user title looks machine-named and gets overwritten.
+    meetings.push({
+      record,
+      notes: await getMeetingNotes(e.id),
+      topics: await getMeetingTopics(e.id),
+      meta: await getMeetingMeta(e.id),
+    });
   }
   return meetings;
 }
@@ -391,6 +479,17 @@ export async function importMeetings(list, { mode = 'merge' } = {}) {
     if (rec.status !== 'ended') {
       rec.status = 'ended';
       rec.endedAt = rec.endedAt || rec.startedAt || Date.now();
+    }
+    // Labelling FIRST, so persistMeeting builds the index entry with it. Older backups
+    // carry no meta — fall back to the record, where the export-time overlay put it.
+    const meta = item.meta && typeof item.meta === 'object' ? item.meta : {};
+    const title = String(meta.title || rec.title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    const tags = normalizeTags(meta.tags ?? rec.tags);
+    if (title || tags.length) {
+      await writeMeetingMeta(rec.id, {
+        ...(title ? { title, titleSource: meta.titleSource || 'user' } : {}),
+        ...(tags.length ? { tags } : {}),
+      });
     }
     await persistMeeting(rec, { enforceLimit: false }); // restore is never blocked/counted
     if (typeof item.notes === 'string' && item.notes) await saveMeetingNotes(rec.id, item.notes);
@@ -420,7 +519,7 @@ export async function pruneMeetings({ keep = Infinity, maxAgeDays = Infinity } =
     else drop.push(e);
   });
   if (!drop.length) return 0;
-  await chrome.storage.local.remove(drop.map((e) => meetingKey(e.id)));
+  await chrome.storage.local.remove(drop.flatMap((e) => [meetingKey(e.id), notesKey(e.id), topicsKey(e.id), monitorsKey(e.id), threadKey(e.id), metaKey(e.id)]));
   await saveIndex([...live, ...kept]);
   return drop.length;
 }

@@ -15,6 +15,10 @@ import { encryptJSON, decryptJSON, isEncrypted } from './meeting-crypto.js';
 // same defect that dropped every meeting). Both are dependency-free leaf modules.
 import { getLicense, isPro, FREE_LIMITS } from './license.js';
 import { usageCount, bumpUsage } from './usage-counters.js';
+// One tag vocabulary across notes, chats and meetings — normalizing here (rather than at
+// the notes editor, which is where it used to happen) is what makes "#Design Review"
+// typed on a note and `tag:design-review` typed on the meetings page the same tag.
+import { normalizeTags } from './events/tags.js';
 
 // Same id shape as store.js's uid(), inlined so the notes page never pulls in the
 // whole store.js module graph (oauth, zip, meetings…) on load — that was the bulk of
@@ -96,7 +100,7 @@ async function writeNote(rec) {
     id: rec.id,
     title: rec.title,
     snippet: snippetOf(rec.body),
-    tags: Array.isArray(rec.tags) ? rec.tags : [],
+    tags: normalizeTags(rec.tags),
     links: extractLinks(rec.body),
     // Auto-extracted topics (kept in the index so the graph/dashboard/omni use them
     // without decrypting bodies — same reason tags/links live here). Attached by the
@@ -125,7 +129,7 @@ export async function saveNote(note) {
     id: note.id,
     title: (note.title || '').trim() || deriveTitle(note.body),
     body: String(note.body || ''),
-    tags: Array.isArray(note.tags) ? note.tags : [],
+    tags: normalizeTags(note.tags),
     createdAt: note.createdAt || now,
     updatedAt: now,
     // Provenance ledger: who (human / which agent) wrote each run of the body, and
@@ -232,7 +236,7 @@ export async function importNotes(list, { mode = 'merge' } = {}) {
       id: rec.id,
       title: (rec.title || '').trim() || deriveTitle(rec.body),
       body: String(rec.body || ''),
-      tags: Array.isArray(rec.tags) ? rec.tags : [],
+      tags: normalizeTags(rec.tags),
       createdAt: rec.createdAt || now,
       updatedAt: rec.updatedAt || now,
       // Restore the note's related artifacts verbatim — co-writer/agent provenance,

@@ -24,14 +24,31 @@ const extDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url
 const BUDGET = {
   // Chat first: providers.js and the turn harness behind it (169 KB) load on the first turn,
   // not to paint the box. Tightened the moment that landed — the ratchet only turns one way.
-  'sidepanel.js': 770,
+  //
+  // 770 → 776 for the shared tag vocabulary (js/events/tags.js, 8.6 KB), reached through
+  // store.js / store-meetings.js — both boot dependencies, and both WRITERS, which is
+  // where a tag has to be normalized. See the background.js note: it is the same 8.6 KB,
+  // for the same reason, and it is the only part of tagging that lands on a boot path.
+  // Everything else the feature added is deferred: the chip/filter control (tag-bar.js),
+  // the inline rename (editable-title.js), the naming ladder (events/titles.js) and the
+  // panel's glue for all three (meeting-labels.js) are `await import()`ed at their call
+  // sites and appear in no entry point's static graph — test-tag-ui.mjs asserts that.
+  'sidepanel.js': 776,
   'settings.js': 1120,
   'notes.js': 910,
   // The worker is the one that regressed. It carries jobs, warm sync and unattended backup
   // because a worker cannot reach a module it did not import statically, and all three were
   // silently dead before. This ceiling is deliberately close to today's cost so the next
   // addition has to be argued for rather than absorbed.
-  'background.js': 500,
+  //
+  // 500 → 506 for the shared tag vocabulary (js/events/tags.js, 8.6 KB). Tags are
+  // normalized at WRITE time — one canonical form, or "#Design Review" on a note and
+  // `tag:design-review` on a meeting stop being the same tag — and the worker is a writer
+  // (meeting capture, capture-to-Inbox, the note tools). A worker cannot dynamic-import,
+  // so this one cannot be deferred. The 13 KB naming ladder that came with the same
+  // feature IS deferred: it lives behind js/meeting-autotitle.js and reaches no entry
+  // point's static graph.
+  'background.js': 506,
 };
 
 function staticGraph(entry) {

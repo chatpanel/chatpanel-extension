@@ -178,23 +178,99 @@ function extractBodyLinks(body) {
   return out;
 }
 
+// The tag vocabulary and the shared chip/filter controls are loaded on demand: neither
+// is needed to paint the list, and notes.js is on a first-paint budget.
+let _tagsMod = null;
+let _tagBarMod = null;
+const tagsMod = () => (_tagsMod ||= import('./js/events/tags.js'));
+const tagBarMod = () => (_tagBarMod ||= import('./js/tag-bar.js'));
+// Parsed from the search box. `src` is the query it was parsed FROM: on the very first
+// tagged query the module is still loading, so the filter lags the box by a microtask,
+// and applying a stale filter to a new query would show the wrong list for a frame.
+let noteTagFilter = { include: [], exclude: [], text: '', src: null };
+let tagFilterBar = null;
+let tagFilterMount = null; // in-flight first mount, so two renders can't mount two bars
+let noteTagEditor = null;
+
+// Parsing needs the module; until it has loaded once, the query is plain text (which is
+// exactly what it was before tags existed). Every later keystroke has it cached.
+async function primeTagFilter(query) {
+  const { parseTagQuery } = await tagsMod();
+  noteTagFilter = { ...parseTagQuery(query || ''), src: query || '' };
+  return noteTagFilter;
+}
+
+// The filter for THIS query, or null when it hasn't been parsed yet (see `src`).
+function tagFilterFor(query) {
+  if (noteTagFilter.src !== (query || '')) return null;
+  const { include, exclude } = noteTagFilter;
+  return include.length || exclude.length ? noteTagFilter : null;
+}
+
+function matchesTagFilter(n, { include, exclude }) {
+  const own = (n.tags || []).map((t) => String(t).toLowerCase());
+  if (exclude.some((t) => own.includes(t))) return false;
+  return include.every((t) => own.includes(t));
+}
+
+async function renderNoteTagFilter() {
+  const host = $('n-tagfilter');
+  if (!host) return;
+  // renderList runs on every keystroke, and the first call has to await two module loads
+  // — so the mount is claimed by a single in-flight promise. Without it, two renders that
+  // overlap that window each mount a bar into the same host.
+  if (!tagFilterBar) {
+    tagFilterMount ||= (async () => {
+      const [{ tagFacets }, { mountTagFilter }] = await Promise.all([tagsMod(), tagBarMod()]);
+      tagFilterBar = mountTagFilter(host, {
+        facets: tagFacets(list, (n) => n.tags, { selected: noteTagFilter.include }),
+        selected: noteTagFilter.include,
+        label: 'Tags',
+        onToggle: toggleNoteTagFilter,
+        onClear: () => { $('n-search').value = noteTagFilter.text || ''; onNotesSearch($('n-search').value); },
+      });
+    })();
+    await tagFilterMount;
+    return; // just painted with current state
+  }
+  const { tagFacets } = await tagsMod();
+  tagFilterBar.update({
+    facets: tagFacets(list, (n) => n.tags, { selected: noteTagFilter.include }),
+    selected: noteTagFilter.include,
+  });
+}
+
+// Clicking a pill edits the search box — one piece of state for "what is this list
+// filtered by", visible and undoable, and the typed `tag:` syntax does the same thing.
+async function toggleNoteTagFilter(tag) {
+  const { parseTagQuery, formatTagQuery, toggleTag } = await tagsMod();
+  const box = $('n-search');
+  const { include, exclude, text } = parseTagQuery(box.value);
+  box.value = formatTagQuery({ include: toggleTag(include, tag), exclude, text });
+  onNotesSearch(box.value);
+}
+
 function renderList(query = '') {
-  const raw = query.trim();
+  // With tag terms in the box, only the free-text remainder is what gets searched.
+  const filter = tagFilterFor(query);
+  const raw = (filter ? filter.text : query).trim();
   const q = raw.toLowerCase();
   const items = $('n-items');
+  const pool = filter ? list.filter((n) => matchesTagFilter(n, filter)) : list;
   let filtered;
   if (!q) {
-    filtered = list;
+    filtered = pool;
   } else if (nSearchMode === 'best' && nBm25 && _nIdxMod) {
     // Ranked relevance (BM25 over title + tags + preview). Fall back to a forgiving
     // substring pass when the ranker finds nothing (short/rare queries).
-    const byId = new Map(list.map((n) => [n.id, n]));
+    const byId = new Map(pool.map((n) => [n.id, n]));
     filtered = _nIdxMod.bm25Search(nBm25, raw).map((r) => byId.get(r.id)).filter(Boolean);
-    if (!filtered.length) filtered = list.filter((n) => noteSearchText(n).toLowerCase().includes(q));
+    if (!filtered.length) filtered = pool.filter((n) => noteSearchText(n).toLowerCase().includes(q));
   } else {
-    filtered = list.filter((n) => noteSearchText(n).toLowerCase().includes(q));
+    filtered = pool.filter((n) => noteSearchText(n).toLowerCase().includes(q));
   }
   renderNoteCap();
+  renderNoteTagFilter().catch(() => { /* the list renders with or without the bar */ });
   $('n-empty-list').classList.toggle('hidden', list.length > 0);
   items.innerHTML = '';
   for (const n of filtered) {
@@ -232,7 +308,10 @@ async function ensureNotesIndex() {
   return nBm25;
 }
 function onNotesSearch(v) {
+  // Repaint immediately with whatever filter is already parsed (keystrokes must not wait
+  // on a module load), then re-parse and repaint if the tag terms changed.
   renderList(v);
+  primeTagFilter(v).then(() => renderList(v)).catch(() => { /* plain-text search stands */ });
   // Best mode needs the ranker; build it once, then repaint with ranked order.
   if (nSearchMode === 'best' && v.trim() && !nBm25) {
     ensureNotesIndex().then(() => renderList($('n-search').value)).catch(() => { /* substring stays */ });
@@ -912,35 +991,27 @@ function scheduleStreamRender(paint) {
   _streamRaf = requestAnimationFrame(() => { _streamRaf = 0; paint(); });
 }
 
-function renderTags(tags) {
+// The chips are the SHARED control (js/tag-bar.js) — the same one the meetings and chats
+// dashboards use, so a tag looks and behaves identically wherever it is edited. Loaded on
+// demand: opening a note is a user action, not first paint.
+async function renderTags(tags) {
   const row = $('n-tags');
-  row.innerHTML = '';
-  for (const t of tags) {
-    const chip = document.createElement('span');
-    chip.className = 'tag-chip';
-    chip.innerHTML = `#${escapeHtml(t)} <button title="Remove tag" data-tag="${escapeHtml(t)}">×</button>`;
-    chip.querySelector('button').onclick = () => { current.tags = (current.tags || []).filter((x) => x !== t); renderTags(current.tags); scheduleSave(true); };
-    row.appendChild(chip);
-  }
-  const add = document.createElement('button');
-  add.className = 'tag-add';
-  add.textContent = '+ tag';
-  add.onclick = () => startTagInput(add);
-  row.appendChild(add);
-}
-function startTagInput(addBtn) {
-  const input = document.createElement('input');
-  input.className = 'tag-input';
-  input.placeholder = 'tag then ↵';
-  addBtn.replaceWith(input);
-  input.focus();
-  const commit = () => {
-    const val = input.value.trim().replace(/^#/, '').replace(/\s+/g, '-');
-    if (val && current && !(current.tags || []).includes(val)) { current.tags = [...(current.tags || []), val]; scheduleSave(true); }
-    renderTags(current?.tags || []);
+  if (!row) return;
+  const [{ mountTagEditor }, { tagFacets }] = await Promise.all([tagBarMod(), tagsMod()]);
+  const suggestions = tagFacets(list, (n) => n.tags, { limit: 40 });
+  const opts = {
+    tags: tags || [],
+    suggestions,
+    onSelect: (tag) => toggleNoteTagFilter(tag),
+    onChange: (next) => {
+      if (!current) return;
+      current.tags = next;
+      scheduleSave(true);
+      renderList($('n-search').value);
+    },
   };
-  input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } else if (e.key === 'Escape') renderTags(current?.tags || []); };
-  input.onblur = commit;
+  if (noteTagEditor && noteTagEditor.host === row) noteTagEditor.ctl.update(opts.tags, suggestions);
+  else noteTagEditor = { host: row, ctl: mountTagEditor(row, opts) };
 }
 
 async function openNote(id, preloaded = null) {

@@ -26,12 +26,13 @@
     <div class="layout" id="n-layout">
       <aside class="nlist">
         <div class="nlist-search">
-          <input id="n-search" class="search" type="search" placeholder="Search notes…" autocomplete="off" spellcheck="false" />
+          <input id="n-search" class="search" type="search" placeholder="Search notes — or tag:design" autocomplete="off" spellcheck="false" />
           <div class="seg" id="n-modes" role="tablist" aria-label="Search mode">
             <button data-mode="best" class="active" type="button" title="Ranked relevance across title, tags & preview">Best match</button>
             <button data-mode="exact" type="button" title="Literal substring match">Exact text</button>
           </div>
         </div>
+        <div id="n-tagfilter" hidden></div>
         <div id="n-items" class="nitems"></div>
         <div id="n-empty-list" class="list-empty hidden">
           <p>No notes yet.</p>

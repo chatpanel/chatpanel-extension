@@ -1,4 +1,5 @@
 import { bm25Search, buildIndex } from './meeting-index.js';
+import { parseTagQuery, filterByTags, tagsSearchText } from './events/tags.js';
 
 function meetingTime(entry = {}) {
   return entry.endedAt || entry.startedAt || 0;
@@ -14,20 +15,27 @@ export function meetingSearchText(entry = {}, detail = {}) {
     entry.title || '',
     rec.title || '',
     entry.meetingKey || '',
+    tagsSearchText(entry.tags?.length ? entry.tags : rec.tags),
     notes,
     transcript,
     chat,
     participants,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 export function rankMeetingEntries(entries = [], query = '', detailsById = new Map(), { mode = 'smart' } = {}) {
-  const q = String(query || '').trim();
   const byRecency = (a, b) => meetingTime(b) - meetingTime(a);
-  if (!q) return [...entries].sort(byRecency);
+  // Tag terms narrow; the rest of the query ranks within what's left. See
+  // rankConversationEntries — the two lists behave identically on purpose.
+  const { include, exclude, text } = parseTagQuery(query);
+  const tagged = (include.length || exclude.length)
+    ? filterByTags(entries, { include, exclude }, (e) => (e.tags?.length ? e.tags : detailsById.get(e.id)?.rec?.tags))
+    : entries;
+  const q = String(text || '').trim();
+  if (!q) return [...tagged].sort(byRecency);
   const qLower = q.toLowerCase();
 
-  const docs = entries.map((entry) => ({
+  const docs = tagged.map((entry) => ({
     id: entry.id,
     entry,
     text: meetingSearchText(entry, detailsById.get(entry.id) || {}),

@@ -26,11 +26,12 @@
     </header>
     <div class="layout">
       <aside class="mlist">
-        <input id="m-search" class="search" type="search" placeholder="Search all meetings — transcripts, notes & attendees…" />
+        <input id="m-search" class="search" type="search" placeholder="Search meetings — or tag:design" />
         <div class="seg" id="m-modes">
           <button data-mode="smart" class="active" type="button" title="Ranked search across title, notes, transcript and attendees">Best match</button>
           <button data-mode="keyword" type="button" title="Literal text match across title, notes, transcript and attendees">Exact text</button>
         </div>
+        <div id="m-tagfilter" hidden></div>
         <div id="m-items"></div>
         <button id="m-clear-all" class="mlist-clear hidden" type="button">Clear all meetings</button>
       </aside>

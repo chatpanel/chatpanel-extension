@@ -87,7 +87,9 @@ assert.match(meetings, /export async function getMeetingThread/, 'the binding mu
 assert.match(meetings, /export async function setMeetingThread/, 'and writable exactly once per meeting.');
 assert.match(
   meetings,
-  /remove\(\[meetingKey\(id\)[^\]]*threadKey\(id\)\]\)/,
+  // Not anchored to the end of the list: the meeting's side keys grow (the title/tags
+  // meta key landed after this), and what matters is that the thread goes with it.
+  /remove\(\[meetingKey\(id\)[^\]]*threadKey\(id\)[^\]]*\]\)/,
   'deleting a meeting must take its thread binding with it — an orphan is a quiet leak.',
 );
 assert.match(
