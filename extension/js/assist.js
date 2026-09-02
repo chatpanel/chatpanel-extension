@@ -2,7 +2,8 @@
 // model (whatever agent/endpoint is currently selected). Shared by the side-panel
 // composer and the Skills editor. Costs nothing extra: it runs on the user's own
 // model, never a ChatPanel-hosted one.
-import { streamChat } from './providers.js';
+// providers.js is imported at the call site, not here: this module is on the side panel's
+// first paint and providers pulls 169 KB of turn machinery that no paint needs.
 import { getTarget, resolveTarget } from './store.js';
 
 // "Preserve any {{placeholders}} verbatim" without naming them is how models came to
@@ -43,7 +44,7 @@ export async function assistPrompt({ draft, settings, onDelta, signal }) {
     ? `Improve and expand this into a complete, well-structured prompt:\n\n"""\n${d}\n"""`
     : 'Write a useful, well-structured starter prompt for an AI assistant that works over web-page context.';
   let out = '';
-  await streamChat({
+  await (await loadStreamChat())({
     agent: { ...agent, systemPrompt: await system(), temperature: 0.4 },
     messages: [{ role: 'user', content: instruction }],
     settings,
@@ -56,4 +57,10 @@ export async function assistPrompt({ draft, settings, onDelta, signal }) {
     onEvent: () => {},
   });
   return out.trim();
+}
+
+/** The turn runner, fetched when a turn is actually run. Module resolution is cached, so
+ *  the first call pays once and the rest are free. */
+async function loadStreamChat() {
+  return (await import('./providers.js')).streamChat;
 }

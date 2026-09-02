@@ -20,11 +20,19 @@ import {
   updateSettings,
   meetingNotesSkill,
 } from './js/store.js';
-import { streamChat as _streamChat, checkBridge, listModels, smallestModel, previewRedaction } from './js/providers.js';
+// providers.js is NOT imported here. It is 122 KB and drags the turn harness, the PII
+// detector and the source contracts behind it — 169 KB in all — and none of it is needed to
+// PAINT a chat box. The panel's first job is to be a usable chat interface against one valid
+// target; the machinery for actually running a turn loads on the first turn, which is already
+// an async user action and cannot tell the difference. Every use below imports at its call
+// site. See tools/test-first-paint-budget.mjs.
 
 // Tag side-panel model calls with the 'chat' surface for token accounting,
 // keyed to the active conversation (unless a caller passes its own usage ctx).
-const streamChat = (opts = {}) => _streamChat({ ...opts, usage: opts.usage || { surface: 'chat', sourceId: state?.conv?.id } });
+const streamChat = async (opts = {}) => {
+  const { streamChat: run } = await import('./js/providers.js');
+  return run({ ...opts, usage: opts.usage || { surface: 'chat', sourceId: state?.conv?.id } });
+};
 import {
   listTabs,
   getActiveTab,
@@ -1353,6 +1361,7 @@ function agentAvailability(target) {
 }
 
 async function refreshBridge() {
+  const { checkBridge } = await import('./js/providers.js');
   state.bridge = await checkBridge(state.settings.bridgeUrl);
   renderAgentName();
 }
@@ -5668,6 +5677,7 @@ async function runPiiPreview() {
   if (!draft.trim()) { panel.classList.add('hidden'); return; }
   const seq = ++_piiPreviewSeq;
   try {
+    const { previewRedaction } = await import('./js/providers.js');
     const { redacted, spans } = await previewRedaction(state.settings, draft);
     if (seq !== _piiPreviewSeq || !piiPreviewEnabled()) return; // stale keystrokes raced us
     let html = escapeAttr(redacted).replace(/\[\[[A-Z][A-Z0-9_]*_\d+\]\]/g, (m) => `<mark>${m}</mark>`);
@@ -8067,6 +8077,7 @@ async function smallModelFor(target) {
   if (acSmallModel.has(key)) return acSmallModel.get(key) || target.model;
   let small = null;
   try {
+    const { listModels, smallestModel } = await import('./js/providers.js');
     small = smallestModel(await listModels(target));
   } catch {
     /* listing unavailable — fall back below */

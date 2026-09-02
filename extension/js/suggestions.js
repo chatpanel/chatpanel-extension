@@ -17,7 +17,8 @@
 //     the same contract can later be served as a hosted value-added API
 //     (api.chatpanel.net) or ported into the gateway by adding a `hosted` entry,
 //     without touching callers.
-import { streamChat } from './providers.js';
+// providers.js is imported at the call site, not here: this module is on the side panel's
+// first paint and providers pulls 169 KB of turn machinery that no paint needs.
 import { createFallbackChain } from './model-fallback.js';
 import { getTarget, resolveTarget } from './store.js';
 
@@ -96,7 +97,7 @@ export async function getMeetingSuggestions({ meeting, settings, signal } = {}) 
     + `\n\nRECENT TRANSCRIPT:\n${String(meeting.transcript || '').slice(-4000)}\n\nReturn a JSON array of 4 question strings.`;
   const { items } = await runWithFallback(settings, async (agent) => {
     let out = '';
-    await streamChat({
+    await (await loadStreamChat())({
       agent: { ...agent, systemPrompt: sys },
       settings,
       signal,
@@ -131,7 +132,7 @@ const PROVIDERS = {
     // candidate instead of ending the feature.
     const { items } = await runWithFallback(settings, async (agent) => {
       let out = '';
-      await streamChat({
+      await (await loadStreamChat())({
         agent: { ...agent, systemPrompt: sys },
         settings,
         signal,
@@ -307,4 +308,10 @@ async function cacheSet(origin, items) {
   try {
     await chrome.storage.session.set({ [CACHE_PREFIX + origin]: { ts: Date.now(), items } });
   } catch { /* best effort */ }
+}
+
+/** The turn runner, fetched when a turn is actually run. Module resolution is cached, so
+ *  the first call pays once and the rest are free. */
+async function loadStreamChat() {
+  return (await import('./providers.js')).streamChat;
 }
