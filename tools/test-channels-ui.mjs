@@ -151,6 +151,28 @@ assert.match(js, /\(unavailable\)/,
   'a configured target that is currently offline must still show as the selection');
 assert.match(js, /kind === 'model' \? \{ model: id \} : \{ agent: id \}/, 'one choice, one field');
 
+// ── an API key only leaves the browser with consent, one at a time ──────────────
+// A phone answers with the browser closed, so whatever answers it must hold the credential
+// outside the browser — that is a constraint, not a preference. Given it, the gateway is the
+// right holder (0600 config, SSRF guard, redaction, spend metering). What must NOT happen is
+// moving keys on the user's behalf: bulk-migrating every key the moment a gateway appears is
+// the easy version and exactly what costs a privacy product its trust.
+assert.match(js, /function publishableEndpoints/, 'the user\'s own APIs should be offerable');
+assert.match(js, /group\('Your APIs — one tap to enable', toPublish\)/);
+assert.match(js, /gatewayReachable \? publishableEndpoints/,
+  'do not offer publishing when there is no gateway to publish to — that is a dead option');
+assert.match(js, /confirmLabel: 'Publish to gateway'/,
+  'publishing a credential must be confirmed, not inferred from a dropdown change');
+assert.match(js, /if \(!ok\) \{ await renderChannels\(\); return; \}/,
+  'declining must put the picker back, not leave it showing a target that was never enabled');
+assert.match(js, /copies the API key/, 'and the dialog must say what actually happens');
+assert.match(js, /readable only by your user account/, 'including who can read it afterwards');
+assert.doesNotMatch(js, /publishAllEndpoints|migrateAllKeys/, 'one key at a time — least privilege');
+// Read-modify-write: a destinations array built from a half-loaded editor would silently drop
+// destinations the user already had.
+assert.match(js, /const existing = Array\.isArray\(cfg\?\.destinations\)/,
+  'publishing must merge into the gateway config, never replace it');
+
 const store = read('js/store.js');
 assert.match(store, /const SECRET_FIELDS = \['bridgeToken'\]/,
   'the bridge token grants every privileged route — seal it like an API key');

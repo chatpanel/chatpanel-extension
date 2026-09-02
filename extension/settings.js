@@ -6074,7 +6074,7 @@ async function renderChannels() {
   // gateway" fail in different ways and the user should be able to tell which they picked.
   const agentSel = $('ch-agent');
   const { channelTargets } = await channelsMod();
-  const { agents, models } = await channelTargets({
+  const { agents, models, gateway: gatewayReachable } = await channelTargets({
     bridgeAgents: bridgeState?.agents || [],
     gatewayUrl: settings.gatewayUrl || '',
   });
@@ -6088,6 +6088,11 @@ async function renderChannels() {
   };
   group('Agents — on this machine', agents);
   group('Models — via the gateway', models);
+  // Only when a gateway is actually there to publish to. Offering this without one would be a
+  // dead option, and telling someone to install a second component to answer a text is exactly
+  // the onboarding we said we would not have.
+  const toPublish = gatewayReachable ? publishableEndpoints(models.map((m) => m.id)) : [];
+  group('Your APIs — one tap to enable', toPublish);
   const current = st.settings.model ? `model:${st.settings.model}` : `agent:${st.settings.agent}`;
   // A target that is configured but not currently offered (the gateway is down, an agent was
   // uninstalled) must still show as the selection — silently switching what answers is worse
@@ -6218,6 +6223,47 @@ function watchPairing(expiresAt) {
   if (countdown) countdown.textContent = `expires in ${mmss(deadline - Date.now())}`;
 }
 
+// The endpoints the user has configured here that the gateway cannot route yet.
+//
+// SECURITY, STATED PLAINLY. A phone-driven turn happens with the browser closed, so whatever
+// answers it must hold the credential outside the browser — there is no arrangement where an
+// API key stays only in extension storage AND a text message gets an answer from it. That is a
+// constraint, not a preference. Given it, the gateway is the right holder: it already writes
+// its config 0600, guards SSRF, redacts, and meters spend.
+//
+// What we do NOT do is move keys on the user's behalf. Publishing happens one endpoint at a
+// time, at the moment they choose it, with the consequence on screen — least privilege, and
+// consent where it is actually meaningful. Bulk-migrating every key the moment a gateway
+// appears would be the easy version and exactly the thing that costs a privacy product trust.
+function publishableEndpoints(routable) {
+  const known = new Set(routable);
+  return (settings.endpoints || [])
+    .filter((e) => e && !e.builtin && e.baseUrl && e.enabled !== false && (e.model || e.name))
+    .filter((e) => !known.has(e.model) && !known.has(e.name))
+    .map((e) => ({ kind: 'publish', id: e.model || e.name, label: `${e.name || e.model}`, endpoint: e }));
+}
+
+/** Publish ONE endpoint as a gateway destination, merging rather than replacing. */
+async function publishEndpointToGateway(endpoint) {
+  const url = normalizeGatewayUrl(settings.gatewayUrl || 'http://127.0.0.1:4320');
+  await handshakeGatewayToken(url);
+  // Read-modify-write: posting a destinations array built from a half-loaded editor would
+  // silently drop the ones the user already had.
+  const cfg = await getGatewayConfig(url);
+  const existing = Array.isArray(cfg?.destinations) ? cfg.destinations : [];
+  const dest = {
+    id: endpoint.name || endpoint.model,
+    type: 'api',
+    baseUrl: endpoint.baseUrl,
+    protocol: endpoint.kind === 'anthropic' ? 'anthropic' : 'openai',
+    models: [endpoint.model].filter(Boolean),
+    ...(endpoint.apiKey ? { apiKey: endpoint.apiKey } : {}),
+  };
+  const merged = [...existing.filter((d) => d?.id !== dest.id), dest];
+  await setGatewayConfig(url, { destinations: merged });
+  return dest.models[0] || dest.id;
+}
+
 // The QR for a pairing link. Drawn locally (js/qr.js) — a code that enrolls a phone against
 // this machine must not be handed to a third-party chart service to render, and the CSP would
 // refuse the script anyway. Imported at the call site: nobody pays for an encoder until they
@@ -6302,9 +6348,38 @@ function wireChannels() {
       renderChannels();
     } catch (e) { chError('ch-error-live', e.message); }
   };
-  $('ch-agent').onchange = () => {
-    const [kind, ...rest] = String($('ch-agent').value).split(':');
+  $('ch-agent').onchange = async () => {
+    const sel = $('ch-agent');
+    const [kind, ...rest] = String(sel.value).split(':');
     const id = rest.join(':');
+    if (kind === 'publish') {
+      const ep = (settings.endpoints || []).find((e) => (e.model || e.name) === id);
+      const { confirmDelete } = await import('./js/confirm-modal.js');
+      const ok = ep && await confirmDelete({
+        title: `Let your phone use ${ep.name || ep.model}?`,
+        // Say what actually happens. A phone answers with the browser closed, so the key has
+        // to live somewhere that is awake — this names where, and who can read it.
+        body: `This copies the API key for ${ep.name || ep.model} into the gateway's config on `
+          + 'this machine, readable only by your user account, so it can answer while your '
+          + 'browser is closed. Nothing is uploaded. Remove it any time from the Gateway tab.',
+        confirmLabel: 'Publish to gateway',
+        // A key icon, not the default trash: this dialog is about moving a credential, and a
+        // bin glyph above "Publish" reads as the opposite of what the button does.
+        icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+          + 'stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/>'
+          + '<path d="M10.7 12.3 21 2"/><path d="m18 5 3 3"/><path d="m15 8 3 3"/></svg>',
+      });
+      if (!ok) { await renderChannels(); return; }
+      try {
+        const model = await publishEndpointToGateway(ep);
+        await push({ model });
+        toast(`${ep.name || ep.model} can now answer your phone`);
+      } catch (e) {
+        toast(`Could not publish: ${e.message}`, 5000);
+      }
+      await renderChannels();
+      return;
+    }
     // One choice: the service clears whichever field was not sent, so a stale target cannot
     // win over the one just picked.
     push(kind === 'model' ? { model: id } : { agent: id });
