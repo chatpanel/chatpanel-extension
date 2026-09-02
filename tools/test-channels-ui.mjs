@@ -185,6 +185,24 @@ assert.doesNotMatch(js, /publishAllEndpoints|migrateAllKeys/, 'one key at a time
 assert.match(js, /const existing = Array\.isArray\(cfg\?\.destinations\)/,
   'publishing must merge into the gateway config, never replace it');
 
+// ── a signed-in endpoint must not be offered, and must not vanish silently ──────
+// Its credential is not a key that can be copied: it is a short-lived access token the
+// BROWSER refreshes. Publishing a snapshot buys a phone that works for an hour and then
+// returns 401 with nothing to explain it — a time-delayed failure is worse than an absent
+// feature. (Publishing one is what produced "401, cookie auth missing".)
+assert.match(js, /function isOAuthEndpoint/, 'the picker must know which endpoints sign in');
+assert.match(js, /\.filter\(\(e\) => !isOAuthEndpoint\(e\)\)/, 'and must not offer them for publishing');
+assert.match(js, /id="ch-oauth-note"|ch-oauth-note/, 'and must say where they went');
+assert.match(html, /id="ch-oauth-note"/, 'the note needs somewhere to render');
+assert.match(js, /only \s*'\s*\+\s*'your browser can renew it|only .{0,40}browser can renew it/,
+  'the reason has to be the actual reason, not "unsupported"');
+
+// Publishable is matched on the DESTINATION id, never on model ids: with 621 models
+// aggregated from three providers, matching on models hid any endpoint whose model another
+// provider also serves — which is how a configured Groq endpoint disappeared.
+assert.match(js, /publishableEndpoints\(gwDests\.map\(\(d\) => d && d\.id\)\)/,
+  'an endpoint is published or not; what other providers serve says nothing about it');
+
 const store = read('js/store.js');
 assert.match(store, /const SECRET_FIELDS = \['bridgeToken'\]/,
   'the bridge token grants every privileged route — seal it like an API key');

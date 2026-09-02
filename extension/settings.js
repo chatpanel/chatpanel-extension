@@ -6073,6 +6073,10 @@ async function renderChannels() {
   // Grouped rather than merged, because "a CLI on this machine" and "an API key in the
   // gateway" fail in different ways and the user should be able to tell which they picked.
   const agentSel = $('ch-agent');
+  // The Channels tab can render before the Agents tab has ever checked the bridge, and an
+  // empty agent list silently drops the whole "Agents" group — the models then reappear at the
+  // bottom labelled (chatpanel-bridge), which is the same list with the structure removed.
+  if (!bridgeState?.ok) bridgeState = await checkBridge(settings.bridgeUrl);
   const { channelTargets } = await channelsMod();
   // The configured destinations are what the user actually set up, so they decide which model
   // represents each provider. Best-effort: without the admin token channelTargets falls back
@@ -6091,10 +6095,15 @@ async function renderChannels() {
     destinations: gwDests,
   });
   agentSel.innerHTML = '';
+  // A native <select> honours almost no CSS on an optgroup, and the default label is a faint
+  // grey line that reads as another entry. Rules drawn INTO the label survive everywhere and
+  // make the boundaries unmistakable, which is the whole job here: 600+ options with invisible
+  // seams is one list, not four groups.
+  const RULE = '──────────';
   const group = (label, items) => {
     if (!items.length) return;
     const g = document.createElement('optgroup');
-    g.label = label;
+    g.label = `${RULE}  ${label}  ${RULE}`;
     for (const it of items) g.append(new Option(it.label, `${it.kind}:${it.id}`));
     agentSel.append(g);
   };
@@ -6106,10 +6115,25 @@ async function renderChannels() {
   // Only when a gateway is actually there to publish to. Offering this without one would be a
   // dead option, and telling someone to install a second component to answer a text is exactly
   // the onboarding we said we would not have.
-  const known = [...providers, ...models].map((m) => m.id);
-  const toPublish = gatewayReachable ? publishableEndpoints(known) : [];
+  const toPublish = gatewayReachable ? publishableEndpoints(gwDests.map((d) => d && d.id)) : [];
   group('Your APIs — one tap to enable', toPublish);
   group(`All models (${models.length})`, models);
+
+  // Name what was left out. A user who configured a signed-in endpoint and cannot find it in
+  // this list has no way to tell whether it is unsupported, broken, or their mistake.
+  const signedIn = (settings.endpoints || [])
+    .filter((e) => e && !e.builtin && e.enabled !== false && isOAuthEndpoint(e))
+    .map((e) => e.name || e.model)
+    .filter(Boolean);
+  const note = $('ch-oauth-note');
+  if (note) {
+    note.classList.toggle('hidden', !signedIn.length);
+    note.textContent = signedIn.length
+      ? `${signedIn.join(', ')} ${signedIn.length === 1 ? 'signs' : 'sign'} in with your account rather `
+        + 'than an API key, so it cannot answer your phone yet: the session is short-lived and only '
+        + 'your browser can renew it. Use an API-key endpoint or an agent for now.'
+      : '';
+  }
   const current = st.settings.model ? `model:${st.settings.model}` : `agent:${st.settings.agent}`;
   // A target that is configured but not currently offered (the gateway is down, an agent was
   // uninstalled) must still show as the selection — silently switching what answers is worse
@@ -6252,11 +6276,29 @@ function watchPairing(expiresAt) {
 // time, at the moment they choose it, with the consequence on screen — least privilege, and
 // consent where it is actually meaningful. Bulk-migrating every key the moment a gateway
 // appears would be the easy version and exactly the thing that costs a privacy product trust.
-function publishableEndpoints(routable) {
-  const known = new Set(routable);
+// Endpoints that sign in rather than carry a key. Detected the same way the request path
+// detects them, so the picker and the actual call agree about what an endpoint is.
+function isOAuthEndpoint(ep) {
+  return !!(ep?.authMode && ep.authMode !== 'key' && ep.authMode !== 'none');
+}
+
+function publishableEndpoints(publishedIds) {
+  // Matched on the DESTINATION id, not on model ids. Matching on models hid any endpoint whose
+  // model some OTHER provider also offers — with 621 models aggregated from three providers
+  // that is most of them, so a configured Groq or Together endpoint simply never appeared and
+  // looked unsupported. A destination exists or it does not; what other providers happen to
+  // serve says nothing about whether YOURS is published.
+  const known = new Set(publishedIds);
   return (settings.endpoints || [])
     .filter((e) => e && !e.builtin && e.baseUrl && e.enabled !== false && (e.model || e.name))
-    .filter((e) => !known.has(e.model) && !known.has(e.name))
+    .filter((e) => !known.has(e.name || e.model))
+    // A signed-in endpoint cannot be published, and offering it would be worse than hiding it.
+    // Its credential is not a key we could copy — it is a short-lived access token that the
+    // BROWSER refreshes with a refresh token when it expires. Publishing a snapshot of it gives
+    // a phone that works for an hour and then returns 401 with nothing to explain it: a
+    // time-delayed failure is harder to diagnose than an absent feature. See the note below the
+    // picker, which names them rather than leaving the user to wonder where they went.
+    .filter((e) => !isOAuthEndpoint(e))
     .map((e) => ({ kind: 'publish', id: e.model || e.name, label: `${e.name || e.model}`, endpoint: e }));
 }
 

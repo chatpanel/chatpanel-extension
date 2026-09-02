@@ -1229,3 +1229,14 @@ hr.sep { border: none; border-top: 1px solid var(--border); margin: 16px 0 14px;
 .ch-qr { background: #fff; padding: 10px; border-radius: 10px; line-height: 0; flex: 0 0 auto; }
 .ch-qr svg { display: block; width: 168px; height: 168px; }
 .ch-qr .ch-qr-fail { display: block; line-height: 1.4; font-size: 12px; color: #b45309; max-width: 168px; }
+
+/* The channel target picker carries 600+ options across four groups. Chromium honours a
+   little styling on optgroup — weight and colour — so the headings stop reading as entries;
+   the drawn rules in the label do the rest where it honours nothing. */
+#ch-agent optgroup {
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: .04em;
+  color: var(--muted, #6b7280);
+}
+#ch-agent option { font-weight: 400; }

@@ -150,6 +150,10 @@ async function bridgeVersion(conn) {
  * missing gateway is not an error — it is the normal case for someone who has only installed
  * the bridge, and the picker simply shows agents.
  */
+// How the gateway labels the models it reaches through the bridge. They are agents, and they
+// belong in the agents group whatever the bridge itself managed to report.
+const BRIDGE_OWNER = 'chatpanel-bridge';
+
 export async function channelTargets({ bridgeAgents = [], gatewayUrl = '', destinations = [] } = {}) {
   const agents = bridgeAgents
     .filter((a) => a.available)
@@ -181,6 +185,14 @@ export async function channelTargets({ bridgeAgents = [], gatewayUrl = '', desti
       const owner = m.owned_by || '';
       if (owner && !agentIds.has(m.id) && !firstByOwner.has(owner)) firstByOwner.set(owner, m.id);
     }
+    // A gateway-reachable agent the bridge did not report (it was still starting, or is not
+    // running at all) still belongs at the top rather than vanishing from the picker.
+    for (const m of all) {
+      if (m.owned_by === BRIDGE_OWNER && !agentIds.has(m.id)) {
+        agents.push({ kind: 'agent', id: m.id, label: m.id });
+        agentIds.add(m.id);
+      }
+    }
     const configured = destinations.filter((d) => d && d.type === 'api' && d.id);
     const providers = (configured.length
       ? configured.map((d) => ({ id: (d.models || []).find(Boolean) || firstByOwner.get(d.id), owner: d.id }))
@@ -191,8 +203,11 @@ export async function channelTargets({ bridgeAgents = [], gatewayUrl = '', desti
     const promoted = new Set(providers.map((p) => p.id));
     const models = all
       // An agent the gateway also exposes is already in the list under its own name; showing
-      // it twice makes the user choose between two spellings of one thing.
-      .filter((m) => !agentIds.has(m.id) && !promoted.has(m.id))
+      // it twice makes the user choose between two spellings of one thing. Filtered by OWNER
+      // as well as by id, because the id match only works when the bridge answered in time —
+      // and when it had not, every agent reappeared at the bottom as "codex (chatpanel-bridge)"
+      // while the Agents group sat empty and hidden.
+      .filter((m) => !agentIds.has(m.id) && !promoted.has(m.id) && m.owned_by !== BRIDGE_OWNER)
       .map((m) => ({ kind: 'model', id: m.id, label: m.owned_by ? `${m.id}  (${m.owned_by})` : m.id }));
     return { agents, providers, models, gateway: true };
   } catch {
