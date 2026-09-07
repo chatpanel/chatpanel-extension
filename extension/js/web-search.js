@@ -23,6 +23,7 @@
 // so a poisoned SERP can't make us fetch the local bridge / cloud metadata / LAN.
 
 import { assertFetchable, stripResourceTags, extractReadable } from './context.js';
+import { waitForTabComplete as tabWait } from './tab-nav.js';
 import { FREE_LIMITS } from './license.js';
 import { defineSearchEngine, reconcileEngines, attemptOrder } from './events/search-engines.js';
 
@@ -294,20 +295,11 @@ async function fetchContent(url, reader, tabFallback) {
 // session). When a fetch yields nothing, load the SERP in a background tab, grab
 // its rendered HTML, and parse that with the SAME parseSerp. Used only on miss, so
 // the common case (Startpage/Mojeek) stays tab-free.
-function waitForTabComplete(tabId) {
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      try { chrome.tabs.onUpdated.removeListener(listener); } catch {}
-      setTimeout(resolve, RENDER_SETTLE_MS);
-    };
-    function listener(id, info) { if (id === tabId && info.status === 'complete') finish(); }
-    chrome.tabs.onUpdated.addListener(listener);
-    setTimeout(finish, NAV_TIMEOUT_MS);
-  });
-}
+//
+// The wait itself moved to js/tab-nav.js when the page tools needed the same one. The
+// constants stay HERE and are passed in: this caller tuned them against real SERPs, and a
+// shared default that quietly changed them would change search behaviour to fix navigation.
+const waitForTabComplete = (tabId) => tabWait(tabId, { timeoutMs: NAV_TIMEOUT_MS, settleMs: RENDER_SETTLE_MS });
 
 async function fetchHtmlViaTab(url) {
   try { assertFetchable(url); } catch { return null; }

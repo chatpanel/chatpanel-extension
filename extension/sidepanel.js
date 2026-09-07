@@ -206,14 +206,28 @@ const pageActionNeedsConfirm = (name) => !READONLY_PAGE_TOOLS.has(name);
 // as them on same-origin APIs), so a blanket approval given for ordinary clicking
 // must not silently extend to it. Every call is shown in full and approved on its
 // own, and approving one never marks the origin trusted.
-const ALWAYS_CONFIRM_TOOLS = new Set(['eval_js']);
+// GOING SOMEWHERE is on this list for the same reason. A site grant means "you may act on
+// THIS site"; opening or navigating to a different one is by definition outside it, and the URL
+// is chosen by a model that has been reading meeting captions and page text. So every
+// navigation is approved on its own, with the URL in front of the user, and approving one never
+// marks anything trusted.
+const ALWAYS_CONFIRM_TOOLS = new Set(['eval_js', 'open_tab', 'navigate']);
 const originOf = (url) => { try { return new URL(url).origin; } catch { return ''; } };
+/** The origin a tab is on RIGHT NOW; the turn's original origin if it cannot be read. */
+async function currentTabOrigin(tabId, fallback = '') {
+  if (tabId == null) return fallback;
+  try { return originOf((await chrome.tabs.get(tabId))?.url || '') || fallback; } catch { return fallback; }
+}
 
 function describePageAction(name, input = {}, host = 'this page') {
   const clip = (s, n = 60) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) + '…' : s; };
   switch (name) {
     case 'fill_form': { const n = Array.isArray(input.fields) ? input.fields.length : 0; return `Fill ${n || ''} field${n === 1 ? '' : 's'} (and possibly submit a form) on ${host}`; }
     case 'fill_combobox': return `Set a dropdown / combobox on ${host}`;
+    // The URL in full, and never clipped: this prompt IS the review of where the browser is
+    // about to go, and "https://accounts.google.com…" hides the half that matters.
+    case 'open_tab': return `Open a new tab at ${String(input.url || '')}`;
+    case 'navigate': return `Leave ${host} and go to ${String(input.url || '')}`;
     case 'click_element':
     case 'click_by_text': return `Click “${clip(input.text || input.selector || 'an element')}” on ${host}`;
     case 'click_mark': return `Click marked element #${input.mark ?? '?'} on ${host}`;
@@ -265,15 +279,20 @@ function confirmPageAction(detail) {
     body.textContent = detail;
     body.style.cssText = 'opacity:.92;margin-bottom:4px;word-break:break-word';
     const why = document.createElement('div');
-    why.textContent = 'Requested by the AI based on page / tool content — review before allowing.';
+    why.textContent = 'Requested by the AI based on page / tool content — review before allowing. Esc declines.';
     why.style.cssText = 'opacity:.6;font-size:11px;margin-bottom:12px';
     const rowEl = document.createElement('div');
     rowEl.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end';
     let settled = false;
     const done = (v) => { if (settled) return; settled = true; document.removeEventListener('keydown', onKey, true); ov.remove(); resolve(v); };
+    // ESCAPE IS A DECISION. Enter is NOT.
+    //
+    // Enter used to mean "allow" while the focused button was Decline — so the visible safe
+    // default and the one keystroke people press without reading disagreed, on the one dialog
+    // where that matters. Enter now does what it does on any focused button: activates THAT
+    // one, which is Decline until the user moves.
     const onKey = (e) => {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done('deny'); }
-      else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); done('allow'); }
     };
     const mk = (label, val, primary) => {
       const b = document.createElement('button');
@@ -286,7 +305,25 @@ function confirmPageAction(detail) {
     rowEl.append(denyBtn, mk('Allow for this site', 'site', false), mk('Allow', 'allow', true));
     card.append(title, body, why, rowEl);
     ov.append(card);
-    ov.addEventListener('mousedown', (e) => { if (e.target === ov) done('deny'); });
+    // A STRAY CLICK IS NOT AN ANSWER.
+    //
+    // A click on the backdrop used to decline — and declining is not a soft outcome here: the
+    // tool result tells the agent the user refused and MUST NOT retry, so the run stops and
+    // the prompt is gone with no way to bring it back. The card sits at the BOTTOM of the
+    // panel, so "clicked somewhere else" means anywhere in the conversation above it, which is
+    // most of the panel. Reported exactly that way: "I accidentally clicked somewhere else
+    // while it is asking permissions, and I lose the permission that needs to be fixed."
+    //
+    // So the dialog now insists on an answer, the way a browser's own permission prompt does.
+    // Escape and Decline are both still one action away — what is gone is deciding by accident.
+    ov.addEventListener('mousedown', (e) => {
+      if (e.target !== ov) return;
+      card.animate?.(
+        [{ transform: 'translateX(0)' }, { transform: 'translateX(-6px)' }, { transform: 'translateX(6px)' }, { transform: 'translateX(0)' }],
+        { duration: 180, easing: 'ease-in-out' },
+      );
+      denyBtn.focus();
+    });
     document.addEventListener('keydown', onKey, true);
     document.body.appendChild(ov);
     denyBtn.focus(); // safe default
@@ -479,16 +516,27 @@ async function pageToolProvider(resolvedAgent) {
   };
   const guardedExecute = async (name, input, meta) => {
     const confirmOn = state.settings.ui?.pageActionConfirm !== false; // default ON
+    // WHERE THE TAB IS NOW, not where it was when this turn started.
+    //
+    // `pageOrigin` is resolved once, when the tools are built. That was already slightly
+    // wrong — the user can follow a link mid-turn — and `navigate` makes it trivially
+    // exploitable: grant "allow for this site" on a site you trust, have the model navigate
+    // away, and every click afterwards would be checked against the origin you left. Read at
+    // call time, so a grant stops the moment the page does.
+    const liveOrigin = await currentTabOrigin(state.activeTab?.id, pageOrigin);
     // An always-confirm tool ignores BOTH escape hatches: the global confirm
     // preference and any per-site trust already granted.
     const always = ALWAYS_CONFIRM_TOOLS.has(name);
     // The capability gate. On a site the user has never granted, the FIRST action asks —
     // whatever the confirm preference says — because that prompt IS the grant.
-    const ungranted = !siteGranted && !trustedActionOrigins.has(pageOrigin);
+    // A site grant resolved for the ORIGINAL origin says nothing about one the page has since
+    // moved to, so it only counts while the tab has not moved.
+    const stillThere = liveOrigin === pageOrigin;
+    const ungranted = !(siteGranted && stillThere) && !trustedActionOrigins.has(liveOrigin);
     const needs = always || ungranted
-      || (confirmOn && pageActionNeedsConfirm(name) && !trustedActionOrigins.has(pageOrigin));
+      || (confirmOn && pageActionNeedsConfirm(name) && !trustedActionOrigins.has(liveOrigin));
     if (needs) {
-      const host = pageOrigin ? pageOrigin.replace(/^https?:\/\//, '') : 'this page';
+      const host = liveOrigin ? liveOrigin.replace(/^https?:\/\//, '') : 'this page';
       const decision = await confirmPageAction(describePageAction(name, input, host));
       if (decision === 'deny') {
         toast('🖋 Action declined');
@@ -497,13 +545,16 @@ async function pageToolProvider(resolvedAgent) {
       }
       // "Allow for this site" must never grant standing permission to an
       // always-confirm tool — treat it as a one-time allow and record nothing.
-      if (decision === 'site' && pageOrigin && !always) {
-        trustedActionOrigins.add(pageOrigin);
+      if (decision === 'site' && liveOrigin && !always) {
+        trustedActionOrigins.add(liveOrigin);
         // Durable, not just this panel session: the user answered a question about a
         // site, and re-asking every restart is how a permission prompt becomes noise
         // people click through. Recorded under the same per-tenant key the settings
         // list shows and can revoke.
-        if (pagePolicy.siteKey) {
+        // The DURABLE grant is keyed by the siteKey the policy resolved, which describes the
+        // origin this turn started on. If the tab has moved, that key names the wrong site —
+        // so the allow stands for this session and nothing is written down.
+        if (pagePolicy.siteKey && stillThere) {
           state.settings = await updateSettings({
             ui: { pageSites: grantSite(state.settings.ui?.pageSites, pagePolicy.siteKey) },
           });

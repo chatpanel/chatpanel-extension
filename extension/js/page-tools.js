@@ -25,6 +25,9 @@ import {
   cdpCapturePointer, cdpEvaluate,
 } from './page-actions-cdp.js';
 import { SENSE_TOOL_SPECS, makeSenseExecutor } from './page-sense.js';
+// The same background-tab machinery web search has always used, and the same outbound-URL
+// guard — see js/tab-nav.js. Nothing new reaches the manifest.
+import { openTab, navigateTab } from './tab-nav.js';
 import { CALIBRATE_TOOL_SPEC, calibrateTurn } from './page-calibrate.js';
 
 // Harness guidance folded into the system prompt when page tools are armed.
@@ -40,7 +43,7 @@ export const PAGE_AUTOMATION_SYSTEM =
   // can do elsewhere is still its to do — see the capability note the relay adds.
   'TO SEE OR ACT ON THIS BROWSER TAB use only the ChatPanel browser tools provided here ' +
   '(read_page, inspect_page, screenshot, read_canvas, structured_insert, click_element, ' +
-  'click_by_text, click_at, type_text, press_key, fill_form, scroll, …) — they are the ONLY ' +
+  'click_by_text, click_at, type_text, press_key, fill_form, scroll, open_tab, navigate, …) — they are the ONLY ' +
   'tools connected to the user’s real, logged-in browser tab. This is a rule about the TAB, ' +
   'not about your other tools.\n' +
   // READING IS A FIRST-CLASS USE OF THIS TAB, and it was missing from the list above — every
@@ -56,6 +59,13 @@ export const PAGE_AUTOMATION_SYSTEM =
   '{"action":"read_page","args":{"query":"what X means"}} returns the matching sections in ' +
   'document order. Reading a long page whole, repeatedly, to hunt for one paragraph is the ' +
   'slow and expensive way; ask for what you need.\n' +
+  // GOING SOMEWHERE had no tool at all, so a model asked to "go to google.com and search"
+  // reached for eval_js, a shell, or its own fetch — and told the user it could not open a
+  // browser. Naming the tools is what stops that.
+  'TO GO SOMEWHERE call open_tab (a new tab, leaves the user where they are) or navigate (this ' +
+  'tab, so you can then read and drive what you opened). For a search, build the search URL — ' +
+  'open_tab {"url":"https://www.google.com/search?q=…"} — rather than loading a homepage and ' +
+  'typing into it. Never use a shell, your own fetch, or eval_js to open a page.\n' +
   'DO NOT FETCH THIS TAB\'S URL. Fetching, web-search, or any "read this link" tool of your own ' +
   'gets a ' +
   'DIFFERENT page from the one the user is looking at: not logged in, not rendered, often a ' +
@@ -285,6 +295,45 @@ async function annotateMarks(dataUrl, marks, vp) {
 // Provider-agnostic tool specs. providers.js maps these into OpenAI's
 // `{type:'function', function:{…}}` and Anthropic's `{name, input_schema}` shapes.
 export const PAGE_TOOL_SPECS = [
+  // GOING SOMEWHERE was the one thing this toolset could not do. Twenty-four actions and
+  // none of them opened a URL, so "go to google.com and search for X" — asked four different
+  // ways in one session — reached a model that had click, type and screenshot and no way to
+  // arrive anywhere. It resorted to eval_js window.open(), which is developer-only, needs
+  // trusted events, and is the single most privileged tool in the set: the workaround for a
+  // missing safe capability was the most dangerous one available.
+  {
+    name: 'open_tab',
+    description:
+      'Open a URL in a NEW browser tab. Use this for "go to X", "open X", "search for X" — for a '
+      + 'search, build the search URL directly (https://www.google.com/search?q=…) rather than '
+      + 'loading a homepage and typing into it. The user\'s current tab is left alone, and the page '
+      + 'tools keep pointing at it, so this does not let you read or act on what you opened — say '
+      + 'what you opened and stop there unless asked to drive it (that is `navigate`). '
+      + 'http and https only. The user approves every call and sees the exact URL.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Absolute http(s) URL to open.' },
+        focus: { type: 'boolean', description: 'Switch to the new tab (default true).' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'navigate',
+    description:
+      'Point the CURRENT tab at a URL and wait for it to load. The page tools then read and act on '
+      + 'the new page, so use this when you must DRIVE what you open — search, then click a result. '
+      + 'It replaces what the user is looking at, so prefer open_tab when they only want to see '
+      + 'something. Returns the URL and title actually reached (a redirect or a login wall means you '
+      + 'are somewhere else than you asked for — check before acting). http and https only. The user '
+      + 'approves every call and sees the exact URL.',
+    parameters: {
+      type: 'object',
+      properties: { url: { type: 'string', description: 'Absolute http(s) URL to load.' } },
+      required: ['url'],
+    },
+  },
   {
     name: 'read_page',
     description:
@@ -777,6 +826,27 @@ export function makePageToolExecutor(tabId, { cdp = false, adapter = null, devJs
   };
   return async function execute(name, input) {
     try {
+      // NAVIGATION FIRST, so nothing can shadow it. An adapter that declared `navigate`
+      // would otherwise take over the one action whose safety story is not the adapter's.
+      if (name === 'open_tab') {
+        // Deliberately NOT retargeting: the page tools stay on the tab the user is on. A model
+        // that could open a tab and then drive it would be acting on a page nobody has looked
+        // at yet, under a permission the user granted for a different site.
+        const r = await openTab(input?.url, { active: input?.focus !== false });
+        return JSON.stringify(r.error ? r : {
+          ...r,
+          note: 'Opened in a new tab. The page tools still read and act on the ORIGINAL tab, not this one — use navigate if you need to drive what you opened.',
+        });
+      }
+      if (name === 'navigate') {
+        // navigateTab WAITS: returning the instant the URL is set hands back a page that has
+        // not loaded, and every read or click after it silently applies to the old one.
+        const r = await navigateTab(tabId, input?.url);
+        return JSON.stringify(r.error || r.url === r.requested ? r : {
+          ...r,
+          note: 'You did not land on the URL you asked for — a redirect, a login wall or a consent page. Look before acting.',
+        });
+      }
       // Structured-editor adapter (e.g. Excalidraw): insert the app's native data
       // in one shot instead of pixel-driving. Only present when the active tab
       // matched an adapter AND the user is entitled (gated where the tool is added).
