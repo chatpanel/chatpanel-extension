@@ -81,8 +81,14 @@ assert.match(
 // ── and the panel binds it, on the fast model, falling back rather than losing it ─
 const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
 assert.match(panel, /actions\.fallback\(async \(cmd\) => \{/, 'the panel must bind the fallback');
-assert.match(panel, /spoken\.ambiguous \? await refineSpokenWithModel/,
-  'the model is paid for ONLY when the free pass declines to choose');
+// The model is ALWAYS asked when one is configured. The free pass can extract a request but
+// has no idea what KIND it is — it always says "question" — so "use the skill summarize" and
+// "take notes on what we discussed" both became questions and neither ever happened.
+// Choosing between ask / watch / write / run is the whole job of the classification.
+assert.match(panel, /let refined = await refineSpokenWithModel\(/,
+  'the classification must run for every unrecognised request, not only ambiguous ones');
+assert.match(panel, /spoken\.ambiguous \? spoken\.request : wide/,
+  'and it reads the trimmed request when several questions were asked, the wide text otherwise');
 assert.match(panel, /if \(refined\.kind === 'none'\) return null;/, 'the model may say "they were just talking"');
 assert.match(panel, /if \(!refined\) refined = \{ request: spoken\.request/,
   'no model, a refusal or a failure must fall back to the deterministic reading — never to nothing');
@@ -320,3 +326,66 @@ console.log('bounded commands: ok');
 }
 
 console.log('spoken routing: ok');
+
+// ── THE TIMER NOBODY ASKED FOR, AND THE ONES THAT KEPT COMING ────────────────────
+//
+// "White created a 1-minute timer, is the question that I didn't. I never asked for it."
+// and "why the timer is going again and again is the biggest question that I have".
+//
+// One cause. The command span was two sentences, and a person restating themselves says the
+// duration twice: "Set a timer for 30 seconds. And then that should actually set a timer for
+// 30 seconds." The duration parser SUMS what it finds across a span — 30 + 30 = 60 — so a
+// thirty-second request produced a one-minute timer. And it moved: as the caption grew, the
+// same words re-parsed to a different duration, which is a different dedupe key, which is
+// another timer. Hence "again and again".
+{
+  const { scanDelta } = await import('../extension/js/voice-commands.js');
+  const voice = { enabled: true, wakeWord: 'ChatPanel', from: 'me', selfNames: ['You'] };
+  const scan = (text, sid = 's1') => scanDelta({
+    segments: [{ t: Date.now(), sid, speaker: 'You', text }], voice, meetingId: 'm1',
+  });
+
+  // Verbatim from the capture.
+  const said = 'Okay, chat panel. Set a timer for 30 seconds. And then that should actually '
+    + 'set a timer for 30 seconds. And I see that it just started it.';
+  const timers = scan(said).filter((c) => c.intent === 'voice:timer');
+  assert.equal(timers.length, 1, 'one request is one timer');
+  assert.equal(timers[0].args.ms, 30_000, 'thirty seconds — not the two of them added together');
+
+  // The SHORTEST span that parses wins…
+  assert.equal(scan('Okay chat panel. Set a timer for 5 minutes. Actually make it soon.')[0].args.ms, 300_000);
+  // …but a request that genuinely needs two sentences still gets them.
+  assert.equal(scan('Okay chat panel. Set a timer. Make it five minutes.')[0].args.ms, 300_000,
+    'the wider span is still tried when the first sentence alone yields nothing');
+
+  // A GROWING CAPTION must keep parsing to the same duration, or every flush is a new timer.
+  const growth = [
+    'Okay, chat panel. Set a timer for 30 seconds.',
+    'Okay, chat panel. Set a timer for 30 seconds. And then that should actually',
+    said,
+  ].map((t) => scan(t).find((c) => c.intent === 'voice:timer')?.args.ms);
+  assert.deepEqual(growth, [30_000, 30_000, 30_000], `duration drifted as the caption grew: ${growth}`);
+}
+
+// ── AND THE QUESTION THAT "STOPPED" ─────────────────────────────────────────────
+//
+// "Initially, there was one question that partially went saying how, but after that, it
+// stopped." Every unrecognised command has intent null and no duration, so they all collapsed
+// onto ONE gist per meeting — and a second, genuinely different question asked inside the
+// two-minute repeat window was swallowed as a duplicate of the first.
+{
+  const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  const at = panel.indexOf('const voiceGist = (c) =>');
+  assert.ok(at > 0, 'voiceGist not found');
+  const gist = panel.slice(at, panel.indexOf('\n\n', at));
+  assert.match(gist, /c\.command/, 'an unrecognised request must be identified by WHAT WAS ASKED');
+  assert.match(gist, /toLowerCase\(\)/, 'and matched insensitively — a transcriber varies case between flushes');
+  assert.match(gist, /replace\(\/\[\^a-z0-9\]\+\/g, ' '\)/, 'and on words, so spacing between flushes does not matter');
+  assert.match(gist, /c\.intent\s*\n?\s*\?/, 'while a recognised one keeps its intent+duration identity');
+  // The failure this replaces: EVERY unrecognised command produced the same gist, so a second
+  // and different question inside the repeat window was dropped as a duplicate of the first.
+  // A null intent may appear in the RECOGNISED branch's template only.
+  assert.match(gist, /:ask:/, 'the unrecognised branch is keyed on the words, not on a null intent');
+}
+
+console.log('spoken duplicates: ok');

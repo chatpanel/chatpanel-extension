@@ -924,6 +924,28 @@ export function parseCommand(text, { wake = compileWake(), intents = defaultVoic
 // is the other way round.
 const endsSentence = (text) => /[.!?…]["'\u2019\u201d)\]]*\s*$/.test(String(text || '').trim());
 
+/**
+ * The SHORTEST span that parses wins.
+ *
+ * "Set a timer for 30 seconds. And then that should actually set a timer for 30 seconds."
+ * is one request said twice, and the duration parser sums what it finds across the span —
+ * so a two-sentence window turned 30 seconds into 60 and produced a one-minute timer nobody
+ * asked for. Worse, it moved: as the caption grew, the same words re-parsed to a different
+ * duration, which is a different dedupe key, which is another timer. That is the "why is it
+ * creating timers again and again" report.
+ *
+ * So the first sentence is tried alone, and the wider span only when it yields nothing. A
+ * request that genuinely needs two ("Set a timer. Make it five minutes.") still gets them.
+ */
+function parseShortest(command, intents, now) {
+  const first = firstSentences(command, 1).trim();
+  if (first && first !== command) {
+    const narrow = intents.parse(first, { now });
+    if (narrow?.intent) return narrow;
+  }
+  return intents.parse(command, { now });
+}
+
 /** How many commands one transcript delta may produce. */
 export const MAX_COMMANDS_PER_DELTA = 3;
 
@@ -958,7 +980,7 @@ export function commandsFromSegments(segments, {
     // timer became 720 hours: the duration parser found "30 days" four sentences later.
     for (const found of findWakeCommands(seg.text, wake)) {
     if (!found.command) continue; // a bare mention with nothing after it
-    const intent = intents.parse(found.command, { now });
+    const intent = parseShortest(found.command, intents, now);
     // `rest` rides along: the deterministic intents parse only the tight span (that is what
     // stops a duration being found four sentences away), but a MODEL asked to read an
     // unrecognised request should see the words around it — the question often follows a

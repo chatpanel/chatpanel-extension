@@ -4458,8 +4458,22 @@ async function loadVoiceActed() {
   return voiceActed;
 }
 
-// What the request WAS, independent of which caption carried it.
-const voiceGist = (c) => `gist:${c.meetingId}:${c.intent}:${c.ms ?? c.when ?? ''}`;
+/**
+ * What the request WAS, independent of which caption carried it.
+ *
+ * `sid` is re-minted whenever the caption engine loses the overlap between a growing line and
+ * the one before it, which Google Meet does routinely inside a long monologue — so the same
+ * words return under a new identity and `key` alone cannot tell it is the same request. This
+ * is what actually stops the repeats.
+ *
+ * The unrecognised case has to carry its TEXT. Every needsModel command has intent null and
+ * no duration, so all of them collapsed onto one gist per meeting — and a second, genuinely
+ * different question asked inside the repeat window was swallowed as a duplicate of the
+ * first. That is the "one question went, then it stopped" half of the report.
+ */
+const voiceGist = (c) => (c.intent
+  ? `gist:${c.meetingId}:${c.intent}:${c.ms ?? c.when ?? ''}`
+  : `gist:${c.meetingId}:ask:${String(c.command || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 120)}`);
 
 /** Should this command run? False if this exact utterance, or the same request, already did. */
 function voiceIsFresh(acted, command, now) {
@@ -4539,7 +4553,15 @@ async function voiceRuntime() {
         const wide = [cmd.command || '', cmd.rest || ''].filter(Boolean).join(' ').trim();
         const spoken = vc.refineSpokenCommand(wide);
         if (!spoken.request) return null;
-        let refined = spoken.ambiguous ? await refineSpokenWithModel(spoken.request) : null;
+        // ALWAYS ask the model, not only when the free pass is unsure.
+        //
+        // The deterministic reading can extract a request but has no idea what KIND it is —
+        // it always said "question". So "use the skill summarize" became a question, and
+        // "take notes on what we discussed" became a question, and neither the skill nor the
+        // note ever happened. Choosing between ask / watch / write / run is exactly what the
+        // classification is for, and it is one short call on the fast model. The free pass
+        // stays as the fallback for when there is no model, or it fails.
+        let refined = await refineSpokenWithModel(spoken.ambiguous ? spoken.request : wide);
         // No model, a refusal, or a failure → the deterministic reading. Never nothing: the
         // user did say something, and silently dropping it is the failure this replaces.
         if (!refined) refined = { request: spoken.request, name: spoken.name, kind: 'question' };
