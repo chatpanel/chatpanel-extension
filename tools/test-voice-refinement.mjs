@@ -400,18 +400,21 @@ console.log('spoken routing: ok');
 // onto ONE gist per meeting — and a second, genuinely different question asked inside the
 // two-minute repeat window was swallowed as a duplicate of the first.
 {
-  const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
-  const at = panel.indexOf('const voiceGist = (c) =>');
-  assert.ok(at > 0, 'voiceGist not found');
-  const gist = panel.slice(at, panel.indexOf('\n\n', at));
-  assert.match(gist, /c\.command/, 'an unrecognised request must be identified by WHAT WAS ASKED');
-  assert.match(gist, /toLowerCase\(\)/, 'and matched insensitively — a transcriber varies case between flushes');
-  assert.match(gist, /replace\(\/\[\^a-z0-9\]\+\/g, ' '\)/, 'and on words, so spacing between flushes does not matter');
-  assert.match(gist, /c\.intent\s*\n?\s*\?/, 'while a recognised one keeps its intent+duration identity');
-  // The failure this replaces: EVERY unrecognised command produced the same gist, so a second
-  // and different question inside the repeat window was dropped as a duplicate of the first.
-  // A null intent may appear in the RECOGNISED branch's template only.
-  assert.match(gist, /:ask:/, 'the unrecognised branch is keyed on the words, not on a null intent');
+  // The real function, not a grep of it — it moved out of sidepanel.js (off the first-paint
+  // graph) and a source match would have followed it silently while asserting nothing.
+  const { voiceGist } = await import('../extension/js/voice-acted.js');
+  const ask = (command) => voiceGist({ meetingId: 'm', intent: null, command });
+  assert.notEqual(ask('how is the weather in Lakeside?'), ask('what are the latest AI models?'),
+    'two different unrecognised questions are two requests, not one repeated');
+  assert.equal(ask('How is the Weather in Lakeside?'), ask('how is   the weather in lakeside'),
+    'case and spacing vary between flushes of one sentence and mean nothing');
+  assert.match(ask('anything at all'), /:ask:/,
+    'the unrecognised branch is keyed on the words, not on a null intent');
+  assert.notEqual(
+    voiceGist({ meetingId: 'm', intent: 'voice:timer', ms: 30_000 }),
+    voiceGist({ meetingId: 'm', intent: 'voice:timer', ms: 60_000 }),
+    'while a recognised one keeps its intent+duration identity',
+  );
 }
 
 console.log('spoken duplicates: ok');
@@ -549,12 +552,13 @@ console.log('one utterance one action: ok');
   assert.notEqual(gistOpening('Take notes on the meeting'), gistOpening('Summarize the meeting so far'));
   assert.equal(gistOpening(''), '');
 
-  // The panel keeps its own copy (it is on the first-paint graph); the two must agree.
+  // There is no second copy to keep in step any more. The panel used to inline this to keep
+  // the contract off its first-paint graph; the code that needed it now lives in
+  // js/voice-acted.js, which is loaded on a meeting delta, so it simply imports the original.
+  const acted = readFileSync(new URL('../extension/js/voice-acted.js', import.meta.url), 'utf8');
   const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
-  const inline = /const vcGistOpening = [\s\S]*?;\n/.exec(panel)?.[0] || '';
-  assert.ok(inline, 'vcGistOpening not found');
-  assert.match(inline, /slice\(0, 6\)/, 'the same six words as the contract');
-  assert.match(inline, /replace\(\/\[\^a-z0-9\]\+\/g, ' '\)/, 'and the same normalisation');
+  assert.match(acted, /import \{ gistOpening \} from '\.\/events\/voice-intents\.js'/);
+  assert.doesNotMatch(acted + panel, /vcGistOpening/, 'the copy is gone, not merely unused');
 }
 
 console.log('non-requests and re-transcription: ok');

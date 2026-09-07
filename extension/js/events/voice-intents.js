@@ -38,6 +38,10 @@
 import {
   defineSchema, describeSchema, responseFormat, coerce, createStructuredStream,
 } from './structured.js';
+// The same list meeting triggers read. "Has this person finished the thought?" must have ONE
+// answer in this package — a second copy here would drift, and two features would disagree
+// about the same caption on the same screen.
+import { DANGLING_TAILS } from './schedule.js';
 
 export class VoiceIntentError extends Error {
   constructor(code, message) { super(message); this.name = 'VoiceIntentError'; this.code = code; }
@@ -1007,11 +1011,40 @@ export function parseCommand(text, { wake = compileWake(), intents = defaultVoic
 // Transcript → commands
 // ---------------------------------------------------------------------------
 
-// Has the speaker stopped? Terminal punctuation, optionally inside a closing quote. Stricter
-// than utteranceLooksComplete (which defaults TRUE because speech-to-text often has no
-// punctuation at all): here a false positive costs an unwanted action, so the burden of proof
-// is the other way round.
-const endsSentence = (text) => /[.!?…]["'\u2019\u201d)\]]*\s*$/.test(String(text || '').trim());
+/**
+ * Has the speaker finished the thought? — and PUNCTUATION IS NOT THE EVIDENCE.
+ *
+ * This used to be `endsSentence`: a full stop at the end of the caption meant the speaker had
+ * stopped. Live caption engines punctuate as they go, and they punctuate FRAGMENTS. One
+ * capture of this feature in use produced, in order: "Take.", "Take the question and ask
+ * the.", "set a timer for.", "let's summar." — four full stops nobody uttered, and four
+ * half-sentences sent to a model as requests while the speaker was still saying the rest.
+ *
+ * So the full stop is thrown away and the LAST WORD is read instead. A command ending on a
+ * preposition, an article, a conjunction or an auxiliary ("…ask the", "…a timer for") is
+ * someone mid-thought, however the transcriber punctuated it.
+ *
+ * A HINT, NOT A VERDICT. "Tell me what that is" is a real request that ends on 'is', so a
+ * dangling tail must never DISCARD a command — it only makes the gate below wait longer for
+ * the rest to arrive. A command that is never acted on is the worse failure of the two.
+ */
+// Words that can end a sentence grammatically but in speech mean the qualifier is still being
+// chosen — "summarize the last 30 seconds, like, maybe…".
+const TRAILING_HEDGES = new Set(['maybe', 'perhaps', 'probably', 'basically', 'roughly', 'kinda', 'sorta']);
+
+export function commandLooksFinished(text) {
+  const t = String(text || '').trim().replace(/[\s.,;:!?…'"’”)\]-]+$/u, '');
+  if (!t) return false;
+  const tokens = t.toLowerCase().match(/[\p{L}\p{N}']+/gu) || [];
+  const last = tokens[tokens.length - 1];
+  if (!last) return false;
+  return !DANGLING_TAILS.has(last) && !TRAILING_HEDGES.has(last);
+}
+
+// Terminal punctuation. Worth almost nothing on its own — see above — but it is the only
+// signal a caller with no gate has, so the ungated path keeps asking for it ON TOP of the
+// tail test rather than getting looser than it was.
+const endsSentence = (text) => /[.!?…]["'’”)\]]*\s*$/.test(String(text || '').trim());
 
 /**
  * The SHORTEST span that parses wins.
@@ -1080,7 +1113,7 @@ export const MAX_COMMANDS_PER_DELTA = 3;
  */
 export function commandsFromSegments(segments, {
   wake = compileWake(), intents = defaultVoiceIntents(), isSelf = null,
-  sinceTs = 0, now = Date.now(), meetingId = '', max = MAX_COMMANDS_PER_DELTA,
+  sinceTs = 0, now = Date.now(), meetingId = '', max = MAX_COMMANDS_PER_DELTA, gate = null,
 } = {}) {
   const out = [];
   for (const seg of segments || []) {
@@ -1118,18 +1151,28 @@ export function commandsFromSegments(segments, {
     // An address with no matching intent goes on with needsModel set, for a model to read —
     // which is what the parser has always said should happen.
     //
-    // …but ONLY once the sentence has actually ended. A live caption is rescanned as it grows,
-    // and an unrecognised command has no intent in its dedupe key to distinguish it from the
-    // recognised one the same utterance is about to become: "ChatPanel, set a timer" would go
-    // out as needsModel, and "…for 10 minutes" as a timer a moment later — one thing said,
-    // two things done. Terminal punctuation is the only signal available here that the
-    // speaker has stopped, and it is deliberately strict: a request that is never punctuated
-    // is a request this path declines, which is the safe direction.
-    if (!parsed.intent && (!parsed.addressed || !endsSentence(seg.text))) continue;
+    if (!parsed.intent && !parsed.addressed) continue;
+    // Does this read as a whole thought? Computed once, where the command's own words are:
+    // the guard below and the gate must never be able to answer that differently.
+    const finished = commandLooksFinished(found.command);
+    // WHETHER THE SENTENCE HAS ENDED IS NOT DECIDED HERE — when there is a gate.
+    //
+    // It used to be decided here, on the caption's terminal punctuation, and that is exactly
+    // what sent "Take the question and ask the." to a model as a request. This function sees
+    // ONE delivery of a caption; only something watching the same utterance across
+    // deliveries can tell a finished sentence from a punctuated fragment, and that is the
+    // gate below (`finished` is the hint it reads).
+    //
+    // A caller with no gate has no such thing, so it keeps the old conservative rule and
+    // gains the tail test on top of it: both, or the request waits for the next delivery.
+    // Getting LOOSER than the code being fixed would be a strange way to fix it.
+    if (!parsed.intent && !gate && !(finished && endsSentence(seg.text))) continue;
     const allowed = isSelf ? !!isSelf(seg.speaker) : false;
     out.push({
       ...parsed,
       allowed,
+      // Carried, so the gate reads the same answer this scan did.
+      finished,
       speaker: seg.speaker || '',
       t: seg.t || now,
       meetingId,
@@ -1178,5 +1221,149 @@ export function commandsFromSegments(segments, {
   //
   // The newest are both the most likely to be fresh and the ones a person is waiting on, so
   // the cap keeps those. The already-acted ones are dropped downstream by the dedupe anyway.
-  return out.length > max ? out.slice(-max) : out;
+  const found = out.length > max ? out.slice(-max) : out;
+  // WITH A GATE, nothing is returned until the words stop moving — see createUtteranceGate.
+  // Without one the old behaviour stands, so a host that has not adopted it (or a test asking
+  // what the grammar sees) is unchanged.
+  return gate ? gate.offer(found, now).due(now) : found;
+}
+
+// ---------------------------------------------------------------------------
+// One utterance, one action
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a command's words must stop changing before it is acted on.
+ *
+ * LONGER THAN THE CAPTURE'S FLUSH INTERVAL, and that is the whole calculation. Captions reach
+ * a client in batches — the extension debounces its flush by 4s — so "these words have not
+ * changed for 1s" says nothing except that no batch arrived in the last second. Only a wait
+ * that outlasts a flush can distinguish "they stopped talking" from "we have not been told
+ * what they said next".
+ */
+export const UTTERANCE_SETTLE_MS = 5_000;
+
+/**
+ * How long a command that ends MID-THOUGHT waits instead.
+ *
+ * "Set a timer for" is not a request yet; the duration is in the breath after it. Waiting the
+ * ordinary window and acting on it is exactly the bug this file exists to stop. But the tail
+ * test is a word list, not grammar, and "tell me what that is" ends on 'is' — so a dangling
+ * command is DELAYED, never dropped. If the speaker really did stop there, it still runs.
+ */
+export const UTTERANCE_DANGLING_MS = 12_000;
+
+// How long an utterance is remembered after it was last heard. A caption entry in a monologue
+// is re-delivered for minutes, and every one of those redeliveries has to find the record
+// saying "this one is done" — that record IS the one-utterance-one-action guarantee.
+const UTTERANCE_FORGET_MS = 3 * 60_000;
+// A cap, because a long meeting must not grow this without bound. Small: only utterances
+// still in flight or recently acted on matter, and the caller has its own longer-lived record
+// of what has been done.
+const UTTERANCE_TRACKED_MAX = 24;
+
+/**
+ * Is this the same spoken request as that one, a moment later?
+ *
+ * Two relations, because a transcriber does both. It APPENDS — "let's summar" becomes "let's
+ * summarize the notes" — which is a prefix. And it REVISES — "…in Seattle, Washington now?"
+ * came back as "…in Seattle, Washington?" — which is not, but keeps the opening.
+ */
+export function sameUtterance(a, b) {
+  if (!a || !b) return false;
+  if (a === b || a.startsWith(b) || b.startsWith(a)) return true;
+  const oa = a.split(' ').slice(0, OPENING_WORDS);
+  const ob = b.split(' ').slice(0, OPENING_WORDS);
+  // A short opening is not enough evidence: "set a timer" opens half the commands ever
+  // spoken, and collapsing two of them into one utterance loses the second silently.
+  return oa.length >= OPENING_WORDS && oa.join(' ') === ob.join(' ');
+}
+
+/**
+ * The thing that makes a growing caption ONE request.
+ *
+ * THE BUG THIS IS. A live caption is re-delivered as it grows, and every delivery was acted
+ * on the moment it parsed. So a single spoken "Okay ChatPanel, set a timer for 30 seconds"
+ * arrived first as "set a timer for." — no duration, no intent, addressed, punctuated by the
+ * transcriber — and went to the model as a QUESTION; then, seconds later, arrived whole and
+ * became a TIMER. One thing said, two things done, and the user reasonably reported it as
+ * "it set the timer but it also sent a message". Nothing downstream could relate the two:
+ * they had different words, different intents, and therefore different dedupe keys.
+ *
+ * They can only be related by watching them, so this is the one stateful thing in the file —
+ * and it is still clock-free (`now` is passed in, like everywhere else) and platform-free.
+ * The host owns exactly two things: keeping the object, and calling back when the wait is up.
+ *
+ *     const gate = createUtteranceGate();
+ *     const ready = commandsFromSegments(segments, { …, gate });   // offers and drains
+ *     const later = gate.nextDueIn();      // ms until something becomes actionable, or null
+ *     …setTimeout(() => act(gate.due()), later)                     // silence needs a nudge
+ *
+ * Note what does NOT come out of `due()`: an utterance that already fired. It stays in the
+ * gate, matching its own redeliveries, so the completed version of a request that was already
+ * acted on cannot act again as something else.
+ */
+export function createUtteranceGate({
+  settleMs = UTTERANCE_SETTLE_MS,
+  danglingMs = UTTERANCE_DANGLING_MS,
+  forgetMs = UTTERANCE_FORGET_MS,
+  max = UTTERANCE_TRACKED_MAX,
+} = {}) {
+  let live = [];
+  const waitFor = (e) => (e.command.finished === false ? danglingMs : settleMs);
+  const find = (command, gist) => live.find(
+    (e) => e.meetingId === (command.meetingId || '') && sameUtterance(e.gist, gist),
+  );
+  return {
+    /** Offer this delta's commands. Chainable, so a scan reads as one expression. */
+    offer(commands, now = Date.now()) {
+      for (const command of commands || []) {
+        const gist = gistText(command.command);
+        if (!gist) continue;
+        const entry = find(command, gist);
+        if (!entry) {
+          live.push({ meetingId: command.meetingId || '', gist, command, changedAt: now, seenAt: now, done: false });
+          continue;
+        }
+        entry.seenAt = now;
+        if (entry.done) continue; // said once, done once — however many more words arrive
+        if (gist === entry.gist) continue; // unchanged: the clock keeps running, untouched
+        // Still growing (or being revised). The newest wording is the one to act on, and the
+        // wait starts again from here — which is what makes a pause, not a full stop, the
+        // signal that someone has finished.
+        entry.gist = gist;
+        entry.command = command;
+        entry.changedAt = now;
+      }
+      live = live.filter((e) => now - e.seenAt <= forgetMs);
+      if (live.length > max) live = live.slice(-max);
+      return this;
+    },
+    /** The commands whose words have stopped moving. Each is returned exactly once. */
+    due(now = Date.now()) {
+      const out = [];
+      for (const e of live) {
+        if (e.done || now - e.changedAt < waitFor(e)) continue;
+        e.done = true;
+        out.push(e.command);
+      }
+      return out;
+    },
+    /**
+     * ms until the earliest waiting command becomes actionable, or null when none is waiting.
+     * The host needs this because silence produces no deltas to re-scan on: the last thing
+     * said before someone stops talking is exactly the thing they are waiting to see happen.
+     */
+    nextDueIn(now = Date.now()) {
+      let soonest = null;
+      for (const e of live) {
+        if (e.done) continue;
+        const left = Math.max(0, waitFor(e) - (now - e.changedAt));
+        if (soonest === null || left < soonest) soonest = left;
+      }
+      return soonest;
+    },
+    /** How many utterances are still waiting — for tests and for a diagnostics line. */
+    get waiting() { return live.filter((e) => !e.done).length; },
+  };
 }

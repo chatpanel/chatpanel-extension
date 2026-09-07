@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 const { createRuleEngine } = await import('../extension/js/events/rules.js');
 const {
   voiceSettings, makeSelfMatcher, scanDelta, voiceCommandRule, createVoiceActions,
-  dispatchVoiceCommands, outcomeMessage, DEFAULT_VOICE,
+  dispatchVoiceCommands, outcomeMessage, DEFAULT_VOICE, createUtteranceGate,
 } = await import('../extension/js/voice-commands.js');
 
 const ON = { enabled: true, wakeWord: 'ChatPanel', from: 'me', selfNames: ['Alex Rivera'] };
@@ -171,6 +171,40 @@ const mkEngine = (admit = () => true) => {
   const out = await dispatchVoiceCommands(cmds, { engine: mkEngine(), actions });
   assert.equal(out[0].ok, false);
   assert.match(outcomeMessage(out[0]), /storage full/);
+}
+
+{
+  // THE TIMER THAT ALSO SENT A MESSAGE. One spoken "Okay ChatPanel, set a timer for 30
+  // seconds" reaches the panel as several deliveries of a growing caption. Each of them used
+  // to be acted on: "set a timer for." went to the model as a question, and the finished
+  // sentence set a timer — one thing said, two things done. The gate is what the panel keeps
+  // so the two can be recognised as one request.
+  const gate = createUtteranceGate();
+  const scan = (now, text) => scanDelta({
+    segments: [{ t: now, speaker: 'Alex Rivera', text }], voice: ON, meetingId: 'm1', now, gate,
+  });
+  const ran = [];
+  for (const [now, text] of [
+    [0, 'Okay ChatPanel, set a timer for.'],
+    [4_000, 'Okay ChatPanel, set a timer for 30.'],
+    [8_000, 'Okay ChatPanel, set a timer for 30 seconds.'],
+    [14_000, 'Okay ChatPanel, set a timer for 30 seconds.'],
+    [20_000, 'Okay ChatPanel, set a timer for 30 seconds. Okay so that worked.'],
+  ]) ran.push(...scan(now, text));
+  assert.equal(ran.length, 1, 'one utterance, one action');
+  assert.equal(ran[0].intent, 'voice:timer');
+  assert.equal(ran[0].args.ms, 30_000, 'and the duration they actually said');
+
+  // The panel needs to be told when to come back: once someone stops talking there are no
+  // more captions to notice the last thing they said on.
+  const g2 = createUtteranceGate();
+  scanDelta({
+    segments: [{ t: 0, speaker: 'Alex Rivera', text: 'Okay ChatPanel, how is the weather in Issaquah?' }],
+    voice: ON, meetingId: 'm1', now: 0, gate: g2,
+  });
+  assert.equal(g2.waiting, 1);
+  assert.ok(g2.nextDueIn(0) > 0, 'and it says how long to wait');
+  assert.equal(g2.due(g2.nextDueIn(0)).length, 1, 'then the question happens');
 }
 
 console.log('voice-commands tests passed');

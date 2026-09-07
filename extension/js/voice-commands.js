@@ -18,6 +18,7 @@
 import { defineRule } from './events/rules.js';
 import {
   compileWake, defaultVoiceIntents, commandsFromSegments, DEFAULT_WAKE, refineSpokenCommand,
+  createUtteranceGate,
 } from './events/voice-intents.js';
 
 // The bus type a transcript delta is offered under. NOT an event-schema type: the log's
@@ -68,7 +69,7 @@ const SELF_LABELS = /^(you|me|myself|you \(you\)|me \(me\))$/i;
 
 // Re-exported: callers already take the voice vocabulary from this module, and a second
 // import path for one function is how two call sites end up refining differently.
-export { refineSpokenCommand };
+export { refineSpokenCommand, createUtteranceGate };
 
 const norm = (s) => String(s || '').trim().toLowerCase();
 
@@ -96,7 +97,7 @@ export function makeSelfMatcher({ from, selfNames }) {
  * own — this runs on every flush of every meeting, so it has to cost nothing when (as is
  * almost always the case) nobody said the wake word.
  */
-export function scanDelta({ segments, voice, meetingId = '', sinceTs = 0, now = Date.now(), intents } = {}) {
+export function scanDelta({ segments, voice, meetingId = '', sinceTs = 0, now = Date.now(), intents, gate = null } = {}) {
   const v = voiceSettings(voice);
   if (!v.enabled || v.from === 'off') return [];
   let wake;
@@ -108,6 +109,10 @@ export function scanDelta({ segments, voice, meetingId = '', sinceTs = 0, now = 
     sinceTs,
     now,
     meetingId,
+    // WITH a gate, a command comes out once its words have stopped moving — see
+    // createUtteranceGate. Optional here only because the gate is state and this function is
+    // not: the host keeps the object, because the host is what can come back later.
+    gate,
   });
 }
 
@@ -203,6 +208,51 @@ export async function dispatchVoiceCommands(commands, { engine, actions, onOutco
     onOutcome(outcome);
   }
   return out;
+}
+
+/**
+ * Act on every command whose words have settled — and come back when the next one does.
+ *
+ * THE TIMER IS THE POINT. A gate holds a spoken request while the caption carrying it is
+ * still growing, and the deliveries that would drain it are captions — which stop the moment
+ * the person stops talking. The last thing said before someone goes quiet is exactly the
+ * thing they are waiting to see happen, so something has to come back for it unprompted.
+ *
+ * Everything platform-bound is INJECTED, so this loop is the same loop wherever it runs: the
+ * panel passes chrome.storage-backed freshness and a toast, a bridge would pass its own. The
+ * only thing assumed is setTimeout, which every JS runtime has.
+ *
+ * @param isFresh (command, now) => boolean|Promise — has this already been acted on?
+ * @param remember (commands, now) => void|Promise — record them BEFORE they run, so a slow
+ *        action cannot be started twice by the next delivery arriving mid-flight.
+ * @param isLive  (meetingId) => boolean — a drain that lands after the user moved on does
+ *        nothing; acting on a call nobody is looking at is the surprise this path avoids.
+ */
+export function createVoiceDrain({
+  engine, actions, gate, isFresh = () => true, remember = () => {}, onOutcome = () => {},
+  isLive = () => true, seen = null,
+}) {
+  let timer = null;
+  return async function drain(meetingId) {
+    const now = Date.now();
+    const ready = gate.due(now);
+    if (ready.length) {
+      const fresh = [];
+      for (const c of ready) if (await isFresh(c, now)) fresh.push(c);
+      if (fresh.length) {
+        await remember(fresh, now);
+        await dispatchVoiceCommands(fresh, { engine, actions, seen, onOutcome });
+      }
+    }
+    if (timer) { clearTimeout(timer); timer = null; }
+    // Measured AFTER the dispatch above, which may have taken a while.
+    const wait = gate.nextDueIn(Date.now());
+    if (wait === null) return;
+    timer = setTimeout(() => {
+      timer = null;
+      if (isLive(meetingId)) drain(meetingId).catch(() => { /* automation is a passenger */ });
+    }, Math.max(200, wait + 100));
+  };
 }
 
 /** What to tell the user, in one short line. */

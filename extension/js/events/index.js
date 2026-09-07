@@ -80,6 +80,8 @@ export {
   timerIntent, reminderIntent, scheduleIntent, noteIntent, monitorIntent,
   REFINEMENT_SCHEMA, refinementPrompt, refinementFormat, parseRefinement, refinementStream, settleRefinement,
   refineSpokenCommand, isFillerSentence, gistText, gistOpening,
+  commandLooksFinished, sameUtterance, createUtteranceGate,
+  UTTERANCE_SETTLE_MS, UTTERANCE_DANGLING_MS,
 } from './voice-intents.js';
 export {
   MAX_TOPICS, MAX_TOPIC_CHARS, TOPICS_SCHEMA, topicsSchema, topicsPrompt, topicsFormat, parseTopics,

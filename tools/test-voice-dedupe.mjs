@@ -3,7 +3,12 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const src = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+const src = readFileSync(new URL('../extension/js/voice-acted.js', import.meta.url), 'utf8');
+const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+const voice = readFileSync(new URL('../extension/js/voice-commands.js', import.meta.url), 'utf8');
+// The real guards, not a copy of them: a test that re-implements the thing it is testing
+// passes just as happily when the shipped version is wrong.
+const { voiceIsFresh, voiceGist, VOICE_SAME_MS } = await import('../extension/js/voice-acted.js');
 
 // DURABLE. Everything that deduped a command used to be in memory — the rule engine's set,
 // the watermark, this page — so a reopened panel refired the last lines said, and deleting
@@ -24,21 +29,38 @@ assert.match(src, /const VOICE_SAME_MS = 20 \* 60_000;/, 'longer than a caption 
 assert.doesNotMatch(src, /VOICE_REPEAT_MS/, 'the short window it replaced must be gone, not merely unused');
 // The looser identity is the OPENING of the request: a transcriber revises its tail
 // ("…Seattle, Washington now?" -> "…Seattle, Washington?"), which used to be a new request.
-assert.match(src, /vcGistOpening/, 'a revised tail must not make a new request');
-assert.match(src, /slice\(0, 6\)/, 'matched on the opening words, which a revision leaves alone');
+// Taken from the shared contract, not copied: there used to be an inlined duplicate here to
+// keep 6 KB off the panel's first paint, and this file is no longer on it.
+assert.match(src, /import \{ gistOpening \} from '\.\/events\/voice-intents\.js'/,
+  'the opening comes from the one place that defines it');
+assert.match(src, /gistOpening\(c\.command\)/, 'a revised tail must not make a new request');
+assert.doesNotMatch(src, /vcGistOpening/, 'and the copy of it is gone, not merely unused');
+{
+  const revised = (text) => voiceGist({ meetingId: 'm', intent: null, command: text });
+  assert.equal(revised('How is the weather in Seattle, Washington now?'),
+    revised('How is the weather in Seattle, Washington?'),
+    'the same question, re-transcribed, is the same question');
+  assert.notEqual(revised('How is the weather in Seattle?'), revised('What did we decide about pricing?'));
+}
 
 // The guard is actually applied before dispatch, not merely defined.
-assert.match(src, /const fresh = commands\.filter\(\(c\) => voiceIsFresh\(acted, c, nowTs\)\)/, 'filtered before dispatch');
-assert.match(src, /if \(!fresh\.length\) return;/, 'and nothing dispatches when all are repeats');
-assert.match(src, /await rememberVoiceActed\(fresh, nowTs\)/, 'recorded BEFORE dispatch, so a slow action cannot double-fire');
+assert.match(voice, /if \(await isFresh\(c, now\)\) fresh\.push\(c\)/, 'filtered before dispatch');
+assert.match(voice, /await remember\(fresh, now\);\n\s*await dispatchVoiceCommands/, 'recorded BEFORE dispatch, so a slow action cannot double-fire');
+
+// SETTLED. The identity guards above cannot relate "set a timer for." to the timer the same
+// breath is about to become — different words, different intent, different key — so the
+// fragment went to the model as a question and the finished sentence set a timer. The gate is
+// what makes one utterance one action, and something must come back to it: once the speaker
+// stops, the captions stop, and nothing else would ever drain it.
+assert.match(panel, /gate = vc\.createUtteranceGate\(\)/, 'the panel keeps one gate for the meeting');
+assert.match(panel, /vc\.scanDelta\(\{[^}]*gate \}\)/, 'and every scan is offered to it');
+assert.match(voice, /const ready = gate\.due\(now\)/, 'only settled commands are acted on');
+assert.match(voice, /gate\.nextDueIn\(Date\.now\(\)\)/, 'and the next one is scheduled for');
+assert.match(voice, /if \(isLive\(meetingId\)\) drain\(meetingId\)/, 'a drain that lands after the meeting moved on does nothing');
+assert.match(panel, /isLive: \(meetingId\) => state\.liveMeeting\?\.id === meetingId/, 'and the panel is what knows that');
 
 // Behaviour of the guard itself, exercised directly.
-const voiceGist = (c) => `gist:${c.meetingId}:${c.intent}:${c.ms ?? c.when ?? ''}`;
-const isFresh = (acted, c, now, win = 120000) => {
-  if (acted.has(c.key)) return false;
-  const at = acted.get(voiceGist(c));
-  return !(at && now - at < win);
-};
+const isFresh = (a, c, now) => voiceIsFresh(a, c, now);
 const acted = new Map();
 const cmd = (key) => ({ key, meetingId: 'm', intent: 'voice:timer', ms: 30000 });
 
@@ -50,7 +72,7 @@ acted.set(first.key, 1000); acted.set(voiceGist(first), 1000);
 assert.equal(isFresh(acted, cmd('voice:m:s:2:voice:timer:30000'), 5000), false, 'a repeat under a new id does not');
 assert.equal(isFresh(acted, first, 9000), false, 'and neither does the identical utterance');
 // Long enough later, the user meant it.
-assert.equal(isFresh(acted, cmd('voice:m:s:9:voice:timer:30000'), 1000 + 130000), true, 'a genuinely new request later does run');
+assert.equal(isFresh(acted, cmd('voice:m:s:9:voice:timer:30000'), 1000 + VOICE_SAME_MS + 1), true, 'a genuinely new request later does run');
 // A different request is never blocked by an unrelated one.
 assert.equal(isFresh(acted, { key: 'k', meetingId: 'm', intent: 'voice:timer', ms: 60000 }, 5000), true);
 
