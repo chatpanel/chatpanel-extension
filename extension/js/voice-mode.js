@@ -49,66 +49,124 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
   };
 
   // ── waveform ────────────────────────────────────────────────────────────────
-  // Driven by whatever is making sound right now: the microphone while you talk,
-  // the speaker while it answers. Both are real AnalyserNodes, so the shape tracks
-  // the signal — bars animating on a timer beside speech they are not measuring
-  // read as lag in the audio rather than in the animation. The source is re-read
-  // every frame because neither analyser exists when the loop is armed.
+  // A mirrored, smoothed band driven by whatever is making sound: the microphone
+  // while you talk, the speaker while it answers. Both are real AnalyserNodes, so
+  // the shape tracks the signal — a band animating on a timer beside speech it is
+  // not measuring reads as lag in the audio rather than in the animation. The
+  // source is re-read each frame because neither analyser exists when the loop is
+  // armed.
   let raf = 0;
   let micSource = () => null;
   const reduceMotion = () => !!globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
 
+  const POINTS = 72;
+
   function startWave() {
     const cv = el('voice-wave');
-    if (!cv || typeof cv.getContext !== 'function' || reduceMotion() || raf) return;
+    if (!cv || typeof cv.getContext !== 'function' || raf) return;
     const ctx2d = cv.getContext('2d');
     if (!ctx2d) return;
-    const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#6aa9ff';
-    const bars = 64;
-    const level = new Float32Array(bars);
-    let buf = null;
 
-    const draw = () => {
-      raf = requestAnimationFrame(draw);
-      // Prefer whichever is actually producing sound; the speaker wins while it
-      // plays, because that is what the user is hearing.
+    // The backing store has to match the CSS box, or the drawing is stretched and
+    // blurry. A fixed 560-wide canvas squashed into a ~350px panel is why the first
+    // version looked like nothing was there at all.
+    let w = 0, h = 0, dpr = 1;
+    const resize = () => {
+      const rect = cv.getBoundingClientRect();
+      const nextDpr = globalThis.devicePixelRatio || 1;
+      const cw = Math.max(1, Math.round(rect.width));
+      const ch = Math.max(1, Math.round(rect.height));
+      if (cw === w && ch === h && nextDpr === dpr) return;
+      w = cw; h = ch; dpr = nextDpr;
+      cv.width = Math.round(w * dpr);
+      cv.height = Math.round(h * dpr);
+      ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#6aa9ff';
+    const level = new Float32Array(POINTS);
+    const curve = new Float32Array(POINTS);
+    let buf = null;
+    let t = 0;
+
+    const shape = () => {
       const an = speaker.analyser?.() || micSource() || null;
-      const { width: w, height: h } = cv;
-      ctx2d.clearRect(0, 0, w, h);
       if (an) {
         if (!buf || buf.length !== an.frequencyBinCount) buf = new Uint8Array(an.frequencyBinCount);
         an.getByteFrequencyData(buf);
       }
-      const bw = w / bars;
-      for (let i = 0; i < bars; i++) {
+      const maxAmp = h * 0.44;
+      for (let i = 0; i < POINTS; i++) {
         let v = 0;
         if (an && buf) {
           // Speech energy sits low, so a linear sweep spends most of the width on
           // hiss that never moves. Squaring the index weights the low end.
-          const from = Math.floor((i / bars) ** 2 * buf.length);
-          const to = Math.max(from + 1, Math.floor(((i + 1) / bars) ** 2 * buf.length));
+          const from = Math.floor((i / POINTS) ** 2 * buf.length);
+          const to = Math.max(from + 1, Math.floor(((i + 1) / POINTS) ** 2 * buf.length));
           let sum = 0;
           for (let j = from; j < to; j++) sum += buf[j];
           v = (sum / (to - from)) / 255;
         }
-        // Fast to rise so a syllable lands crisply, slow to fall so the shape does
+        // Fast to rise so a syllable lands crisply, slow to fall so the band does
         // not flicker between words.
-        level[i] += (v - level[i]) * (v > level[i] ? 0.55 : 0.12);
-        const idle = 0.05 + 0.04 * Math.sin(Date.now() / 300 + i / 3.2);
-        const amp = Math.max(idle, level[i]);
-        const taper = Math.sin((Math.PI * (i + 0.5)) / bars) ** 0.6;
-        const bh = Math.max(2, amp * taper * h);
-        ctx2d.globalAlpha = 0.3 + Math.min(0.7, amp * 1.2);
-        ctx2d.fillStyle = accent;
-        const x = i * bw + bw * 0.22;
-        const bwd = Math.max(1, bw * 0.56);
-        const y = (h - bh) / 2;
-        ctx2d.beginPath();
-        if (ctx2d.roundRect) ctx2d.roundRect(x, y, bwd, bh, Math.min(bwd / 2, 2));
-        else ctx2d.rect(x, y, bwd, bh);
-        ctx2d.fill();
+        level[i] += (v - level[i]) * (v > level[i] ? 0.5 : 0.12);
+        // A travelling ripple when there is nothing to measure, so the bar reads as
+        // live and waiting rather than broken.
+        const idle = 0.12 * Math.abs(Math.sin(i * 0.22 - t * 0.05)) * Math.abs(Math.sin(i * 0.07 + t * 0.017));
+        const taper = Math.sin((Math.PI * (i + 0.5)) / POINTS) ** 0.7;
+        curve[i] = Math.max(idle, Math.max(0, level[i])) * taper * maxAmp;
       }
+    };
+
+    // One filled band mirrored about the centre line, outlined over the fill —
+    // far easier to read at this height than a row of hairline bars.
+    const paint = () => {
+      const mid = h / 2;
+      const x = (i) => (i / (POINTS - 1)) * w;
+      ctx2d.clearRect(0, 0, w, h);
+      const grad = ctx2d.createLinearGradient(0, 0, w, 0);
+      grad.addColorStop(0, `${accent}22`);
+      grad.addColorStop(0.5, `${accent}cc`);
+      grad.addColorStop(1, `${accent}22`);
+
+      ctx2d.beginPath();
+      ctx2d.moveTo(0, mid - curve[0]);
+      // Quadratics through midpoints: smooth without real spline maths.
+      for (let i = 1; i < POINTS; i++) {
+        const cx = (x(i - 1) + x(i)) / 2;
+        ctx2d.quadraticCurveTo(x(i - 1), mid - curve[i - 1], cx, mid - (curve[i - 1] + curve[i]) / 2);
+      }
+      ctx2d.lineTo(w, mid - curve[POINTS - 1]);
+      ctx2d.lineTo(w, mid + curve[POINTS - 1]);
+      for (let i = POINTS - 1; i > 0; i--) {
+        const cx = (x(i) + x(i - 1)) / 2;
+        ctx2d.quadraticCurveTo(x(i), mid + curve[i], cx, mid + (curve[i] + curve[i - 1]) / 2);
+      }
+      ctx2d.closePath();
+      ctx2d.fillStyle = grad;
+      ctx2d.globalAlpha = 0.5;
+      ctx2d.fill();
       ctx2d.globalAlpha = 1;
+      ctx2d.strokeStyle = accent;
+      ctx2d.lineWidth = 1.5;
+      ctx2d.stroke();
+    };
+
+    if (reduceMotion()) {
+      // Draw one static band rather than leaving the space empty, then stop.
+      resize();
+      for (let i = 0; i < POINTS; i++) curve[i] = h * 0.05;
+      paint();
+      return;
+    }
+
+    const draw = () => {
+      raf = requestAnimationFrame(draw);
+      resize();
+      if (!w || !h) return;
+      t += 1;
+      shape();
+      paint();
     };
     draw();
   }

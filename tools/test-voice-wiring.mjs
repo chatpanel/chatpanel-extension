@@ -200,3 +200,18 @@ function loopSrc() { return read('js/voice-loop.js'); }
 }
 
 console.log('✓ voice wiring: ids exist and are wired, voice is INLINE (no overlay) and replaces the composer, barge-in is automatic, speech starts before generation ends, waveform follows mic AND speaker, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, TTS search wired, recorded voices confirmed + mic released, rename + re-record in place, rendering never writes config');
+
+// ── the waveform must be sized from its box, not from fixed attributes ─────────
+// A canvas with width="560" stretched by CSS into a ~350px panel draws squashed
+// and blurry, and a small idle amplitude then reads as an empty bar — which is
+// exactly how the first version looked.
+{
+  const html2 = read('sidepanel.html');
+  const canvas = html2.match(/<canvas[^>]*id="voice-wave"[^>]*>/)?.[0] || '';
+  assert.ok(canvas, 'the voice bar needs its canvas');
+  assert.ok(!/\swidth="/.test(canvas) && !/\sheight="/.test(canvas),
+    'the canvas must not carry fixed width/height attributes — CSS sizes it and the code scales the backing store');
+  const mode2 = read('js/voice-mode.js');
+  assert.match(mode2, /devicePixelRatio/, 'the backing store must account for the device pixel ratio');
+  assert.match(mode2, /getBoundingClientRect/, 'and be measured from the element box');
+}
