@@ -28,24 +28,38 @@ const IDLE_SWING = 0.16;
  *             user's own voice makes the feature look broken, which is exactly
  *             what happened when this drew a single static frame and stopped.
  */
-export function waveShape({ points = POINTS, t = 0, level = null, height, amplitude = 0.44, motion = true } = {}) {
+export function waveShape({ points = POINTS, t = 0, level = null, height, amplitude = 0.44, motion = true, layer = 0 } = {}) {
   const maxAmp = Math.max(1, height * amplitude);
   const out = new Float32Array(points);
+  // Each layer runs at its own frequency, speed and phase, so stacked layers
+  // interfere with one another — that interference is what reads as liquid rather
+  // than as one band sliding sideways.
+  const L = LAYERS[layer] || LAYERS[0];
   for (let i = 0; i < points; i++) {
-    // A single travelling sine. An earlier version multiplied two of them, which
+    // A single travelling sine per layer. An earlier version multiplied two, which
     // spends most of its time near zero — the product is why this looked dead.
-    // With motion off the phase is fixed, so the resting band has a shape but does
-    // not animate.
+    // With motion off the phase is fixed, so the band has a shape but does not slide.
     const idle = motion
-      ? IDLE_BASE + IDLE_SWING * Math.sin(i * 0.38 - t * 0.09)
+      ? IDLE_BASE + IDLE_SWING * Math.sin(i * L.freq - t * L.speed + L.phase)
       : IDLE_BASE * 0.6;
-    const signal = level ? Math.max(0, level[i] || 0) : 0;
+    // The signal is read at a shifted point per layer, so a syllable ripples
+    // across the stack instead of every layer spiking in lock-step.
+    const j = Math.min(points - 1, Math.max(0, i + L.shift));
+    const signal = level ? Math.max(0, level[j] || 0) : 0;
     // Taper the ends so it reads as a voice rather than a rectangle.
     const taper = Math.sin((Math.PI * (i + 0.5)) / points) ** 0.7;
-    out[i] = Math.max(idle, signal) * taper * maxAmp;
+    out[i] = Math.max(idle, signal) * taper * maxAmp * L.scale;
   }
   return out;
 }
+
+// Three layers: the body, a faster shimmer riding on it, and a slower swell under
+// it. Amplitudes descend so the body stays legible; the others give it depth.
+export const LAYERS = [
+  { freq: 0.38, speed: 0.09,  phase: 0,   shift: 0,  scale: 1.0 },
+  { freq: 0.61, speed: 0.14,  phase: 1.7, shift: 3,  scale: 0.72 },
+  { freq: 0.23, speed: 0.055, phase: 3.9, shift: -4, scale: 0.85 },
+];
 
 /**
  * Smooth a raw analyser frame into per-point levels, in place.

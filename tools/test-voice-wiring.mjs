@@ -224,4 +224,14 @@ console.log('✓ voice wiring: ids exist and are wired, voice is INLINE (no over
   assert.ok(!/if \(reduceMotion\(\)\) \{[\s\S]{0,220}return;/.test(mode2),
     'reduced motion must not stop the draw loop — it may only still the decorative idle travel');
   assert.match(mode2, /motion = !reduceMotion\(\)/, 'it must be passed to the shape instead');
+
+  // The analyser is chosen by loop STATE. The speaker's node lives on after its
+  // first utterance — silent, not null — so `speaker.analyser() || mic` made it win
+  // forever and the mic never showed again after the first reply. That was the
+  // "animation stops after a follow-up" report.
+  assert.ok(!/speaker\.analyser\?\.\(\)\s*\|\|\s*micSource/.test(mode2),
+    'the source must not be picked by null-check — the speaker analyser is never null after the first reply');
+  assert.match(mode2, /currentState\(\) === 'speaking'/, 'the source must follow the loop state');
+  assert.match(mode2, /LAYERS\.map/, 'all layers must be drawn');
+  assert.match(mode2, /shadowBlur/, 'the body needs its glow');
 }

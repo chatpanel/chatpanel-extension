@@ -1122,7 +1122,7 @@ html.surface-tab .topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
 /* Sized in CSS only — the canvas backing store is set from this box times the
    device pixel ratio at draw time. Fixed width/height attributes fought it and
    left the band squashed and blurry. */
-.voice-wave { width: 100%; height: 56px; display: block; }
+.voice-wave { width: 100%; height: 64px; display: block; }
 .voice-bar-row { display: flex; align-items: center; gap: 8px; }
 .voice-bar-spacer { flex: 1 1 auto; }
 .voice-bar-state { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; }

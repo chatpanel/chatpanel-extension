@@ -102,4 +102,27 @@ function stats(curve) {
     'reduced motion must not stop the band responding to your voice — that is the information, not decoration');
 }
 
-console.log('✓ voice-wave: idle band is thick enough to see, travels rather than pulses, speech rises clearly above it, ends taper, levels rise fast and fall slow, degenerate input is finite, reduced motion keeps the signal');
+// ── layers interfere, they do not stack into one band ─────────────────────────
+// Three copies of the same curve at different opacities would just be one thicker
+// band. The liquid look comes from each layer moving at its own frequency, speed
+// and phase, and reading the signal at its own offset.
+{
+  const { LAYERS } = await import('../extension/js/voice-wave.js');
+  assert.ok(LAYERS.length >= 3, 'at least three layers');
+  const freqs = new Set(LAYERS.map((l) => l.freq));
+  const speeds = new Set(LAYERS.map((l) => l.speed));
+  assert.equal(freqs.size, LAYERS.length, 'every layer needs its own frequency');
+  assert.equal(speeds.size, LAYERS.length, 'and its own speed, or they drift in lock-step');
+  const shapes = LAYERS.map((_, k) => waveShape({ t: 10, height: H, layer: k }));
+  let apart = 0;
+  for (let i = 0; i < POINTS; i++) apart = Math.max(apart, Math.abs(shapes[0][i] - shapes[1][i]), Math.abs(shapes[0][i] - shapes[2][i]));
+  assert.ok(apart >= 3, `layers differ by only ${apart.toFixed(1)}px — they will read as one band`);
+  // The body must stay the loudest so the silhouette is legible under the others.
+  assert.equal(LAYERS[0].scale, 1, 'layer 0 is the body at full scale');
+  assert.ok(LAYERS.slice(1).every((l) => l.scale < 1), 'the other layers sit inside it');
+  // A syllable should ripple across layers, not spike them all at once.
+  const shifts = new Set(LAYERS.map((l) => l.shift));
+  assert.ok(shifts.size > 1, 'layers must read the signal at different offsets');
+}
+
+console.log('✓ voice-wave: idle band is thick enough to see, travels rather than pulses, speech rises clearly above it, ends taper, levels rise fast and fall slow, degenerate input is finite, reduced motion keeps the signal, layers interfere');

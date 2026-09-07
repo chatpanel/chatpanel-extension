@@ -33,7 +33,7 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
     import('./voice-loop.js'), import('./read-aloud.js'), import('./speech.js'),
   ]);
   const { createSpeech, speakStream } = speechMod;
-  const { waveShape, smoothLevels, POINTS } = await import('./voice-wave.js');
+  const { waveShape, smoothLevels, POINTS, LAYERS } = await import('./voice-wave.js');
   const [ear, mouth] = await Promise.all([
     resolveDictationProvider({ gatewayUrl }),
     resolveEngine({ gatewayUrl }),
@@ -60,6 +60,7 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
   // that drew a flat line were numeric bugs invisible from reading the code.
   let raf = 0;
   let micSource = () => null;
+  let currentState = () => 'listening';
   const reduceMotion = () => !!globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
 
   function startWave() {
@@ -89,20 +90,22 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
     let bins = null;
     let t = 0;
 
-    // One filled band mirrored about the centre, smoothed with quadratics through
-    // midpoints and outlined over a gradient — far easier to read at this height
-    // than a row of hairline bars.
-    const paint = (curve) => {
+    // Three bands stacked about the centre line, each at its own frequency and
+    // phase so they interfere — that interference, plus a soft glow, is what reads
+    // as liquid rather than as a single outline sliding sideways. Drawn back to
+    // front: the slow swell, the body, then the shimmer on top.
+    const ORDER = [2, 0, 1];
+    const ALPHA = [0.22, 0.50, 0.30];
+    const band = (curve, alpha, glow) => {
       const mid = h / 2;
       const x = (i) => (i / (POINTS - 1)) * w;
-      ctx2d.clearRect(0, 0, w, h);
       const grad = ctx2d.createLinearGradient(0, 0, w, 0);
-      grad.addColorStop(0, `${accent}22`);
-      grad.addColorStop(0.5, `${accent}cc`);
-      grad.addColorStop(1, `${accent}22`);
-
+      grad.addColorStop(0, `${accent}11`);
+      grad.addColorStop(0.5, `${accent}dd`);
+      grad.addColorStop(1, `${accent}11`);
       ctx2d.beginPath();
       ctx2d.moveTo(0, mid - curve[0]);
+      // Quadratics through midpoints: smooth without real spline maths.
       for (let i = 1; i < POINTS; i++) {
         const cx = (x(i - 1) + x(i)) / 2;
         ctx2d.quadraticCurveTo(x(i - 1), mid - curve[i - 1], cx, mid - (curve[i - 1] + curve[i]) / 2);
@@ -114,13 +117,32 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
         ctx2d.quadraticCurveTo(x(i), mid + curve[i], cx, mid + (curve[i] + curve[i - 1]) / 2);
       }
       ctx2d.closePath();
+      ctx2d.save();
+      if (glow) { ctx2d.shadowColor = accent; ctx2d.shadowBlur = 14; }
       ctx2d.fillStyle = grad;
-      ctx2d.globalAlpha = 0.5;
+      ctx2d.globalAlpha = alpha;
       ctx2d.fill();
-      ctx2d.globalAlpha = 1;
+      ctx2d.restore();
+    };
+
+    const paint = (curves) => {
+      ctx2d.clearRect(0, 0, w, h);
+      for (const k of ORDER) band(curves[k], ALPHA[k], k === 0);
+      // A hairline on the body only, so the silhouette stays crisp inside the glow.
+      const mid = h / 2;
+      const x = (i) => (i / (POINTS - 1)) * w;
+      const c = curves[0];
+      ctx2d.beginPath();
+      ctx2d.moveTo(0, mid - c[0]);
+      for (let i = 1; i < POINTS; i++) {
+        const cx = (x(i - 1) + x(i)) / 2;
+        ctx2d.quadraticCurveTo(x(i - 1), mid - c[i - 1], cx, mid - (c[i - 1] + c[i]) / 2);
+      }
       ctx2d.strokeStyle = accent;
-      ctx2d.lineWidth = 1.5;
+      ctx2d.globalAlpha = 0.9;
+      ctx2d.lineWidth = 1.25;
       ctx2d.stroke();
+      ctx2d.globalAlpha = 1;
     };
 
     // NOTE: reduced motion does NOT stop the loop. This used to draw one frame and
@@ -135,8 +157,14 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
       resize();
       if (!w || !h) return;
       t += 1;
-      // The speaker wins while it plays — that is what the user is hearing.
-      const an = speaker.analyser?.() || micSource() || null;
+      // Pick the source by what the assistant is DOING, not by which analyser
+      // happens to exist. The speaker's node lives on after its first utterance —
+      // silent, but not null — so a null-check made it win forever and the mic
+      // never showed again after the first reply. That was the "animation stops
+      // after a follow-up question" report.
+      const an = currentState() === 'speaking'
+        ? (speaker.analyser?.() || null)
+        : (micSource() || null);
       if (an) {
         if (!bins || bins.length !== an.frequencyBinCount) bins = new Uint8Array(an.frequencyBinCount);
         an.getByteFrequencyData(bins);
@@ -144,7 +172,7 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
       } else {
         smoothLevels(level, null);
       }
-      paint(waveShape({ t, level, height: h, motion }));
+      paint(LAYERS.map((_, k) => waveShape({ t, level, height: h, motion, layer: k })));
     };
     draw();
   }
@@ -196,6 +224,7 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
     onError: (m) => toast?.(`✕ ${m}`, 3000),
   });
 
+  currentState = () => loop.state();
   bar()?.classList.remove('hidden');
   el('btn-voice')?.setAttribute('aria-pressed', 'true');
   document.body?.classList.add('voice-active');
