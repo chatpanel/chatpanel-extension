@@ -1122,14 +1122,26 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
             <p class="muted sm">Record a few seconds of speech and the gateway derives a
               <strong>voice print</strong> from it — 512 numbers. The <strong>recording itself is never
               stored</strong>, and neither the audio nor the print ever leaves this machine.
-              Needs a model that can use one: only <strong>SpeechT5</strong> above can, so pick it first.
-              It is rougher than Kokoro, and the result is <em>a distinctive voice derived from your
-              sample</em> rather than an exact impression of you.</p>
+              Needs a model that can use one: only <strong>SpeechT5</strong> above can, so pick it first.</p>
+            <p class="muted sm"><strong>Be warned about how close it gets.</strong> SpeechT5 was trained
+              against a different kind of voice print than the one this gateway computes, so it borrows
+              your pitch and timbre only loosely — most people say <em>it does not sound like them</em>.
+              What it does give you is a consistent voice of your own: the same recording always produces
+              the same voice, and different people produce clearly different ones. A closer match needs a
+              model built for cloning; that is tracked as a follow-up.</p>
             <div id="gw-tts-voices" class="model-list"></div>
+            <!-- Read this while recording. It is chosen for phonetic COVERAGE, not
+                 meaning — the embedding is only as good as the range of sounds in it. -->
+            <div class="voice-prompt" id="gw-tts-prompt-box">
+              <p class="muted sm" style="margin:0 0 4px"><strong>Read this aloud</strong> at a normal pace —
+                recording stops on its own after <span id="gw-tts-target">10</span> seconds.</p>
+              <p class="voice-prompt-text" id="gw-tts-prompt"></p>
+            </div>
             <div class="field row" style="margin-top:8px">
               <input id="gw-tts-voice-name" placeholder="Name this voice — e.g. My voice" maxlength="60" />
               <button id="gw-tts-record" class="btn" type="button">Record</button>
             </div>
+            <div class="voice-meter hidden" id="gw-tts-meter"><div id="gw-tts-meter-fill"></div></div>
             <p class="status" id="gw-tts-voice-status">—</p>
           </div>
 

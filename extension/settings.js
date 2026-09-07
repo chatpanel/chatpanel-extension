@@ -2366,6 +2366,7 @@ async function refreshGateway() {
     refreshSttModels();
     refreshTtsModels();
     refreshTtsVoices();
+    paintVoicePrompt();
     refreshDiarizeModel();
   } catch (e) {
     const isAuth = /admin route|token required|403/i.test(e.message || '');
@@ -2720,6 +2721,13 @@ function renderTtsVoices(data) {
     sel.innerHTML = custom.length
       ? custom.map((v) => `<option value="custom:${escapeHtml(v.id)}"${data.voice === `custom:${v.id}` ? ' selected' : ''}>${escapeHtml(v.name)}</option>`).join('')
       : '<option value="">No saved voices — record one below</option>';
+    // Switching to this model does not rewrite the stored voice, so the config can
+    // still name a Kokoro one while the picker displays yours. Showing a selection
+    // that was never saved is how "I picked my voice and it says I have none"
+    // happens — so persist what is on screen.
+    if (custom.length && !String(data.voice || '').startsWith('custom:')) {
+      selectTtsModel({ voice: sel.value });
+    }
     if (note) {
       note.textContent = custom.length
         ? 'Speaking in a voice derived from your recording. Nothing about it leaves this machine.'
@@ -2820,10 +2828,10 @@ async function selectTtsModel(patch) {
 
 // Hearing the voice is the only way to choose one, and it doubles as the proof that
 // the whole local path works — model loaded, voice fetched, audio played.
-async function previewTtsVoice() {
+async function previewTtsVoice(explicitVoice) {
   const url = normalizeGatewayUrl($('gw-url').value);
   const st = $('gw-tts-models-status');
-  const voice = $('gw-tts-voice')?.value;
+  const voice = explicitVoice || $('gw-tts-voice')?.value;
   if (!url) return;
   st.className = 'status'; st.textContent = 'Synthesizing…';
   try {
@@ -2854,6 +2862,10 @@ async function previewTtsVoice() {
 // The recorder itself is dynamic-imported: getUserMedia and an AudioContext have
 // no business on a settings page that may never record anything.
 let _recorder = null;
+// A recording that failed to save is KEPT. The user already did the work of
+// speaking; making them do it again because the model was still loading is the
+// kind of small cruelty that makes a feature feel broken.
+let _pendingSample = null;   // { pcm, name, seconds }
 
 function renderTtsVoiceList(data) {
   const host = $('gw-tts-voices');
@@ -2873,6 +2885,7 @@ function renderTtsVoiceList(data) {
       <div class="entity-head">
         <strong style="flex:1 1 auto">${esc(v.name)}</strong>
         <span class="status">${esc(when)}${usable ? '' : ' · needs SpeechT5'}</span>
+        <button type="button" class="btn gw-tts-voice-play" data-id="${esc(v.id)}"${usable ? '' : ' disabled'}>Preview</button>
         <button type="button" class="btn gw-tts-voice-del" data-id="${esc(v.id)}">Delete</button>
       </div>
     </div>`;
@@ -2880,6 +2893,22 @@ function renderTtsVoiceList(data) {
   host.querySelectorAll('.gw-tts-voice-del').forEach((b) => {
     b.onclick = () => deleteSavedVoice(b.dataset.id, b.closest('.entity')?.querySelector('strong')?.textContent || '');
   });
+  // Hearing it is the only way to judge a voice print — the name says nothing
+  // about what it sounds like.
+  host.querySelectorAll('.gw-tts-voice-play').forEach((b) => {
+    b.onclick = () => previewTtsVoice(`custom:${b.dataset.id}`);
+  });
+}
+
+// The prompt and the target live in the recorder module, so the page shows the
+// values that will actually be used rather than a copy that can drift.
+async function paintVoicePrompt() {
+  const box = $('gw-tts-prompt');
+  if (!box || box.textContent) return;
+  const { PROMPT_TEXT, TARGET_SECONDS } = await import('./js/voice-record.js');
+  box.textContent = PROMPT_TEXT;
+  const t = $('gw-tts-target');
+  if (t) t.textContent = String(TARGET_SECONDS);
 }
 
 async function refreshTtsVoices() {
@@ -2914,18 +2943,61 @@ async function deleteSavedVoice(id, name) {
   } catch (e) { st.className = 'status err'; st.textContent = `Delete failed: ${e.message}`; }
 }
 
-// One button, two states — Record then Stop. A separate Stop that only appears
-// mid-recording is a control you hunt for while the clock runs.
+// Send whatever sample is in hand. Split out from the recorder so a failed save
+// can be retried against the SAME audio — the button becomes "Save again" rather
+// than making someone speak twice.
+async function savePendingSample() {
+  const st = $('gw-tts-voice-status');
+  const btn = $('gw-tts-record');
+  const url = normalizeGatewayUrl($('gw-url').value);
+  if (!_pendingSample || !url) return;
+  const { pcm, seconds } = _pendingSample;
+  const name = ($('gw-tts-voice-name').value || '').trim() || _pendingSample.name;
+  st.className = 'status'; st.textContent = `Deriving a voice print from ${seconds.toFixed(1)}s…`;
+  btn.disabled = true;
+  try {
+    await saveTtsVoice(url, { name, pcm });
+    _pendingSample = null;
+    $('gw-tts-voice-name').value = '';
+    btn.textContent = 'Record';
+    st.className = 'status ok'; st.textContent = `✓ Saved "${name}" — the recording itself was discarded.`;
+    await refreshTtsVoices();
+    await refreshTtsModels();
+  } catch (e) {
+    // Four failures that all read as "save failed" unless separated — and in every
+    // one of them the recording is KEPT, so the fix is one button press, not a
+    // re-recording.
+    btn.textContent = 'Save again';
+    st.className = 'status err';
+    st.textContent = /404|unknown_endpoint|upstream fetch failed/.test(e.message)
+      ? 'This gateway is too old for recorded voices — update it to 0.6.53+ and restart, then press Save again.'
+      : /embedder_not_ready|still downloading/.test(e.message)
+        ? 'The speaker model is still loading — your recording was kept, press Save again in a moment.'
+        : /failed to load/.test(e.message)
+          ? `The speaker model failed to load. ${e.message}`
+          : `Save failed: ${e.message} — your recording was kept, press Save again.`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// One button, three states — Record, Stop, and Save again if a save did not land.
+// A separate Stop that only appears mid-recording is a control you hunt for while
+// the clock runs.
 async function toggleVoiceRecording() {
   const btn = $('gw-tts-record');
   const st = $('gw-tts-voice-status');
   const url = normalizeGatewayUrl($('gw-url').value);
   if (!url) { st.className = 'status err'; st.textContent = 'Set the gateway URL first.'; return; }
 
+  // A previous attempt is still in hand — retry it rather than recording over it.
+  if (_pendingSample && !_recorder) return savePendingSample();
+
   if (_recorder) {
     const rec = _recorder;
     _recorder = null;
     btn.textContent = 'Record';
+    $('gw-tts-meter')?.classList.add('hidden');
     const pcm = await rec.stop();
     const { MIN_SECONDS, SAMPLE_RATE } = await import('./js/voice-record.js');
     const secs = pcm.length / SAMPLE_RATE;
@@ -2934,35 +3006,28 @@ async function toggleVoiceRecording() {
       st.textContent = `Only ${secs.toFixed(1)}s — record at least ${MIN_SECONDS}s, or the voice print is mostly room noise.`;
       return;
     }
-    const name = ($('gw-tts-voice-name').value || '').trim() || `Voice ${new Date().toLocaleTimeString()}`;
-    st.className = 'status'; st.textContent = `Deriving a voice print from ${secs.toFixed(1)}s…`;
-    try {
-      await saveTtsVoice(url, { name, pcm });
-      $('gw-tts-voice-name').value = '';
-      st.className = 'status ok'; st.textContent = `✓ Saved "${name}" — the recording was discarded.`;
-      await refreshTtsVoices();
-      await refreshTtsModels();
-    } catch (e) {
-      st.className = 'status err';
-      // Three different failures that all read as "save failed" unless separated:
-      // the gateway is too old to have the route at all, the embedder has not
-      // finished downloading, or something else went wrong.
-      st.textContent = /404|unknown_endpoint|upstream fetch failed/.test(e.message)
-        ? 'This gateway is too old for recorded voices — update it to 0.6.53+ and restart.'
-        : /embedder_not_ready|downloading/.test(e.message)
-          ? 'The speaker model is downloading (~100 MB) — try again in a moment.'
-          : `Save failed: ${e.message}`;
-    }
-    return;
+    _pendingSample = { pcm, seconds: secs, name: ($('gw-tts-voice-name').value || '').trim() || `Voice ${new Date().toLocaleTimeString()}` };
+    return savePendingSample();
   }
 
   try {
-    const { startRecording, MAX_SECONDS } = await import('./js/voice-record.js');
+    const { startRecording, TARGET_SECONDS } = await import('./js/voice-record.js');
+    _pendingSample = null; // recording again deliberately replaces the held sample
+    const meter = $('gw-tts-meter');
+    const fill = $('gw-tts-meter-fill');
+    meter?.classList.remove('hidden');
     _recorder = await startRecording({
-      onTick: (secs) => { st.className = 'status'; st.textContent = `Recording ${secs.toFixed(1)}s — say a couple of sentences, then Stop.`; },
+      onTick: (secs, target) => {
+        if (fill) fill.style.width = `${Math.min(100, (secs / target) * 100)}%`;
+        st.className = 'status';
+        st.textContent = `Recording ${secs.toFixed(1)}s of ${target}s — keep reading.`;
+      },
+      // Auto-stop is the point: nobody should have to judge when they have said
+      // enough. Stop happens in the recorder, so the button state follows it here.
+      onAutoStop: () => { setTimeout(() => { if (_recorder) toggleVoiceRecording(); }, 0); },
     });
     btn.textContent = 'Stop';
-    st.className = 'status'; st.textContent = `Recording… up to ${MAX_SECONDS}s.`;
+    st.className = 'status'; st.textContent = `Recording… stops on its own after ${TARGET_SECONDS}s.`;
   } catch (e) {
     _recorder = null;
     st.className = 'status err';
@@ -3435,7 +3500,7 @@ function wireGateway() {
   $('gw-det-backend').onchange = () => { setGwDetectorRows(); renderNerStatus(gatewayState && gatewayState.ner); };
   $('gw-det-url').oninput = setGwDetectorRows; // live cloud-warning for a manual URL
   $('gw-save').onclick = saveGateway;
-  $('gw-tts-preview').onclick = previewTtsVoice;
+  $('gw-tts-preview').onclick = () => previewTtsVoice();
   $('gw-tts-record').onclick = toggleVoiceRecording;
   $('gw-pro-activate').onclick = activateGatewayPro;
   $('gw-dest-all').onclick = () => { gatewayDests = availableDestinations(); renderDestinations(); autoSaveGateway(); };

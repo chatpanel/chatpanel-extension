@@ -177,6 +177,43 @@ const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
   // back out of the speakers and howls.
   assert.match(rec, /gain\.value = 0/, 'the monitoring path must be silent');
   assert.match(rec, /MIN_SECONDS/, 'too-short samples must be rejected — the print would be room noise');
+
+  // Recording must END BY ITSELF. Without a target, someone talks into an open mic
+  // with no idea when they have said enough — which is the state this replaced.
+  assert.match(rec, /TARGET_SECONDS/, 'the recorder must have a target duration');
+  assert.match(rec, /onAutoStop/, 'and must stop itself when it reaches it');
+  const target = Number(rec.match(/TARGET_SECONDS = (\d+)/)?.[1]);
+  const min = Number(rec.match(/MIN_SECONDS = (\d+)/)?.[1]);
+  const max = Number(rec.match(/MAX_SECONDS = (\d+)/)?.[1]);
+  assert.ok(min < target && target <= max, `target ${target}s must sit between min ${min}s and max ${max}s`);
+
+  // The prompt exists for phonetic COVERAGE, so it has to actually contain the
+  // sounds. A friendly sentence that misses half the consonants is not a prompt.
+  const prompt = rec.match(/PROMPT_TEXT =\s*([\s\S]*?);/)?.[1] || '';
+  const words = prompt.toLowerCase();
+  assert.ok(prompt.length > 120, 'the prompt must be long enough to fill the target duration');
+  for (const sound of ['th', 'sh', 'ch', 'j', 'z', 'v', 'f', 'g', 'k', 'b', 'p', 'r', 'l', 'ng']) {
+    assert.ok(words.includes(sound), `the elicitation prompt is missing "${sound}" — the embedding only covers sounds that were spoken`);
+  }
+  for (const vowel of ['a', 'e', 'i', 'o', 'u']) assert.ok(words.includes(vowel));
 }
 
-console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, mute + signal-driven waveform, TTS search wired, recorded voices confirmed + mic released');
+// ── the recording UI tells the user what to do ────────────────────────────────
+{
+  const settingsHtml2 = read('settings.html');
+  const settings2 = read('settings.js');
+  for (const id of ['gw-tts-prompt', 'gw-tts-target', 'gw-tts-meter']) {
+    assert.ok(settingsHtml2.includes(`id="${id}"`), `settings.html has no #${id} — the user would be guessing how long to speak`);
+  }
+  // The page must read its prompt and target FROM the recorder, or the two drift
+  // and the page confidently states a duration that is no longer used.
+  assert.match(settings2, /PROMPT_TEXT/, 'the page must show the recorder\'s own prompt');
+  assert.match(settings2, /TARGET_SECONDS/, 'and the recorder\'s own target');
+  // A saved voice is unjudgeable by name alone.
+  assert.match(settings2, /gw-tts-voice-play/, 'each saved voice needs a Preview');
+  // And a failed save must not cost the recording.
+  assert.match(settings2, /_pendingSample/, 'a failed save must keep the sample for a retry');
+  assert.match(settings2, /Save again/, 'and the button must offer that retry');
+}
+
+console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, mute + signal-driven waveform, TTS search wired, recorded voices confirmed + mic released, auto-stop + phonetic prompt + retry keeps the take');

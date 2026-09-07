@@ -1367,3 +1367,14 @@ hr.sep { border: none; border-top: 1px solid var(--border); margin: 16px 0 14px;
   color: var(--muted, #6b7280);
 }
 #ch-agent option { font-weight: 400; }
+
+/* The elicitation prompt. Set larger and looser than body copy because someone is
+   reading it aloud from a distance while watching a countdown. */
+.voice-prompt { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 8px 0 0; background: rgba(127,127,127,.05); }
+.voice-prompt-text { margin: 0; font-size: 14px; line-height: 1.55; color: var(--text); }
+
+/* Elapsed against the target. It fills toward a known end, so the question
+   "how much longer" has an answer on screen instead of in the user's head. */
+.voice-meter { height: 6px; border-radius: 999px; background: rgba(127,127,127,.18); overflow: hidden; margin: 8px 0 0; }
+.voice-meter.hidden { display: none; }
+.voice-meter > div { height: 100%; width: 0; background: var(--accent); transition: width .12s linear; }
