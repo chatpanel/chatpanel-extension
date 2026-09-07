@@ -166,6 +166,19 @@ console.log('voice refinement: ok');
     assert.equal(scan(addressed).length, 1, `"${addressed}" is an address`);
   }
 
+  // TALKED ABOUT, mid-demo — and it answered in the chat. Verbatim from the capture: the
+  // transcriber cut "…testing to see what chat panel actually helps us to monitor" in half and
+  // punctuated the cut, so the second half read as a fresh address. Two things are wrong with
+  // that and both are now false: an invented full stop is not a sentence break, and a name
+  // followed by its own verb is a subject, not a listener.
+  assert.equal(
+    scan('Okay, so this is another round of testing to see what. Chat panel actually helps us to. Uh, monitor. So some of the things that we will be testing is.').length,
+    0,
+    'a sentence ABOUT the product must not become a request to it',
+  );
+  assert.equal(scan('I think chat panel is a great product.').length, 0);
+  assert.equal(scan('Chat panel helps a lot with meetings.').length, 0);
+
   // A SENTENCE THAT HAS NOT ENDED is declined, and that is the safe direction.
   //
   // A live caption is rescanned as it grows, and an unrecognised command carries no intent in

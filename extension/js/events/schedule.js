@@ -230,6 +230,11 @@ export const DANGLING_TAILS = Object.freeze(new Set([
   'and', 'or', 'but', 'so', 'because', 'cause', 'cos', 'since', 'although', 'though', 'while',
   'whereas', 'unless', 'until', 'if', 'when', 'whenever', 'that', 'which', 'who', 'whom',
   'whose', 'than', 'as', 'like',
+  // 'what' ends a clause only in a handful of set phrases ("guess what") and otherwise means
+  // the object of the thought is still coming — "…testing to see what". Live captions cut
+  // exactly there and punctuate it, which is how a sentence ABOUT the product became an
+  // address to it (see isAddressed in voice-intents.js).
+  'what',
   // prepositions and particles
   'to', 'of', 'in', 'on', 'at', 'by', 'for', 'from', 'with', 'without', 'about', 'into',
   'onto', 'over', 'under', 'between', 'through', 'during', 'against', 'per',

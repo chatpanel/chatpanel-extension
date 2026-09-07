@@ -510,24 +510,66 @@ export function refinementStream({ onChange = null } = {}) {
  */
 const NOUN_MARKERS = /^(?:the|a|an|our|your|their|my|this|that|these|those|about|on|in|of|with|via|using|called|named|to)$/i;
 
+// Adverbs that sit between a subject and its verb — "chat panel ACTUALLY helps us".
+const SUBJECT_ADVERBS = /^(?:actually|really|also|always|never|just|only|still|often|usually|basically|literally|probably|certainly|definitely|now|then|even|apparently|obviously)$/i;
+// Verb forms that make whatever comes before them the SUBJECT of a claim rather than the
+// person being spoken to. A closed list on purpose: the general rule ("any third-person verb")
+// cannot be told from an imperative without a parser, and guessing wrong here costs a command.
+const SUBJECT_VERBS = /^(?:is|isn't|was|wasn't|are|aren't|were|weren't|has|hasn't|have|had|does|doesn't|did|didn't|can|can't|cannot|could|couldn't|will|won't|would|wouldn't|should|shouldn't|shall|may|might|must|seems|helps|lets|gives|allows|works|looks|means|needs|wants|keeps|makes|shows|tells|comes|goes|takes|runs|becomes|provides|supports)$/i;
+// …unless a pronoun follows, which turns the same auxiliary into a question aimed at us:
+// "chatpanel, can YOU set a timer" against "chat panel can help us".
+const QUESTION_PRONOUNS = /^(?:you|we|i|they|it|there|he|she)$/i;
+
+const bare = (t) => String(t?.w || '').replace(/[^\p{L}\p{N}']/gu, '');
+
+/**
+ * Is the wake phrase the SUBJECT of the sentence rather than the person being addressed?
+ *
+ * "…what chat panel actually helps us to monitor" is a sentence ABOUT the product, and it
+ * fired a request. Nothing in the words before the name says so — the giveaway is what comes
+ * after it: a vocative is followed by a comma, an imperative or a question word, while a
+ * subject is followed by its verb.
+ */
+function readsAsSubject(raw, tokens, endIdx) {
+  const next = tokens[endIdx + 1];
+  if (!next) return false; // nothing after the name at all — not a claim about it
+  // Punctuation between the name and what follows is the vocative comma (or a sentence
+  // break). Either way the name stands alone, which subjects do not do.
+  if (/[.!?,;:–—-]/.test(raw.slice(tokens[endIdx].end, next.start))) return false;
+  let j = endIdx + 1;
+  if (SUBJECT_ADVERBS.test(bare(tokens[j])) && tokens[j + 1]) j += 1;
+  if (!SUBJECT_VERBS.test(bare(tokens[j]))) return false;
+  return !QUESTION_PRONOUNS.test(bare(tokens[j + 1]));
+}
+
 function isAddressed(raw, tokens, i, n = 0) {
   // The fuzzy match is generous enough to SWALLOW a leading article: "a chat panel" squashes
   // to "achatpanel", one edit from "chatpanel", so the determiner ends up inside the matched
   // span instead of before it. Check the first matched token too, or "a chat panel would be
   // useful here" reads as an address purely because the "a" was absorbed.
   if (n > 0 && NOUN_MARKERS.test(String(tokens[i].w || '').replace(/[^\p{L}\p{N}]/gu, ''))) return false;
+  // Whatever came before it, a name followed by its own verb is being TALKED ABOUT.
+  if (readsAsSubject(raw, tokens, i + n)) return false;
   if (i === 0) return true; // nothing before it — it opens the utterance
   const prev = tokens[i - 1];
   const word = String(prev.w || '').replace(/[^\p{L}\p{N}]/gu, '');
   if (NOUN_MARKERS.test(word)) return false; // "the chat panel" — a thing, not a listener
+  // "hey chatpanel", "ok chatpanel" — an address word is how people open one.
+  if (/^(?:ok|okay|hey|hi|yo|hello|so|um|uh)$/i.test(word)) return true;
   // Punctuation before it is the vocative comma or a sentence break — "…here. Okay, chat
   // panel", "so I was thinking. ChatPanel, what did we decide?" — and both mean a fresh
   // address rather than a continuing noun phrase. Measured from the previous token's START,
   // because the tokenizer keeps trailing punctuation ON the token ("thinking."), so the gap
   // between tokens is only the space and the full stop would be missed.
-  if (/[.!?,;:]["')\]]?\s*$/.test(raw.slice(prev.start, tokens[i].start))) return true;
-  // "hey chatpanel", "ok chatpanel" — an address word is the other way people open one.
-  return /^(?:ok|okay|hey|hi|yo|hello|so|um|uh)$/i.test(word);
+  const gap = raw.slice(prev.start, tokens[i].start);
+  if (!/[.!?,;:]["'’”)\]]*\s*$/.test(gap)) return false;
+  // …but ONLY a break the speaker actually made. The transcriber invents full stops, and it
+  // invents them mid-clause: "…another round of testing to see what. Chat panel actually
+  // helps us to monitor" is one sentence about the product, cut in half by a machine, and the
+  // half-stop made the second half read as a fresh address. A break is only a break when the
+  // words before it are a finished thought — the same test that decides when a command has
+  // stopped growing, for exactly the same reason.
+  return !/[.!?…]/.test(gap) || commandLooksFinished(raw.slice(0, prev.end));
 }
 
 /**
