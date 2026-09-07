@@ -131,7 +131,7 @@ import {
 import { upsertMeetingChatAttachment } from './js/meeting-chat-context.js';
 // history-rag.js (+ its meeting/search subgraph) is dynamic-imported inside send().
 import { enabledSkills, skillRunFromSkill } from './js/skill-runtime.js';
-import { slashCommandInsert, slashCommandItems } from './js/slash-commands.js';
+import { skillInvocationLabel, skillInvocationOf, slashCommandInsert, slashCommandItems } from './js/slash-commands.js';
 import {
   HISTORY_CONTEXT_MODES,
   historyContextForMode,
@@ -1794,7 +1794,31 @@ function renderMessage(m) {
     wireRedactionReveal(bubble);
   } else {
     // user bubble: plain text + attachment note (+ image thumbnails)
-    bubble.textContent = m.content;
+    // A skill run is the exception — see skillInvocationOf. Show the command; keep the
+    // prompt one click away rather than gone, since a run you cannot inspect is one you
+    // cannot debug.
+    if (m.skillInvocation) {
+      const inv = document.createElement('div');
+      inv.className = 'skill-invoke';
+      const head = document.createElement('div');
+      head.className = 'skill-invoke-h';
+      head.textContent = `${m.skillInvocation.icon || '\u{1F393}'} ${skillInvocationLabel(m.skillInvocation)}`;
+      head.title = m.skillInvocation.name || m.skillInvocation.command;
+      const show = miniBtn('Prompt', () => {
+        body.hidden = !body.hidden;
+        show.textContent = body.hidden ? 'Prompt' : 'Hide';
+      }, 'Show the prompt this skill sent');
+      show.classList.add('skill-invoke-toggle');
+      const body = document.createElement('div');
+      body.className = 'skill-invoke-body';
+      body.hidden = true;
+      body.textContent = m.content;
+      head.appendChild(show);
+      inv.append(head, body);
+      bubble.appendChild(inv);
+    } else {
+      bubble.textContent = m.content;
+    }
     if (m.attachments?.length) {
       const imgs = m.attachments.filter((a) => a.kind === 'image' && a.dataUrl);
       const rest = m.attachments.filter((a) => a.kind !== 'image');
@@ -2431,11 +2455,13 @@ async function send({ steer = false } = {}) {
     // Skills are Pro; on Free the command is sent as literal text with a nudge.
     let text = historyCommand ? historyCommand.query : raw;
     let skillRun = state.pendingSkillRun || null;
+    let skillInvocation = null;
     const sk = historyCommand || searchCommand ? null : matchSlashSkill(raw);
     if (sk && !skillsAllowed()) {
       upsell('customSkills');
     } else if (sk) {
       await applySkillPrep(sk.skill);
+      skillInvocation = skillInvocationOf(sk.skill, sk.args);
       skillRun = skillRunFromSkill(sk.skill, { includeMeetings: can(state.license, 'liveMeetings') });
       // Append the typed args ONLY when the prompt has no {{input}} slot to put
       // them in — otherwise "/fix this sentence" landed in the prompt twice.
@@ -2484,6 +2510,8 @@ async function send({ steer = false } = {}) {
       ts: Date.now(),
       mcpMode: normalizeMcpTurnMode(state.settings.ui?.mcpToolsMode),
     };
+    // The bubble says `/hninsights`; `content` is still the expanded prompt the model gets.
+    if (skillInvocation) userMsg.skillInvocation = skillInvocation;
     const queued = state.streams.has(conv.id); // a reply is already in flight
     userMsg.queued = queued;
     // Name it: "Reading the video transcript…" sets a different expectation from "Reading the
@@ -2832,7 +2860,10 @@ function queueRow({ message, position }, total) {
   text.className = 'q-text';
   // Two lines, then a fade — long enough to recognise which question this is, short
   // enough that three queued messages don't bury the answer they were typed over.
-  text.textContent = message.content || '(attachments only)';
+  // A skill run is recognised by its command: two runs of the same skill open with the
+  // same two lines of prompt, so the clamp would show two rows that read identically.
+  const label = message.skillInvocation ? skillInvocationLabel(message.skillInvocation) : '';
+  text.textContent = label || message.content || '(attachments only)';
   text.title = message.content || '';
   body.appendChild(text);
   if (message.attachments?.length) {
@@ -3558,6 +3589,9 @@ async function resendEdited(m, text) {
   m.content = text;
   m.ts = Date.now();
   m.queued = false;
+  // The editor hands back the prompt itself, so what is sent is no longer what `/command`
+  // expands to. Keeping the chip would label edited text with a command it no longer is.
+  delete m.skillInvocation;
   // Drop everything AFTER this message — the old reply and any later turns.
   conv.messages.splice(idx + 1);
   const agent = agentForConv(conv);

@@ -351,6 +351,19 @@ html.surface-tab .topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
 .msg-edit-actions { display: flex; gap: 4px; justify-content: flex-end; }
 .msg-edit-actions .mini-btn { background: var(--bg-soft); }
 .msg-edit-actions .mini-btn:first-child { color: var(--accent); font-weight: 600; }
+
+/* A sent skill run reads as the command that started it. The prompt it expanded into is
+   one click away rather than gone: a run you cannot inspect is a run you cannot debug. */
+.skill-invoke-h { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.skill-invoke-h .skill-invoke-toggle {
+  margin-left: auto; flex: none; color: inherit; opacity: .7; font-weight: 400;
+}
+.skill-invoke-h .skill-invoke-toggle:hover { opacity: 1; background: rgba(127,127,127,.28); }
+.skill-invoke-body {
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(127,127,127,.45);
+  font-size: 12px; line-height: 1.45; white-space: pre-wrap; opacity: .85;
+  max-height: 220px; overflow: auto;
+}
 .cursor-blink::after { content: '▋'; animation: blink 1s steps(2) infinite; color: var(--text-dim); }
 @keyframes blink { 0%,50%{opacity:1} 50.01%,100%{opacity:0} }
 

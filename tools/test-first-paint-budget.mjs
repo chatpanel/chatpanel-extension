@@ -48,7 +48,14 @@ const BUDGET = {
   // 796 → 800 for the ECHO-FIRST send path: the user's message now goes into the conversation
   // before any context is read, so a video URL's two round-trips no longer look like a dead
   // Enter key. Comment weight, not code — the change is a reorder.
-  'sidepanel.js': 800,
+  // 800 → 806 so a sent `/command` reads as the command. A skill expands into the whole prompt
+  // its author wrote, and the user's bubble was echoing all of it back — pushing the answer,
+  // and the page the skill was asked to read, off the panel on every run. The message CONTENT
+  // is unchanged; what lands here is the label helper in js/slash-commands.js (~1 KB, already
+  // on this graph and on no other) plus the chip in renderMessage, which is first paint by
+  // definition — restoring a conversation draws these bubbles. The previous ceiling had 0.6 KB
+  // left under it, which fails on the next comment anyone writes; this one leaves ~3.7 KB.
+  'sidepanel.js': 806,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one
