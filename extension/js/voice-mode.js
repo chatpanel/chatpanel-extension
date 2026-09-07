@@ -123,12 +123,12 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
       ctx2d.stroke();
     };
 
-    if (reduceMotion()) {
-      // Draw one static band rather than leaving the space blank, then stop.
-      resize();
-      paint(waveShape({ t: 0, height: h }));
-      return;
-    }
+    // NOTE: reduced motion does NOT stop the loop. This used to draw one frame and
+    // return, which on a machine with the OS setting on produced a beautifully
+    // shaped band that never moved — indistinguishable from broken, and the exact
+    // complaint it was meant to avoid. The setting suppresses the decorative idle
+    // travel; the band still follows your voice, because that is information.
+    const motion = !reduceMotion();
 
     const draw = () => {
       raf = requestAnimationFrame(draw);
@@ -144,7 +144,7 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
       } else {
         smoothLevels(level, null);
       }
-      paint(waveShape({ t, level, height: h }));
+      paint(waveShape({ t, level, height: h, motion }));
     };
     draw();
   }

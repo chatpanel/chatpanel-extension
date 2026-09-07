@@ -83,4 +83,23 @@ function stats(curve) {
   assert.doesNotThrow(() => smoothLevels(new Float32Array(POINTS), new Uint8Array(0)));
 }
 
-console.log('✓ voice-wave: idle band is thick enough to see, travels rather than pulses, speech rises clearly above it, ends taper, levels rise fast and fall slow, degenerate input is finite');
+// ── reduced motion drops the DECORATION, not the information ──────────────────
+// This drew a single static frame and stopped, which on a machine with the OS
+// setting enabled produced a band that never moved — indistinguishable from
+// broken, and the exact failure it was supposed to prevent.
+{
+  const a = waveShape({ t: 0, height: H, motion: false });
+  const b = waveShape({ t: 40, height: H, motion: false });
+  let drift = 0;
+  for (let i = 0; i < a.length; i++) drift = Math.max(drift, Math.abs(a[i] - b[i]));
+  assert.equal(drift, 0, 'with motion off the resting band must not travel');
+  assert.ok(stats(a).mean > 0, 'but it must still have a shape, not collapse to a line');
+
+  // The important half: it must STILL follow the analyser.
+  const loud = new Float32Array(POINTS).fill(0.9);
+  const speaking = waveShape({ t: 0, height: H, level: loud, motion: false });
+  assert.ok(stats(speaking).mean > stats(a).mean * 2,
+    'reduced motion must not stop the band responding to your voice — that is the information, not decoration');
+}
+
+console.log('✓ voice-wave: idle band is thick enough to see, travels rather than pulses, speech rises clearly above it, ends taper, levels rise fast and fall slow, degenerate input is finite, reduced motion keeps the signal');

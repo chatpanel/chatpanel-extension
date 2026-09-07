@@ -219,4 +219,9 @@ console.log('✓ voice wiring: ids exist and are wired, voice is INLINE (no over
   assert.match(mode2, /waveShape/, 'the drawing must use the tested shape function');
   assert.ok(!/Math\.sin\([^)]*\)\s*\*\s*Math\.sin/.test(mode2),
     'the idle amplitude must not be a product of two sines — it spends most of its time near zero');
+  // Reduced motion must not short-circuit the render loop: a frozen display of the
+  // user's own voice looks broken, which is what a single static paint produced.
+  assert.ok(!/if \(reduceMotion\(\)\) \{[\s\S]{0,220}return;/.test(mode2),
+    'reduced motion must not stop the draw loop — it may only still the decorative idle travel');
+  assert.match(mode2, /motion = !reduceMotion\(\)/, 'it must be passed to the shape instead');
 }
