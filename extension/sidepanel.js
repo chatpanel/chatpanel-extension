@@ -3269,6 +3269,17 @@ async function toggleVoiceMode() {
     // awaitTurn() is registered BEFORE send(), or a fast reply lands first and the
     // loop waits forever for a turn that already finished.
     sendTurn: async (text, { onDelta } = {}) => {
+      // BARGE-IN. Interrupting is not just "stop the audio": while a reply is
+      // still streaming, send() queues the next message rather than answering it
+      // (see `const queued = state.streams.has(conv.id)`), so talking over the
+      // assistant produced a QUEUED card and no interruption at all. Abort the
+      // stream first, and WAIT for it to actually finish — the stream is removed
+      // from state.streams in its finally, so sending before that would queue too.
+      if (isActiveStreaming()) {
+        const ended = awaitTurn();
+        stopStream();
+        await ended;
+      }
       const input = $('input');
       input.value = text;
       autoGrow();

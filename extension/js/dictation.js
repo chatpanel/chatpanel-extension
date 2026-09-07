@@ -240,7 +240,19 @@ function createGatewayDictation({
   // AudioWorklet (ScriptProcessorNode is deprecated). The worklet module loads
   // from the extension origin (CSP-clean); it batches quanta and posts PCM here.
   async function pumpAudio() {
-    media = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Echo cancellation is NOT optional here. The microphone stays open while the
+    // assistant speaks (that is what makes barge-in possible), so without AEC its
+    // own voice is transcribed and every reply interrupts itself. Browsers default
+    // these on for `audio: true`, but the whole conversation loop now depends on
+    // them, so they are asked for explicitly rather than assumed.
+    media = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+      },
+    });
     ctx = new AudioContext({ sampleRate: 16000 });
     const src = ctx.createMediaStreamSource(media);
     // Tap the mic for a level/spectrum read, so a caller can draw a waveform that
