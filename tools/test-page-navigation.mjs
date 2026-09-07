@@ -33,8 +33,10 @@ const search = read('js/web-search.js');
 
 // ── one implementation, not two ────────────────────────────────────────────
 {
-  assert.match(search, /import \{ waitForTabComplete as tabWait \} from '\.\/tab-nav\.js'/,
+  assert.match(search, /await import\('\.\/tab-nav\.js'\)/,
     'web search takes the extracted wait rather than keeping its own');
+  assert.doesNotMatch(search, /^import .*tab-nav\.js/m,
+    'at its call site — a top-level import puts it on two first-paint graphs for a path most sessions never take');
   assert.doesNotMatch(search, /chrome\.tabs\.onUpdated\.addListener/,
     'and its copy is gone, not merely unused');
   assert.match(search, /timeoutMs: NAV_TIMEOUT_MS, settleMs: RENDER_SETTLE_MS/,

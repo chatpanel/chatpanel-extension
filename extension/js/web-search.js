@@ -23,7 +23,6 @@
 // so a poisoned SERP can't make us fetch the local bridge / cloud metadata / LAN.
 
 import { assertFetchable, stripResourceTags, extractReadable } from './context.js';
-import { waitForTabComplete as tabWait } from './tab-nav.js';
 import { FREE_LIMITS } from './license.js';
 import { defineSearchEngine, reconcileEngines, attemptOrder } from './events/search-engines.js';
 
@@ -299,7 +298,15 @@ async function fetchContent(url, reader, tabFallback) {
 // The wait itself moved to js/tab-nav.js when the page tools needed the same one. The
 // constants stay HERE and are passed in: this caller tuned them against real SERPs, and a
 // shared default that quietly changed them would change search behaviour to fix navigation.
-const waitForTabComplete = (tabId) => tabWait(tabId, { timeoutMs: NAV_TIMEOUT_MS, settleMs: RENDER_SETTLE_MS });
+//
+// Imported AT THE CALL SITE, not at the top. This module is on the static graph of both the
+// side panel and settings, and a tab wait is only ever reached once a search has already
+// decided to render one — so a top-level import put 4 KB on two first paints to serve a path
+// most sessions never take. Both callers are already async; module resolution is cached.
+async function waitForTabComplete(tabId) {
+  const { waitForTabComplete: tabWait } = await import('./tab-nav.js');
+  return tabWait(tabId, { timeoutMs: NAV_TIMEOUT_MS, settleMs: RENDER_SETTLE_MS });
+}
 
 async function fetchHtmlViaTab(url) {
   try { assertFetchable(url); } catch { return null; }

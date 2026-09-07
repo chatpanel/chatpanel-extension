@@ -206,11 +206,9 @@ const pageActionNeedsConfirm = (name) => !READONLY_PAGE_TOOLS.has(name);
 // as them on same-origin APIs), so a blanket approval given for ordinary clicking
 // must not silently extend to it. Every call is shown in full and approved on its
 // own, and approving one never marks the origin trusted.
-// GOING SOMEWHERE is on this list for the same reason. A site grant means "you may act on
-// THIS site"; opening or navigating to a different one is by definition outside it, and the URL
-// is chosen by a model that has been reading meeting captions and page text. So every
-// navigation is approved on its own, with the URL in front of the user, and approving one never
-// marks anything trusted.
+// GOING SOMEWHERE is here for the same reason: a site grant means "act on THIS site", and
+// opening or navigating to another is outside it — with a URL chosen by a model that has been
+// reading meeting captions and page text. Approved one at a time, and never marks trust.
 const ALWAYS_CONFIRM_TOOLS = new Set(['eval_js', 'open_tab', 'navigate']);
 const originOf = (url) => { try { return new URL(url).origin; } catch { return ''; } };
 /** The origin a tab is on RIGHT NOW; the turn's original origin if it cannot be read. */
@@ -224,8 +222,8 @@ function describePageAction(name, input = {}, host = 'this page') {
   switch (name) {
     case 'fill_form': { const n = Array.isArray(input.fields) ? input.fields.length : 0; return `Fill ${n || ''} field${n === 1 ? '' : 's'} (and possibly submit a form) on ${host}`; }
     case 'fill_combobox': return `Set a dropdown / combobox on ${host}`;
-    // The URL in full, and never clipped: this prompt IS the review of where the browser is
-    // about to go, and "https://accounts.google.com…" hides the half that matters.
+    // Never clipped: this prompt IS the review of where the browser is about to go, and
+    // "https://accounts.google.com…" hides the half that matters.
     case 'open_tab': return `Open a new tab at ${String(input.url || '')}`;
     case 'navigate': return `Leave ${host} and go to ${String(input.url || '')}`;
     case 'click_element':
@@ -285,12 +283,9 @@ function confirmPageAction(detail) {
     rowEl.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end';
     let settled = false;
     const done = (v) => { if (settled) return; settled = true; document.removeEventListener('keydown', onKey, true); ov.remove(); resolve(v); };
-    // ESCAPE IS A DECISION. Enter is NOT.
-    //
-    // Enter used to mean "allow" while the focused button was Decline — so the visible safe
-    // default and the one keystroke people press without reading disagreed, on the one dialog
-    // where that matters. Enter now does what it does on any focused button: activates THAT
-    // one, which is Decline until the user moves.
+    // ESCAPE IS A DECISION, Enter is NOT. Enter used to mean "allow" while the focused button
+    // was Decline — the visible safe default and the unread keystroke disagreeing, on the one
+    // dialog where that matters. It now activates the focused button, like any other.
     const onKey = (e) => {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done('deny'); }
     };
@@ -305,17 +300,11 @@ function confirmPageAction(detail) {
     rowEl.append(denyBtn, mk('Allow for this site', 'site', false), mk('Allow', 'allow', true));
     card.append(title, body, why, rowEl);
     ov.append(card);
-    // A STRAY CLICK IS NOT AN ANSWER.
-    //
-    // A click on the backdrop used to decline — and declining is not a soft outcome here: the
-    // tool result tells the agent the user refused and MUST NOT retry, so the run stops and
-    // the prompt is gone with no way to bring it back. The card sits at the BOTTOM of the
-    // panel, so "clicked somewhere else" means anywhere in the conversation above it, which is
-    // most of the panel. Reported exactly that way: "I accidentally clicked somewhere else
-    // while it is asking permissions, and I lose the permission that needs to be fixed."
-    //
-    // So the dialog now insists on an answer, the way a browser's own permission prompt does.
-    // Escape and Decline are both still one action away — what is gone is deciding by accident.
+    // A STRAY CLICK IS NOT AN ANSWER. The backdrop used to decline, and declining is not soft:
+    // the agent is told the user refused and must not retry, so the run stops and the prompt is
+    // gone. The card sits at the BOTTOM of the panel, so "clicked somewhere else" is most of
+    // the panel. It now insists on an answer, like a browser's own permission prompt; Escape
+    // and Decline are still one press away.
     ov.addEventListener('mousedown', (e) => {
       if (e.target !== ov) return;
       card.animate?.(
@@ -516,13 +505,10 @@ async function pageToolProvider(resolvedAgent) {
   };
   const guardedExecute = async (name, input, meta) => {
     const confirmOn = state.settings.ui?.pageActionConfirm !== false; // default ON
-    // WHERE THE TAB IS NOW, not where it was when this turn started.
-    //
-    // `pageOrigin` is resolved once, when the tools are built. That was already slightly
-    // wrong — the user can follow a link mid-turn — and `navigate` makes it trivially
-    // exploitable: grant "allow for this site" on a site you trust, have the model navigate
-    // away, and every click afterwards would be checked against the origin you left. Read at
-    // call time, so a grant stops the moment the page does.
+    // WHERE THE TAB IS NOW, not where it was when the turn started. `pageOrigin` is resolved
+    // once, at build; a user can follow a link mid-turn, and `navigate` makes that trivially
+    // exploitable — grant a site you trust, navigate away, and every later click is checked
+    // against the origin you left. Read at call time, so a grant stops when the page moves.
     const liveOrigin = await currentTabOrigin(state.activeTab?.id, pageOrigin);
     // An always-confirm tool ignores BOTH escape hatches: the global confirm
     // preference and any per-site trust already granted.
