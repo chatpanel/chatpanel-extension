@@ -90,7 +90,13 @@ const BUDGET = {
   // Models section refreshes its three managers together on load, and a fourth that lazy-
   // loaded would show an empty card until it arrived. Settings is also not the latency
   // surface — sidepanel.js is, and the voice engines are pinned off THAT graph below.
-  'settings.js': 1190,
+  // 1190 → 1198 for the TTS model SEARCH, which is also why 1190 was too tight to keep. The
+  // engine drives TWO architectures (Kokoro and VITS/MMS) and Hugging Face returns others
+  // under the same pipeline tag, so results are split into runnable and not-runnable with
+  // the reason shown rather than quietly filtered — that split is the code, and why it has
+  // to exist is the comment. Headroom is deliberate: the previous ceiling landed on
+  // 1189.1/1190, which fails on the next sentence anyone writes here.
+  'settings.js': 1198,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was

@@ -153,4 +153,82 @@ function rig({ send, speak } = {}) {
   assert.equal(loop.isRunning(), false);
 }
 
-console.log('✓ voice-loop: full cycle, silence ignored, interim captions, send/speak failures survive, stop beats late reply + late audio, barge-in keeps session, double-start safe, mic failure lands idle');
+// ── mute ───────────────────────────────────────────────────────────────────────
+// Mute must CLOSE the mic, not filter its output. A loop that keeps recording and
+// throws the text away still ships room noise to the STT engine every turn — and on
+// the browser provider that means shipping it to a vendor.
+{
+  const r = rig();
+  r.loop.start();
+  assert.ok(r.listening(), 'starts listening');
+  r.loop.setMuted(true);
+  assert.equal(r.listening(), false, 'muting must stop the listener, not just ignore it');
+  assert.equal(r.loop.state(), 'muted');
+  assert.ok(r.loop.isRunning(), 'and must NOT end the session');
+  r.loop.setMuted(false);
+  assert.ok(r.listening(), 'unmuting reopens the mic');
+  assert.equal(r.loop.state(), 'listening');
+  r.loop.stop();
+}
+
+// Muting mid-answer is allowed, and must not claim the assistant stopped talking.
+{
+  let endAudio;
+  const r = rig({ speak: () => new Promise((res) => { endAudio = res; }) });
+  r.loop.start();
+  r.say('question');
+  await tick(); await tick();
+  assert.equal(r.loop.state(), 'speaking');
+  r.loop.setMuted(true);
+  assert.equal(r.loop.state(), 'speaking', 'a mute pressed mid-answer must not hijack the display');
+  endAudio();
+  await tick(); await tick();
+  assert.equal(r.loop.state(), 'muted', 'but the turn must end into muted, not reopen the mic');
+  assert.equal(r.listening(), false);
+  r.loop.stop();
+}
+
+// Unmuting while the assistant is still talking just clears the flag; the turn
+// ends into listening as usual.
+{
+  let endAudio;
+  const r = rig({ speak: () => new Promise((res) => { endAudio = res; }) });
+  r.loop.start();
+  r.loop.setMuted(true);
+  r.loop.setMuted(false);
+  r.say('question');
+  await tick(); await tick();
+  r.loop.setMuted(true);
+  r.loop.setMuted(false);
+  endAudio();
+  await tick(); await tick();
+  assert.equal(r.loop.state(), 'listening');
+  r.loop.stop();
+}
+
+// Interrupt while muted must not sneak the mic back open.
+{
+  const r = rig();
+  r.loop.start();
+  r.loop.setMuted(true);
+  r.loop.interrupt();
+  assert.equal(r.listening(), false, 'barge-in must respect mute');
+  assert.equal(r.loop.state(), 'muted');
+  r.loop.stop();
+}
+
+// Redundant calls are no-ops, and a new session never starts silently deaf.
+{
+  const r = rig();
+  r.loop.start();
+  r.loop.setMuted(true);
+  r.loop.setMuted(true);
+  assert.equal(r.stops(), 1, 'muting twice must not stop a listener twice');
+  r.loop.stop();
+  assert.equal(r.loop.isMuted(), false, 'stop() clears mute — the next session opens with the mic on');
+  r.loop.start();
+  assert.equal(r.loop.state(), 'listening');
+  r.loop.stop();
+}
+
+console.log('✓ voice-loop: full cycle, silence ignored, interim captions, send/speak failures survive, stop beats late reply + late audio, barge-in keeps session, double-start safe, mic failure lands idle, mute closes the mic and survives mid-answer');

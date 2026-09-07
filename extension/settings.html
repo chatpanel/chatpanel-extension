@@ -1094,6 +1094,18 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
               voice, which also stays on-device but sounds noticeably more robotic.</p>
             <div id="gw-tts-models" class="model-list"></div>
             <p class="status" id="gw-tts-models-status">—</p>
+            <div class="model-reg">
+              <div class="model-reg-bar">
+                <input id="gw-tts-search" placeholder="Search Hugging Face for voices — e.g. kokoro, mms-tts-hin, mms-tts-spa" />
+                <button id="gw-tts-search-btn" class="btn" type="button">Search</button>
+              </div>
+              <div id="gw-tts-search-results" class="model-reg-results hidden"></div>
+              <p class="muted sm" style="margin:4px 0 0">Two families run here: <strong>Kokoro</strong>
+                (multi-voice, English/Chinese) and <strong>VITS / MMS</strong> (one small model per language —
+                Meta's MMS covers ~1000 of them, so search <code>mms-tts-</code> plus your language code).
+                Anything else on Hugging Face is listed as <em>not runnable</em> rather than hidden, so you can
+                see it exists and why it won't load.</p>
+            </div>
             <div class="field row" style="margin-top:8px">
               <label style="min-width:auto">Voice</label>
               <select id="gw-tts-voice"></select>

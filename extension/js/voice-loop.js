@@ -30,13 +30,14 @@
 //     with no way out. A voice UI that dies silently is indistinguishable from one
 //     that is still listening, and the user keeps talking to nothing.
 
-export const VOICE_STATES = ['idle', 'listening', 'thinking', 'speaking'];
+export const VOICE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'muted'];
 
 export function createVoiceLoop({ listen, send, speak, onState, onError } = {}) {
   let state = 'idle';
   let token = 0;
   let stopListen = null;
   let running = false;
+  let muted = false;
 
   const setState = (s, text) => {
     if (state === s && text === undefined) return;
@@ -73,6 +74,11 @@ export function createVoiceLoop({ listen, send, speak, onState, onError } = {}) 
 
   function cycle(mine) {
     if (token !== mine || !running) return;
+    // Muted means the mic is CLOSED, not merely ignored. A loop that keeps
+    // recording and discards the text still ships room noise to the STT engine
+    // every turn, and on the browser provider that means shipping it to a vendor —
+    // so mute has to stop the listener, not filter its output.
+    if (muted) { setState('muted'); return; }
     setState('listening');
     try {
       stopListen = listen({
@@ -95,6 +101,7 @@ export function createVoiceLoop({ listen, send, speak, onState, onError } = {}) 
   function stopAll() {
     token++;
     running = false;
+    muted = false; // a new session starts with the mic open, not silently deaf
     try { stopListen?.(); } catch { /* already stopped */ }
     stopListen = null;
     setState('idle');
@@ -110,6 +117,31 @@ export function createVoiceLoop({ listen, send, speak, onState, onError } = {}) 
       cycle(mine);
     },
     stop: stopAll,
+    isMuted: () => muted,
+    /**
+     * Close (or reopen) the microphone without ending the session — the control for
+     * a noisy room, or for saying something you do not want transcribed.
+     *
+     * Muting mid-answer is allowed and does nothing violent: the mic is already
+     * closed while thinking and speaking, so it simply means the NEXT cycle will
+     * not open it. Unmuting there is equally safe — the flag clears and the turn
+     * ends into a listening state as usual.
+     */
+    setMuted(on) {
+      const next = !!on;
+      if (next === muted) return;
+      muted = next;
+      if (!running) return;
+      if (muted) {
+        try { stopListen?.(); } catch { /* not listening */ }
+        stopListen = null;
+        // Only take over the display if the mic was what was showing; a mute
+        // pressed mid-answer must not claim the assistant stopped talking.
+        if (state === 'listening') setState('muted');
+      } else if (state === 'muted') {
+        cycle(++token);
+      }
+    },
     /**
      * Barge-in: drop whatever is being said or thought and listen again, without
      * ending the session. This is the button a user reaches for when the assistant
@@ -120,7 +152,7 @@ export function createVoiceLoop({ listen, send, speak, onState, onError } = {}) 
       const mine = ++token;
       try { stopListen?.(); } catch { /* not listening */ }
       stopListen = null;
-      cycle(mine);
+      cycle(mine); // respects mute — cycle() will not open a muted mic
     },
   };
 }

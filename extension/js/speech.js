@@ -11,10 +11,17 @@
 // Contract:
 //   resolveSpeechProvider({gatewayUrl}) -> { provider, private, label, tts? }
 //   createSpeech(opts)                  -> controller
-//     opts: { gatewayUrl?, provider='browser', voice?, speed?,
+//     opts: { gatewayUrl?, provider='browser', voice?, speed?, analyse?,
 //             onStart, onChunk, onEnd, onError }
-//       onChunk(i, total) — a chunk began playing; drives progress UI.
-//   controller: { speak(text), stop(), isSpeaking() }
+//       onChunk(i, total, text) — a chunk began playing, and the words it is
+//                 saying. The caption follows the AUDIO rather than the whole
+//                 reply, so what is on screen is what you are hearing.
+//   controller: { speak(text), stop(), isSpeaking(), analyser() }
+//
+// `analyse: true` taps the playing audio with a Web Audio AnalyserNode and exposes
+// it via analyser(), so a caller can draw a waveform driven by the ACTUAL signal.
+// A shape that merely animates on a timer drifts out of sync with the voice within
+// a sentence, which reads as lag in the audio rather than in the animation.
 //
 // Why the text is chunked HERE and not only in the gateway: the gateway returns a
 // complete WAV, so a 60-second answer would sit silent for ~30 s before the first
@@ -107,6 +114,9 @@ function createBrowserSpeech({ voice = null, speed = 1, onStart, onChunk, onEnd,
   return {
     provider: 'browser',
     isSpeaking: () => speaking,
+    // speechSynthesis gives no audio node to tap, so a caller must fall back to
+    // something that is not signal-driven. Saying so is better than a fake.
+    analyser: () => null,
     stop() {
       speaking = false;
       try { window.speechSynthesis.cancel(); } catch { /* nothing playing */ }
@@ -126,7 +136,7 @@ function createBrowserSpeech({ voice = null, speed = 1, onStart, onChunk, onEnd,
         }
         u.onend = () => { speaking = false; onEnd?.(); };
         u.onerror = (e) => { speaking = false; onError?.(e?.error || 'speech failed'); onEnd?.(); };
-        onChunk?.(0, 1);
+        onChunk?.(0, 1, clean);
         window.speechSynthesis.speak(u);
       } catch (e) {
         speaking = false;
@@ -137,12 +147,31 @@ function createBrowserSpeech({ voice = null, speed = 1, onStart, onChunk, onEnd,
 }
 
 // ── gateway (Kokoro over loopback) ─────────────────────────────────────────────
-function createGatewaySpeech({ gatewayUrl, voice, speed = 1, onStart, onChunk, onEnd, onError } = {}) {
+function createGatewaySpeech({ gatewayUrl, voice, speed = 1, analyse = false, onStart, onChunk, onEnd, onError } = {}) {
   const base = String(gatewayUrl || DEFAULT_GATEWAY_URL).replace(/\/+$/, '');
   let speaking = false;
   let audio = null;
   let abort = null;
   let token = 0; // bumped by stop(), so a late fetch from a cancelled run is dropped
+
+  // One AudioContext for the whole controller, created lazily on first play so it
+  // is born inside the user gesture that started the conversation — a context
+  // constructed earlier starts 'suspended' and the waveform never moves.
+  let actx = null;
+  let analyserNode = null;
+  function ensureAnalyser() {
+    if (!analyse || analyserNode) return analyserNode;
+    try {
+      const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
+      if (!AC) return null;
+      actx = new AC();
+      analyserNode = actx.createAnalyser();
+      analyserNode.fftSize = 1024;
+      analyserNode.smoothingTimeConstant = 0.75;
+      analyserNode.connect(actx.destination);
+    } catch { analyserNode = null; } // no Web Audio: the caller falls back to CSS
+    return analyserNode;
+  }
 
   async function fetchChunk(text, signal) {
     const res = await fetch(`${base}/tts`, {
@@ -162,6 +191,16 @@ function createGatewaySpeech({ gatewayUrl, voice, speed = 1, onStart, onChunk, o
   function play(url) {
     return new Promise((resolve, reject) => {
       audio = new Audio(url);
+      const an = ensureAnalyser();
+      if (an && actx) {
+        try {
+          // A media element can be tapped ONCE, which is fine — every chunk is a
+          // fresh element. Routing through the analyser replaces the element's own
+          // output, so the node must reach the destination or playback goes silent.
+          actx.createMediaElementSource(audio).connect(an);
+          if (actx.state === 'suspended') actx.resume().catch(() => {});
+        } catch { /* already tapped, or no Web Audio — play it plainly */ }
+      }
       audio.onended = resolve;
       audio.onerror = () => reject(new Error('playback failed'));
       audio.play().catch(reject);
@@ -171,6 +210,7 @@ function createGatewaySpeech({ gatewayUrl, voice, speed = 1, onStart, onChunk, o
   const api = {
     provider: 'gateway',
     isSpeaking: () => speaking,
+    analyser: () => analyserNode,
     stop() {
       token++;
       speaking = false;
@@ -196,7 +236,7 @@ function createGatewaySpeech({ gatewayUrl, voice, speed = 1, onStart, onChunk, o
           if (token !== mine) return;            // stopped while we were fetching
           urls.push(url);
           next = i + 1 < chunks.length ? fetchChunk(chunks[i + 1], abort.signal) : null;
-          onChunk?.(i, chunks.length);
+          onChunk?.(i, chunks.length, chunks[i]);
           await play(url);
           if (token !== mine) return;
         }

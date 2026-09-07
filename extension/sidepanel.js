@@ -9100,6 +9100,7 @@ function wireEvents() {
   $('voice-stop').onclick = stopVoiceMode;
   $('voice-close').onclick = stopVoiceMode;
   $('voice-interrupt').onclick = () => voiceSession?.interrupt();
+  $('voice-mute').onclick = () => voiceSession?.toggleMute();
   $('btn-mcp').onclick = (e) => {
     e.stopPropagation();
     const m = $('mcp-tools-menu');

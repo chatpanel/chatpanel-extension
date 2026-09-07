@@ -95,6 +95,21 @@ const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
   assert.ok(!readAloud.includes("import('./voice-mode.js')"), 'read-aloud must not depend on voice mode — the Speak button works without it');
 }
 
+// ── mute and the waveform ──────────────────────────────────────────────────────
+{
+  assert.ok(idsInHtml.has('voice-mute'), 'the overlay needs a mute control — a live mic in a noisy room is the common case');
+  assert.ok(idsInHtml.has('voice-wave'), 'and a canvas for the waveform');
+  assert.match(panel, /\$\('voice-mute'\)\.onclick/, 'mute must be wired');
+  assert.match(mode, /toggleMute/, 'and the session must expose the toggle');
+  // Muted is a state the user can be left in, so it needs a label and a look.
+  assert.match(mode, /muted:/, 'LABEL must name the muted state');
+  assert.ok(css.includes('[data-state="muted"]'), 'the orb must stop breathing when muted — it is not listening');
+  // The waveform is signal-driven; it must hide when there is no signal.
+  assert.match(mode, /stopWave|classList\.add\('hidden'\)/, 'the canvas must hide when nothing is playing');
+  assert.match(mode, /getByteFrequencyData/, 'the waveform must read the analyser, not a timer');
+  assert.match(mode, /prefers-reduced-motion/, 'and must not animate for someone who asked it not to');
+}
+
 // ── the Gateway settings TTS manager ───────────────────────────────────────────
 // Same class of failure, different page: a model picker whose ids drifted renders
 // into nothing and reads as "the gateway has no TTS".
@@ -116,6 +131,19 @@ const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
   assert.match(settings, /\$\('gw-tts-preview'\)\.onclick/, 'the Preview button must be wired');
   // An older gateway 404s /tts/models; that must read as "update it", not as an error.
   assert.match(settings, /404.*text-to-speech|text-to-speech.*404/s, 'a 404 from /tts/models must tell the user to update the gateway');
+
+  // The search box has to be wired like the STT and NER ones — the loop that wires
+  // them must cover every registered task, not a hardcoded pair.
+  for (const id of ['gw-tts-search', 'gw-tts-search-btn', 'gw-tts-search-results']) {
+    assert.ok(sIds.has(id), `settings.html has no #${id} — the TTS model search would not render`);
+  }
+  assert.match(settings, /tts:\s*\{\s*input:\s*'gw-tts-search'/, 'tts must be registered in MODEL_REG');
+  assert.ok(!/for \(const task of \['stt', 'ner'\]\)/.test(settings),
+    'the search wiring loop must iterate MODEL_REG, not a hardcoded task list — a registered task that is never wired is a dead search box');
+
+  // A single-speaker model must HIDE the voice picker rather than offer choices
+  // that cannot take effect.
+  assert.match(settings, /supportsVoices/, 'the voice picker must react to whether the active model has voices');
 }
 
-console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired');
+console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, mute + signal-driven waveform, TTS search wired for every registered task');

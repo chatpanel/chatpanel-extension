@@ -44,7 +44,7 @@ import { testMcpServer } from './js/mcp-manager.js';
 import { MCP_CATALOG } from './js/mcp-catalog.js';
 import { argsToText, parseArgsInput, parseMcpConfig } from './js/mcp-config-import.js';
 import { fetchMcpRegistryPage } from './js/mcp-registry.js';
-import { searchModels, formatDownloads } from './js/model-registry.js';
+import { searchModels, partitionTtsModels, ttsArchOf, formatDownloads } from './js/model-registry.js';
 import { assistPrompt } from './js/assist.js';
 import { isSkillEnabled } from './js/skill-runtime.js';
 import { lintSkillPrompt } from './js/events/skill-vars.js';
@@ -2707,6 +2707,15 @@ function renderTtsVoices(data) {
   if (!sel) return;
   const voices = data?.voices || [];
   const cur = data?.voice || '';
+  // A VITS/MMS model is single-speaker: the gateway returns no voices for it, and
+  // a picker offering choices that cannot take effect is worse than no picker.
+  const row = sel.closest('.field');
+  const single = data?.supportsVoices === false || (data?.arch && data.arch !== 'style-tts2');
+  if (row) row.style.display = single ? 'none' : '';
+  if (single) {
+    if (note) note.textContent = `${data.arch === 'vits' ? 'This model is single-speaker' : 'This model has no selectable voices'} — one voice, one language. Switch to a Kokoro model to choose a voice.`;
+    return;
+  }
   sel.innerHTML = voices.map((v) => {
     const bits = [v.grade ? `grade ${v.grade}` : '', v.installed ? 'installed' : 'downloads on first use'].filter(Boolean).join(' · ');
     return `<option value="${escapeHtml(v.id)}"${v.id === cur ? ' selected' : ''}>${escapeHtml(v.label)} — ${escapeHtml(bits)}</option>`;
@@ -2879,6 +2888,7 @@ async function downloadDiarize() {
 const MODEL_REG = {
   stt: { input: 'gw-stt-search', btn: 'gw-stt-search-btn', results: 'gw-stt-search-results', pick: (id) => selectSttModel(id) },
   ner: { input: 'gw-ner-search', btn: 'gw-ner-search-btn', results: 'gw-ner-search-results', pick: (id) => selectNerModel(id) },
+  tts: { input: 'gw-tts-search', btn: 'gw-tts-search-btn', results: 'gw-tts-search-results', pick: (id) => selectTtsModel({ id }) },
 };
 
 async function runModelSearch(task) {
@@ -2891,6 +2901,12 @@ async function runModelSearch(task) {
   try {
     const items = await searchModels({ task, query, limit: 30 });
     if (!items.length) { box.innerHTML = '<p class="muted sm">No transformers.js (ONNX) models matched. Try another term.</p>'; return; }
+    // TTS is the one task where "transformers.js + right pipeline" still isn't
+    // enough — the engine drives two architectures and HF returns others. Show the
+    // rest as NOT runnable rather than hiding them: a user who searched for a model
+    // by name deserves to see it exists and why it won't load, instead of
+    // concluding the search is broken.
+    if (task === 'tts') { renderTtsSearch(box, items); return; }
     box.innerHTML = items.map((m) => {
       const meta = [`↓ ${formatDownloads(m.downloads)}`, m.likes ? `♥ ${m.likes}` : '', m.langs.length ? m.langs.join('/') : '']
         .filter(Boolean).join(' · ');
@@ -2906,6 +2922,40 @@ async function runModelSearch(task) {
   } catch (e) {
     box.innerHTML = `<p class="status err">Search failed: ${escapeHtml(e.message)}</p>`;
   }
+}
+
+// TTS search results, split by whether this gateway can actually run them.
+const TTS_ARCH_LABEL = { style_text_to_speech_2: 'Kokoro · multi-voice', vits: 'VITS/MMS · one language' };
+
+function renderTtsSearch(box, items) {
+  const { runnable, unsupported } = partitionTtsModels(items);
+  const row = (m, ok) => {
+    const arch = ttsArchOf(m);
+    const meta = [
+      ok ? (TTS_ARCH_LABEL[arch] || arch) : 'not runnable here',
+      `↓ ${formatDownloads(m.downloads)}`,
+      m.likes ? `♥ ${m.likes}` : '',
+      m.langs.length ? m.langs.join('/') : '',
+    ].filter(Boolean).join(' · ');
+    return `<div class="model-reg-item">
+      <div class="mri-main">
+        <a href="${escapeHtml(m.url)}" target="_blank" rel="noopener" class="mri-id">${escapeHtml(m.id)}</a>
+        <span class="mri-meta">${escapeHtml(meta)}</span>
+      </div>
+      ${ok
+        ? `<button type="button" class="btn primary sm mri-use" data-id="${escapeHtml(m.id)}">Download &amp; use</button>`
+        : '<span class="mri-meta">—</span>'}
+    </div>`;
+  };
+  const parts = [];
+  if (runnable.length) parts.push(runnable.map((m) => row(m, true)).join(''));
+  else parts.push('<p class="muted sm">Nothing runnable matched. Try <code>kokoro</code>, or <code>mms-tts-</code> plus a language code.</p>');
+  if (unsupported.length) {
+    parts.push(`<p class="muted sm" style="margin:8px 0 4px">Also found, but this gateway can\u2019t run them
+      (it drives Kokoro and VITS/MMS):</p>${unsupported.slice(0, 6).map((m) => row(m, false)).join('')}`);
+  }
+  box.innerHTML = parts.join('');
+  box.querySelectorAll('.mri-use').forEach((b) => { b.onclick = () => selectTtsModel({ id: b.dataset.id }); });
 }
 
 // Privacy-tab NER health line (the "Bundled NER" detector === the gateway's NER).
@@ -3281,7 +3331,7 @@ function wireGateway() {
     toast(`Copied ${added.length} entr${added.length === 1 ? 'y' : 'ies'} to the gateway.`);
   };
   // Searchable model registries (Hugging Face) — browse & download, like MCP tools.
-  for (const task of ['stt', 'ner']) {
+  for (const task of Object.keys(MODEL_REG)) {
     const ctx = MODEL_REG[task];
     if ($(ctx.btn)) $(ctx.btn).onclick = () => runModelSearch(task);
     if ($(ctx.input)) $(ctx.input).onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); runModelSearch(task); } };

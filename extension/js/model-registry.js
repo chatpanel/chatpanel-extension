@@ -3,6 +3,7 @@
 // browses the MCP registry. Two tasks:
 //   'stt' → automatic-speech-recognition (whisper)   → gateway /stt/models
 //   'ner' → token-classification (PER/ORG/LOC)        → gateway /ner/models
+//   'tts' → text-to-speech                            → gateway /tts/models
 //
 // We restrict to `filter=transformers.js`, which returns ONLY repos that ship
 // ONNX weights the in-process engine can actually load (no PyTorch-only repos —
@@ -18,7 +19,27 @@ const HF_API = 'https://huggingface.co/api/models';
 const TASK = {
   stt: { pipeline: 'automatic-speech-recognition', hint: 'whisper' },
   ner: { pipeline: 'token-classification', hint: '' },
+  tts: { pipeline: 'text-to-speech', hint: '' },
 };
+
+// The TTS engine drives two architectures. `filter=transformers.js` alone is not
+// enough here: it happily returns SpeechT5 and other exports the engine cannot
+// run, and finding that out by clicking Download and waiting is a bad way to
+// learn it. The tags below are what HF puts on the repos we CAN drive.
+const TTS_ARCH_TAGS = ['style_text_to_speech_2', 'vits'];
+
+export function ttsArchOf(model = {}) {
+  const tags = Array.isArray(model.tags) ? model.tags : [];
+  return TTS_ARCH_TAGS.find((t) => tags.includes(t)) || null;
+}
+
+/** Split a TTS result list into what this gateway can run and what it cannot. */
+export function partitionTtsModels(models = []) {
+  const runnable = [];
+  const unsupported = [];
+  for (const m of models) (ttsArchOf(m) ? runnable : unsupported).push(m);
+  return { runnable, unsupported };
+}
 
 // Build the HF search URL: filter=transformers.js guarantees ONNX/runnable.
 export function modelSearchUrl({ task = 'stt', query = '', limit = 30 } = {}) {

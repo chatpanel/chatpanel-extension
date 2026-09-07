@@ -105,6 +105,63 @@ const { stripForSpeech, splitForSpeech, resolveSpeechProvider, createSpeech, pro
   assert.deepEqual(requested, ['One. Two. Three.'], 'a short answer is one request');
 }
 
+// The caption follows the AUDIO, so onChunk must say WHAT is being spoken — the
+// whole reply sitting on screen from the first word is not a caption.
+{
+  const seen = [];
+  globalThis.fetch = async () => ({ ok: true, blob: async () => ({ __id: 1 }) });
+  const s = createSpeech({ provider: 'gateway', onChunk: (i, n, text) => seen.push([i, n, text]) });
+  const A = `Alpha ${'a'.repeat(90)}.`, B = `Beta ${'b'.repeat(300)}.`;
+  await s.speak(`${A} ${B}`);
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0][2], A, 'onChunk must carry the text of the chunk that just started');
+  assert.equal(seen[1][2], B);
+  assert.deepEqual(seen.map((x) => x[1]), [2, 2], 'and the total, for progress');
+}
+
+// The browser voice has no audio node to tap. Saying so lets the UI fall back
+// honestly instead of animating a waveform it is not measuring.
+{
+  assert.equal(createSpeech({ provider: 'browser' }).analyser(), null);
+  const g = createSpeech({ provider: 'gateway' });
+  assert.equal(typeof g.analyser, 'function');
+  assert.equal(g.analyser(), null, 'no analyser before anything has played');
+}
+
+// With analyse:true and a Web Audio implementation present, the playing element is
+// routed through an analyser that still reaches the destination — a tap that
+// forgets to connect onward plays silence.
+{
+  const connected = [];
+  class FakeNode { connect(t) { connected.push(t === 'DEST' ? 'destination' : 'analyser'); } }
+  globalThis.AudioContext = class {
+    constructor() { this.state = 'running'; this.destination = 'DEST'; }
+    createAnalyser() { const a = new FakeNode(); a.fftSize = 0; a.smoothingTimeConstant = 0; a.frequencyBinCount = 8; return a; }
+    createMediaElementSource() { return new FakeNode(); }
+    resume() { return Promise.resolve(); }
+  };
+  globalThis.fetch = async () => ({ ok: true, blob: async () => ({ __id: 1 }) });
+  const s = createSpeech({ provider: 'gateway', analyse: true });
+  await s.speak('Hello there.');
+  assert.ok(s.analyser(), 'analyse:true must expose a node once audio has played');
+  assert.ok(connected.includes('destination'), 'the analyser must reach the destination or playback is silent');
+  assert.ok(connected.includes('analyser'), 'and the media element must be routed into it');
+  delete globalThis.AudioContext;
+}
+
+// No Web Audio at all must not break playback — the visual degrades, the voice does not.
+{
+  const saved = globalThis.AudioContext;
+  delete globalThis.AudioContext;
+  played.length = 0;
+  globalThis.fetch = async () => ({ ok: true, blob: async () => ({ __id: 1 }) });
+  const s = createSpeech({ provider: 'gateway', analyse: true });
+  await s.speak('Still speaks.');
+  assert.equal(played.length, 1, 'audio must still play with no Web Audio available');
+  assert.equal(s.analyser(), null);
+  if (saved) globalThis.AudioContext = saved;
+}
+
 // ── stop() is the one that matters: nothing may play after it ──────────────────
 {
   played.length = 0; audioInstances = [];
@@ -149,4 +206,4 @@ const { stripForSpeech, splitForSpeech, resolveSpeechProvider, createSpeech, pro
   assert.equal(calls[1][1], 'Heading\n\nHello world.', 'browser voice gets stripped text too');
 }
 
-console.log('✓ speech: markdown stripping, latency chunking, provider ladder, ordered playback, prefetch bound, stop-after-fetch, error surfacing, browser fallback');
+console.log('✓ speech: markdown stripping, latency chunking, provider ladder, ordered playback, prefetch bound, stop-after-fetch, error surfacing, browser fallback, chunk text for captions, analyser tap reaches the destination');
