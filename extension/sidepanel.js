@@ -4444,6 +4444,19 @@ const VOICE_ACTED_MAX = 500;
 // of minutes is a duplicate, not a second intention; anyone who really wants two identical
 // timers can add one from the Jobs panel.
 const VOICE_REPEAT_MS = 120_000;
+/**
+ * How long the EXACT same words stay done.
+ *
+ * Long, and that is the point. A caption entry in a monologue lives for minutes and is
+ * re-scanned on every flush (deliberately — a half-heard command must get a second chance),
+ * so a command spoken once kept arriving as new and kept creating timers once it cleared the
+ * two-minute window. This has to outlive a caption entry comfortably.
+ *
+ * The cost is that saying the identical thing twice inside the window does it once. That is
+ * the right trade: a duplicate timer is noise the user has to hunt down and delete, and the
+ * second one can always be made from the Jobs pane.
+ */
+const VOICE_SAME_MS = 20 * 60_000;
 let voiceActed = null; // Map of key → when it was acted on
 
 async function loadVoiceActed() {
@@ -4477,7 +4490,10 @@ const voiceGist = (c) => (c.intent
 
 /** Should this command run? False if this exact utterance, or the same request, already did. */
 function voiceIsFresh(acted, command, now) {
-  if (acted.has(command.key)) return false;
+  // The exact words, for as long as the caption carrying them can keep being re-delivered.
+  const said = acted.get(command.key);
+  if (said && now - said < VOICE_SAME_MS) return false;
+  // The looser match — same intent and duration, different words — on a shorter leash.
   const at = acted.get(voiceGist(command));
   return !(at && now - at < VOICE_REPEAT_MS);
 }
@@ -4602,10 +4618,18 @@ async function voiceRuntime() {
  */
 async function runSpokenRequest(refined) {
   const input = $('input');
-  // NEVER CLOBBER A DRAFT. Someone mid-sentence in the composer is the one person who is
-  // definitely paying attention, and losing their words to a spoken command would be far
-  // worse than the command waiting. Offer it instead.
-  const busy = !!input?.value.trim() || state.streams.has(state.conv?.id);
+  // A TYPED DRAFT, and nothing else.
+  //
+  // This used to also count "a reply is already streaming", and that swallowed requests: a
+  // question asked while the previous answer was still arriving — which is most of them,
+  // during a meeting — became a toast nobody saw. send() ALREADY queues when a turn is in
+  // flight (it marks the message `queued` and drains it after), so streaming is its business,
+  // not ours.
+  //
+  // What is genuinely ours is the composer: someone mid-sentence in it is the one person
+  // definitely paying attention, and losing their words to a spoken command would be worse
+  // than the command waiting.
+  const busy = !!input?.value.trim();
 
   if (refined.kind === 'skill') {
     const skill = (enabledSkills(state.settings?.skills) || [])

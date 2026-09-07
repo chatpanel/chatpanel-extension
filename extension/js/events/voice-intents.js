@@ -946,6 +946,16 @@ function parseShortest(command, intents, now) {
   return intents.parse(command, { now });
 }
 
+/**
+ * A command's words, reduced to what survives re-transcription.
+ *
+ * Case and spacing vary between flushes of the same sentence, and punctuation appears and
+ * disappears as the engine revises — so none of them may be part of an identity that is
+ * supposed to say "you have already done this".
+ */
+export const gistText = (text) => String(text || '')
+  .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 160);
+
 /** How many commands one transcript delta may produce. */
 export const MAX_COMMANDS_PER_DELTA = 3;
 
@@ -1034,11 +1044,18 @@ export function commandsFromSegments(segments, {
       // one spoken request look like a new request on every update, and a single "set a timer
       // for 30 seconds" became a screenful of timers. `sid` is assigned once per utterance and
       // never moves, so the same sentence keeps one key however many times it is rescanned.
-      // `at` is the wake word's CHARACTER OFFSET in this caption. It distinguishes the
-      // several commands one utterance can hold, and it is stable as the caption grows —
-      // text is appended, so an earlier offset never moves. Without it two commands in one
-      // breath collapse onto one key and the second is silently deduped away.
-      key: `voice:${meetingId}:${seg.sid || seg.t || 0}:${parsed.at}:${parsed.intent || 'unknown'}:${parsed.ms ?? parsed.when ?? ''}`,
+      // WHAT WAS ASKED, not which delivery of it carried the words.
+      //
+      // This used to key on the caption's identity (`sid`) and the wake word's offset. Both
+      // move: `sid` is re-minted whenever the caption engine loses the overlap between a
+      // growing line and the one before it, and a monologue keeps ONE entry alive for
+      // minutes — re-scanned on every flush, by design, so a half-heard command gets a
+      // second chance. So one spoken "set a timer for 30 seconds" kept arriving as a
+      // brand-new command and kept creating timers.
+      //
+      // The words are what does not move. Two different commands in one breath still differ;
+      // the same command through fifty flushes is one request.
+      key: `voice:${meetingId}:${parsed.intent || 'ask'}:${parsed.ms ?? parsed.when ?? ''}:${gistText(found.command)}`,
     });
     if (out.length >= max) break; // a pathological transcript cannot fire fifty actions
     }

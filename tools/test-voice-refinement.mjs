@@ -302,9 +302,16 @@ console.log('bounded commands: ok');
 
   // ── NEVER CLOBBER A DRAFT ──────────────────────────────────────────────────────
   // Someone mid-sentence in the composer is the one person definitely paying attention.
+  // A TYPED DRAFT ONLY. Counting "a reply is already streaming" as busy swallowed requests:
+  // a question asked while the previous answer was still arriving — most of them, during a
+  // meeting — became a toast nobody saw. send() already queues an in-flight turn.
+  assert.match(router, /const busy = !!input\?\.value\.trim\(\);/, 'busy means a typed draft');
+  assert.doesNotMatch(router, /state\.streams\.has/,
+    'streaming is send()\'s business — it queues, and a spoken question must reach that queue');
   assert.match(
-    router, /const busy = !!input\?\.value\.trim\(\) \|\| state\.streams\.has/,
-    'a draft in progress, or a turn already streaming, means do not seize the composer',
+    readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8'),
+    /const queued = state\.streams\.has\(conv\.id\); \/\/ a reply is already in flight/,
+    '…which is only true while send() actually does queue',
   );
   assert.ok(
     (router.match(/if \(busy\)/g) || []).length >= 2,

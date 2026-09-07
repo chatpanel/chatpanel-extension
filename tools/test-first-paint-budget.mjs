@@ -37,7 +37,7 @@ const BUDGET = {
   // at run time: the lean default builds no toolset at all, where every monitor tick used to
   // assemble the full chat toolset (web search, history RAG, every MCP server) and put every
   // one of those schemas in the prompt.
-  'sidepanel.js': 783,
+  'sidepanel.js': 786,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one
