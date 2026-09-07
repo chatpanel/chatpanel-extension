@@ -53,7 +53,7 @@ import {
   enableMeetingCaptions,
   getMeetingRecord,
 } from './js/context.js';
-import { getSuggestions, getMeetingSuggestions, FALLBACK_SUGGESTIONS, targetKey } from './js/suggestions.js';
+import { getSuggestions, getMeetingSuggestions, fallbacksFor, targetKey } from './js/suggestions.js';
 import { createFallbackChain } from './js/model-fallback.js';
 // warm-sync.js is dynamic-imported in maybeWarmSync() — it drags in the history-rag subgraph.
 import {
@@ -2285,8 +2285,11 @@ function renderSuggestions() {
       hint.classList.remove('warn');
     }
   }
-  // Universal fallbacks paint instantly — no model call, works offline.
-  paintSuggestions(box, FALLBACK_SUGGESTIONS);
+  // Fallbacks paint instantly — no model call, works offline. They are chosen from the
+  // active tab, so a video offers "Summarize this video" rather than inviting a summary of
+  // the comment thread. `state.activeTab` is read defensively: the panel is interactive
+  // before any tab has been resolved.
+  paintSuggestions(box, fallbacksFor(state.activeTab));
   // Opt-in: replace with page-specific ideas from a small model (metadata only).
   if (!state.settings?.ui?.suggestions?.enabled) return;
   const run = ++suggestRun;
@@ -7662,7 +7665,7 @@ function renderContextBar() {
   state.attachments.forEach((att, i) => {
     const chip = document.createElement('div');
     chip.className = 'ctx-chip';
-    const kind = { page: icon('web'), url: icon('link'), selection: icon('cut'), image: icon('image') }[att.kind] || icon('attach');
+    const kind = { page: icon('web'), url: icon('link'), selection: icon('cut'), image: icon('image'), video: icon('video'), meeting: icon('mic') }[att.kind] || icon('attach');
     chip.innerHTML = `<span class="ctx-kind">${kind}</span><span class="ctx-title">${escapeAttr(
       att.title || att.url,
     )}</span>`;

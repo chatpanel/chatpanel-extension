@@ -37,7 +37,15 @@ const BUDGET = {
   // at run time: the lean default builds no toolset at all, where every monitor tick used to
   // assemble the full chat toolset (web search, history RAG, every MCP server) and put every
   // one of those schemas in the prompt.
-  'sidepanel.js': 786,
+  // 786 → 796 for video transcripts and PDF reading — 6.3 KB measured, for two features
+  // whose implementations weigh 30 KB and 1.7 MB. What lands here is js/source-kind.js
+  // (~1 KB) plus the branches and reasoning at the four call sites in js/context.js. The gate
+  // is the one piece that CANNOT be deferred: it decides whether to load a layer, so it has
+  // to be resolved first. Everything behind it — js/vendor/pdf.js, js/pdf-text.js,
+  // js/youtube-transcript.js and their shared parsers — is `await import()`ed at the call
+  // site and is pinned OFF every entry point in OFF_LIMITS below, which is what makes that
+  // claim checkable rather than remembered.
+  'sidepanel.js': 796,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one
@@ -54,7 +62,9 @@ const BUDGET = {
   // test-access-log.mjs assert. The ~7 KB is the code and its reasoning, and shaving the
   // reasoning to fit a byte budget is the wrong trade. Headroom is deliberate — the previous
   // ceiling landed on 1166.0/1166, which fails on the next comment anyone writes.
-  'settings.js': 1170,
+  // 1170 → 1176: settings reaches js/context.js too, so it pays the same ~4 KB of gate and
+  // branches the panel does. The layers themselves are pinned off it in OFF_LIMITS.
+  'settings.js': 1176,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was
@@ -129,6 +139,18 @@ const OFF_LIMITS = {
   // with js/editor-cm.js when someone actually switches Live on.
   'js/vendor/codemirror.js': ['notes.js', 'sidepanel.js', 'settings.js', 'background.js'],
   'js/notes-regions.js': ['notes.js'],
+  // THE TWO NEWEST AND HEAVIEST ADDITIONS, on no first paint at all.
+  //
+  // The PDF engine is 1.7 MB across two files — bigger than everything else on this list put
+  // together — and is needed by the fraction of sessions that open a PDF. The transcript
+  // layer is ~30 KB and is needed on YouTube tabs. Both are reached through `await import()`
+  // behind js/source-kind.js, which is the ~1 KB gate that decides; the gate is the only part
+  // that can be on a first-paint graph, because the decision cannot itself be deferred.
+  'js/vendor/pdf.js': ['sidepanel.js', 'notes.js', 'settings.js', 'background.js'],
+  'js/pdf-text.js': ['sidepanel.js', 'notes.js', 'settings.js', 'background.js'],
+  'js/youtube-transcript.js': ['sidepanel.js', 'notes.js', 'settings.js', 'background.js'],
+  'js/events/media-transcript.js': ['sidepanel.js', 'notes.js', 'settings.js', 'background.js'],
+  'js/events/pdf-layout.js': ['sidepanel.js', 'notes.js', 'settings.js', 'background.js'],
 };
 for (const [mod, entries] of Object.entries(OFF_LIMITS)) {
   for (const entry of entries) {

@@ -3,10 +3,16 @@
 //   • a pasted URL (fetched and reduced to readable text)
 //
 // Attachments have the shape:
-//   { id, kind: 'page' | 'url' | 'selection' | 'meeting', title, url, text, chars }
+//   { id, kind: 'page' | 'url' | 'selection' | 'meeting' | 'video' | 'pdf', title, url, text, chars }
 
 import { meetingPlatform, meetingToText, getMeeting, meetingLimitReached } from './store-meetings.js';
 import { isBlockedHost as isBlockedNetHost } from './net.js';
+
+import { looksLikeVideoHost, looksLikePdfUrl } from './source-kind.js';
+
+// The transcript layer (the shared parser plus the injected page fetch) is ~30 KB and is
+// needed on exactly one kind of tab, so it is reached through `await import()` at the call
+// site; `looksLikeVideoHost` is the cheap gate that decides whether to pay for it.
 
 export { meetingPlatform };
 
@@ -154,6 +160,85 @@ export async function captureOwnPage(tab) {
   return ownAttachment('chat', id, conv.title, tab.url, conversationToMarkdown(conv));
 }
 
+/**
+ * A video transcript, shaped like every other attachment.
+ *
+ * `kind: 'video'` rather than 'page' because it is NOT the page: the page is a player, a
+ * comment thread and a sidebar of recommendations, and the words the user wants summarised
+ * are in a caption track that the DOM does not contain. Anything that decides what to do
+ * with an attachment needs to be able to tell those apart.
+ */
+function transcriptAttachment(doc, idPrefix) {
+  return {
+    id: `${idPrefix}_${Date.now()}`,
+    kind: 'video',
+    title: doc.title ? `▶ ${doc.title}` : '▶ Video transcript',
+    url: doc.url || '',
+    language: doc.language || '',
+    generated: !!doc.generated,
+    durationSec: doc.durationSec || 0,
+    // Already capped by the transcript layer at a video-sized budget; MAX_CHARS is a page
+    // budget and would cut a 40-minute talk off after its first eight minutes.
+    text: doc.text,
+    chars: doc.chars ?? doc.text.length,
+  };
+}
+
+/**
+ * The transcript for a video tab, or null when this is not one.
+ *
+ * Attaching "the page" of a YouTube tab used to hand a model the comment section and the
+ * recommendation rail, which is why "summarise this video" answered about the comments.
+ */
+export async function captureVideoTab(tab) {
+  if (!looksLikeVideoHost(tab?.url) || !tab?.id) return null;
+  const { transcriptFromTab } = await import('./youtube-transcript.js');
+  const doc = await transcriptFromTab(tab.id).catch(() => null);
+  return doc ? transcriptAttachment(doc, `yt_${tab.id}`) : null;
+}
+
+/**
+ * A PDF, shaped like every other attachment.
+ *
+ * `kind: 'pdf'` for the same reason 'video' exists: it did not come from a DOM, it carries
+ * page numbers rather than a scroll position, and it may be a scan with nothing in it —
+ * three things a caller has to be able to see without parsing the text.
+ */
+function pdfAttachment(doc, idPrefix) {
+  return {
+    id: `${idPrefix}_${Date.now()}`,
+    kind: 'pdf',
+    title: doc.title ? `📄 ${doc.title}` : '📄 PDF',
+    url: doc.url || '',
+    pageCount: doc.pageCount,
+    pagesRead: doc.pagesRead,
+    scanned: doc.scanned,
+    // Already capped by the PDF layer at a document-sized budget; MAX_CHARS is a page budget
+    // and would cut a paper off inside its introduction.
+    text: doc.text,
+    chars: doc.chars ?? doc.text.length,
+  };
+}
+
+/**
+ * The PDF a tab is showing, or null when it is not showing one.
+ *
+ * Chrome renders PDFs in its own built-in viewer, which is an extension — and Chrome forbids
+ * extensions from scripting other extensions' pages. So this tab has never been readable, and
+ * the error said so. The bytes, though, are at a URL we are allowed to fetch.
+ */
+export async function capturePdfTab(tab) {
+  if (!tab?.url || !/^https?:/i.test(tab.url)) return null;
+  const { pdfTextFromUrl } = await import('./pdf-text.js');
+  const doc = await pdfTextFromUrl(tab.url).catch(() => null);
+  if (!doc) return null;
+  if (doc.scanned) {
+    const { scannedPdfMessage } = await import('./pdf-text.js');
+    throw new Error(scannedPdfMessage(doc));
+  }
+  return pdfAttachment(doc, `pdf_${tab.id}`);
+}
+
 export async function captureTab(tabId) {
   // Our own extension pages can't be script-injected — read them from storage by
   // their hash id instead. Any error from captureOwnPage (no record open, etc.)
@@ -168,6 +253,17 @@ export async function captureTab(tabId) {
   if (tab) {
     const own = await captureOwnPage(tab);
     if (own) return own;
+    // A video page's WORDS are not in its DOM. Try the transcript before falling back to
+    // scraping the player chrome — but only try: a video with captions disabled, or a
+    // YouTube page that is not a video at all, must still capture as an ordinary page.
+    const video = await captureVideoTab(tab).catch(() => null);
+    if (video) return video;
+    // Proactive, because injection into Chrome's PDF viewer does not merely fail — it fails
+    // with an error about chrome:// pages that has sent people looking for a permission bug.
+    if (looksLikePdfUrl(tab.url)) {
+      const pdf = await capturePdfTab(tab);   // a scan throws its own explanation; let it
+      if (pdf) return pdf;
+    }
   }
 
   let result;
@@ -178,8 +274,18 @@ export async function captureTab(tabId) {
     });
     result = inj?.result;
   } catch (e) {
+    // A PDF served from a URL with no `.pdf` in it lands here rather than in the proactive
+    // check above — injection is exactly how we find out. The magic bytes decide, so an
+    // ordinary page that failed for an ordinary reason still reports the ordinary error.
+    if (tab?.url && /^https?:/i.test(tab.url)) {
+      const pdf = await capturePdfTab(tab).catch((err) => {
+        if (/no text layer/i.test(err.message)) throw err; // a scan: say so, don't fall through
+        return null;
+      });
+      if (pdf) return pdf;
+    }
     throw new Error(
-      `Couldn't read that tab (${e.message}). Chrome blocks reading some pages (chrome://, the Web Store, PDFs).`,
+      `Couldn't read that tab (${e.message}). Chrome blocks reading some pages (chrome://, the Web Store, other extensions' pages).`,
     );
   }
   if (!result) throw new Error('No content extracted from that tab.');
@@ -416,6 +522,23 @@ export async function captureUrl(rawUrl) {
   let url = rawUrl.trim();
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
   assertFetchable(url); // block obvious private targets up front
+  // A pasted video link is a request for the VIDEO, not for its player markup. There is no
+  // way to fetch a transcript (YouTube gates captions on a token only the real player mints —
+  // see js/youtube-transcript.js), so this reads the video in a muted, inactive background tab
+  // and closes it, or reuses a tab the user already has open on it.
+  if (looksLikeVideoHost(url)) {
+    const { transcriptFromUrl } = await import('./youtube-transcript.js');
+    const doc = await transcriptFromUrl(url).catch(() => null);
+    if (doc) return transcriptAttachment(doc, 'yturl');
+  }
+  // A pasted PDF link fetched as text is a few hundred KB of binary — which used to be
+  // truncated to 30,000 characters of it and attached, silently, as "the page".
+  if (looksLikePdfUrl(url)) {
+    const { pdfTextFromUrl, scannedPdfMessage } = await import('./pdf-text.js');
+    const doc = await pdfTextFromUrl(url).catch(() => null);
+    if (doc?.scanned) throw new Error(scannedPdfMessage(doc));
+    if (doc) return pdfAttachment(doc, 'pdfurl');
+  }
   let res;
   try {
     res = await fetch(url, { redirect: 'follow' });
@@ -426,6 +549,14 @@ export async function captureUrl(rawUrl) {
   if (res.url) assertFetchable(res.url);
   if (!res.ok) throw new Error(`Fetch failed: HTTP ${res.status} for ${url}`);
   const ct = res.headers.get('content-type') || '';
+  // A PDF has to be caught BEFORE `res.text()`: decoding binary as UTF-8 is lossy, so the
+  // bytes cannot be recovered afterwards and the body has already been consumed.
+  if (/application\/pdf/i.test(ct)) {
+    const { pdfTextFromBytes, scannedPdfMessage } = await import('./pdf-text.js');
+    const doc = await pdfTextFromBytes(new Uint8Array(await res.arrayBuffer()), { url });
+    if (doc.scanned) throw new Error(scannedPdfMessage(doc));
+    return pdfAttachment(doc, 'pdfurl');
+  }
   const body = await res.text();
 
   let title = url;

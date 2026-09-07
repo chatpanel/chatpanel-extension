@@ -21,6 +21,7 @@
 // first paint and providers pulls 169 KB of turn machinery that no paint needs.
 import { createFallbackChain } from './model-fallback.js';
 import { getTarget, resolveTarget } from './store.js';
+import { looksLikeVideoHost, looksLikePdfUrl } from './source-kind.js';
 
 // Universal ideas that are useful on almost any page. Shown instantly, and used
 // whenever smart suggestions are off, still loading, or fail.
@@ -30,6 +31,36 @@ export const FALLBACK_SUGGESTIONS = [
   'Questions I should ask about this',
   'Translate this page',
 ];
+
+// A VIDEO AND A PDF ARE NOT PAGES, AND OFFERING "Summarize this page" ON ONE IS A DEAD END.
+//
+// Smart suggestions are opt-in and OFF by default, so the fallbacks are what most users
+// ever see — and on a talk they invited a summary of the comment thread. These are the same
+// four ideas said in the language of what is actually on screen, which is also how someone
+// discovers that the transcript and the document can be read at all. Free: the two host
+// tests are the ~1 KB gate this module already sits alongside on the first-paint graph, not
+// the layers behind it.
+export const VIDEO_SUGGESTIONS = [
+  'Summarize this video',
+  'What are the key points, with timestamps?',
+  'Questions this video leaves unanswered',
+  'Pull out the action items',
+];
+
+export const PDF_SUGGESTIONS = [
+  'Summarize this PDF',
+  'What does it conclude, and on what evidence?',
+  'Explain this simply',
+  'Pull out the key figures and dates',
+];
+
+/** The fallbacks that fit what this tab is showing. Never a model call. */
+export function fallbacksFor(tab) {
+  const url = tab?.url || '';
+  if (looksLikeVideoHost(url)) return VIDEO_SUGGESTIONS.slice();
+  if (looksLikePdfUrl(url)) return PDF_SUGGESTIONS.slice();
+  return FALLBACK_SUGGESTIONS.slice();
+}
 
 const CACHE_PREFIX = 'cpSugg:';
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // per-origin, so re-opening a site is free
@@ -75,7 +106,7 @@ export async function siteMetadata(tab) {
 export async function getSuggestions({ tab, settings, signal, force = false, sourceId = null } = {}) {
   const enabled = !!settings?.ui?.suggestions?.enabled;
   if ((!enabled && !force) || !tab?.url || !/^https?:/i.test(tab.url)) {
-    return { items: FALLBACK_SUGGESTIONS.slice(), source: 'fallback' };
+    return { items: fallbacksFor(tab), source: 'fallback' };
   }
   const origin = originOf(tab.url);
   if (origin && !force) {
@@ -93,10 +124,10 @@ export async function getSuggestions({ tab, settings, signal, force = false, sou
     // Empty result with no usable model configured → tell the caller (only matters
     // for an explicit click; auto just shows fallbacks).
     if (force && !pickSuggestionAgent(settings)) {
-      return { items: FALLBACK_SUGGESTIONS.slice(), source: 'nomodel' };
+      return { items: fallbacksFor(tab), source: 'nomodel' };
     }
   } catch { /* fall through to fallbacks */ }
-  return { items: FALLBACK_SUGGESTIONS.slice(), source: 'fallback' };
+  return { items: fallbacksFor(tab), source: 'fallback' };
 }
 
 // Meeting-aware variant: instead of page ideas, suggest CLARIFYING QUESTIONS to ask

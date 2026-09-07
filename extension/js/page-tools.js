@@ -28,6 +28,7 @@ import { SENSE_TOOL_SPECS, makeSenseExecutor } from './page-sense.js';
 // The same background-tab machinery web search has always used, and the same outbound-URL
 // guard — see js/tab-nav.js. Nothing new reaches the manifest.
 import { openTab, navigateTab } from './tab-nav.js';
+import { looksLikeVideoHost, looksLikePdfUrl } from './source-kind.js';
 import { CALIBRATE_TOOL_SPEC, calibrateTurn } from './page-calibrate.js';
 
 // Harness guidance folded into the system prompt when page tools are armed.
@@ -59,6 +60,16 @@ export const PAGE_AUTOMATION_SYSTEM =
   '{"action":"read_page","args":{"query":"what X means"}} returns the matching sections in ' +
   'document order. Reading a long page whole, repeatedly, to hunt for one paragraph is the ' +
   'slow and expensive way; ask for what you need.\n' +
+  // A VIDEO PAGE'S DOM IS NOT ITS CONTENT. Asked to summarise a talk, a model read the page,
+  // got the comment thread, and answered about the comments — with no sign anything went
+  // wrong, because a page WAS read and it DID contain text.
+  'ON A VIDEO PAGE (YouTube) the spoken words are NOT in the DOM — reading it returns the ' +
+  'comment thread and the recommendation rail. read_page on a video tab returns the ' +
+  'TRANSCRIPT instead; call read_transcript when you need a particular caption language. ' +
+  'Never summarise a video from its page text or its title.\n' +
+  'ON A PDF TAB read_page returns the DOCUMENT, page by page with [page N] markers — the ' +
+  'other page tools cannot touch it, because Chrome renders PDFs in a viewer extensions may ' +
+  'not script. Cite the page number.\n' +
   // GOING SOMEWHERE had no tool at all, so a model asked to "go to google.com and search"
   // reached for eval_js, a shell, or its own fetch — and told the user it could not open a
   // browser. Naming the tools is what stops that.
@@ -355,6 +366,29 @@ export const PAGE_TOOL_SPECS = [
         },
         maxTokens: { type: 'number', description: 'Budget for a query read (default 2000).' },
         maxChars: { type: 'number', description: 'Cap when reading the WHOLE page (default 40000).' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'read_transcript',
+    description:
+      'READ A VIDEO\'S TRANSCRIPT — the spoken words, timestamped. Use this on a YouTube tab '
+      + 'whenever the task is to summarise, quote or answer questions about the VIDEO. '
+      + 'read_page on a video tab already returns this, so you only need read_transcript to '
+      + 'ask for a specific caption LANGUAGE or to drop the timestamps. The words are NOT in '
+      + 'the page: reading the DOM of a video page returns the comment thread and the '
+      + 'recommendation rail, which is a different document that will confidently answer the '
+      + 'wrong question. Returns `[m:ss]`-prefixed paragraphs, so you can cite a moment.',
+    parameters: {
+      type: 'object',
+      properties: {
+        language: {
+          type: 'string',
+          description: 'BCP-47 code for the caption track you want (e.g. "en", "de"). Defaults to English, falling back to whatever the video has.',
+        },
+        timestamps: { type: 'boolean', description: 'Prefix each paragraph with its time (default true).' },
+        maxChars: { type: 'number', description: 'Cap on the transcript body (default 120000).' },
       },
       required: [],
     },
@@ -748,6 +782,68 @@ async function readPageText(tabId, maxChars) {
   return res?.result || { error: 'Could not read this page (restricted or empty).' };
 }
 
+async function tabUrl(tabId) {
+  try {
+    return (await chrome.tabs.get(tabId))?.url || '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The transcript for a video tab, or null.
+ *
+ * Dynamic: the transcript layer is ~30 KB of caption parsing that a page-action turn on any
+ * other site must not pay for, and `looksLikeVideoHost` (js/source-kind.js) is the cheap
+ * gate that keeps it off that path.
+ */
+async function tabTranscript(tabId, { maxChars, ...opts } = {}) {
+  if (!looksLikeVideoHost(await tabUrl(tabId))) return null;
+  const { transcriptFromTab } = await import('./youtube-transcript.js');
+  const doc = await transcriptFromTab(tabId, { ...opts, ...(maxChars ? { maxChars } : {}) }).catch(() => null);
+  if (!doc) return null;
+  // The tool result is the DOCUMENT, not the attachment: no id, no chip title, and the
+  // language/duration stated so the model can say what it read.
+  return {
+    kind: 'transcript',
+    title: doc.title,
+    url: doc.url,
+    language: doc.language,
+    generated: doc.generated,
+    durationSec: doc.durationSec,
+    segments: doc.segments,
+    chars: doc.chars,
+    text: doc.text,
+  };
+}
+
+/**
+ * The PDF a tab is showing, or null.
+ *
+ * Chrome's PDF viewer is another extension's page, so `read_page` on it has always returned
+ * "this page can't be automated" — true of the VIEWER, and misleading about the document.
+ */
+async function tabPdf(tabId, { maxChars } = {}) {
+  const url = await tabUrl(tabId);
+  if (!looksLikePdfUrl(url)) return null;
+  const { pdfTextFromUrl } = await import('./pdf-text.js');
+  const doc = await pdfTextFromUrl(url, maxChars ? { maxChars } : {}).catch(() => null);
+  if (!doc) return null;
+  return {
+    kind: 'pdf',
+    title: doc.title,
+    url: doc.url,
+    pageCount: doc.pageCount,
+    pagesRead: doc.pagesRead,
+    truncatedPages: doc.truncatedPages || 0,
+    chars: doc.chars,
+    ...(doc.scanned
+      ? { scanned: true, note: 'This PDF has no text layer — it is a scan or a set of page images. Reading it would need OCR. Say so rather than guessing from the filename.' }
+      : {}),
+    text: doc.text,
+  };
+}
+
 function compactInspect(r) {
   const fields = (r.fields || []).map((f) => {
     const out = {
@@ -790,7 +886,7 @@ const BLOCKED_PAGE_RE = /cannot access (a chrome|contents)|cannot be scripted|ex
 const blockedPageResult = () =>
   JSON.stringify({
     error:
-      "This page can’t be automated — it’s a browser page, the Web Store, a PDF, or another extension’s page (e.g. a New-Tab override). Switch to a normal website tab and try again.",
+      "This page can’t be automated — it’s a browser page, the Web Store, or another extension’s page (e.g. a New-Tab override). Switch to a normal website tab and try again. (A PDF tab cannot be CLICKED, but read_page does read its text.)",
     blocked: true,
   });
 
@@ -888,7 +984,37 @@ export function makePageToolExecutor(tabId, { cdp = false, adapter = null, devJs
         const vp = await viewportInfo(tabId);
         return JSON.stringify(await calibrateTurn(tabId, { delta: input?.delta, viewportWidth: vp?.w }));
       }
+      if (name === 'read_transcript') {
+        const doc = await tabTranscript(tabId, {
+          language: String(input?.language || ''),
+          timestamps: input?.timestamps !== false,
+          maxChars: Number(input?.maxChars) || undefined,
+        });
+        if (!doc) {
+          return JSON.stringify({
+            error: 'No transcript available for this tab — it is not a video page, or the video has no captions. '
+              + 'Use read_page to read the page itself.',
+          });
+        }
+        return JSON.stringify(doc);
+      }
       if (name === 'read_page') {
+        // ON A VIDEO PAGE, THE PAGE IS THE WRONG DOCUMENT. Its DOM is a player, a comment
+        // thread and a recommendation rail; the words the question is about are in a caption
+        // track fetched separately. A model that asked to "read the page" of a talk got the
+        // comments and answered about the comments — confidently, and wrongly. So reading a
+        // video tab returns its transcript, and says so, rather than making the model know
+        // to reach for a differently-named tool it may not have looked at.
+        if (looksLikeVideoHost(await tabUrl(tabId))) {
+          const doc = await tabTranscript(tabId, { maxChars: Number(input?.maxChars) || undefined });
+          if (doc) return JSON.stringify({ ...doc, note: 'This is a VIDEO page — you are reading its transcript, not its DOM. Call read_transcript for another caption language.' });
+        }
+        // Same shape of problem, different cause: a PDF tab has no DOM we are allowed to
+        // touch, so reading it means fetching and parsing the document itself.
+        {
+          const pdf = await tabPdf(tabId, { maxChars: Number(input?.maxChars) || undefined });
+          if (pdf) return JSON.stringify(pdf);
+        }
         // A QUERY GETS THE RELEVANT PART, NOT THE FIRST N CHARACTERS.
         //
         // Without one this returns the head of the document up to a cap, and on a long wiki
