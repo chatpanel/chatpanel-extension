@@ -552,15 +552,15 @@ export async function captureUrl(rawUrl) {
   // whose transcript cannot be read raises instead of quietly becoming a page.
   if (looksLikeVideoHost(url) && parseVideoId(url)) {
     const { transcriptFromUrl } = await import('./youtube-transcript.js');
-    let failure = '';
-    const doc = await transcriptFromUrl(url).catch((e) => { failure = String(e?.message || e); return null; });
+    const diag = [];
+    const doc = await transcriptFromUrl(url, { diag })
+      .catch((e) => { diag.push(`route threw: ${String(e?.message || e)}`); return null; });
     if (doc) return transcriptAttachment(doc, 'yturl');
-    // Loud in the console, because this is the one failure a user cannot see the cause of.
-    console.warn('[chatpanel] no transcript for', url, failure || '(no captions, or every route declined)');
-    throw new Error(
-      `Couldn't read a transcript for that video${failure ? ` (${failure})` : ''}. It may have no captions at all. `
-      + 'The link is still in your message, so the model can look it up.',
-    );
+    // Loud in the console, because this is the one failure a user cannot see the cause of —
+    // and it fails differently in the side panel than it does anywhere it can be tested.
+    const why = diag.join(' · ') || 'no captions on any route';
+    console.warn('[chatpanel] no transcript for', url, '—', why);
+    throw new Error(`Couldn't read a transcript for that video (${why}). The link is still in your message.`);
   }
   // A pasted PDF link fetched as text is a few hundred KB of binary — which used to be
   // truncated to 30,000 characters of it and attached, silently, as "the page".

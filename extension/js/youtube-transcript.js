@@ -225,7 +225,13 @@ async function fetchInPage(url) {
  * should not carry someone's YouTube identity, and it does not have to: this works signed
  * out.
  */
-export async function transcriptViaInnertube(videoId, { language = '', languages = ['en'], ...opts } = {}) {
+export async function transcriptViaInnertube(videoId, { language = '', languages = ['en'], diag = null, ...opts } = {}) {
+  // WHY EVERY STEP REPORTS. This route works from Node and failed from the side panel, and
+  // the difference between those two environments is invisible from here — CORS, CSP, a
+  // blocked host, an extension-page fetch quirk. Swallowing the reason turned a one-line
+  // answer into a guessing game, so each step says what happened and the caller puts it in
+  // front of whoever can read it.
+  const note = (msg) => { if (Array.isArray(diag)) diag.push(msg); };
   const get = async (url, init) => {
     const res = await fetch(url, { credentials: 'omit', ...init });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -236,7 +242,8 @@ export async function transcriptViaInnertube(videoId, { language = '', languages
     if (!req) return null;
     try {
       return await (await get(req.url, { method: req.method, headers: req.headers, body: req.body })).json();
-    } catch {
+    } catch (e) {
+      note(`player(${apiKey ? 'keyed' : 'keyless'}): ${e?.message || e}`);
       return null;
     }
   };
@@ -248,27 +255,42 @@ export async function transcriptViaInnertube(videoId, { language = '', languages
   // as a fallback for the day that stops being true.
   let player = await askPlayer('');
   let tracks = captionTracksFromPlayerResponse(player);
+  if (player && !tracks.length) note(`player(keyless): ok but no captionTracks (status=${player?.playabilityStatus?.status || '?'})`);
   if (!tracks.length) {
     let apiKey = '';
     try {
       apiKey = innertubeApiKeyFromHtml(await (await get(`https://www.youtube.com/watch?v=${videoId}`)).text());
-    } catch { /* offline, or YouTube refused the page — nothing more to try */ }
+      if (!apiKey) note('watch page: no INNERTUBE_API_KEY in it');
+    } catch (e) {
+      note(`watch page: ${e?.message || e}`);
+    }
     if (apiKey) {
       player = await askPlayer(apiKey);
       tracks = captionTracksFromPlayerResponse(player);
+      if (player && !tracks.length) note('player(keyed): ok but no captionTracks');
     }
   }
   // NOT an error, and not "no captions" either: a stale client version returns exactly this.
   // The caller falls through to the panel route rather than telling the user there are none.
   if (!tracks.length) return null;
 
-  return transcriptFromTracks({
+  let captionError = '';
+  const doc = await transcriptFromTracks({
     tracks,
     meta: videoMetaFromPlayerResponse(player),
     language, languages, source: 'youtube:innertube',
-    fetchText: async (url) => (await get(url)).text(),
+    fetchText: async (url) => {
+      try {
+        return await (await get(url)).text();
+      } catch (e) {
+        captionError = String(e?.message || e);
+        throw e;
+      }
+    },
     ...opts,
   });
+  if (!doc) note(`captions: ${captionError || 'every format returned an unparseable/empty body'}`);
+  return doc;
 }
 
 // --------------------------------------------------------------------------
@@ -365,7 +387,9 @@ export async function transcriptFromUrl(rawUrl, opts = {}) {
 
   // NO TAB IF WE DO NOT NEED ONE. This is the whole point of a pasted link: an answer with
   // nothing appearing on screen and nothing coming out of the speakers.
-  const fetched = await transcriptViaInnertube(parsed.videoId, opts).catch(() => null);
+  const diag = Array.isArray(opts.diag) ? opts.diag : [];
+  const fetched = await transcriptViaInnertube(parsed.videoId, { ...opts, diag })
+    .catch((e) => { diag.push(`fetch route threw: ${e?.message || e}`); return null; });
   if (fetched) return fetched;
 
   const existing = await findVideoTab(parsed.videoId);

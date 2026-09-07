@@ -1674,6 +1674,11 @@ function renderAgentMenu() {
 // Messages
 // --------------------------------------------------------------------------
 function renderMessages() {
+  // `gathering` is a LIVE state, never a stored one. A panel closed mid-read would otherwise
+  // reopen with a spinner that nothing is ever going to clear.
+  if (!sendingLock.has(state.conv?.id)) {
+    for (const m of state.conv?.messages || []) if (m.gathering) m.gathering = false;
+  }
   const root = $('messages');
   root.querySelectorAll('.msg').forEach((n) => n.remove());
   state.bubbles.clear();
@@ -1812,6 +1817,17 @@ function renderMessage(m) {
         }
         bubble.appendChild(strip);
       }
+    }
+    // READING IS WORK, AND WORK HAS TO BE VISIBLE. Between pressing Enter and the assistant
+    // bubble appearing there is a gap — the open tab, the URLs in the message, history RAG —
+    // and a video URL makes it seconds long. The message was on screen by then, but nothing
+    // else was, so the panel looked frozen and the send looked lost.
+    if (m.gathering) {
+      const g = document.createElement('div');
+      g.className = 'who';
+      g.style.marginTop = '6px';
+      g.innerHTML = icon('loading') + ' ' + escapeAttr(m.gatheringLabel || 'Reading context…');
+      bubble.appendChild(g);
     }
     if (m.queued) {
       const q = document.createElement('div');
@@ -2470,7 +2486,13 @@ async function send({ steer = false } = {}) {
     };
     const queued = state.streams.has(conv.id); // a reply is already in flight
     userMsg.queued = queued;
-    userMsg.gathering = true; // the composer shows this as "reading context…" until cleared
+    // Name it: "Reading the video transcript…" sets a different expectation from "Reading the
+    // page…", and the wait is genuinely different.
+    const pending = (text.match(/https?:\/\/[^\s)]+/gi) || []);
+    userMsg.gathering = true;
+    userMsg.gatheringLabel = pending.some(looksLikeVideoHost) ? 'Reading the video transcript…'
+      : pending.length ? 'Reading the link…'
+      : 'Reading context…';
     conv.messages.push(userMsg);
     input.value = '';
     autoGrow();
