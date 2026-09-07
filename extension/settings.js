@@ -2658,6 +2658,33 @@ async function selectSttModel(id, dtype) {
   if (my === _sttPollToken) { st.className = 'status'; st.textContent = 'Still downloading… it will switch when ready.'; }
 }
 
+// Replace a <select>'s options ONLY when they actually differ.
+//
+// These panels re-render on a 2s poll while a model downloads. Rewriting innerHTML
+// every time closes an open dropdown, drops the highlighted row and resets the
+// scroll position — which is what "the selection is super jittery" looks like from
+// the outside. Comparing first makes the common case (nothing changed) a no-op.
+function setOptions(sel, html) {
+  if (!sel || sel.innerHTML === html) return;
+  // Do not yank the list out from under someone who has it open.
+  if (document.activeElement === sel && sel.dataset.open === '1') { sel.dataset.pending = html; return; }
+  sel.innerHTML = html;
+}
+
+// A dropdown the user has opened is off-limits until they close it; the pending
+// markup is applied on the way out.
+function guardSelect(sel) {
+  if (!sel || sel.dataset.guarded === '1') return;
+  sel.dataset.guarded = '1';
+  sel.addEventListener('mousedown', () => { sel.dataset.open = '1'; });
+  const release = () => {
+    sel.dataset.open = '0';
+    if (sel.dataset.pending) { sel.innerHTML = sel.dataset.pending; delete sel.dataset.pending; }
+  };
+  sel.addEventListener('change', release);
+  sel.addEventListener('blur', release);
+}
+
 // ── TTS (read-aloud / voice) model manager — mirrors the STT one above ──────────
 // Two independent choices here, which is why the POST takes a patch: the MODEL is a
 // download, the VOICE is a ~500 KB style bank. Picking a different voice must not
@@ -2707,6 +2734,7 @@ function renderTtsModels(data) {
 // otherwise choosing one looks broken for the few seconds it is fetching.
 function renderTtsVoices(data) {
   const sel = $('gw-tts-voice');
+  guardSelect(sel);
   const note = $('gw-tts-voice-note');
   if (!sel) return;
   const voices = data?.voices || [];
@@ -2727,19 +2755,18 @@ function renderTtsVoices(data) {
       return `<option value="${escapeHtml(v.id)}"${data.voice === v.id ? ' selected' : ''}>${escapeHtml(label)}</option>`;
     });
     const mine = custom.map((v) => `<option value="custom:${escapeHtml(v.id)}"${data.voice === `custom:${v.id}` ? ' selected' : ''}>${escapeHtml(v.name)} (yours)</option>`);
-    sel.innerHTML = (builtin.length || mine.length)
+    setOptions(sel, (builtin.length || mine.length)
       ? [
         builtin.length ? `<optgroup label="Built-in">${builtin.join('')}</optgroup>` : '',
         mine.length ? `<optgroup label="Your voices">${mine.join('')}</optgroup>` : '',
       ].join('')
-      : '<option value="">No voices yet — record one below</option>';
-    // Switching to this model does not rewrite the stored voice, so the config can
-    // still name a Kokoro one while the picker displays yours. Showing a selection
-    // that was never saved is how "I picked my voice and it says I have none"
-    // happens — so persist what is on screen.
-    if (custom.length && !String(data.voice || '').startsWith('custom:')) {
-      selectTtsModel({ voice: sel.value });
-    }
+      : '<option value="">No voices yet — record one below</option>');
+    // NOTE: this used to persist whatever the picker was displaying, to cover the
+    // gateway not rewriting the voice when the model changed. It caused a loop —
+    // render posted, the post refreshed, the refresh re-rendered, and the select
+    // rebuilt itself under the cursor several times a second. The gateway does its
+    // own revalidation now (0.6.55+), so the client has no business writing config
+    // as a side effect of drawing.
     if (note) {
       note.textContent = custom.length
         ? 'Your own voices are derived from your recording and never leave this machine.'
@@ -2757,10 +2784,10 @@ function renderTtsVoices(data) {
     if (note) note.textContent = `${data.arch === 'vits' ? 'This model is single-speaker' : 'This model has no selectable voices'} — one voice, one language. Switch to a Kokoro model to choose a voice.`;
     return;
   }
-  sel.innerHTML = voices.map((v) => {
+  setOptions(sel, voices.map((v) => {
     const bits = [v.grade ? `grade ${v.grade}` : '', v.installed ? 'installed' : 'downloads on first use'].filter(Boolean).join(' · ');
     return `<option value="${escapeHtml(v.id)}"${v.id === cur ? ' selected' : ''}>${escapeHtml(v.label)} — ${escapeHtml(bits)}</option>`;
-  }).join('') || '<option value="">—</option>';
+  }).join('') || '<option value="">—</option>');
   if (note) {
     const v = voices.find((x) => x.id === cur);
     note.textContent = v?.note || (voices.length ? 'Grades are Kokoro’s own quality ratings. Each voice is a ~500 KB download.' : '');
@@ -2770,6 +2797,7 @@ function renderTtsVoices(data) {
 
 function renderTtsDtype(data) {
   const sel = $('gw-tts-dtype');
+  guardSelect(sel);
   const note = $('gw-tts-dtype-note');
   if (!sel) return;
   const opts = data?.dtypes || [{ id: 'auto', label: 'Auto (recommended)' }];

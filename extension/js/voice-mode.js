@@ -15,7 +15,7 @@
 
 const LABEL = { listening: 'Listening…', thinking: 'Thinking…', speaking: 'Speaking…', muted: 'Muted — tap Unmute to talk', idle: '' };
 
-export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sendTurn, openMicPermission } = {}) {
+export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sendTurn, openMicPermission, onTurnDelta } = {}) {
   const { micPermissionState, createDictation, resolveDictationProvider } = await import('./dictation.js');
   if (await micPermissionState() !== 'granted') {
     openMicPermission?.();
@@ -55,46 +55,79 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
   };
 
   // ── waveform ────────────────────────────────────────────────────────────────
-  // Driven by the AnalyserNode on the audio that is actually playing. There is no
-  // node while listening or thinking, and none at all on the browser voice, so the
-  // canvas hides itself rather than animating something it is not measuring.
+  // Driven by whatever is making sound RIGHT NOW: the microphone while listening,
+  // the speaker while speaking. Both are real AnalyserNodes, so the shape tracks
+  // the actual signal — a bar chart animating on a timer next to speech it is not
+  // measuring is worse than no bar chart, because it looks like lag in the audio.
+  //
+  // The getter is re-read every frame rather than captured once: the mic analyser
+  // does not exist until capture starts, and the speech one not until audio plays.
   let raf = 0;
+  let getAnalyser = () => null;
+  const reduceMotion = () => !!globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+
   function stopWave() {
     if (raf) cancelAnimationFrame(raf);
     raf = 0;
     el('voice-wave')?.classList.add('hidden');
   }
-  function startWave(getAnalyser) {
+
+  function startWave(source) {
+    getAnalyser = source || (() => null);
     const cv = el('voice-wave');
-    const an = getAnalyser?.();
-    if (!cv || !an || typeof cv.getContext !== 'function') return;
+    if (!cv || typeof cv.getContext !== 'function' || reduceMotion()) return;
+    if (raf) return; // already running; the source just changed
     const ctx2d = cv.getContext('2d');
     if (!ctx2d) return;
-    const reduce = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-    if (reduce) return; // the orb already carries the state without motion
     cv.classList.remove('hidden');
-    const buf = new Uint8Array(an.frequencyBinCount);
     const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#6aa9ff';
+    const bars = 56;
+    // Smoothed per-bar heights, so the shape eases between frames instead of
+    // strobing on every FFT update.
+    const level = new Float32Array(bars);
+    let buf = null;
+
     const draw = () => {
       raf = requestAnimationFrame(draw);
-      an.getByteFrequencyData(buf);
+      const an = getAnalyser();
       const { width: w, height: h } = cv;
       ctx2d.clearRect(0, 0, w, h);
-      // Log-ish spacing: speech energy lives low, so a linear sweep wastes most of
-      // the width on hiss that never moves.
-      const bars = 48;
+      if (an) {
+        if (!buf || buf.length !== an.frequencyBinCount) buf = new Uint8Array(an.frequencyBinCount);
+        an.getByteFrequencyData(buf);
+      }
       const bw = w / bars;
       for (let i = 0; i < bars; i++) {
-        const from = Math.floor((i / bars) ** 2 * buf.length);
-        const to = Math.max(from + 1, Math.floor(((i + 1) / bars) ** 2 * buf.length));
-        let sum = 0;
-        for (let j = from; j < to; j++) sum += buf[j];
-        const v = (sum / (to - from)) / 255;
-        const bh = Math.max(2, v * h);
-        ctx2d.globalAlpha = 0.25 + v * 0.75;
+        let v = 0;
+        if (an && buf) {
+          // Speech energy sits low, so a linear sweep spends most of the width on
+          // hiss that never moves. Square the index to weight the low end.
+          const from = Math.floor((i / bars) ** 2 * buf.length);
+          const to = Math.max(from + 1, Math.floor(((i + 1) / bars) ** 2 * buf.length));
+          let sum = 0;
+          for (let j = from; j < to; j++) sum += buf[j];
+          v = (sum / (to - from)) / 255;
+        }
+        // Ease toward the target: fast to rise (so a syllable lands crisply), slow
+        // to fall (so the shape does not flicker between words).
+        level[i] += (v - level[i]) * (v > level[i] ? 0.55 : 0.12);
+        // A resting ripple when there is no signal, so the panel never looks frozen.
+        const idle = 0.04 + 0.03 * Math.sin(Date.now() / 320 + i / 3.5);
+        const amp = Math.max(idle, level[i]);
+        // Taper the ends so it reads as a voice rather than a bar chart.
+        const taper = Math.sin((Math.PI * (i + 0.5)) / bars) ** 0.6;
+        const bh = Math.max(2, amp * taper * h);
+        ctx2d.globalAlpha = 0.3 + Math.min(0.7, amp * 1.2);
         ctx2d.fillStyle = accent;
-        // Mirrored around the centre line — it reads as a voice, not a bar chart.
-        ctx2d.fillRect(i * bw + bw * 0.2, (h - bh) / 2, bw * 0.6, bh);
+        const x = i * bw + bw * 0.22;
+        const bwd = bw * 0.56;
+        const r = Math.min(bwd / 2, 2);
+        const y = (h - bh) / 2;
+        // Rounded caps — cheap, and it stops the bars looking like a spreadsheet.
+        ctx2d.beginPath();
+        if (ctx2d.roundRect) ctx2d.roundRect(x, y, bwd, bh, r);
+        else ctx2d.rect(x, y, bwd, bh);
+        ctx2d.fill();
       }
       ctx2d.globalAlpha = 1;
     };
@@ -133,7 +166,13 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
         onError: ({ message }) => toast?.(`✕ ${message || 'Voice input failed'}`, 2800),
       });
       d.start();
-      return () => { try { d.stop(); } catch { /* already stopped */ } };
+      // The mic analyser appears once capture is up, so hand the getter over now
+      // and let the draw loop pick it up when it exists.
+      startWave(() => d.analyser?.() || null);
+      return () => {
+        try { d.stop(); } catch { /* already stopped */ }
+        stopWave();
+      };
     },
     send: sendTurn,
     speak: async (text) => {
@@ -142,6 +181,15 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
     },
     onState: ({ state: st, text }) => setState(st, text),
     onError: (m) => toast?.(`✕ ${m}`, 3000),
+  });
+
+  // Show the answer forming. Without this the overlay reads "Thinking…" for the
+  // whole generation and then jumps to speech, which feels like a hang on anything
+  // longer than a sentence.
+  const stopDelta = onTurnDelta?.((partial) => {
+    if (loop.state() !== 'thinking') return;
+    const clean = String(partial || '').replace(/\s+/g, ' ').trim();
+    if (clean) setState('thinking', clean.length > 240 ? `…${clean.slice(-240)}` : clean);
   });
 
   el('voice-overlay')?.classList.remove('hidden');
@@ -168,6 +216,7 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
       loop.interrupt();
     },
     stop() {
+      try { stopDelta?.(); } catch { /* not subscribed */ }
       try { loop.stop(); } catch { /* already stopped */ }
       try { speaker.stop(); } catch { /* nothing playing */ }
       stopWave();

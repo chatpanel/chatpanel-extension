@@ -155,6 +155,9 @@ function createBrowserDictation({
       try { rec?.stop(); } catch { /* already stopped */ }
     },
     toggle() { if (this.recording) this.stop(); else this.start(); },
+    // The browser engine exposes no audio node to observe, so a caller wanting a
+    // waveform gets an honest null rather than a shape animating on a timer.
+    analyser: () => null,
   };
 }
 
@@ -175,6 +178,7 @@ function createGatewayDictation({
   let sid = null;
   let media = null;    // MediaStream
   let ctx = null;      // AudioContext
+  let micAnalyser = null; // observational tap on the mic, for a live waveform
   let finished = false;
 
   function stopCapture() {
@@ -239,6 +243,16 @@ function createGatewayDictation({
     media = await navigator.mediaDevices.getUserMedia({ audio: true });
     ctx = new AudioContext({ sampleRate: 16000 });
     const src = ctx.createMediaStreamSource(media);
+    // Tap the mic for a level/spectrum read, so a caller can draw a waveform that
+    // responds to the person actually speaking. Purely observational — it hangs off
+    // the source and feeds nothing onward, so it cannot affect what is transcribed.
+    try {
+      const an = ctx.createAnalyser();
+      an.fftSize = 512;
+      an.smoothingTimeConstant = 0.7;
+      src.connect(an);
+      micAnalyser = an;
+    } catch { micAnalyser = null; } // no Web Audio analyser: the UI falls back
     const workletUrl = globalThis.chrome?.runtime?.getURL
       ? chrome.runtime.getURL('js/pcm-worklet.js')
       : new URL('./pcm-worklet.js', import.meta.url).href;
@@ -270,6 +284,9 @@ function createGatewayDictation({
 
   return {
     get recording() { return recording; },
+    // The live mic tap, once capture has started — null before that. A caller that
+    // wants a waveform must handle "no signal yet" rather than animate on a timer.
+    analyser: () => micAnalyser,
     async start() {
       if (recording || finished) return;
       recording = true;

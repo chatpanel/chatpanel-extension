@@ -108,6 +108,38 @@ const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
   assert.match(mode, /stopWave|classList\.add\('hidden'\)/, 'the canvas must hide when nothing is playing');
   assert.match(mode, /getByteFrequencyData/, 'the waveform must read the analyser, not a timer');
   assert.match(mode, /prefers-reduced-motion/, 'and must not animate for someone who asked it not to');
+
+  // The waveform must follow whatever is making sound NOW — the mic while
+  // listening, the speaker while speaking. A shape that only moves for one of them
+  // leaves the other half of the conversation looking dead.
+  assert.match(mode, /d\.analyser/, 'listening must draw from the microphone');
+  assert.match(mode, /speaker\.analyser/, 'speaking must draw from the playing audio');
+  // Re-read per frame: neither analyser exists at the moment the loop is armed.
+  assert.match(mode, /getAnalyser\(\)/, 'the analyser must be re-read each frame, not captured once');
+  assert.match(read('js/dictation.js'), /analyser: \(\) => micAnalyser/, 'dictation must expose its mic tap');
+
+  // Thinking is the longest wait; it needs both motion and streaming text or it
+  // reads as a hang.
+  assert.ok(css.includes('voice-think'), 'the thinking state needs its own motion');
+  assert.match(mode, /onTurnDelta/, 'partial reply text must reach the overlay');
+  assert.match(panel, /onTurnDelta,/, 'and the panel must hand the subscription to voice mode');
+  // Match the CALL inside the stream's flush, not merely the function's existence —
+  // a defined-but-never-called notifier passes a looser check while the overlay
+  // sits on "Thinking…" for the whole generation.
+  const flushBody = panel.slice(panel.indexOf('const flush = () => {'), panel.indexOf('let dl = null'));
+  assert.match(flushBody, /notifyTurnDelta\(assistant\)/,
+    'the streaming flush must emit the partial text — defining the notifier is not enough');
+
+  // Drawing must not WRITE. A render that persists config re-triggers the refresh
+  // that re-renders it, and the select rebuilds under the cursor several times a
+  // second — which is what "the selection is super jittery" was.
+  const settingsSrc = read('settings.js');
+  const voicesRenderer = settingsSrc.slice(settingsSrc.indexOf('function renderTtsVoices'), settingsSrc.indexOf('function renderTtsDtype'));
+  // sel.onchange assignments are fine — those run on interaction, not on draw.
+  const drawBody = voicesRenderer.replace(/sel\.onchange[^;]*;/g, '');
+  assert.ok(!/selectTtsModel\(/.test(drawBody),
+    'renderTtsVoices must not call selectTtsModel while DRAWING — that is a render→post→render loop');
+  assert.match(settingsSrc, /function setOptions/, 'options must only be rewritten when they actually change');
 }
 
 // ── the Gateway settings TTS manager ───────────────────────────────────────────
@@ -216,4 +248,4 @@ const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
   assert.match(settings2, /Save again/, 'and the button must offer that retry');
 }
 
-console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, mute + signal-driven waveform, TTS search wired, recorded voices confirmed + mic released, auto-stop + phonetic prompt + retry keeps the take');
+console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, mute + signal-driven waveform, TTS search wired, recorded voices confirmed + mic released, auto-stop + phonetic prompt + retry keeps the take, waveform follows mic AND speaker, thinking streams, rendering never writes config');

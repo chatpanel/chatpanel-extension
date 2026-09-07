@@ -3221,7 +3221,20 @@ function makeDownloadUx(paint) {
 // notify, voice mode gives up and listens again instead of waiting forever with the
 // mic closed, which is indistinguishable from a crash.
 const turnWaiters = new Set();
+const turnDeltaListeners = new Set();
 const TURN_WAIT_MS = 180_000;
+
+/** Subscribe to partial assistant text as it streams. Returns an unsubscribe. */
+function onTurnDelta(fn) {
+  turnDeltaListeners.add(fn);
+  return () => turnDeltaListeners.delete(fn);
+}
+function notifyTurnDelta(assistant) {
+  if (!turnDeltaListeners.size) return;
+  for (const fn of [...turnDeltaListeners]) {
+    try { fn(assistant?.content || ''); } catch { /* a bad listener must not break the stream */ }
+  }
+}
 function notifyTurnDone(assistant) {
   for (const fn of [...turnWaiters]) { try { fn(assistant); } catch { /* one bad waiter must not block the rest */ } }
 }
@@ -3255,6 +3268,9 @@ async function toggleVoiceMode() {
     // One turn: put the words in the composer, send, and wait for the answer.
     // awaitTurn() is registered BEFORE send(), or a fast reply lands first and the
     // loop waits forever for a turn that already finished.
+    // Partial reply text, so the overlay can show the answer forming instead of
+    // sitting on "Thinking…" until audio starts.
+    onTurnDelta,
     sendTurn: async (text) => {
       const input = $('input');
       input.value = text;
@@ -3287,6 +3303,10 @@ async function runStream(agent, assistant, conv) {
       updateBubble(assistant);
       scrollToBottom();
     }
+    // Voice mode has no bubble to read — it shows a caption — so the partial text
+    // is offered here too. Without it the overlay says "Thinking…" for the whole
+    // generation and then jumps straight to speech, which reads as a hang.
+    notifyTurnDelta(assistant);
   };
   let dl = null; // in-browser model first-use download UX (progress + education carousel)
 
