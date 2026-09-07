@@ -238,7 +238,7 @@ export function findWakeCommands(text, wake = compileWake(), { maxSentences = MA
     // the first command however the sentences fall.
     const stop = idx + 1 < hits.length ? hits[idx + 1].start : raw.length;
     const span = raw.slice(hit.end, stop);
-    const command = stripLeadIn(firstSentences(span, maxSentences)).trim();
+    const command = trimTrailingLeadIn(stripLeadIn(firstSentences(span, maxSentences)).trim());
     return {
       command,
       wake: hit.phrase,
@@ -453,6 +453,24 @@ function isAddressed(raw, tokens, i, n = 0) {
   if (/[.!?,;:]["')\]]?\s*$/.test(raw.slice(prev.start, tokens[i].start))) return true;
   // "hey chatpanel", "ok chatpanel" — an address word is the other way people open one.
   return /^(?:ok|okay|hey|hi|yo|hello|so|um|uh)$/i.test(word);
+}
+
+/**
+ * Drop the NEXT address's run-up from the end of this command.
+ *
+ * A command is bounded by where the next wake phrase starts — but people open an address with
+ * a word or two before the name ("…Okay, chat panel."), and those land on the end of the
+ * previous command. Harmless to read, ruinous to identity: as the caption grows, "start
+ * monitoring the pricing question." becomes "…pricing question. Okay", which is different
+ * words, a different key, and therefore the same request acted on twice.
+ *
+ * Only the address words are trimmed, and only from the end — the same short list that marks
+ * an opening in isAddressed().
+ */
+function trimTrailingLeadIn(text) {
+  return String(text)
+    .replace(/(?:[\s,.:;!?-]*\b(?:ok|okay|hey|hi|yo|hello|so|um+|uh+|and|then|now)\b)+[\s,.:;!?-]*$/i, '')
+    .trim();
 }
 
 // "chatpanel, could you please set a timer" — politeness is not part of the command, and
@@ -1057,9 +1075,18 @@ export function commandsFromSegments(segments, {
       // the same command through fifty flushes is one request.
       key: `voice:${meetingId}:${parsed.intent || 'ask'}:${parsed.ms ?? parsed.when ?? ''}:${gistText(found.command)}`,
     });
-    if (out.length >= max) break; // a pathological transcript cannot fire fifty actions
     }
-    if (out.length >= max) break;
   }
-  return out;
+  // THE NEWEST, not the first.
+  //
+  // The cap exists so a pathological transcript cannot fire fifty actions, and it used to
+  // stop scanning once it had `max` — counting from the START of the caption. A caption entry
+  // in a monologue lives for minutes and is re-scanned on every flush, accumulating every
+  // address spoken into it, so the first three (long since acted on) consumed the whole
+  // budget and everything said AFTER them was never returned at all. The request you just
+  // made was the one thrown away.
+  //
+  // The newest are both the most likely to be fresh and the ones a person is waiting on, so
+  // the cap keeps those. The already-acted ones are dropped downstream by the dedupe anyway.
+  return out.length > max ? out.slice(-max) : out;
 }

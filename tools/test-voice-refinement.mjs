@@ -245,9 +245,16 @@ console.log('addressed vs mentioned: ok');
     voice: { enabled: true, wakeWord: 'ChatPanel', from: 'me', selfNames: ['You'] },
     meetingId: 'm1',
   });
-  for (const c of cmds) {
-    assert.ok(grown.some((g) => g.key === c.key), 'a growing caption must not re-key a command it already offered');
+  // KEY STABILITY, not list identity. The cap keeps the NEWEST commands, so an older one
+  // legitimately falls off the end as a caption grows (it has been acted on, and the dedupe
+  // would suppress it anyway). What must never change is a command's KEY: the same words must
+  // hash to the same identity on every flush, or it fires again.
+  const byText = new Map(cmds.map((c) => [c.command, c.key]));
+  for (const g of grown) {
+    if (!byText.has(g.command)) continue;
+    assert.equal(g.key, byText.get(g.command), 'a growing caption must not re-key a command it already offered');
   }
+  assert.ok(grown.some((g) => byText.has(g.command)), 'the fixture must still overlap, or this asserts nothing');
 
   // PARSE NARROW, REFINE WIDE: the model still gets the words around the request.
   const withRest = hits.find((h) => h.rest);
@@ -396,3 +403,86 @@ console.log('spoken routing: ok');
 }
 
 console.log('spoken duplicates: ok');
+
+// ── ONE UTTERANCE, ONE ACTION — across a caption that keeps growing ──────────────
+//
+// A caption entry in a monologue lives for MINUTES and is re-scanned on every flush
+// (deliberately: a half-heard command must get a second chance). So the scanner sees every
+// address ever spoken into that entry, over and over. Two things have to hold:
+//
+//   1. the NEWEST request must always be visible — the cap used to count from the START of
+//      the caption, so once three addresses had accumulated, everything said after them was
+//      never returned at all. "I asked about the weather, which didn't come yet."
+//   2. an already-acted request must not act again, however many times it is re-scanned.
+{
+  const { scanDelta } = await import('../extension/js/voice-commands.js');
+  const { MAX_COMMANDS_PER_DELTA } = await import('../extension/js/events/voice-intents.js');
+  const voice = { enabled: true, wakeWord: 'ChatPanel', from: 'me', selfNames: ['You'] };
+
+  const spoken = [
+    'Okay chat panel. Set a timer for 30 seconds.',
+    'Okay chat panel. Start monitoring the pricing question.',
+    'Okay chat panel. Take notes on what we discussed.',
+    'Okay chat panel. What are the latest AI models?',
+    'Okay chat panel. How is the weather in Lakeside?',
+  ];
+
+  // 1 — the newest is always offered, however long the entry has grown.
+  let text = '';
+  const seenPerFlush = [];
+  for (let i = 0; i < spoken.length; i++) {
+    text += (i ? ' ' : '') + spoken[i];
+    const cmds = scanDelta({ segments: [{ t: 1000 + i, sid: 's1', speaker: 'You', text }], voice, meetingId: 'm1' });
+    assert.ok(cmds.length <= MAX_COMMANDS_PER_DELTA, 'the cap still bounds a pathological transcript');
+    assert.ok(
+      cmds.some((c) => spoken[i].includes(c.command.slice(0, 20))),
+      `flush ${i + 1}: the thing just said must be in what is returned — it was being dropped`,
+    );
+    seenPerFlush.push(cmds);
+  }
+
+  // 2 — replay the whole thing through the panel's freshness rules. Each distinct request
+  //     must act exactly ONCE, no matter how many flushes carried it.
+  const VOICE_REPEAT_MS = 120_000;
+  const VOICE_SAME_MS = 20 * 60_000;
+  const gist = (c) => (c.intent
+    ? `gist:${c.meetingId}:${c.intent}:${c.ms ?? c.when ?? ''}`
+    : `gist:${c.meetingId}:ask:${String(c.command || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 120)}`);
+  const acted = new Map();
+  const ran = [];
+  let now = 1_000_000;
+  for (const cmds of seenPerFlush) {
+    now += 4000; // a caption flush every few seconds
+    for (const c of cmds) {
+      const said = acted.get(c.key);
+      if (said && now - said < VOICE_SAME_MS) continue;
+      const at = acted.get(gist(c));
+      if (at && now - at < VOICE_REPEAT_MS) continue;
+      acted.set(c.key, now);
+      acted.set(gist(c), now);
+      ran.push(c.command);
+    }
+  }
+  assert.equal(ran.length, spoken.length, `each request must act once — got ${ran.length}: ${JSON.stringify(ran)}`);
+  assert.equal(new Set(ran).size, ran.length, 'and none of them twice');
+
+  // 3 — and it must STAY done as the speaker keeps talking for minutes afterwards. This is
+  //     the timer that kept coming back: the identity used to move with the caption, so it
+  //     re-fired the moment it cleared the two-minute gist window.
+  const before = ran.length;
+  for (let m = 1; m <= 10; m++) {
+    now += 60_000; // ten more minutes of monologue, same entry, re-scanned throughout
+    for (const c of seenPerFlush.at(-1)) {
+      const said = acted.get(c.key);
+      if (said && now - said < VOICE_SAME_MS) continue;
+      const at = acted.get(gist(c));
+      if (at && now - at < VOICE_REPEAT_MS) continue;
+      acted.set(c.key, now);
+      acted.set(gist(c), now);
+      ran.push(c.command);
+    }
+  }
+  assert.equal(ran.length, before, `nothing may re-fire while the caption is re-delivered: ${JSON.stringify(ran.slice(before))}`);
+}
+
+console.log('one utterance one action: ok');
