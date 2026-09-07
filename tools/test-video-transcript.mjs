@@ -177,6 +177,26 @@ assert.match(yt, /FAILED_PRECONDITION/);
 assert.match(yt, /no sign-in and no Premium/, 'the entitlement facts are not written down');
 
 // --------------------------------------------------------------------------
+// A VIDEO THAT CANNOT BE READ MUST NOT BECOME A PAGE
+// --------------------------------------------------------------------------
+//
+// A YouTube watch page fetched as HTML reduces to ~40 characters of footer, and that used to
+// attach CLEANLY — real title, chip in the composer, no error. The model then summarised
+// search results about the video and presented it as an answer. A silent degradation that
+// produces a confident wrong answer is worse than a visible failure.
+const context = read('../extension/js/context.js');
+assert.match(context, /FALLING BACK TO THE PAGE IS WORSE THAN FAILING/,
+  'the reason a video URL raises rather than degrading is not written down');
+const videoBranch = context.slice(context.indexOf('if (looksLikeVideoHost(url) && parseVideoId(url))'), context.indexOf('A pasted PDF link'));
+assert.match(videoBranch, /throw new Error\(/, 'an unreadable video still degrades quietly into a page capture');
+assert.match(videoBranch, /console\.warn\('\[chatpanel\] no transcript for'/,
+  'the one failure a user cannot see the cause of is not logged');
+// A channel or a search page is NOT a video, and must still capture as an ordinary page.
+assert.match(context, /function parseVideoId/, 'every youtube.com URL would be treated as a video');
+const panel = read('../extension/sidepanel.js');
+assert.match(panel, /toast\(`⚠ \$\{e\.message\}`/, 'a link that failed to read says nothing to the user');
+
+// --------------------------------------------------------------------------
 // Reading the player response out of watch-page HTML
 // --------------------------------------------------------------------------
 

@@ -2447,6 +2447,45 @@ async function send({ steer = false } = {}) {
       text = searchCommand.cleaned || searchCommand.query;
     }
 
+    // ECHO FIRST, GATHER SECOND.
+    //
+    // Everything below this point READS: the open tab, any URL in the message, history RAG.
+    // A video URL means two network round-trips, and all of it used to happen before the
+    // message was created — so the text sat in the composer, the transcript stayed empty, and
+    // Enter (correctly swallowed by sendingLock while a send is in flight) looked broken.
+    // Reported twice as "the enter button doesn't work; I press it several times and then
+    // click Send".
+    //
+    // So the user's turn goes into the conversation NOW, with its attachments filled in when
+    // the reading finishes. This is optimistic — `rollbackEcho` takes it back on the one path
+    // below that can still decline the turn — and everything after it is unchanged: the model
+    // is called with the same message, carrying the same context, as before.
+    const userMsg = {
+      id: uid(),
+      role: 'user',
+      content: text,
+      attachments: [],
+      ts: Date.now(),
+      mcpMode: normalizeMcpTurnMode(state.settings.ui?.mcpToolsMode),
+    };
+    const queued = state.streams.has(conv.id); // a reply is already in flight
+    userMsg.queued = queued;
+    userMsg.gathering = true; // the composer shows this as "reading context…" until cleared
+    conv.messages.push(userMsg);
+    input.value = '';
+    autoGrow();
+    suggestSuppressed = false;
+    $('skill-suggest').classList.add('hidden');
+    $('empty').classList.add('hidden');
+    if (!queued) renderMessages();
+    const rollbackEcho = () => {
+      const at = conv.messages.indexOf(userMsg);
+      if (at >= 0) conv.messages.splice(at, 1);
+      input.value = raw;
+      autoGrow();
+      renderMessages();
+    };
+
     const includeMeetingsForHistory = can(state.license, 'liveMeetings');
     const autoHistoryContext = historyCommand ? null : historyContextForMode(state.settings.ui?.historyContextMode, {
       canMeetings: includeMeetingsForHistory,
@@ -2552,6 +2591,7 @@ async function send({ steer = false } = {}) {
     if (historyCommand) {
       const includeMeetings = includeMeetingsForHistory;
       if (!includeMeetings && historyCommand.scope === 'meetings') {
+        rollbackEcho(); // the turn is declined, so the message must not be left in the log
         upsell('liveMeetings', 'Meeting history search is a Pro feature. Use /history chats for chat history.');
         return;
       }
@@ -2608,37 +2648,27 @@ async function send({ steer = false } = {}) {
       return true;
     });
 
-    const userMsg = {
-      id: uid(),
-      role: 'user',
-      content: text,
-      attachments,
-      ts: Date.now(),
-      mcpMode: normalizeMcpTurnMode(state.settings.ui?.mcpToolsMode),
-    };
+    // The reading is done — hand the turn what it gathered. The message itself has been on
+    // screen since before any of it started.
+    userMsg.attachments = attachments;
+    userMsg.gathering = false;
     if (historyRag) userMsg.historyRag = historyRag;
     if (skillRun) userMsg.skillRun = skillRun;
-    const queued = state.streams.has(conv.id); // a reply is already in flight
-    userMsg.queued = queued;
-    conv.messages.push(userMsg);
     // READ WHAT THEY JUST TYPED for anything worth keeping. Deterministic (a regex pass, no
     // model call), so it costs nothing to run on every message, and never blocks the send:
     // a memory that failed to save must not cost the user their turn.
     captureMemory(text, conv.id);
-    input.value = '';
-    autoGrow();
-    suggestSuppressed = false;
-    $('skill-suggest').classList.add('hidden');
     // Note references are STICKY across turns (a live doc you keep discussing); every
     // other attachment is turn-scoped. The model re-reads the latest via the note tool.
     state.attachments = (state.attachments || []).filter((a) => a.sourceNoteId);
     state.pendingSkillRun = null;
     renderContextBar();
-
-    $('empty').classList.add('hidden');
     // A queued message belongs in the queue card, not in a bubble of its own.
+    // The un-queued bubble is already ON SCREEN — it was rendered before the reading started
+    // (see ECHO FIRST above), so this re-renders it to show what the reading attached rather
+    // than appending a second copy of it.
     if (queued) { await primeQueue(); refreshQueueCard(); }
-    else $('messages').appendChild(renderMessage(userMsg));
+    else renderMessages();
     scrollToBottomNow();
     await saveConversation(conv);
     refreshHistory();
@@ -7569,8 +7599,11 @@ async function autoAttachUrls(text) {
     try {
       const att = await captureUrl(url);
       state.attachments.push(att);
-    } catch {
-      /* leave the bare URL in the text */
+    } catch (e) {
+      // SAY WHY. A link that could not be read leaves the bare URL in the message, which is
+      // right — but silently, the turn looked identical to one that worked, and the model
+      // answered from whatever it could find instead. The user could not tell those apart.
+      toast(`⚠ ${e.message}`, 4000);
     }
   }
   renderContextBar();

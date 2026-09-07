@@ -45,7 +45,10 @@ const BUDGET = {
   // js/youtube-transcript.js and their shared parsers — is `await import()`ed at the call
   // site and is pinned OFF every entry point in OFF_LIMITS below, which is what makes that
   // claim checkable rather than remembered.
-  'sidepanel.js': 796,
+  // 796 → 800 for the ECHO-FIRST send path: the user's message now goes into the conversation
+  // before any context is read, so a video URL's two round-trips no longer look like a dead
+  // Enter key. Comment weight, not code — the change is a reorder.
+  'sidepanel.js': 800,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one
@@ -62,9 +65,11 @@ const BUDGET = {
   // test-access-log.mjs assert. The ~7 KB is the code and its reasoning, and shaving the
   // reasoning to fit a byte budget is the wrong trade. Headroom is deliberate — the previous
   // ceiling landed on 1166.0/1166, which fails on the next comment anyone writes.
-  // 1170 → 1176: settings reaches js/context.js too, so it pays the same ~4 KB of gate and
-  // branches the panel does. The layers themselves are pinned off it in OFF_LIMITS.
-  'settings.js': 1176,
+  // 1170 → 1180: settings reaches js/context.js too, so it pays the same gate, branches and
+  // reasoning the panel does — including parseVideoId and the note on why an unreadable video
+  // raises instead of quietly degrading into a page capture. The layers themselves are pinned
+  // off it in OFF_LIMITS.
+  'settings.js': 1180,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was

@@ -10,6 +10,25 @@ import { isBlockedHost as isBlockedNetHost } from './net.js';
 
 import { looksLikeVideoHost, looksLikePdfUrl } from './source-kind.js';
 
+// Is this specifically a VIDEO (not a channel or a search page)? The authority lives in the
+// shared parser, but that module is part of the 30 KB the gate exists to defer — and the
+// answer decides whether a failure is fatal, so it is needed before the layer loads. This is
+// the same set of shapes parseYouTubeUrl accepts, kept deliberately narrow: anything it is
+// unsure about captures as an ordinary page, which is the safe direction to be wrong in.
+function parseVideoId(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase().replace(/^www\./, '');
+    const parts = u.pathname.split('/').filter(Boolean);
+    const id = host === 'youtu.be'
+      ? parts[0]
+      : (parts[0] === 'watch' ? u.searchParams.get('v') : (['shorts', 'embed', 'live', 'v'].includes(parts[0]) ? parts[1] : ''));
+    return /^[A-Za-z0-9_-]{11}$/.test(id || '') ? id : '';
+  } catch {
+    return '';
+  }
+}
+
 // The transcript layer (the shared parser plus the injected page fetch) is ~30 KB and is
 // needed on exactly one kind of tab, so it is reached through `await import()` at the call
 // site; `looksLikeVideoHost` is the cheap gate that decides whether to pay for it.
@@ -522,14 +541,26 @@ export async function captureUrl(rawUrl) {
   let url = rawUrl.trim();
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
   assertFetchable(url); // block obvious private targets up front
-  // A pasted video link is a request for the VIDEO, not for its player markup. There is no
-  // way to fetch a transcript (YouTube gates captions on a token only the real player mints —
-  // see js/youtube-transcript.js), so this reads the video in a muted, inactive background tab
-  // and closes it, or reuses a tab the user already has open on it.
-  if (looksLikeVideoHost(url)) {
+  // A pasted video link is a request for the VIDEO, not for its player markup.
+  //
+  // AND FALLING BACK TO THE PAGE IS WORSE THAN FAILING. A YouTube watch page fetched as HTML
+  // reduces to about forty characters of footer — "About Press Copyright … © Google LLC" —
+  // and that attached CLEANLY: no error, a real title, a chip in the composer. The model then
+  // did the only thing left to it and summarised search results about the video instead of
+  // the video, and said so in a way that read like an answer. A silent degradation that
+  // produces a confident wrong answer is the worst outcome available here, so a video URL
+  // whose transcript cannot be read raises instead of quietly becoming a page.
+  if (looksLikeVideoHost(url) && parseVideoId(url)) {
     const { transcriptFromUrl } = await import('./youtube-transcript.js');
-    const doc = await transcriptFromUrl(url).catch(() => null);
+    let failure = '';
+    const doc = await transcriptFromUrl(url).catch((e) => { failure = String(e?.message || e); return null; });
     if (doc) return transcriptAttachment(doc, 'yturl');
+    // Loud in the console, because this is the one failure a user cannot see the cause of.
+    console.warn('[chatpanel] no transcript for', url, failure || '(no captions, or every route declined)');
+    throw new Error(
+      `Couldn't read a transcript for that video${failure ? ` (${failure})` : ''}. It may have no captions at all. `
+      + 'The link is still in your message, so the model can look it up.',
+    );
   }
   // A pasted PDF link fetched as text is a few hundred KB of binary — which used to be
   // truncated to 30,000 characters of it and attached, silently, as "the page".
