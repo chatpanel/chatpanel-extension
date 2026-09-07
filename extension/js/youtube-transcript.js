@@ -6,43 +6,42 @@
 // the browser, and that part is not a detail — it is the whole feature.
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// WHY THIS DOES NOT FETCH A CAPTION URL, THOUGH EVERY TRANSCRIPT LIBRARY DOES
+// WHICH CAPTION URL WORKS, AND WHY THAT IS THE WHOLE FEATURE
 //
-// The published approach — scrape `ytInitialPlayerResponse` from the watch page, read
-// `captionTracks[].baseUrl`, fetch it — no longer returns anything. Measured against real
-// YouTube, not assumed:
+// Measured against live YouTube, not assumed:
 //
-//   scraped baseUrl (+fmt, +Referer, +Origin, +session cookies)  → HTTP 200, ZERO BYTES
-//   …on four unrelated videos, including ones with 31 caption tracks
-//   /youtubei/v1/player as WEB / ANDROID / IOS / TVHTML5         → UNPLAYABLE, no tracks
-//   /youtubei/v1/get_transcript with the page's own INNERTUBE
-//     context, its params and its cookies                        → 400 FAILED_PRECONDITION
+//   baseUrl scraped from the watch page HTML (+fmt/+Referer/+Origin/+cookies)
+//                                                     -> HTTP 200, ZERO BYTES
+//   /youtubei/v1/get_transcript, even from inside the real page with its own
+//     INNERTUBE context, its params and its session   -> 400 FAILED_PRECONDITION
+//   /youtubei/v1/player as ANDROID, clientVersion 20.10.38, caption URL fetched
+//     from ITS response                               -> 60,441 bytes of captions
 //
-// The empty 200 is the tell: the request is well-formed and accepted, and YouTube declines to
-// answer it. Caption delivery is now gated on a proof-of-origin token minted at runtime by the
-// player's own attestation code. A token cannot be forged, borrowed, or requested; it can only
-// be produced by the real player running in a real page.
+// So there IS a fetch route — it just is not the one every blog post describes. The player
+// endpoint's URLs work where the HTML's do not, and the ANDROID CLIENT VERSION is the entire
+// difference: 20.10.38 returns caption tracks, 19.09.37 and 17.31.35 return a well-formed
+// player response with the `captions` block missing. A stale version therefore does not
+// error — it reads exactly like "this video has no subtitles". See INNERTUBE_ANDROID in
+// js/events/media-transcript.js.
 //
-// So there is no server-shaped route, and there is no "just fetch it" route either — not from
-// a Node CLI, not from the gateway, and not from this extension's own origin. Anything
-// claiming otherwise is either about to break or is running a headless browser.
+// That route needs no tab, no player, no sign-in and no Premium, which is what makes
+// "summarise this video" answerable from a pasted URL with nothing on screen and no sound.
 //
-// WHAT DOES WORK, AND WHY IT KEEPS WORKING. YouTube's own "Show transcript" panel. The player
-// mints its token, makes its own request, and renders the result into the DOM — and we read
-// what it rendered. There is nothing to forge because we never make the request; we read a
-// feature YouTube ships to every visitor. It needs no Premium (captions never did), no
-// account, and no sign-in. It breaks only if YouTube removes the transcript panel from its own
-// product, and if that happens no approach survives.
+// WHEN IT ROTS — and it will, because the client version is a moving target — the fallback is
+// YouTube's own transcript panel in a real tab: the player has already attested, requested
+// and rendered, and we read the render. Slower and it needs a page, but it cannot be
+// version-locked. Two routes, because one route is an outage.
 //
-// The cost is that it needs a real page. When the user is on the video, that is the tab they
-// are already looking at. When they paste a URL, this loads it in a MUTED, INACTIVE background
-// tab and closes it — the same machinery web search has used since it shipped (js/tab-nav.js),
-// muted before the player can reach for the speakers.
+// (Synthetic clicks do NOT open that panel: a plain .click(), a full pointer sequence and a
+// CDP-trusted click were all tried against a real page and none of them opened it. The
+// description has to be EXPANDED first, or the control is a zero-size element inside a
+// collapsed container and every click lands on nothing.)
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
   parseYouTubeUrl, captionTracksFromPlayerResponse, videoMetaFromPlayerResponse,
   transcriptFromTracks, parseTimedText, buildTranscriptDocument,
+  innertubeApiKeyFromHtml, innertubePlayerRequest,
 } from './events/media-transcript.js';
 import { waitForTabComplete } from './tab-nav.js';
 
@@ -214,6 +213,54 @@ async function fetchInPage(url) {
 }
 
 // --------------------------------------------------------------------------
+// Route 1 — the fetch route. No tab, no player, no sound.
+// --------------------------------------------------------------------------
+
+/**
+ * Transcript for a video id, using nothing but two fetches.
+ *
+ * This is the route that makes a pasted link answerable instantly. The panel holds
+ * `<all_urls>`, so both requests are ordinary cross-origin fetches; neither needs the user's
+ * cookies, so neither sends them — `credentials: 'omit'` is deliberate. A transcript request
+ * should not carry someone's YouTube identity, and it does not have to: this works signed
+ * out.
+ */
+export async function transcriptViaInnertube(videoId, { language = '', languages = ['en'], ...opts } = {}) {
+  const get = async (url, init) => {
+    const res = await fetch(url, { credentials: 'omit', ...init });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res;
+  };
+  let apiKey = '';
+  try {
+    apiKey = innertubeApiKeyFromHtml(await (await get(`https://www.youtube.com/watch?v=${videoId}`)).text());
+  } catch {
+    return null;
+  }
+  const req = innertubePlayerRequest(videoId, { apiKey });
+  if (!req) return null;
+
+  let player;
+  try {
+    player = await (await get(req.url, { method: req.method, headers: req.headers, body: req.body })).json();
+  } catch {
+    return null;
+  }
+  const tracks = captionTracksFromPlayerResponse(player);
+  // NOT an error, and not "no captions" either: a stale client version returns exactly this.
+  // The caller falls through to the panel route rather than telling the user there are none.
+  if (!tracks.length) return null;
+
+  return transcriptFromTracks({
+    tracks,
+    meta: videoMetaFromPlayerResponse(player),
+    language, languages, source: 'youtube:innertube',
+    fetchText: async (url) => (await get(url)).text(),
+    ...opts,
+  });
+}
+
+// --------------------------------------------------------------------------
 // Reading a tab
 // --------------------------------------------------------------------------
 
@@ -238,9 +285,15 @@ function metaFrom(grabbed, scraped) {
 export async function transcriptFromTab(tabId, { language = '', languages = ['en'], timeoutMs = PANEL_TIMEOUT_MS, ...opts } = {}) {
   const grabbed = await inject(tabId, grabPlayerResponse).catch(() => null);
   if (!grabbed) return null;
-  if (!parseYouTubeUrl(grabbed.url)) return null; // a channel or search page, not a video
+  const parsedUrl = parseYouTubeUrl(grabbed.url);
+  if (!parsedUrl) return null; // a channel or search page, not a video
 
-  // THE PANEL FIRST, because it is the only route that returns anything today.
+  // THE FETCH ROUTE FIRST, even on a tab. It touches nothing the user can see — no panel
+  // opening and closing in the window they are looking at — and it is the faster of the two.
+  const fetched = await transcriptViaInnertube(parsedUrl.videoId, { language, languages, ...opts }).catch(() => null);
+  if (fetched) return fetched;
+
+  // THE PANEL, when the fetch route has gone stale.
   const scraped = await inject(tabId, readTranscriptPanel, [timeoutMs]).catch(() => null);
   if (scraped?.ok) {
     return buildTranscriptDocument({
@@ -248,11 +301,10 @@ export async function transcriptFromTab(tabId, { language = '', languages = ['en
     });
   }
 
-  // Last resort, and today it returns an empty body every time (see the header). It is kept
-  // rather than deleted because it costs one request on a path that has already failed, it is
-  // the only route that can serve a language the panel is not showing, and it starts working
-  // again by itself if YouTube ever relaxes the token requirement. It must never be first: a
-  // route that quietly returns nothing would mask the one that works.
+  // Last resort: the caption URLs printed into the page's own HTML. They answer with an empty
+  // body today (see the header), so this cannot be first — a route that quietly returns
+  // nothing would mask the two that work. It is kept because it costs one request on a path
+  // that has already failed twice, and it revives by itself if YouTube relaxes.
   if (grabbed.ok) {
     const tracks = captionTracksFromPlayerResponse(grabbed.playerResponse);
     if (tracks.length) {
@@ -299,6 +351,11 @@ async function findVideoTab(videoId) {
 export async function transcriptFromUrl(rawUrl, opts = {}) {
   const parsed = parseYouTubeUrl(rawUrl);
   if (!parsed) return null;
+
+  // NO TAB IF WE DO NOT NEED ONE. This is the whole point of a pasted link: an answer with
+  // nothing appearing on screen and nothing coming out of the speakers.
+  const fetched = await transcriptViaInnertube(parsed.videoId, opts).catch(() => null);
+  if (fetched) return fetched;
 
   const existing = await findVideoTab(parsed.videoId);
   if (existing?.id) {

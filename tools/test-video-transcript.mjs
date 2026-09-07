@@ -4,9 +4,8 @@
 // extractor in this extension — captureTab, captureUrl, read_page — returned exactly that,
 // which is the worst possible failure shape: text WAS found, so nothing errored, and the
 // model answered the wrong question confidently. This file pins what fixes it: the words come
-// from YouTube's own transcript panel (the only route that still answers — see below), a
-// pasted URL is read in a silent background tab, and the layer that does it all stays off
-// first paint.
+// from a caption track fetched the one way that still works (see below), a page is used only
+// when that route rots, and the layer that does it all stays off first paint.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { PAGE_AUTOMATION_SYSTEM, PAGE_TOOL_SPECS } from '../extension/js/page-tools.js';
@@ -74,42 +73,56 @@ assert.match(PAGE_AUTOMATION_SYSTEM, /Never summarise a video from its page text
 // THE ROUTE ORDER IS THE FEATURE
 // --------------------------------------------------------------------------
 //
-// Measured against real YouTube, not assumed: the published approach — scrape
-// `captionTracks[].baseUrl` and fetch it — returns HTTP 200 with ZERO BYTES on every video
-// tried, with or without session cookies, Referer and Origin; /youtubei/v1/player answers
-// UNPLAYABLE for WEB, ANDROID, IOS and TVHTML5; and /youtubei/v1/get_transcript answers
-// FAILED_PRECONDITION even with the page's own INNERTUBE context and params. Caption delivery
-// is gated on a token only the real player can mint.
+// Measured against live YouTube, not assumed:
 //
-// So the transcript PANEL — YouTube's own feature, already rendered by the already-attested
-// player — is the route that works, and it must be FIRST. A caption fetch that quietly returns
-// nothing, tried first, would mask the route that works and this feature would look broken.
+//   baseUrl scraped from the watch page HTML, with every combination of
+//     fmt / Referer / Origin / session cookies      -> HTTP 200, ZERO BYTES
+//   /youtubei/v1/get_transcript, even from INSIDE the real page with its own
+//     INNERTUBE context, its params and its session -> 400 FAILED_PRECONDITION
+//   /youtubei/v1/player as ANDROID 20.10.38, caption
+//     URL taken from ITS response                   -> 60,441 bytes of captions
+//
+// So the fetch route exists — it is just not the one the HTML advertises. It needs no tab,
+// no player and no sound, which is what makes a pasted link answerable instantly, so it goes
+// first everywhere. The transcript panel in a real tab is the fallback for when the pinned
+// client version rots, and it cannot be version-locked because the player does the work.
 const yt = read('../extension/js/youtube-transcript.js');
 const tabRoute = yt.slice(yt.indexOf('export async function transcriptFromTab'), yt.indexOf('async function findVideoTab'));
+const innertubeAt = tabRoute.indexOf('transcriptViaInnertube');
 const panelAt = tabRoute.indexOf('readTranscriptPanel');
 const captionsAt = tabRoute.indexOf('transcriptFromTracks');
-assert.ok(panelAt > 0, 'the tab route does not read the transcript panel at all');
-assert.ok(captionsAt > 0, 'the caption route was deleted rather than demoted');
+assert.ok(innertubeAt > 0 && panelAt > 0 && captionsAt > 0, 'a route is missing from the tab path');
+assert.ok(innertubeAt < panelAt,
+  'the panel is opened before the fetch route is tried — that puts UI on the screen of a user '
+  + 'whose tab we could have left completely alone');
 assert.ok(panelAt < captionsAt,
-  'the caption fetch runs before the transcript panel — it returns an empty body every time, '
-  + 'so it would mask the only route that works');
+  'the page-HTML caption fetch runs before the panel — it returns an empty body every time, '
+  + 'so it would mask a route that works');
 
-// The panel is read by driving YouTube's own UI, so it must put the page back: on the user's
-// own tab this runs in the window they are looking at.
+// A stale client version returns a player response with `captions` MISSING, which reads
+// exactly like "this video has no subtitles". That must fall through, never be reported.
+assert.match(yt, /NOT an error, and not "no captions" either/,
+  'nothing records that an empty tracklist means a stale client, not a video without captions');
+
+// The transcript fetch carries no identity: it works signed out, so it must not send cookies.
+assert.match(yt, /credentials: 'omit'/, "the fetch route sends the user's YouTube cookies");
+assert.doesNotMatch(yt.slice(yt.indexOf('export async function transcriptViaInnertube'), yt.indexOf('// Reading a tab')),
+  /credentials: 'include'/, 'the fetch route sends credentials');
+
+// The panel is read by driving YouTube's own UI, so it must put the page back.
 assert.match(yt, /const weOpenedIt = !panelOpen\(\)/, 'nothing tracks whether we opened the panel');
 assert.match(yt, /if \(weOpenedIt\) \{/, 'a panel we opened is never closed again');
 // A 90-minute talk must not come back as its first three minutes.
 assert.match(yt, /scroller\.scrollTop = scroller\.scrollHeight/, 'the transcript list is never scrolled');
 
-// THE ONE UNVERIFIABLE BET, HEDGED. Three of the four selectors were checked against a live
-// watch page (`engagement-panel-searchable-transcript`, the description's transcript section,
-// and the "Show transcript" label all appear in its HTML). The segment element and its two
-// class names cannot be — segments only exist after the panel is opened — so a rename would
-// turn this into a silent "no transcript". The shape fallback is what makes that survivable:
-// a transcript is lines beginning with a timestamp, whatever it is built from.
+// A plain .click(), a full pointer sequence AND a CDP-trusted click were all tried against a
+// real page: none opened the panel while the description was collapsed, because the control
+// is then a zero-size element inside a collapsed container.
+assert.match(yt, /Synthetic clicks do NOT open that panel/, 'the click finding is not recorded');
+
+// THE ONE UNVERIFIABLE BET, HEDGED. The segment element and its class names cannot be checked
+// without a browser, so a rename would turn this into a silent "no transcript".
 assert.match(yt, /SHAPE-BASED FALLBACK/, 'the segment selectors are an unhedged bet on YouTube internals');
-assert.match(yt, /\^\\s\*\(\\d\{1,2\}:\\d\{2\}/, 'the fallback does not parse a timestamped line');
-// And the fallback reads the panel's own text, so the panel cannot be closed before it runs.
 assert.ok(yt.indexOf('SHAPE-BASED FALLBACK') < yt.indexOf('if (weOpenedIt) {'),
   'the panel is closed before the fallback reads it — the fallback would always find nothing');
 
@@ -118,7 +131,13 @@ assert.ok(yt.indexOf('SHAPE-BASED FALLBACK') < yt.indexOf('if (weOpenedIt) {'),
 // --------------------------------------------------------------------------
 
 const urlRoute = yt.slice(yt.indexOf('export async function transcriptFromUrl'));
-// Cheapest answer first: if the video is already open, use that tab and open nothing.
+// NO TAB AT ALL when the fetch route answers — which is the whole point of pasting a link.
+assert.ok(urlRoute.indexOf('transcriptViaInnertube') < urlRoute.indexOf('findVideoTab'),
+  'a tab is looked for before the tab-free route is even tried');
+assert.ok(urlRoute.indexOf('transcriptViaInnertube') < urlRoute.indexOf('chrome.tabs.create'),
+  'a tab is CREATED before the tab-free route is tried — that is a window and a sound the '
+  + 'user did not ask for');
+// Then, only if that failed: a tab already showing the video, before making a new one.
 assert.match(urlRoute, /findVideoTab\(parsed\.videoId\)/, 'a tab already showing the video is ignored');
 // A transcript needs a real page, so one is made — but it must never take over the screen…
 assert.match(urlRoute, /chrome\.tabs\.create\(\{ url: parsed\.url, active: false \}\)/,
@@ -137,8 +156,7 @@ assert.ok(urlRoute.indexOf('muted: true') < urlRoute.indexOf('waitForTabComplete
 // The findings above are recorded where the next person will look, not only in a commit.
 assert.match(yt, /HTTP 200, ZERO BYTES/, 'the measured reason for this design is not written down');
 assert.match(yt, /FAILED_PRECONDITION/);
-assert.match(yt, /needs no Premium \(captions never did\), no/);
-assert.match(yt, /account, and no sign-in/);
+assert.match(yt, /no sign-in and no Premium/, 'the entitlement facts are not written down');
 
 // --------------------------------------------------------------------------
 // Reading the player response out of watch-page HTML
@@ -196,4 +214,4 @@ assert.deepEqual(fallbacksFor({ url: 'https://example.com/article' }), FALLBACK_
 assert.deepEqual(fallbacksFor(null), FALLBACK_SUGGESTIONS);
 assert.deepEqual(fallbacksFor({}), FALLBACK_SUGGESTIONS);
 
-console.log('✓ video transcripts: the panel first (the only route that answers), silent background tab, layer off first paint');
+console.log('✓ video transcripts: fetch route first (no tab, no sound), panel as fallback, layer off first paint');

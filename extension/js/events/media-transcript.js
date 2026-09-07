@@ -178,6 +178,54 @@ export function pickCaptionTrack(tracks, { language = '', languages = ['en'] } =
     .sort((a, b) => b.s - a.s)[0].t;
 }
 
+// --------------------------------------------------------------------------
+// The InnerTube player request — how a caption URL that WORKS is obtained
+// --------------------------------------------------------------------------
+//
+// The caption URLs printed into the watch page's HTML answer HTTP 200 with an EMPTY BODY —
+// measured on every video tried, with and without session cookies, Referer and Origin. The
+// ones returned by the InnerTube player endpoint for the ANDROID client do not.
+//
+// AND THE CLIENT VERSION IS THE WHOLE DIFFERENCE, which is worth stating because it is
+// invisible and it will go stale:
+//
+//   clientVersion 20.10.38  -> 1 track,  60,441 bytes of captions
+//   clientVersion 19.09.37  -> no captionTracks at all
+//   clientVersion 17.31.35  -> no captionTracks at all
+//
+// A stale version does not error. It returns a well-formed player response with the
+// `captions` block missing, which reads exactly like "this video has no subtitles" — so the
+// failure mode of letting this rot is a feature that quietly claims videos have no captions.
+// tests/media-transcript.test.js pins the shape; a live check is the client's job.
+
+/** The InnerTube client whose player response carries usable caption URLs. */
+export const INNERTUBE_ANDROID = Object.freeze({ clientName: 'ANDROID', clientVersion: '20.10.38' });
+
+/** The public InnerTube key is printed into every watch page; it is not a secret. */
+export function innertubeApiKeyFromHtml(html) {
+  const m = /"INNERTUBE_API_KEY":\s*"([^"]+)"/.exec(String(html || ''))
+    || /INNERTUBE_API_KEY\\":\\"([^\\"]+)/.exec(String(html || ''));
+  return m ? m[1] : '';
+}
+
+/**
+ * The request to make, as data — so the caller performs it wherever its network is.
+ *
+ * Returned rather than sent for the same reason nothing else here fetches: the extension, the
+ * bridge and a mobile client each have their own idea of what "fetch" means, and this file
+ * has to run in all three.
+ */
+export function innertubePlayerRequest(videoId, { apiKey = '', client = INNERTUBE_ANDROID } = {}) {
+  if (!videoId) return null;
+  const query = apiKey ? `?key=${encodeURIComponent(apiKey)}` : '';
+  return {
+    url: `https://www.youtube.com/youtubei/v1/player${query}`,
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ context: { client: { ...client } }, videoId }),
+  };
+}
+
 /**
  * Ask a caption URL for a specific serialisation.
  *
