@@ -383,9 +383,37 @@ async function pageToolProvider(resolvedAgent) {
   // a readable web tab to act on.
   if (!resolvedAgent) return null;
   if (!state.activeTab?.id) {
-    console.warn('[chatpanel] page actions NOT attached — no readable web tab is active');
-    toast('▶️ Act on page can’t run: no readable web tab is active');
-    return null;
+    // Not a web page (a new tab, chrome://, one of our own dashboards): nothing to read or
+    // act on, so the page tools stay off — except the one that needs no page. `open_tab`
+    // never touches the current tab, and "go to google.com and search for X" asked from a
+    // new tab is the most natural thing to say to a browser. Returning null here made the
+    // agent say, truthfully, that it had no way to reach the browser.
+    console.warn('[chatpanel] page actions NOT attached — no readable web tab is active; offering open_tab only');
+    toast('▶️ Not a web page — the agent can open tabs, not read or act on this one');
+    const [{ makeOpenTabOnlyProvider, whereNoPage }, { PAGE_TOOL_SPECS }, { openTab }] = await Promise.all([
+      import('./js/page-tools-anywhere.js'),
+      import('./js/page-tools.js'),
+      import('./js/tab-nav.js'),
+    ]);
+    let where;
+    try { where = whereNoPage((await getActiveTab())?.url || ''); } catch { where = whereNoPage(''); }
+    return makeOpenTabOnlyProvider({
+      spec: PAGE_TOOL_SPECS.find((s) => s.name === 'open_tab'),
+      where,
+      run: (url, opts) => openTab(url, opts),
+      // The same authority as on a web page: the user either said the destination out loud
+      // or approves the exact URL in the dialog. No site grant can apply — there is no site.
+      gate: async (input) => {
+        if (await spokenAuthorityFor('open_tab', input)) return true;
+        const decision = await confirmPageAction(describePageAction('open_tab', input));
+        if (decision === 'deny') {
+          toast('🖋 Action declined');
+          logEvent('policy.guard_denied', { capability: 'page.actions', reason: 'user-declined:open_tab' });
+          return false;
+        }
+        return true;
+      },
+    });
   }
   // The MODEL decides whether this page matters; the USER decides whether it may act.
   //
