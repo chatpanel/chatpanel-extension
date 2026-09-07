@@ -1,0 +1,98 @@
+// The voice UI's most likely failure is not a logic bug — it is a button that does
+// nothing because an element id drifted. $('voice-stop') on a missing element is
+// `undefined`, `undefined?.onclick = fn` throws nothing useful, and the feature is
+// silently dead. Unit tests never see it because they never touch the document.
+//
+// So this pins the contract BETWEEN the three files: the ids sidepanel.js and
+// voice-mode.js reach for must exist in sidepanel.html, and the states the JS
+// writes must be states the CSS actually styles.
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+const read = (p) => readFileSync(new URL(`../extension/${p}`, import.meta.url), 'utf8');
+const html = read('sidepanel.html');
+const panel = read('sidepanel.js');
+const mode = read('js/voice-mode.js');
+const css = read('sidepanel.css');
+const speech = read('js/speech.js');
+const readAloud = read('js/read-aloud.js');
+
+const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
+
+// ── every voice element the JS reaches for must exist ──────────────────────────
+{
+  const referenced = new Set();
+  for (const src of [panel, mode]) {
+    // no \b before \$ — it is not a word character, so the boundary never matches
+    for (const m of src.matchAll(/(?:\$|el)\(\s*'(voice-[^']+|btn-voice)'\s*\)/g)) referenced.add(m[1]);
+  }
+  assert.ok(referenced.size >= 6, `expected the voice UI to reference several ids, saw ${referenced.size}`);
+  for (const id of referenced) {
+    assert.ok(idsInHtml.has(id), `sidepanel.html has no #${id}, but the JS reaches for it — the control would be silently dead`);
+  }
+}
+
+// ── and every control in the overlay must be wired to something ────────────────
+{
+  const overlay = html.slice(html.indexOf('id="voice-overlay"'), html.indexOf('</div>', html.indexOf('voice-privacy')));
+  for (const m of overlay.matchAll(/<button[^>]*\bid="([^"]+)"/g)) {
+    const id = m[1];
+    assert.match(panel, new RegExp(`\\$\\('${id}'\\)\\.onclick`), `#${id} is in the overlay but nothing wires its onclick`);
+  }
+}
+
+// ── the states the JS writes are the states the CSS styles ─────────────────────
+{
+  const written = new Set([...mode.matchAll(/setState\('([a-z]+)'/g)].map((m) => m[1]));
+  // LABEL is the module's own list of what it can display.
+  const labelDecl = mode.match(/const LABEL = \{([^}]+)\}/);
+  assert.ok(labelDecl, 'voice-mode must declare a LABEL map of the states it can show');
+  const labelled = new Set([...labelDecl[1].matchAll(/(\w+):/g)].map((x) => x[1]));
+  for (const st of written) assert.ok(labelled.has(st), `voice-mode writes state "${st}" but LABEL has no text for it`);
+  for (const st of ['listening', 'thinking', 'speaking']) {
+    assert.ok(css.includes(`[data-state="${st}"]`), `sidepanel.css does not style the "${st}" state — the orb would not change`);
+  }
+}
+
+// ── motion is the signal, so reduced-motion must not leave three identical rings ─
+{
+  const rm = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)', css.indexOf('.voice-orb')));
+  assert.ok(rm.includes('animation: none'), 'reduced motion must stop the orb animation');
+  assert.ok(/thinking"\].*border-style|speaking"\].*opacity/s.test(rm.slice(0, 400)),
+    'with motion suppressed the orb still has to distinguish the states some other way');
+}
+
+// ── the privacy line is not optional ───────────────────────────────────────────
+{
+  assert.ok(idsInHtml.has('voice-privacy'), 'the overlay must have somewhere to say where audio is handled');
+  assert.match(mode, /voice-privacy/, 'voice-mode must fill it in');
+  assert.match(mode, /bothLocal/, 'and it must distinguish fully-local from anything else');
+}
+
+// ── speech must never be a static import on a first-paint entry ────────────────
+// (the budget test measures bytes; this one names the rule, so a violation reads as
+// "you broke the deferral" rather than "the number went up")
+{
+  for (const [name, src] of [['sidepanel.js', panel]]) {
+    for (const mod of ['speech.js', 'read-aloud.js', 'voice-loop.js', 'voice-mode.js']) {
+      const staticImport = new RegExp(`^import[^\\n]*from '\\./js/${mod.replace('.', '\\.')}'`, 'm');
+      assert.ok(!staticImport.test(src), `${name} statically imports ${mod} — it must be await import()ed at the call site`);
+    }
+  }
+}
+
+// ── the capability modules stay platform-free where they claim to be ───────────
+{
+  // voice-loop is the one that must run under node with no DOM — it is why the
+  // loop is testable at all.
+  const loop = read('js/voice-loop.js');
+  for (const bad of ['document.', 'window.', 'chrome.', 'navigator.']) {
+    assert.ok(!loop.includes(bad), `voice-loop.js touches ${bad} — every platform capability there is meant to be injected`);
+  }
+  // speech.js may use window/Audio (it is the audio layer) but must not reach into
+  // the panel's DOM.
+  assert.ok(!speech.includes('document.querySelector'), 'speech.js must not reach into the page it is used from');
+  assert.ok(!readAloud.includes("import('./voice-mode.js')"), 'read-aloud must not depend on voice mode — the Speak button works without it');
+}
+
+console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free');
