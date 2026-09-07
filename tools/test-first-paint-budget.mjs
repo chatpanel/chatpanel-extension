@@ -63,7 +63,13 @@ const BUDGET = {
   // shim that does nothing but import the session, the turn-completion notifier runStream
   // fires, and one more Lucide glyph in icons.js. ~4 KB, most of it comment, and the engine
   // behind it stays off. Leaves ~5 KB of headroom.
-  'sidepanel.js': 812,
+  // 812 → 820. That "~5 KB" is now 0.1 KB — the voice work's shared client helpers
+  // (js/gateway.js gained the TTS model and voice calls, reached from this graph)
+  // ate it, and a ceiling with 0.1 KB left fails on the next comment anyone writes,
+  // which is a bad way to learn about a budget. The engines themselves are still
+  // pinned OFF this graph in OFF_LIMITS, so what grew is client plumbing, not the
+  // deferral leaking.
+  'sidepanel.js': 820,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one

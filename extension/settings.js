@@ -2678,9 +2678,11 @@ function renderTtsModels(data) {
       m.ramMB ? `~${(m.ramMB / 1024).toFixed(1)} GB RAM` : '',
       m.installed && !isActive ? 'installed' : '',
     ].filter(Boolean).join(' · ');
-    const label = downloading
-      ? `Downloading… ${dl.pct || 0}%`
-      : isActive ? 'In use' : (m.installed ? 'Use' : `Download${m.approxMB ? ` (~${m.approxMB} MB)` : ''}`);
+    // A model this runtime cannot load is shown, disabled, WITH the reason. Hiding
+    // it would make "why can't I clone my voice?" unanswerable from the UI.
+    const label = m.unavailable ? 'Unavailable'
+      : downloading ? `Downloading… ${dl.pct || 0}%`
+        : isActive ? 'In use' : (m.installed ? 'Use' : `Download${m.approxMB ? ` (~${m.approxMB} MB)` : ''}`);
     const bar = downloading
       ? `<div class="dl-bar"><div class="dl-bar-fill" style="width:${Math.max(3, dl.pct || 0)}%"></div></div>
          <p class="muted sm" style="margin:2px 0 0">${dl.file ? esc(dl.file) + ' · ' : ''}${dl.pct || 0}% — you can keep working.</p>`
@@ -2689,9 +2691,9 @@ function renderTtsModels(data) {
       <div class="entity-head">
         <strong style="flex:1 1 auto">${esc(m.label || m.id)}</strong>
         <span class="status">${meta}</span>
-        <button type="button" class="btn ${isActive ? '' : 'primary'} gw-tts-use" data-id="${esc(m.id)}" ${isActive || downloading ? 'disabled' : ''}>${label}</button>
+        <button type="button" class="btn ${isActive || m.unavailable ? '' : 'primary'} gw-tts-use" data-id="${esc(m.id)}" ${isActive || downloading || m.unavailable ? 'disabled' : ''}>${label}</button>
       </div>
-      <p class="muted sm" style="margin:0">${esc(m.note || '')}</p>
+      <p class="muted sm" style="margin:0">${esc(m.unavailable || m.note || '')}</p>
       ${bar}
     </div>`;
   });
@@ -2714,13 +2716,23 @@ function renderTtsVoices(data) {
   const row = sel.closest('.field');
   const custom = data?.customVoiceList || [];
 
-  // SpeechT5 has no built-in voices but CAN use a recorded one, so the picker is
-  // still the right control — it just lists yours instead of Kokoro's.
+  // Pocket TTS has BOTH kinds — eight built-in speakers and whatever you have
+  // recorded — so the picker lists them together rather than assuming a model can
+  // only have one sort of voice. SpeechT5 has only recorded ones; Kokoro only
+  // built-in ones.
   if (data?.supportsCustomVoices) {
     if (row) row.style.display = '';
-    sel.innerHTML = custom.length
-      ? custom.map((v) => `<option value="custom:${escapeHtml(v.id)}"${data.voice === `custom:${v.id}` ? ' selected' : ''}>${escapeHtml(v.name)}</option>`).join('')
-      : '<option value="">No saved voices — record one below</option>';
+    const builtin = (voices || []).map((v) => {
+      const label = v.installed === false ? `${v.label || v.id} — downloads on first use` : (v.label || v.id);
+      return `<option value="${escapeHtml(v.id)}"${data.voice === v.id ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+    });
+    const mine = custom.map((v) => `<option value="custom:${escapeHtml(v.id)}"${data.voice === `custom:${v.id}` ? ' selected' : ''}>${escapeHtml(v.name)} (yours)</option>`);
+    sel.innerHTML = (builtin.length || mine.length)
+      ? [
+        builtin.length ? `<optgroup label="Built-in">${builtin.join('')}</optgroup>` : '',
+        mine.length ? `<optgroup label="Your voices">${mine.join('')}</optgroup>` : '',
+      ].join('')
+      : '<option value="">No voices yet — record one below</option>';
     // Switching to this model does not rewrite the stored voice, so the config can
     // still name a Kokoro one while the picker displays yours. Showing a selection
     // that was never saved is how "I picked my voice and it says I have none"
@@ -2730,8 +2742,10 @@ function renderTtsVoices(data) {
     }
     if (note) {
       note.textContent = custom.length
-        ? 'Speaking in a voice derived from your recording. Nothing about it leaves this machine.'
-        : 'This model speaks in a voice you record — add one under Your voices.';
+        ? 'Your own voices are derived from your recording and never leave this machine.'
+        : (voices || []).length
+          ? 'Built-in voices work straight away. Record one below to speak in your own.'
+          : 'This model speaks in a voice you record — add one under Your voices.';
     }
     sel.onchange = () => sel.value && selectTtsModel({ voice: sel.value });
     return;
