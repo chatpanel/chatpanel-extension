@@ -2266,23 +2266,11 @@ export async function checkAgentCommand(bridgeUrl, command) {
 
 // Ask the Bridge which local agents are alive. Returns { ok, agents: [{id,
 // label, available, reason}] } or { ok:false } if the Bridge isn't running.
-export async function checkBridge(bridgeUrl) {
-  const base = (bridgeUrl || 'http://127.0.0.1:4319').replace(/\/$/, '');
-  try {
-    const res = await fetch(`${base}/health`, { method: 'GET' });
-    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
-    const json = await res.json();
-    // `skills` is additive — an older bridge omits it entirely, which is exactly how a
-    // newer client learns not to call endpoints that are not there (no lockstep).
-    return {
-      ok: true, agents: json.agents || [], version: json.version, update: json.update || null,
-      skills: json.skills || null,
-      workspace: json.workspace || '',
-    };
-  } catch (e) {
-    return { ok: false, reason: e.message };
-  }
-}
+// MOVED to js/bridge-health.js — a health check is one fetch and must not require the model
+// layer. Re-exported here because settings.js, notes.js and bridge-update.js already import
+// it from this module and are loading providers.js anyway; the side panel imports the small
+// module directly, which is the whole point. See js/bridge-health.js.
+export { checkBridge } from './bridge-health.js';
 
 // Tell the bridge to self-update to the latest release (compiled-binary installs).
 // It swaps its binary and restarts, so the connection drops briefly — callers

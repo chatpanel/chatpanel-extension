@@ -22,9 +22,6 @@ import {
 import {
   SWARM_ROLES, SWARM_ROLE_META, swarmOverrides, swarmCandidates, roleAgent, getRouter,
 } from './js/notes-swarm-router.js';
-import {
-  beginRegion, appendRegion, finishRegion, activeRegions, agentReplace,
-} from './js/notes-regions.js';
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
 import {
   HUMAN, blankAttribution, mergeRuns, applyAttribution, attributionSummary, normalizeAttribution,
@@ -647,6 +644,26 @@ function updatePreview() {
 // streaming, undo/restore) mirror OUT to CM through updatePreview(). CM6 is lazy-loaded on
 // first switch — off the notes first-paint path. Full swarm gestures (@mention, autocomplete,
 // ⌘↵ draft) reconnect to CM in Phase 3; today they run in the classic Write view.
+// THE 495 KB THAT WAS NOT NEEDED TO PAINT A NOTE.
+//
+// js/notes-regions.js is CM6 machinery — it imports the vendored CodeMirror bundle — and it
+// was a STATIC import here. That put 495 KB, more than half of this page's entire first
+// paint, on the path of every user who opens Notes, including the overwhelming majority who
+// never switch on Live mode. And it bought nothing: every one of these five functions is
+// already guarded by `cm` being mounted, and `cm` only exists after ensureCm() has
+// dynamically imported js/editor-cm.js — which imports notes-regions itself.
+//
+// So the module is taken from the editor once the editor has loaded. The wrappers are what
+// let the call sites stay exactly as they were: before Live mode is on there are no regions,
+// which is precisely what each of these now returns.
+let _regions = null;
+const beginRegion = (...a) => _regions?.beginRegion(...a);
+const appendRegion = (...a) => _regions?.appendRegion(...a);
+const finishRegion = (...a) => _regions?.finishRegion(...a);
+const agentReplace = (...a) => _regions?.agentReplace(...a);
+// An array, never undefined: callers iterate and .find() on this.
+const activeRegions = (...a) => (_regions ? _regions.activeRegions(...a) : []);
+
 let cm = null;          // the live-editor facade (js/editor-cm.js createLiveEditor)
 let cmActive = false;   // is Live mode the visible surface right now?
 let _cmMod = null;
@@ -655,6 +672,8 @@ let _cmRO = null;       // last read-only state pushed to CM (avoid churny recon
 async function ensureCm() {
   if (cm) return cm;
   if (!_cmMod) _cmMod = await import('./js/editor-cm.js');
+  // editor-cm.js imports notes-regions, so by here it is resolved and free to reach.
+  if (!_regions) _regions = await import('./js/notes-regions.js');
   cm = _cmMod.createLiveEditor({
     parent: $('n-cm'),
     doc: $('n-body').value,
@@ -3527,9 +3546,22 @@ function makeNoteTools(job) {
 
 // ── Editor co-writer — Phase 1 of the swarm ──────────────────────────────────────
 // Watches on a typing pause, asks a cheap model to fix ONLY typos/grammar, diffs its
-// output to precise one-click fixes, and shows them in an ambient strip. Opt-in
-// (cost + control). All heavy deps are lazy-loaded — nothing on the page load path.
-let cwEnabled = localStorage.getItem('chatpanel.notes.cowriter') === '1';
+// output to precise one-click fixes, and shows them in an ambient strip.
+//
+// ON BY DEFAULT, and only the ABSENCE of a stored value means on — an explicit '0' is a
+// person who turned it off and must stay off. It was opt-in on cost grounds, and that
+// reasoning had stopped being true: the Editor runs a deterministic pass FIRST
+// (cowriter-lint.js) and spends a token only on text that is already mechanically clean, the
+// default gear is Ambient (suggest-only, nothing written for you), a per-minute budget caps
+// the rest, and with no model configured every member returns without calling anything. What
+// the opt-in actually bought was a feature nobody found.
+//
+// All heavy deps are lazy-loaded — nothing on the page load path.
+let cwEnabled = readCowriterPref();
+function readCowriterPref() {
+  // Guarded: a private window throws on access, and the right answer there is the default.
+  try { return localStorage.getItem('chatpanel.notes.cowriter') !== '0'; } catch { return true; }
+}
 let cwTimer = null;
 let cwGen = 0;
 let cwSuggestions = [];
@@ -3844,7 +3876,9 @@ function applyConnector(h) {
 }
 function setCowriter(on, announce = false) {
   cwEnabled = on;
-  localStorage.setItem('chatpanel.notes.cowriter', on ? '1' : '0');
+  // Guarded like the read: a private window throws here, and failing to REMEMBER the choice
+  // must not stop the choice taking effect for this session.
+  try { localStorage.setItem('chatpanel.notes.cowriter', on ? '1' : '0'); } catch { /* no store */ }
   const btn = $('n-cw-toggle');
   btn.classList.toggle('on', on);
   btn.title = on ? 'Co-writer swarm: on — proofreads as you write · ⌘↵ draft ahead · 🔎 research' : 'Co-writer: off';
@@ -4438,14 +4472,28 @@ async function renderSwarmMenu() {
   const pickable = cands.filter((c) => c.enabled !== false && c.usable !== false);
   const reasonFor = (c) => (c.enabled === false ? ' — inactive (enable in Settings)' : (c.usable === false ? ' — needs Pro' : ''));
   menu.innerHTML = '<div class="swarm-title">Co-writer team</div>';
-  // Two gears — Ambient (quiet, suggest-only) vs Focus (drafts sections + fact-checks).
+  // Two gears — and what they DO, on screen. The difference between them is the difference
+  // between a tool that suggests and a tool that writes, which is the single most important
+  // thing to know about this panel; it was carried only by a `title` tooltip, on a control
+  // most people reach with a click rather than a hover. Each button now names the behaviour,
+  // and the line under the pair spells out the selected one.
+  const gearHead = document.createElement('div');
+  gearHead.className = 'swarm-prefs-h';
+  gearHead.innerHTML = `${icon('sparkles')} How much should the team do?`;
+  menu.appendChild(gearHead);
   const gearRow = document.createElement('div');
   gearRow.className = 'swarm-gear';
   gearRow.innerHTML =
-    `<button class="sg-opt ${swarmGear === 'ambient' ? 'on' : ''}" data-g="ambient" title="Quiet — suggestions only, cheap/free members">🌙 Ambient</button>`
-    + `<button class="sg-opt ${swarmGear === 'focus' ? 'on' : ''}" data-g="focus" title="Active — drafts sections on the spot + runs the Fact-checker">${icon('zap')} Focus</button>`;
+    `<button class="sg-opt ${swarmGear === 'ambient' ? 'on' : ''}" data-g="ambient">`
+    + `<b>🌙 Ambient</b><span>Suggests only</span></button>`
+    + `<button class="sg-opt ${swarmGear === 'focus' ? 'on' : ''}" data-g="focus">`
+    + `<b>${icon('zap')} Focus</b><span>Writes with you</span></button>`;
   gearRow.querySelectorAll('.sg-opt').forEach((b) => { b.onclick = () => setGear(b.dataset.g); });
   menu.appendChild(gearRow);
+  const gearNote = document.createElement('p');
+  gearNote.className = 'swarm-gear-note';
+  gearNote.textContent = GEAR_NOTE[swarmGear] || GEAR_NOTE.ambient;
+  menu.appendChild(gearNote);
   // Shared intent — this note's goal; guides the Writer & Researcher.
   const intentWrap = document.createElement('label');
   intentWrap.className = 'swarm-intent';
@@ -4561,6 +4609,16 @@ function setAIPref(k, v) {
   AI_PREFS[k] = !!v;
   localStorage.setItem('chatpanel.notes.aiPrefs', JSON.stringify(AI_PREFS));
 }
+
+// What each gear actually does, in the panel. Written as "what happens to your text",
+// because that is the question — not which members run.
+const GEAR_NOTE = {
+  ambient: 'Nothing is written for you. Typo fixes, links and research collect quietly in the '
+    + 'Co-writer tab, and you decide what to take. Press ⌘↵ any time to draft ahead.',
+  focus: 'The team writes alongside you: it drafts a section when you pause on a heading and '
+    + 'the Fact-checker flags shaky claims. Every draft is still accept-or-reject, and the '
+    + 'per-minute spend cap below still applies.',
+};
 
 function setGear(g) {
   swarmGear = g === 'focus' ? 'focus' : 'ambient';

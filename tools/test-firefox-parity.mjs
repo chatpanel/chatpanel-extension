@@ -32,7 +32,11 @@ const CONFINED = {
   'api.sidePanel': ['js/side-panel.js', 'js/browser-api.js'],
   'chrome.sidebarAction': ['js/side-panel.js'],
   'api.sidebarAction': ['js/side-panel.js', 'js/browser-api.js'],
-  'chrome.offscreen': ['js/webllm.js'],
+  // ONE module owns the offscreen document now. It used to be webllm.js, but the timer alert
+  // needs the same document (a service worker has no audio API), and Chrome allows only one —
+  // so its `reasons` must cover both uses at creation time. Two modules each creating it with
+  // their own reasons is how the second one silently loses the capability it asked for.
+  'chrome.offscreen': ['js/offscreen-host.js'],
   'api.offscreen': ['js/browser-api.js'],
   'chrome.debugger': [],
   'api.debugger': ['js/page-actions-cdp.js', 'js/browser-api.js'],
@@ -46,11 +50,18 @@ for (const [needle, allowed] of Object.entries(CONFINED)) {
 }
 
 // ── 2. Chromium-only APIs that DO remain are feature-detected before use ───
-// webllm.js may name chrome.offscreen, but only after checking for it — otherwise the
-// in-browser model would throw a TypeError on Firefox instead of falling back.
+// offscreen-host.js may name chrome.offscreen, but only after checking for it — otherwise
+// the in-browser model AND the timer alert would throw a TypeError on Firefox instead of
+// falling back (to the in-panel engine, and to the notification alone).
+const offscreenHost = read('js/offscreen-host.js');
+assert.match(offscreenHost, /!chrome\.offscreen|chrome\.offscreen\s*&&|typeof chrome !== 'undefined' && !!chrome\.offscreen/,
+  'js/offscreen-host.js must feature-detect chrome.offscreen before using it; Firefox has no offscreen documents');
+assert.match(offscreenHost, /if \(!hasOffscreen\(\)\) throw/,
+  'and must throw rather than proceed, so callers can fall back');
+// The alert must degrade to silence, never to an unhandled rejection in a worker.
+assert.match(offscreenHost, /catch \{\s*\n?\s*return false;/,
+  'playAlertAnywhere must resolve false where audio is impossible — the notification still goes out');
 const webllm = read('js/webllm.js');
-assert.match(webllm, /!chrome\.offscreen|chrome\.offscreen\s*&&|if \(typeof chrome === 'undefined' \|\| !chrome\.offscreen\)/,
-  'js/webllm.js must feature-detect chrome.offscreen before using it; Firefox has no offscreen documents');
 assert.match(webllm, /navigator\.gpu/,
   'js/webllm.js must feature-detect WebGPU — Firefox ships it later and on fewer platforms than Chromium');
 
@@ -112,7 +123,11 @@ for (const rel of CHROMIUM_ONLY_FILES) {
   assert.ok(existsSync(path.join(extDir, rel)), `CHROMIUM_ONLY_FILES lists a file that no longer exists: ${rel}`);
   for (const other of files) {
     if (CHROMIUM_ONLY_FILES.includes(other)) continue;
-    assert.ok(!code(other).includes(`'${rel}'`) || other === 'js/webllm.js',
+    // js/offscreen-host.js names offscreen.html and js/webllm.js names the WebLLM bundle —
+    // both behind a guard (hasOffscreen(), and the WebGPU probe) that can never be true on
+    // Firefox, so neither reference can be reached in a package that lacks the file.
+    const guarded = ['js/webllm.js', 'js/offscreen-host.js'];
+    assert.ok(!code(other).includes(`'${rel}'`) || guarded.includes(other),
       `${other} references ${rel}, which the Firefox package drops. Guard it or keep the file.`);
   }
 }

@@ -15,7 +15,7 @@ globalThis.chrome = {
   },
 };
 
-const { defaultSkills, getSettings } = await import('../extension/js/store.js');
+const { defaultSkills, getSettings, defaultSettings } = await import('../extension/js/store.js');
 
 const shipped = defaultSkills();
 assert.ok(shipped.length > 0, 'Default skills should be present.');
@@ -49,6 +49,12 @@ assert.equal(
   'selected',
   'Explicit user MCP selections on custom skills should be preserved.',
 );
-assert.equal(storage.get('chatpanel:settings').version, 9, 'Skill default migration should be persisted (current schema version).');
+// Read from defaultSettings() rather than hardcoded: this asserts that the migration was
+// PERSISTED at whatever the current schema version is, and pinning the literal only meant
+// this failed for the next schema bump that had nothing to do with skills.
+assert.equal(
+  storage.get('chatpanel:settings').version, defaultSettings().version,
+  'Skill default migration should be persisted (current schema version).',
+);
 
 console.log('skill defaults tests passed');

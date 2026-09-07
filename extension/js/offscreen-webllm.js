@@ -53,7 +53,15 @@ async function runChat(msg) {
   }
 }
 
-chrome.runtime.onMessage.addListener((msg) => {
+/**
+ * Handle one panel → offscreen message.
+ *
+ * EXPORTED rather than self-registered: this module is now `await import()`ed by
+ * js/offscreen.js on the first message that needs the engine, so a listener registered at
+ * module scope would be attached too late to see that very message. The router owns the
+ * listener and hands each message here once the module is ready.
+ */
+export function handleWebllmMessage(msg) {
   if (!msg || msg.target !== 'offscreen-webllm') return;
   if (msg.type === 'chat') runChat(msg);
   else if (msg.type === 'stop') { try { engine?.interruptGenerate(); } catch { /* ignore */ } }
@@ -64,4 +72,4 @@ chrome.runtime.onMessage.addListener((msg) => {
       try { await mlc.deleteModelInCache?.(msg.model); } catch { /* ignore */ }
     })();
   }
-});
+}

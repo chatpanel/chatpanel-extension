@@ -34,7 +34,14 @@ const backup = {
   meetings: [],
   notes: [],
   notesConfig: { 'chatpanel.notes.gear': 'restored-gear' },
-  settings: { activeAgentId: 'restored-agent' },
+  // Self-consistent on purpose: activeAgentId is repaired on read when it names nothing
+  // (see store.repairActiveAgentId), so a marker id has to be backed by a real endpoint or
+  // the repair heals it away and this assertion stops testing restore scope. A genuine
+  // backup always carries the endpoint its active id names.
+  settings: {
+    activeAgentId: 'restored-agent',
+    endpoints: [{ id: 'restored-agent', name: 'Restored', kind: 'openai', baseUrl: 'https://example.com/v1', model: 'restored-model' }],
+  },
   oauthTokens: { endpoint1: { access_token: 'restored-access-token', token_type: 'Bearer' } },
 };
 

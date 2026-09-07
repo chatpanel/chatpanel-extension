@@ -134,21 +134,12 @@ export async function ensureEngine(modelId = DEFAULT_WEBLLM_MODEL, onProgress, c
 // Runs the engine in an offscreen document so the model stays loaded across panel
 // open/close. The panel is a CLIENT that streams over chrome.runtime messages. Guarded
 // so a failure to set up the offscreen doc falls back to the in-panel engine.
-let _offscreenReady = null;
-export async function ensureOffscreenDoc() {
-  if (typeof chrome === 'undefined' || !chrome.offscreen) throw new Error('offscreen API unavailable');
-  if (_offscreenReady) return _offscreenReady;
-  _offscreenReady = (async () => {
-    if (!(await chrome.offscreen.hasDocument?.())) {
-      await chrome.offscreen.createDocument({
-        url: 'offscreen.html',
-        reasons: ['WORKERS'],
-        justification: 'Run the on-device AI model off the UI thread so it stays loaded when the side panel closes.',
-      });
-    }
-  })();
-  try { return await _offscreenReady; } catch (e) { _offscreenReady = null; throw e; }
-}
+// MOVED to js/offscreen-host.js. There is only ONE offscreen document per extension and the
+// alert sound now shares it, so its `reasons` must cover both uses at creation time —
+// whichever feature opens it first. Two modules each creating it with their own reasons is
+// how the second one silently loses the capability it asked for.
+export { ensureOffscreenDoc } from './offscreen-host.js';
+import { ensureOffscreenDoc, offscreenDocOpen } from './offscreen-host.js';
 
 let _reqSeq = 0;
 async function* streamChatBackground(model, messages, { onProgress, signal, params = {}, customModels = [] }) {
@@ -238,7 +229,9 @@ export async function deleteModel(modelId = DEFAULT_WEBLLM_MODEL) {
   // If the offscreen engine is holding this model, ask it to unload + purge too, so the
   // background "stay warm" path doesn't keep stale weights loaded after a Remove.
   try {
-    if (typeof chrome !== 'undefined' && chrome.offscreen && (await chrome.offscreen.hasDocument?.())) {
+    // Through offscreen-host, which owns every chrome.offscreen call — see its header, and
+    // test-firefox-parity, which enforces that there is exactly one such place.
+    if (await offscreenDocOpen()) {
       chrome.runtime.sendMessage({ target: 'offscreen-webllm', type: 'delete', model: modelId });
     }
   } catch { /* ignore */ }

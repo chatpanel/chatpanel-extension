@@ -26,10 +26,60 @@ let backupRun = null;
 
 const DEFAULT_STATE = {
   enabled: false, lastAt: 0, lastDay: '', lastHash: '', lastError: '',
+  // WHICH step failed and WHEN. Without these the settings page could only ever render the
+  // raw exception text, forever — "✕ Failed to fetch", with no way to tell what was being
+  // fetched, whether it happened a minute or a month ago, or what to do about it. That is
+  // exactly how it was reported.
+  lastErrorStep: '', lastErrorAt: 0,
   lastGatewayError: '', count: 0, meetingsCount: 0, lastBytes: 0, hour: 20,
   gatewayBackupIndex: false, destination: 'local', lastDriveFileId: '',
   deviceId: '', deviceName: '',
 };
+
+/**
+ * The steps a backup goes through, in order — the vocabulary for saying what broke.
+ *
+ * A backup is four fallible things wearing one try/catch: read the data, encrypt it, upload
+ * it, write it to disk. Two of them touch the network, and a network failure in a browser
+ * surfaces as the single least informative string there is: "Failed to fetch". Naming the
+ * step is what turns that back into something a person can act on.
+ */
+export const BACKUP_STEPS = Object.freeze({
+  export: 'reading your chats, meetings and notes',
+  encrypt: 'encrypting the backup',
+  drive: 'uploading to Google Drive',
+  download: 'saving the file to Downloads',
+});
+
+/**
+ * Turn a thrown error into something the person reading it can act on.
+ *
+ * `TypeError: Failed to fetch` is what a browser says for every network failure it will not
+ * explain: offline, DNS, a proxy, a blocked host, a revoked token. It is the message the user
+ * saw, and on its own it names neither the thing that was being fetched nor the fix. So the
+ * step supplies the subject and the likeliest cause supplies the next move.
+ *
+ * Pure, so the wording is testable without running a backup.
+ */
+export function describeBackupError(step, err) {
+  const raw = String(err?.message || err || 'Unknown error').trim();
+  const what = BACKUP_STEPS[step] || 'running the backup';
+  const network = /failed to fetch|networkerror|load failed|err_/i.test(raw);
+  if (step === 'drive' && network) {
+    return `Couldn't reach Google Drive while ${what}. Check your connection, then press `
+      + '"Connect Google Drive" again to re-authorize — or set the destination to Downloads '
+      + 'to back up locally instead.';
+  }
+  if (step === 'drive') return `Google Drive refused the upload while ${what}: ${raw}.`;
+  if (step === 'download' && /user_canceled|canceled/i.test(raw)) {
+    return `The download was cancelled while ${what}. Turn off "Ask where to save each file" `
+      + 'in your browser\'s download settings so scheduled backups can write unattended.';
+  }
+  if (network) {
+    return `A network request failed while ${what} ("${raw}"). Check your connection and try again.`;
+  }
+  return `Failed while ${what}: ${raw}`;
+}
 
 export function backupDeviceSlot(value) {
   const normalized = String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -229,15 +279,18 @@ export function runAutoBackup(options = {}) {
 }
 
 async function runAutoBackupOnce({ force = false, now = new Date(), extras } = {}) {
+  // Which step we are on, so the catch below can say what broke instead of re-throwing an
+  // unattributed string at the settings page. See describeBackupError().
+  let step = 'export';
   try {
     const license = await getLicense();
     if (!can(license, 'autoBackup')) {
-      await patchBackupState({ lastError: 'Auto-backup is a Pro feature.' });
+      await patchBackupState({ lastError: 'Auto-backup is a Pro feature.', lastErrorStep: '', lastErrorAt: Date.now() });
       return { ok: false, reason: 'not-pro' };
     }
     const state = await getBackupState();
     if (!state.passphrase) {
-      await patchBackupState({ lastError: 'Set a backup password before running automatic backup.' });
+      await patchBackupState({ lastError: 'Set a backup password before running automatic backup.', lastErrorStep: '', lastErrorAt: Date.now() });
       return { ok: false, reason: 'passphrase-required' };
     }
     if (!force && !scheduledBackupDue(state, now)) return { ok: true, skipped: true, reason: 'not-due' };
@@ -249,6 +302,7 @@ async function runAutoBackupOnce({ force = false, now = new Date(), extras } = {
 
     // Compress then encrypt exactly once. Both destinations receive the identical
     // ciphertext; Drive-only never invokes chrome.downloads or persists locally.
+    step = 'encrypt';
     const envelope = await encryptBackup(data, state.passphrase);
     const text = JSON.stringify(envelope);
     const blob = new Blob([text], { type: 'application/json' });
@@ -261,6 +315,7 @@ async function runAutoBackupOnce({ force = false, now = new Date(), extras } = {
 
     let driveFile = null;
     if (backupDestinationIncludes(state.destination, 'drive')) {
+      step = 'drive';
       driveFile = await uploadEncryptedBackupToDrive(blob, {
         filename: basename,
         deviceId: state.deviceId,
@@ -270,6 +325,7 @@ async function runAutoBackupOnce({ force = false, now = new Date(), extras } = {
     }
 
     if (backupDestinationIncludes(state.destination, 'local')) {
+      step = 'download';
       // data: URLs write silently with saveAs:false. blob: URLs can trigger Save As.
       const b64 = bytesToBase64(new TextEncoder().encode(text));
       const downloadId = await chrome.downloads.download({
@@ -289,6 +345,8 @@ async function runAutoBackupOnce({ force = false, now = new Date(), extras } = {
       lastDay: backupDayKey(now),
       lastHash: hash,
       lastError: '',
+      lastErrorStep: '',
+      lastErrorAt: 0,
       lastGatewayError,
       count: data.count,
       meetingsCount: data.meetingsCount,
@@ -297,8 +355,12 @@ async function runAutoBackupOnce({ force = false, now = new Date(), extras } = {
     });
     return { ok: true, count: data.count, meetingsCount: data.meetingsCount, bytes, destination: state.destination };
   } catch (e) {
-    await patchBackupState({ lastError: String(e?.message || e) });
-    return { ok: false, reason: 'error', error: String(e?.message || e) };
+    // Described, timestamped and attributed to a step. The bare exception text was rendered
+    // verbatim and forever, which is how "✕ Failed to fetch" came to sit in Settings with
+    // nothing to say what had failed or when.
+    const message = describeBackupError(step, e);
+    await patchBackupState({ lastError: message, lastErrorStep: step, lastErrorAt: Date.now() });
+    return { ok: false, reason: 'error', step, error: message };
   }
 }
 
@@ -348,12 +410,12 @@ export async function setAutoBackupPassphrase(passphrase) {
   if (value && !isSealed(encryptedPassphrase)) {
     throw new Error('Could not securely store the backup password. Automatic backup was not enabled.');
   }
-  await patchBackupState({ passphrase: value, encryptedPassphrase, lastError: '' });
+  await patchBackupState({ passphrase: value, encryptedPassphrase, lastError: '', lastErrorStep: '', lastErrorAt: 0 });
   await syncBackupAlarm();
 }
 
 export async function setAutoBackupDestination(destination) {
-  await patchBackupState({ destination: normalizeBackupDestination(destination), lastError: '' });
+  await patchBackupState({ destination: normalizeBackupDestination(destination), lastError: '', lastErrorStep: '', lastErrorAt: 0 });
 }
 
 export async function setBackupDeviceName(name) {

@@ -25,6 +25,15 @@ import { exportMemories, importMemories } from './store-memory.js';
 import { exportWidgets, importWidgets } from './widgets-store.js';
 import { exportJobs, importJobs } from './jobs.js';
 import { exportVault, importVault } from './vault.js';
+// The ORIGINAL four, moved here for the same reason as the four above. store.js imported
+// these statically, so meetings, notes, the Notes UI config and the OAuth sign-ins were on
+// the first-paint graph of every page that reads a setting — 42.6 KB on the side panel alone
+// (oauth.js + store-notes.js + notes-config.js) for functions only a backup calls. They were
+// the reason this seam had to exist and the last thing left outside it.
+import { exportMeetings, importMeetings } from './store-meetings.js';
+import { exportNotes, importNotes } from './store-notes.js';
+import { exportNotesConfig, importNotesConfig } from './notes-config.js';
+import { exportOAuthTokens, importOAuthTokens } from './oauth.js';
 
 /** Everything store.js needs to round-trip the late-arriving stores. */
 export const backupExtras = Object.freeze({
@@ -32,4 +41,8 @@ export const backupExtras = Object.freeze({
   exportWidgets, importWidgets,
   exportJobs, importJobs,
   exportVault, importVault,
+  exportMeetings, importMeetings,
+  exportNotes, importNotes,
+  exportNotesConfig, importNotesConfig,
+  exportOAuthTokens, importOAuthTokens,
 });

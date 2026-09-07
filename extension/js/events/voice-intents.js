@@ -49,8 +49,12 @@ export const DEFAULT_WAKE = Object.freeze(['chatpanel']);
 // the same attempt.
 function slack(len) { return len <= 4 ? 0 : len <= 6 ? 1 : 2; }
 
-// The widest span of spoken tokens that may add up to one wake phrase ("chat" "pan" "ell").
+// The widest span of spoken tokens that may add up to a ONE-WORD wake phrase ("chat" "pan"
+// "ell"). A longer phrase widens its own window — see compileWake.
 const MAX_WAKE_TOKENS = 3;
+// …but never without limit: the scan is O(tokens x window x phrases) over every utterance,
+// and a wake phrase longer than this is a sentence, not a wake phrase.
+const WAKE_TOKEN_CEILING = 8;
 
 // Bounded Levenshtein — returns early once the distance cannot come in under `max`, so a
 // wake scan over a long transcript stays linear in practice.
@@ -107,39 +111,348 @@ export function tokenize(text) {
  * squashed to letters so "chat panel", "ChatPanel" and "chat-panel" are one phrase.
  */
 export function compileWake(words = DEFAULT_WAKE) {
-  const list = (Array.isArray(words) ? words : [words])
-    .map((w) => String(w || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, ''))
-    .filter((w) => w.length >= 3); // shorter than this and ordinary speech trips it constantly
+  // SEVERAL PHRASES, however they arrive. People do not say one fixed thing: "ok chatpanel",
+  // "okay chat panel" and "hey chatpanel" are one intent with three spellings, and asking
+  // someone to pick exactly one is asking them to remember which one they picked.
+  //
+  // A COMMA SEPARATES THEM — "chatpanel, siri, google" is what anyone would write, and any
+  // other separator is a rule to learn. The apparent conflict ("okay, chat panel" is also how
+  // you would write ONE phrase) is not a real one: matching strips punctuation from the
+  // TRANSCRIPT, so a comma is never needed inside a configured phrase to hear one spoken.
+  // Type "okay chat panel" and "okay, chat panel" is heard. `|`, `;` and newlines work too.
+  const raw = (Array.isArray(words) ? words : String(words ?? '').split(/[,|;\n]/))
+    .map((w) => String(w ?? '').trim())
+    .filter(Boolean);
+  const list = [];
+  // The phrases AS TYPED, kept alongside the squashed forms and in the same order. The
+  // squashed form is an implementation detail — "okchatpanel" is neither what the user wrote
+  // nor what they would say — so any UI that echoes the setting back must have the original
+  // to show. Deduped on the squashed form, keeping the first spelling of each.
+  const labels = [];
+  let widest = 1;
+  for (const phrase of raw) {
+    // Punctuation and spacing are stripped, so "ok chat panel", "ok, chat panel" and
+    // "okchatpanel" compile to one and the same thing — which is what makes the setting
+    // forgiving of how it was typed AND of how the transcriber spaced it.
+    const squashed = phrase.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+    if (squashed.length < 3) continue; // shorter than this and ordinary speech trips it constantly
+    if (list.includes(squashed)) continue;
+    list.push(squashed);
+    labels.push(phrase);
+    // The scan joins adjacent spoken tokens looking for the phrase, so its window has to be
+    // at least as wide as the longest phrase is in WORDS — otherwise a three-word wake phrase
+    // could never be found, however it was typed. +1 for a transcriber that splits one of
+    // them ("chat" "pan" "ell").
+    widest = Math.max(widest, phrase.split(/\s+/).filter(Boolean).length + 1);
+  }
   if (!list.length) throw new VoiceIntentError('BAD_WAKE', 'wake word must have at least 3 letters');
-  return Object.freeze({ phrases: Object.freeze(list) });
+  return Object.freeze({
+    phrases: Object.freeze(list),
+    labels: Object.freeze(labels),
+    maxTokens: Math.min(Math.max(widest, MAX_WAKE_TOKENS), WAKE_TOKEN_CEILING),
+  });
 }
 
 /**
- * Find "<wake>, <command>" in one utterance.
+ * How much of what follows the wake word is the command.
  *
- * Returns the command with its ORIGINAL casing, plus which wake phrase matched and where —
- * the host logs the span so a user can see why something fired.
+ * THE 720-HOUR TIMER. One caption held six wake words and 420 characters, and the command was
+ * "everything after the first one to the end of the line". So "Okay, chat panel. Set a timer
+ * for 1 minute" swallowed four later sentences including "…research on the weather for the
+ * next 30 days" — and the duration parser, scanning the whole span, found 30 days. The user
+ * got a 720-hour timer from a request for one minute.
+ *
+ * A spoken command is a sentence, occasionally two ("Set a timer for 30 seconds. Make it
+ * two."). Never a paragraph. Bounded here, and bounded again by the next wake word: a second
+ * address is by definition the end of the first command.
  */
-export function findWakeCommand(text, wake = compileWake()) {
-  const raw = String(text || '');
-  const tokens = tokenize(raw);
-  if (!tokens.length) return null;
+export const MAX_COMMAND_SENTENCES = 2;
+
+/** Where every wake phrase sits in this text, in order. Shared by the singular and plural. */
+function wakeHits(raw, tokens, wake) {
+  const hits = [];
+  const window = wake.maxTokens || MAX_WAKE_TOKENS; // an older compiled wake has no maxTokens
   for (let i = 0; i < tokens.length; i++) {
     let squashed = '';
-    for (let n = 0; n < MAX_WAKE_TOKENS && i + n < tokens.length; n++) {
+    let matched = false;
+    for (let n = 0; n < window && i + n < tokens.length && !matched; n++) {
       squashed += tokens[i + n].w.replace(/[^\p{L}\p{N}]/gu, '');
       for (const phrase of wake.phrases) {
         // A window far from the phrase's length cannot match; skip the distance work.
         if (Math.abs(squashed.length - phrase.length) > slack(phrase.length)) continue;
         if (editDistance(squashed, phrase, slack(phrase.length)) <= slack(phrase.length)) {
-          const end = tokens[i + n].end;
-          const command = stripLeadIn(raw.slice(end));
-          return { command, wake: phrase, heard: raw.slice(tokens[i].start, end), at: tokens[i].start };
+          hits.push({
+            phrase,
+            start: tokens[i].start,
+            end: tokens[i + n].end,
+            addressed: isAddressed(raw, tokens, i, n),
+          });
+          // Skip past the phrase so "chat panel" is one hit, not two overlapping ones.
+          i += n;
+          matched = true;
+          break;
         }
       }
     }
   }
-  return null;
+  return hits;
+}
+
+/**
+ * The first `max` sentences of `text`, or all of it when it has fewer.
+ *
+ * A boundary is terminal punctuation followed by WHITESPACE or the end — not any full stop.
+ * "Go to google.com and search" is one sentence; splitting on the dot in a domain cut a
+ * command down to "Go to google." and sent that. Decimals ("2.5 minutes") and initials break
+ * the same way.
+ */
+function firstSentences(text, max) {
+  const t = String(text || '');
+  if (!t) return t;
+  const re = /[.!?…]+["'\u2019\u201d)\]]*(?=\s|$)/g;
+  let taken = 0;
+  let m;
+  while (taken < max && (m = re.exec(t))) {
+    taken += 1;
+    if (taken === max) return t.slice(0, m.index + m[0].length);
+  }
+  // Fewer sentences than asked for — all of it. A trailing fragment with no terminal
+  // punctuation is still what they said, and must not be silently emptied.
+  return t;
+}
+
+/**
+ * EVERY "<wake>, <command>" in one utterance, in order.
+ *
+ * A live caption often carries a whole minute of speech, and a person addressing an assistant
+ * addresses it more than once in a minute. Returning only the first match meant the other
+ * five requests in the same caption were invisible — and made the first command swallow them.
+ */
+export function findWakeCommands(text, wake = compileWake(), { maxSentences = MAX_COMMAND_SENTENCES } = {}) {
+  const raw = String(text || '');
+  const tokens = tokenize(raw);
+  if (!tokens.length) return [];
+  const hits = wakeHits(raw, tokens, wake);
+  return hits.map((hit, idx) => {
+    // Bounded by the NEXT address, then by sentence count. A second wake word is the end of
+    // the first command however the sentences fall.
+    const stop = idx + 1 < hits.length ? hits[idx + 1].start : raw.length;
+    const span = raw.slice(hit.end, stop);
+    const command = stripLeadIn(firstSentences(span, maxSentences)).trim();
+    return {
+      command,
+      wake: hit.phrase,
+      heard: raw.slice(hit.start, hit.end),
+      at: hit.start,
+      addressed: hit.addressed,
+      // What was said after the command's own sentences, up to the next address. Not part of
+      // the command — kept so a caller refining with a model has the surrounding words.
+      rest: raw.slice(hit.end + span.indexOf(command) + command.length, stop).trim(),
+    };
+  });
+}
+
+/**
+ * Find "<wake>, <command>" in one utterance — the first one.
+ *
+ * Returns the command with its ORIGINAL casing, plus which wake phrase matched and where —
+ * the host logs the span so a user can see why something fired.
+ */
+export function findWakeCommand(text, wake = compileWake(), opts = {}) {
+  return findWakeCommands(text, wake, opts)[0] || null;
+}
+
+/**
+ * The REQUEST inside a spoken utterance — not everything that followed the wake word.
+ *
+ * People do not stop talking when they finish asking. A real capture:
+ *
+ *   "Okay, chat panel. Whenever I do anything or ask any question just to do a research for
+ *    me and get me the answer, okay? All right, so. I want to know how is the weather in
+ *    Fairview today? All right, so we will see. It does anything. Does it get added to?"
+ *
+ * Everything after the wake word became the job's name AND its prompt, so the job was a
+ * paragraph of thinking-aloud with a weather question buried in the middle — which is what
+ * "it didn't separate" means, and why the answer was useless even on the runs that happened.
+ *
+ * What this does, and deliberately no more: split into sentences, drop the ones that are pure
+ * filler, and prefer a QUESTION when one was asked (the LAST one — people circle back, and
+ * the restatement is the version they meant). Everything here is free, deterministic and
+ * reversible. Turning rambling into a good PROMPT is a model's job, and the parser already
+ * says so by returning `needsModel`; this is the FLOOR under that, for when no model is
+ * configured and for the instant before one answers. It is a heuristic over speech and it
+ * will sometimes pick the wrong sentence — that is precisely why the contract asks the host
+ * to pay for a model rather than pretending this is the answer.
+ */
+
+// Sentences carrying no request — verbal punctuation, thinking aloud, or narrating the very
+// experiment being run. Matched WHOLE, so "so we will see" goes and "see if the build passed"
+// stays.
+const FILLER_SENTENCE = new RegExp('^(?:'
+  + "ok(?:ay)?|all ?right|right|so|well|um+|uh+|hmm+|yeah|yep|hey|and|but|then|now"
+  + "|let(?:'s| us) see|we(?:'ll| will) see|so we(?:'ll| will) see"
+  + "|i think it is doing something|it does anything|does it (?:do )?anything"
+  + "|hold on(?: a second)?|one second|let me see|i think|i guess|here we go|there we go"
+  + "|test(?:ing)?"
+  + ')[\\s,.!?]*$', 'i');
+
+const SENTENCE_SPLIT = /(?<=[.!?])\s+/;
+
+/**
+ * True when a sentence is only filler — verbal punctuation rather than a request.
+ *
+ * Checked CLAUSE BY CLAUSE, because people string filler together with commas: "All right,
+ * so we will see." is two fillers in one sentence and matches neither whole. Every clause
+ * must be filler for the sentence to be, so "right after the demo, remind me" survives on the
+ * strength of its first clause even though the second would pass alone.
+ */
+export function isFillerSentence(text) {
+  const t = String(text || '').trim().replace(/^[\s,.:;!?-]+/, '');
+  if (!t) return true;
+  if (FILLER_SENTENCE.test(t)) return true;
+  const clauses = t.split(',').map((c) => c.trim()).filter(Boolean);
+  return clauses.length > 1 && clauses.every((c) => FILLER_SENTENCE.test(c));
+}
+
+/**
+ * @returns { request, name, ambiguous } — the text to act on, a short label for it, and
+ *          whether more than one question was asked (in which case `request` is everything
+ *          meaningful and a model should be asked to pick). Both strings fall back to the
+ *          cleaned original rather than to nothing: a command we could not parse is still a
+ *          command the user gave, and dropping it silently is the worse failure.
+ */
+export function refineSpokenCommand(text, { maxName = 48 } = {}) {
+  const raw = stripLeadIn(String(text || '')).trim();
+  if (!raw) return { request: '', name: '' };
+  const sentences = raw.split(SENTENCE_SPLIT).map((t) => t.trim()).filter(Boolean);
+  const meaningful = sentences.filter((t) => !isFillerSentence(t));
+  // ONE question is the request. SEVERAL is a guess, and this function refuses to make it.
+  //
+  // A real capture contained three: a standing preamble ("whenever I ask anything, research
+  // it for me, okay?"), the actual request ("how is the weather in Fairview today?") and a
+  // meta-question about the tool ("does it get added to?"). Last-wins picks the third,
+  // longest-wins picks the first, and every other rule that fits this sample is a rule fitted
+  // to this sample. Choosing between them needs to understand them — which is a model's job,
+  // and exactly what `needsModel` exists to ask for. So: an unambiguous question is used, and
+  // an ambiguous one is handed on WHOLE with `ambiguous` set, for the caller to refine.
+  const questions = meaningful.filter((t) => /\?\s*$/.test(t));
+  const ambiguous = questions.length > 1;
+  const picked = questions.length === 1
+    ? questions[0]
+    : (meaningful.length ? meaningful.join(' ') : raw);
+  const request = stripLeadIn(picked).trim() || raw;
+  // The name is a label in a list, not the instruction. One line, clipped on a word boundary.
+  const flat = request.replace(/\s+/g, ' ').trim();
+  const name = flat.length > maxName
+    ? `${flat.slice(0, maxName - 1).replace(/\s+\S*$/, '')}…`
+    : flat;
+  return { request, name: name || flat, ambiguous };
+}
+
+/**
+ * Ask a model what was actually being asked — the other half of `needsModel`.
+ *
+ * The parser has always returned `needsModel: true` for a command it did not recognise, with
+ * a comment saying the host "may pay for a small model to read it, and MUST NOT guess". No
+ * host ever did, so an unrecognised spoken request became a job whose name and prompt were
+ * both the entire utterance. refineSpokenCommand() is the free floor under this; when several
+ * questions were asked it declines to choose, and THIS is what chooses.
+ *
+ * Deliberately a tiny, single-shot classification with a strict output shape: it runs on a
+ * fast model while a meeting is happening, so it must cost about as much as one sentence.
+ */
+export function refinementPrompt(utterance) {
+  return [
+    'A person spoke to their assistant during a meeting. Below is everything they said after',
+    'the wake word, transcribed live — so it contains false starts, thinking aloud, and',
+    'sometimes several questions where only one is the request.',
+    '',
+    'Return ONLY a JSON object, no prose and no code fences:',
+    '{"request":"<the one thing they actually want done, in their own words, one sentence>",',
+    ' "name":"<a label of at most 6 words>",',
+    ' "kind":"<question|monitor|note|skill|none>",',
+    ' "skill":"<the skill name, only when kind is skill>"}',
+    '',
+    'Pick the SMALLEST kind that does what they asked:',
+    '  question — answer it once, now. The DEFAULT for anything they want to know.',
+    '  monitor  — only if they asked to be told as the meeting CONTINUES ("let me know if",',
+    '             "keep an eye on"). A one-off question is NOT a monitor.',
+    '  note     — they asked for notes written down ("take notes on", "write that up").',
+    '  skill    — they named a saved skill ("use the summarize skill"); put its name in `skill`.',
+    '  none     — not asking for anything: thinking aloud, or talking ABOUT the assistant.',
+    'Never invent a request that is not there — return "none". Keep `request` close to their',
+    'words; do not answer it.',
+    '',
+    'WHAT THEY SAID:',
+    String(utterance || ''),
+  ].join('\n');
+}
+
+/**
+ * Read the model's answer back, defensively.
+ *
+ * Returns null for anything that is not a usable refinement, so the caller falls back to the
+ * deterministic pass rather than acting on a hallucinated request. A model that wraps its JSON
+ * in a code fence is common enough to handle rather than punish.
+ */
+export function parseRefinement(text) {
+  const raw = String(text || '').trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  let obj;
+  try { obj = JSON.parse(raw.slice(start, end + 1)); } catch { return null; }
+  const request = String(obj?.request || '').trim();
+  // An unknown kind becomes a QUESTION — the least surprising thing to do with something
+  // someone asked for, and the only kind that is undone by ignoring the answer. Guessing
+  // "monitor" instead would leave a card watching the meeting that nobody asked for.
+  const kind = ['question', 'monitor', 'note', 'skill', 'none'].includes(obj?.kind) ? obj.kind : 'question';
+  // "none" is a real answer and the most important one to honour: it is how the model says
+  // "they were just talking", which is the case that produced junk jobs.
+  if (kind === 'none' || !request) return { request: '', name: '', kind: 'none' };
+  const name = String(obj?.name || '').trim() || request;
+  const skill = String(obj?.skill || '').trim().slice(0, 80);
+  // A "skill" with no name is a question — there is nothing to run.
+  const settled = kind === 'skill' && !skill ? 'question' : kind;
+  return { request, name: name.length > 48 ? `${name.slice(0, 47)}…` : name, kind: settled, skill };
+}
+
+/**
+ * Was the assistant SPOKEN TO, or merely spoken about?
+ *
+ * "we should talk about the chat panel roadmap next week" contains the wake word and is not a
+ * command — acting on it is how ordinary conversation quietly set timers. But "Okay, chat
+ * panel. Anytime I ask a question…" is unmistakably addressed, and dropping it is why a
+ * clearly-spoken request did nothing at all.
+ *
+ * The signal that separates them is grammatical and cheap: a wake word used as a NOUN is
+ * introduced by a determiner or preposition ("the chat panel", "about ChatPanel", "our chat
+ * panel"). A wake word used as a VOCATIVE is at the start of what is being said, or follows
+ * an address word ("okay", "hey", "hi"), or follows the end of the previous sentence.
+ *
+ * Wrong sometimes, in both directions — which is exactly why it decides whether to ASK
+ * (needsModel, a visible and reversible monitor) rather than whether to act.
+ */
+const NOUN_MARKERS = /^(?:the|a|an|our|your|their|my|this|that|these|those|about|on|in|of|with|via|using|called|named|to)$/i;
+
+function isAddressed(raw, tokens, i, n = 0) {
+  // The fuzzy match is generous enough to SWALLOW a leading article: "a chat panel" squashes
+  // to "achatpanel", one edit from "chatpanel", so the determiner ends up inside the matched
+  // span instead of before it. Check the first matched token too, or "a chat panel would be
+  // useful here" reads as an address purely because the "a" was absorbed.
+  if (n > 0 && NOUN_MARKERS.test(String(tokens[i].w || '').replace(/[^\p{L}\p{N}]/gu, ''))) return false;
+  if (i === 0) return true; // nothing before it — it opens the utterance
+  const prev = tokens[i - 1];
+  const word = String(prev.w || '').replace(/[^\p{L}\p{N}]/gu, '');
+  if (NOUN_MARKERS.test(word)) return false; // "the chat panel" — a thing, not a listener
+  // Punctuation before it is the vocative comma or a sentence break — "…here. Okay, chat
+  // panel", "so I was thinking. ChatPanel, what did we decide?" — and both mean a fresh
+  // address rather than a continuing noun phrase. Measured from the previous token's START,
+  // because the tokenizer keeps trailing punctuation ON the token ("thinking."), so the gap
+  // between tokens is only the space and the full stop would be missed.
+  if (/[.!?,;:]["')\]]?\s*$/.test(raw.slice(prev.start, tokens[i].start))) return true;
+  // "hey chatpanel", "ok chatpanel" — an address word is the other way people open one.
+  return /^(?:ok|okay|hey|hi|yo|hello|so|um|uh)$/i.test(word);
 }
 
 // "chatpanel, could you please set a timer" — politeness is not part of the command, and
@@ -598,12 +911,18 @@ export function parseCommand(text, { wake = compileWake(), intents = defaultVoic
   if (!found) return null;
   const parsed = intents.parse(found.command, { now });
   if (!parsed) return null;
-  return { ...parsed, wake: found.wake, heard: found.heard, at: found.at };
+  return { ...parsed, wake: found.wake, heard: found.heard, at: found.at, addressed: found.addressed !== false };
 }
 
 // ---------------------------------------------------------------------------
 // Transcript → commands
 // ---------------------------------------------------------------------------
+
+// Has the speaker stopped? Terminal punctuation, optionally inside a closing quote. Stricter
+// than utteranceLooksComplete (which defaults TRUE because speech-to-text often has no
+// punctuation at all): here a false positive costs an unwanted action, so the burden of proof
+// is the other way round.
+const endsSentence = (text) => /[.!?…]["'\u2019\u201d)\]]*\s*$/.test(String(text || '').trim());
 
 /** How many commands one transcript delta may produce. */
 export const MAX_COMMANDS_PER_DELTA = 3;
@@ -632,17 +951,46 @@ export function commandsFromSegments(segments, {
   for (const seg of segments || []) {
     if (!seg || !seg.text) continue;
     if (seg.t && seg.t <= sinceTs) continue;
-    const parsed = parseCommand(seg.text, { wake, intents, now });
+    // EVERY address in this caption, not just the first. A live caption carries a minute of
+    // speech, and a person addressing an assistant addresses it more than once in a minute —
+    // "…set a timer for 1 minute. Okay chat panel, go and search…" is two commands. Taking
+    // only the first also made that first command swallow the rest, which is how a one-minute
+    // timer became 720 hours: the duration parser found "30 days" four sentences later.
+    for (const found of findWakeCommands(seg.text, wake)) {
+    if (!found.command) continue; // a bare mention with nothing after it
+    const intent = intents.parse(found.command, { now });
+    // `rest` rides along: the deterministic intents parse only the tight span (that is what
+    // stops a duration being found four sentences away), but a MODEL asked to read an
+    // unrecognised request should see the words around it — the question often follows a
+    // sentence of preamble. Parse narrow, refine wide.
+    const parsed = intent && {
+      ...intent, wake: found.wake, heard: found.heard, at: found.at,
+      addressed: found.addressed, rest: found.rest,
+    };
     if (!parsed) continue;
-    // NO INTENT, NO ACTION. parseCommand returns a shape for anything that carries the wake
-    // word and a time-ish phrase, intent included or not — so "we should talk about the chat
-    // panel roadmap next week" came back as a command with intent:null and the caller acted
-    // on it anyway. In a live meeting that means ordinary conversation quietly sets timers,
-    // which is what happened: a caption grows, keeps matching, and fires again.
+    // MENTIONED vs ADDRESSED — and this guard used to conflate them.
     //
-    // An automation that runs when it did not understand the request is worse than one that
-    // does nothing, so an unrecognised utterance stops here.
-    if (!parsed.intent) continue;
+    // parseCommand returns a shape for anything carrying the wake word, intent or not, so
+    // "we should talk about the chat panel roadmap next week" came back as a command and the
+    // caller acted on it: ordinary conversation quietly setting timers. Dropping every
+    // intentless utterance fixed that, and broke the opposite case just as badly — "Okay,
+    // chat panel. How is the weather in Lakeside?" is unmistakably a request, matches no
+    // built-in intent (there is no weather intent, and there should not be), and was
+    // discarded here. Nothing downstream ever saw it, which is why `needsModel` had no
+    // handler: it could not reach one.
+    //
+    // So the test is whether the assistant was SPOKEN TO. A passing mention still stops here.
+    // An address with no matching intent goes on with needsModel set, for a model to read —
+    // which is what the parser has always said should happen.
+    //
+    // …but ONLY once the sentence has actually ended. A live caption is rescanned as it grows,
+    // and an unrecognised command has no intent in its dedupe key to distinguish it from the
+    // recognised one the same utterance is about to become: "ChatPanel, set a timer" would go
+    // out as needsModel, and "…for 10 minutes" as a timer a moment later — one thing said,
+    // two things done. Terminal punctuation is the only signal available here that the
+    // speaker has stopped, and it is deliberately strict: a request that is never punctuated
+    // is a request this path declines, which is the safe direction.
+    if (!parsed.intent && (!parsed.addressed || !endsSentence(seg.text))) continue;
     const allowed = isSelf ? !!isSelf(seg.speaker) : false;
     out.push({
       ...parsed,
@@ -664,9 +1012,15 @@ export function commandsFromSegments(segments, {
       // one spoken request look like a new request on every update, and a single "set a timer
       // for 30 seconds" became a screenful of timers. `sid` is assigned once per utterance and
       // never moves, so the same sentence keeps one key however many times it is rescanned.
-      key: `voice:${meetingId}:${seg.sid || seg.t || 0}:${parsed.intent || 'unknown'}:${parsed.ms ?? parsed.when ?? ''}`,
+      // `at` is the wake word's CHARACTER OFFSET in this caption. It distinguishes the
+      // several commands one utterance can hold, and it is stable as the caption grows —
+      // text is appended, so an earlier offset never moves. Without it two commands in one
+      // breath collapse onto one key and the second is silently deduped away.
+      key: `voice:${meetingId}:${seg.sid || seg.t || 0}:${parsed.at}:${parsed.intent || 'unknown'}:${parsed.ms ?? parsed.when ?? ''}`,
     });
     if (out.length >= max) break; // a pathological transcript cannot fire fifty actions
+    }
+    if (out.length >= max) break;
   }
   return out;
 }

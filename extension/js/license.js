@@ -186,15 +186,46 @@ export function freeEndpointId(settings) {
   const eps = settings.endpoints || [];
   const saved = settings.freeEndpointId;
   if (saved && eps.some((e) => e.id === saved)) return saved;
-  return eps[0]?.id || null;
+  // An endpoint with no model chosen cannot answer, so it is the worst possible thing to
+  // hand someone as their one unlocked model. Prefer any endpoint that can.
+  return eps.find((e) => e.enabled !== false && e.model)?.id || eps[0]?.id || null;
 }
+/**
+ * The one local CLI agent a Free user has unlocked.
+ *
+ * DELIBERATELY INDEPENDENT OF BRIDGE HEALTH. It would be tempting to answer "whichever is
+ * installed" here, but canUseAgent() is built on this, so a health-dependent answer would
+ * make a target usable one second and locked the next as /health came and went — the UI
+ * would flicker and a running turn could lose its licence mid-stream. So this stays a pure
+ * function of settings, and the ADOPTION of an available agent into an empty slot is a
+ * one-time settings write the panel makes once it knows what is installed.
+ *
+ * Free is one API provider and one CLI agent — the user's pick of each, never ours.
+ */
 export function freeAgentId(settings) {
   // Custom "bring your own" agents require Pro, so they are never the single
   // free agent slot — only built-in bridge CLIs are eligible.
   const bridge = (settings.agents || []).filter((a) => a.kind === 'bridge' && a.bridgeAgent !== 'custom');
   const saved = settings.freeAgentId;
   if (saved && bridge.some((a) => a.id === saved)) return saved;
-  return bridge[0]?.id || null;
+  return bridge.find((a) => a.enabled !== false)?.id || bridge[0]?.id || null;
+}
+
+/**
+ * Which agent should claim an UNCLAIMED free slot, now that we know what is installed.
+ *
+ * Returns an id to persist, or '' to leave things alone. Only ever fills an EMPTY slot: a
+ * slot the user has set is their choice, and a choice does not get revised because a CLI
+ * happened to be offline when the panel opened.
+ *
+ * @param bridgeAgents the `agents` array from the bridge's /health
+ */
+export function freeAgentToAdopt(settings, bridgeAgents) {
+  if (settings?.freeAgentId) return '';            // already claimed — the user's, not ours
+  if (!Array.isArray(bridgeAgents) || !bridgeAgents.length) return ''; // nothing known yet
+  const bridge = (settings?.agents || []).filter((a) => a.kind === 'bridge' && a.bridgeAgent !== 'custom' && a.enabled !== false);
+  const present = bridge.find((a) => bridgeAgents.some((h) => h.id === a.bridgeAgent && h.available !== false));
+  return present?.id || '';
 }
 
 // Can the current plan actually *use* this target (endpoint or bridge agent)?

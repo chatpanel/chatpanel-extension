@@ -21,6 +21,10 @@ import {
   BUILTIN_TRIGGERS, timerTrigger, nextFireAt, utteranceLooksComplete,
   coalesceMatches, matchTexts, matchSummary, clipText,
 } from './events/schedule.js';
+// NOT imported here: js/events/voice-intents.js is 37 KB and this module is on the SERVICE
+// WORKER's static graph, which cannot defer anything. A spoken job's name is refined by the
+// panel before it reaches jobFromCommand — the panel has the voice vocabulary loaded already,
+// because it is what heard the command.
 
 export const JOBS_KEY = 'chatpanel:jobs';        // id -> job
 export const RUNS_KEY = 'chatpanel:jobRuns';     // id -> last OCCURRENCE run (not wake time)
@@ -327,9 +331,13 @@ export function jobFromCommand(cmd, { now = Date.now() } = {}) {
     const schedule = cmd.args.recurrence
       ? { ...cmd.args.recurrence }
       : { kind: 'once', at: cmd.args.at };
+    // `target` is expected to arrive REFINED (see the panel's voice:schedule binding): the
+    // request that was asked, not the whole utterance around it. A job named "anything or ask
+    // any question just to do a research for me, okay? All right, so…" is one nobody can find,
+    // read or confirm — and it was the prompt as well.
     return {
       id: uid(),
-      name: cmd.args.target,
+      name: clipText(cmd.args.target, 48),
       trigger: timerTrigger.id,
       schedule,
       action: { kind: 'prompt', text: cmd.args.target },

@@ -449,7 +449,16 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .ghost-hint.hidden { display: none; }
 
 /* Swarm team panel — the model router made visible: role → appointed model + override. */
-.swarm-menu { right: 0; left: auto; min-width: 272px; padding: 7px; }
+/* The team panel is the tallest menu in the app — a gear pair, a goal field, three
+   proactivity switches, four role rows with model pickers, a spend meter and a hint. It had
+   no ceiling, so on a short screen the bottom of it (the roles, the meter) was simply off the
+   viewport with no way to reach it: the panel was reported as "not visible". Cap it against
+   the viewport and let it scroll inside itself. overscroll-behavior stops that scroll from
+   continuing into the note underneath once it bottoms out. */
+.swarm-menu {
+  right: 0; left: auto; min-width: 272px; max-width: min(340px, calc(100vw - 24px)); padding: 7px;
+  max-height: min(72vh, 620px); overflow-y: auto; overscroll-behavior: contain;
+}
 .swarm-title { font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); padding: 3px 6px 7px; }
 .swarm-row { padding: 7px 6px; border-radius: 9px; }
 .swarm-row:hover { background: var(--field); }
@@ -490,9 +499,26 @@ mark { background: rgba(245, 200, 66, .35); color: inherit; border-radius: 3px; 
 .rcard-answer.alt { border-color: var(--border-strong); background: var(--card); color: var(--text); }
 .rcard-answer.alt:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-weak); }
 .swarm-gear { display: flex; gap: 4px; padding: 2px 6px 8px; }
-.sg-opt { flex: 1; font: inherit; font-size: 12px; cursor: pointer; border: 1px solid var(--border-strong); background: var(--card); color: var(--muted); border-radius: 8px; padding: 5px 8px; }
-.sg-opt:hover { border-color: var(--accent); color: var(--text); }
-.sg-opt.on { border-color: var(--accent); background: var(--accent-weak); color: var(--accent); font-weight: 600; }
+/* Each gear names its behaviour on two lines — "Ambient" alone said nothing about whether
+   the thing writes for you, which is the only question that matters here. */
+.sg-opt {
+  flex: 1; font: inherit; font-size: 12px; cursor: pointer; text-align: left;
+  border: 1px solid var(--border-strong); background: var(--card); color: var(--muted);
+  border-radius: 8px; padding: 6px 9px;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.sg-opt b { font-size: 12px; font-weight: 600; color: var(--text); }
+.sg-opt span { font-size: 10.5px; color: var(--muted); }
+.sg-opt:hover { border-color: var(--accent); }
+.sg-opt.on { border-color: var(--accent); background: var(--accent-weak); }
+.sg-opt.on b, .sg-opt.on span { color: var(--accent); }
+/* The full sentence for whichever gear is selected — the tooltip these replaced was on a
+   control people click rather than hover. */
+.swarm-gear-note {
+  margin: 0 6px 8px; padding: 7px 9px; border-radius: 8px;
+  background: var(--field); border: 1px solid var(--border);
+  font-size: 11.5px; line-height: 1.45; color: var(--muted);
+}
 .ss-focus { color: #b4530a; font-weight: 700; }
 .cw-factcheck { border-color: #e0a43a; }
 .cw-factcheck b, .cw-factcheck { color: #b4530a; }

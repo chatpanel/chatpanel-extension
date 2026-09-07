@@ -22,33 +22,38 @@ const extDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url
 
 // KB. Ceilings, not targets — every one of these is above what the tree costs today.
 const BUDGET = {
-  // Chat first: providers.js and the turn harness behind it (169 KB) load on the first turn,
-  // not to paint the box. Tightened the moment that landed — the ratchet only turns one way.
+  // Every one of these is a CEILING a few KB above what the tree costs today, so the next
+  // addition has to be argued for rather than absorbed. A budget going UP needs a reason in
+  // the commit message; a budget going DOWN is tightened here in the same change.
   //
-  // 770 → 776 for the shared tag vocabulary (js/events/tags.js, 8.6 KB), reached through
-  // store.js / store-meetings.js — both boot dependencies, and both WRITERS, which is
-  // where a tag has to be normalized. See the background.js note: it is the same 8.6 KB,
-  // for the same reason, and it is the only part of tagging that lands on a boot path.
-  // Everything else the feature added is deferred: the chip/filter control (tag-bar.js),
-  // the inline rename (editable-title.js), the naming ladder (events/titles.js) and the
-  // panel's glue for all three (meeting-labels.js) are `await import()`ed at their call
-  // sites and appear in no entry point's static graph — test-tag-ui.mjs asserts that.
-  'sidepanel.js': 776,
-  'settings.js': 1120,
-  'notes.js': 910,
-  // The worker is the one that regressed. It carries jobs, warm sync and unattended backup
-  // because a worker cannot reach a module it did not import statically, and all three were
-  // silently dead before. This ceiling is deliberately close to today's cost so the next
-  // addition has to be argued for rather than absorbed.
-  //
-  // 500 → 506 for the shared tag vocabulary (js/events/tags.js, 8.6 KB). Tags are
-  // normalized at WRITE time — one canonical form, or "#Design Review" on a note and
-  // `tag:design-review` on a meeting stop being the same tag — and the worker is a writer
-  // (meeting capture, capture-to-Inbox, the note tools). A worker cannot dynamic-import,
-  // so this one cannot be deferred. The 13 KB naming ladder that came with the same
-  // feature IS deferred: it lives behind js/meeting-autotitle.js and reaches no entry
-  // point's static graph.
-  'background.js': 506,
+  // 809 → 768. Two things left the panel's first paint in one pass:
+  //   • `checkBridge` moved to js/bridge-health.js, so init() no longer dynamically imports
+  //     the 382 KB model layer to read one localhost JSON (see NOT_ON_BOOT below);
+  //   • meetings, notes, the Notes config and the OAuth sign-ins moved out of store.js and
+  //     behind js/backup-payload.js — 42.6 KB of stores that only a backup calls, on the
+  //     graph of every page that reads a setting.
+  // 768 → 776 for js/monitor-profile.js (~6 KB, no imports). It decides what a monitor turn
+  // assembles, so it has to be resolved before the first one runs — and it is a net REMOVAL
+  // at run time: the lean default builds no toolset at all, where every monitor tick used to
+  // assemble the full chat toolset (web search, history RAG, every MCP server) and put every
+  // one of those schemas in the prompt.
+  'sidepanel.js': 783,
+  // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
+  // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
+  // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one
+  // that touches a dozen call sites and belongs in its own change rather than this one.
+  'settings.js': 1163,
+  // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
+  // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
+  // Notes, including everyone who never turns Live mode on. Every function it provided was
+  // already guarded by the CM editor being mounted, and mounting it dynamically imports
+  // notes-regions anyway.
+  'notes.js': 415,
+  // The worker is the one entry point that CANNOT defer anything: `import()` throws on
+  // ServiceWorkerGlobalScope, so every module it may ever need is static. It therefore keeps
+  // the backup stores the pages just shed — js/backup-payload.js imports them for it — and
+  // this ceiling sits deliberately close to today's cost.
+  'background.js': 525,
 };
 
 function staticGraph(entry) {
@@ -101,6 +106,17 @@ const OFF_LIMITS = {
   'js/bridge-update.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/channels.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/backup-payload.js': ['sidepanel.js', 'notes.js', 'settings.js'], // the worker needs it; no document does
+  // The sub-tab bar renders after the panel does, and only one panel is ever on screen. It
+  // must stay behind an import() at its call site rather than becoming settings' problem.
+  'js/subtabs.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  // A widget is a sandboxed iframe and a store read. Neither belongs on any first paint —
+  // the side panel mounts them from its drawer, settings from its tab, both on demand.
+  'js/widget-host.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/widgets-store.js': ['sidepanel.js', 'notes.js', 'settings.js'],
+  // Live mode is opt-in and CodeMirror is 495 KB. Notes must paint without it; it arrives
+  // with js/editor-cm.js when someone actually switches Live on.
+  'js/vendor/codemirror.js': ['notes.js', 'sidepanel.js', 'settings.js', 'background.js'],
+  'js/notes-regions.js': ['notes.js'],
 };
 for (const [mod, entries] of Object.entries(OFF_LIMITS)) {
   for (const entry of entries) {
@@ -108,6 +124,75 @@ for (const [mod, entries] of Object.entries(OFF_LIMITS)) {
       `${mod} is statically reachable from ${entry}. It is only needed on a user action — `
       + 'import it at the call site so it costs nothing until then.');
   }
+}
+
+// ---------------------------------------------------------------------------
+// THE BLIND SPOT. Everything above follows STATIC imports only, which is right — a dynamic
+// import is exactly what keeps weight off the number. But it means the check cannot see an
+// `await import()` that boot itself performs, and that is not a hypothetical gap:
+//
+//   init() → refreshBridge() → await import('./js/providers.js')
+//
+// ran on every panel open and pulled 382 KB across 25 modules onto the boot path, to read one
+// JSON object from localhost. The budget read 769 KB and passed; the panel loaded 939 KB. A
+// deferral undone at boot is not a deferral, and the test that guards the deferral has to be
+// able to say so.
+//
+// So: follow init()'s own dynamic imports, and those of the functions it calls by name —
+// one level, which is the shape the regression actually takes.
+// ---------------------------------------------------------------------------
+
+/** The body of `function name(...)` / `async function name(...)`, brace-matched. */
+function fnBody(src, name) {
+  const m = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(src);
+  if (!m) return '';
+  const open = src.indexOf('{', m.index);
+  if (open < 0) return '';
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth += 1;
+    else if (src[i] === '}' && --depth === 0) return src.slice(open, i + 1);
+  }
+  return '';
+}
+
+const dynamicSpecs = (body) => [...body.matchAll(/import\(\s*['"](\.[^'"]+)['"]/g)].map((m) => m[1]);
+
+/** Modules an entry point pulls in DYNAMICALLY while booting, resolved to repo-relative paths. */
+function bootDynamicImports(entry) {
+  const src = readFileSync(path.join(extDir, entry), 'utf8');
+  const init = fnBody(src, 'init');
+  if (!init) return new Set();
+  const specs = new Set(dynamicSpecs(init));
+  // …and one level out: a function init calls, whose import lands just as early.
+  for (const [, callee] of init.matchAll(/(?:^|[\s;{}=(])([a-zA-Z_$][\w$]*)\s*\(/g)) {
+    const body = fnBody(src, callee);
+    if (body) for (const spec of dynamicSpecs(body)) specs.add(spec);
+  }
+  const dir = path.dirname(path.join(extDir, entry));
+  return new Set([...specs].map((spec) =>
+    path.relative(extDir, path.resolve(dir, spec)).split(path.sep).join('/')));
+}
+
+// Reached from boot, however it is imported. Being behind an `await import()` is not an
+// excuse when boot is what awaits it.
+const NOT_ON_BOOT = {
+  'sidepanel.js': ['js/providers.js'],
+};
+for (const [entry, mods] of Object.entries(NOT_ON_BOOT)) {
+  const boot = bootDynamicImports(entry);
+  for (const mod of mods) {
+    assert.ok(!boot.has(mod),
+      `${entry} dynamically imports ${mod} on its boot path (init(), or something init calls).\n`
+      + '  Deferring a module and then loading it during boot costs MORE than a static import,\n'
+      + '  not less: the same bytes, plus a round trip, and the budget above cannot see it.\n'
+      + '  Move what boot needs into a small module of its own — see js/bridge-health.js.');
+  }
+  // The saving is the point, so state it. A future reader can see what boot really costs.
+  const bootGraph = new Set(staticGraph(entry));
+  for (const mod of boot) for (const f of staticGraph(mod)) bootGraph.add(f);
+  report.push(`  ${(entry + ' +boot').padEnd(15)} ${kb(bootGraph).toFixed(1).padStart(7)} KB `
+    + `/    — KB  (${bootGraph.size} modules, incl. idle-deferred)`);
 }
 
 console.log('first-paint budgets:\n' + report.join('\n'));

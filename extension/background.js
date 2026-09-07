@@ -28,6 +28,9 @@ import * as memoryStore from './js/store-memory.js';
 // The backup's late stores. auto-backup.js takes them as an argument rather than importing
 // them, because it is also on the settings page's first paint — see js/backup-payload.js.
 import { backupExtras } from './js/backup-payload.js';
+// The worker has no audio API at all, so a timer sounds through the offscreen document.
+// Dependency-free and static, for the reason above. See js/offscreen-host.js.
+import { playAlertViaOffscreen } from './js/offscreen-host.js';
 
 const REVALIDATE_ALARM = 'chatpanel-revalidate-license';
 const WARM_SYNC_ALARM = 'chatpanel-warm-sync';   // coalesced background push of history → local gateway
@@ -367,6 +370,16 @@ async function runDueJobs() {
 async function deliverNotify(job, at) {
   const title = job.action.title || job.name || 'ChatPanel';
   const body = job.action.body || '';
+  // SOUND FIRST, and independently of the notification.
+  //
+  // A timer that finishes silently is a timer that did not go off — and a notification is a
+  // thing you SEE, which is no use for the one feature whose whole point is telling you about
+  // something while you are looking elsewhere. Chrome's own notifications arrive silent often
+  // enough (Focus Assist, per-app settings, an OS that just does not chime) that "the system
+  // will make the noise" was never a plan. Unawaited: the alert must never delay or gate the
+  // notification, and a machine with no audio output still gets its reminder.
+  soundAlert(job).catch(() => {});
+  let how = 'badge';
   try {
     if (chrome.notifications?.create) {
       await chrome.notifications.create(`cp-job-${job.id}-${at}`, {
@@ -375,11 +388,50 @@ async function deliverNotify(job, at) {
         // away from the screen — that is the entire job.
         requireInteraction: job.action.kind === 'notify' && !!job.action.sticky,
       });
-      return;
+      how = 'notification';
+    } else {
+      flashBadge('⏰', '#dc2626');
     }
-  } catch { /* fall through to the badge */ }
-  flashBadge('⏰', '#dc2626');
-  chrome.runtime.sendMessage({ type: 'CP_JOB_FIRED', title, body }).catch(() => {});
+  } catch {
+    flashBadge('⏰', '#dc2626'); // notifications refused (permission, OS policy) — still say something
+  }
+  // ALWAYS, not only when the notification could not be delivered.
+  //
+  // These two lines used to sit after a `return` in the success path, so a timer that fired
+  // normally left NO trace anywhere in ChatPanel: no toast in an open panel, and nothing in
+  // the job's own history — which is the pane a person opens to ask "did it run?". The OS
+  // notification was the entire record, and it disappears when you dismiss it. Reported,
+  // exactly, as "I saw a notification but nothing happened in ChatPanel".
+  chrome.runtime.sendMessage({ type: 'CP_JOB_FIRED', jobId: job.id, title, body, how })
+    .catch(() => { /* no panel open — the log below is the record */ });
+  await jobs.logRun(job.id, {
+    ok: true,
+    why: job.action.kind === 'notify' ? 'timer' : job.action.kind,
+    note: body ? `${title} — ${body}` : title,
+  });
+}
+
+/**
+ * Make the noise, from a worker that has no audio API of its own.
+ *
+ * The service worker cannot play a sound — `AudioContext` does not exist there — so this goes
+ * through the offscreen document, which is also where the in-browser model runs. Opening that
+ * document used to cost 6.3 MB (it loaded the model runtime eagerly); it now loads a router
+ * that imports the ~3 KB chime and nothing else. See js/offscreen-host.js.
+ *
+ * Off is a real choice, so it is checked here rather than assumed: a shared office is exactly
+ * where a chiming browser is unwelcome.
+ */
+async function soundAlert(job) {
+  let ui;
+  try { ui = (await getSettings())?.ui; } catch { ui = null; }
+  if (ui?.alertSound === false) return;
+  // STATIC (see the note at the top of this file) — `import()` throws in a service worker,
+  // so a lazily-imported alert would be an alert that never sounds. offscreen-host.js is
+  // ~2.5 KB and imports nothing; the chime itself IS lazy, loaded inside the offscreen
+  // document, which is a page and may import freely.
+  // A reminder marked sticky is one the user said they must not miss — sound it twice.
+  await playAlertViaOffscreen({ repeat: job?.action?.sticky ? 2 : 1 });
 }
 
 // A reminder you cannot act on is half a reminder: clicking it opens the panel, where the

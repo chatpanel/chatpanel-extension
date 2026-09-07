@@ -22,7 +22,12 @@ function injectStyles() {
   .cp-confirm-ic{flex:none;width:34px;height:34px;border-radius:9px;display:grid;place-items:center;background:color-mix(in srgb,var(--danger,#dc2626) 15%,transparent);color:var(--danger,#dc2626)}
   .cp-confirm-ic svg{width:18px;height:18px}
   .cp-confirm-title{font-weight:650;font-size:14.5px}
-  .cp-confirm-body{opacity:.82;margin:0 0 16px;word-break:break-word}
+  .cp-confirm-body{opacity:.82;margin:0 0 16px;word-break:break-word;max-height:38vh;overflow-y:auto}
+  .cp-confirm-title{overflow-wrap:anywhere}
+  .cp-confirm-card{max-height:86vh;overflow-y:auto}
+  /* The buttons must stay reachable no matter what the body does — a confirm you cannot
+     click is worse than no confirm at all. */
+  .cp-confirm-row{position:sticky;bottom:0;background:inherit;padding-top:2px}
   .cp-confirm-row{display:flex;gap:8px;justify-content:flex-end}
   .cp-confirm-btn{cursor:pointer;border-radius:9px;padding:8px 14px;font:inherit;font-weight:600;border:1px solid transparent}
   .cp-confirm-cancel{background:transparent;color:inherit;border-color:var(--border,#33363d)}
@@ -45,6 +50,25 @@ function injectStyles() {
 // Trash icon (inline so the modal has no icon-system dependency and paints instantly).
 const TRASH_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>';
 
+/**
+ * A dialog is never sized by the thing it is asking about.
+ *
+ * Callers name what is being deleted — "“{title}” will be deleted" — and a chat's title can be
+ * the first thing someone dictated into it, which is as long as they kept talking. One of
+ * those filled the entire side panel with a wall of transcript and buried the two buttons
+ * off-screen, so the only way out of "are you sure?" was to guess.
+ *
+ * Clamped HERE rather than at each call site: there are a dozen of them, they all interpolate
+ * something a user typed, and the next one added will not remember. The CSS cap below is the
+ * second line of defence for a long unbroken string that no character count can shorten.
+ */
+const clamp = (text, max) => {
+  const t = String(text ?? '').replace(/\s+/g, ' ').trim();
+  return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
+};
+const MAX_TITLE = 80;
+const MAX_BODY = 220;
+
 // Resolve true only on an explicit confirm. `icon` accepts inline SVG markup (defaults to a
 // trash glyph). Pass `confirmLabel` for the danger button (e.g. 'Delete' | 'Reset' | 'Clear').
 export function confirmDelete({ title = 'Delete?', body = '', confirmLabel = 'Delete', icon = TRASH_ICON } = {}) {
@@ -65,14 +89,17 @@ export function confirmDelete({ title = 'Delete?', body = '', confirmLabel = 'De
     ic.innerHTML = icon;
     const t = document.createElement('div');
     t.className = 'cp-confirm-title';
-    t.textContent = title;
+    t.textContent = clamp(title, MAX_TITLE) || 'Delete?';
     head.append(ic, t);
     card.append(head);
 
-    if (body) {
+    const bodyText = clamp(body, MAX_BODY);
+    if (bodyText) {
       const b = document.createElement('div');
       b.className = 'cp-confirm-body';
-      b.textContent = body;
+      b.textContent = bodyText;
+      // The full text stays reachable on hover for the rare case where the tail mattered.
+      if (bodyText !== String(body ?? '').trim()) b.title = String(body);
       card.append(b);
     }
 

@@ -123,10 +123,126 @@ async function init() {
   renderLicense();
   wireGateway();
   renderGateway();
+  // After renderGateway, so the bar knows on its first paint which tabs the gateway's
+  // connection state actually makes available.
+  wireAllSubtabs();
   wireChannels(); // rendering is lazy (on tab open); binding is not, so no button is ever dead
   wireUsage();
   refreshBridgeState();
   loadMcpRegistry({ reset: true });
+}
+
+// --------------------------------------------------------------------------
+// Widgets — every small thing the model built and the user kept, on one page.
+//
+// They existed only behind a side-panel drawer that shows one at a time, so there was no
+// answer to "what do I actually have?". Here they are all mounted and RUNNING: a widget you
+// can see working is the only honest way to show what it is, and a screenshot of a timer is
+// not a timer.
+//
+// Everything about the trust boundary is unchanged — mountWidget puts each one in the same
+// opaque-origin sandbox as anywhere else, and `invokeCapability` is deliberately NOT supplied
+// here, so a granted capability call fails on this page rather than running unattended in a
+// settings tab the user is only browsing. See js/widget-host.js.
+// --------------------------------------------------------------------------
+let widgetMounts = [];
+
+async function renderWidgetsGallery() {
+  const host = $('wg-gallery');
+  const empty = $('wg-empty');
+  if (!host) return;
+  // Tear down the previous mounts before re-rendering: an iframe left running is a widget's
+  // timers still ticking in a page nobody is looking at.
+  for (const m of widgetMounts) { try { m.destroy?.(); } catch { /* already gone */ } }
+  widgetMounts = [];
+  host.replaceChildren();
+
+  const [{ listWidgets, deleteWidget, pinWidget }, { mountWidget }] = await Promise.all([
+    import('./js/widgets-store.js'),
+    import('./js/widget-host.js'),
+  ]);
+  const all = await listWidgets();
+  empty?.classList.toggle('hidden', all.length > 0);
+  if (!all.length) return;
+
+  for (const rec of all) {
+    const m = rec.manifest || {};
+    const card = document.createElement('div');
+    card.className = 'widget-tile';
+
+    const head = document.createElement('div');
+    head.className = 'widget-tile-head';
+    const name = document.createElement('b');
+    name.textContent = m.name || 'Untitled widget';
+    const actions = document.createElement('div');
+    actions.className = 'widget-tile-actions';
+
+    const pin = document.createElement('button');
+    pin.type = 'button';
+    pin.className = 'btn ghost' + (rec.pinned ? ' active' : '');
+    pin.textContent = rec.pinned ? '★ Pinned' : '☆ Pin';
+    pin.title = rec.pinned ? 'Remove from the side-panel rail' : 'Put this on the side-panel rail';
+    pin.onclick = async () => { await pinWidget(m.id, !rec.pinned); renderWidgetsGallery(); };
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'btn ghost danger';
+    del.textContent = 'Delete';
+    del.onclick = async () => {
+      const { confirmDelete } = await import('./js/confirm-modal.js');
+      if (!(await confirmDelete({
+        title: `Delete “${m.name || 'this widget'}”?`,
+        body: 'Its saved state goes with it. This cannot be undone.',
+      }))) return;
+      await deleteWidget(m.id);
+      renderWidgetsGallery();
+    };
+    actions.append(pin, del);
+    head.append(name, actions);
+    card.appendChild(head);
+
+    if (m.description) {
+      const desc = document.createElement('p');
+      desc.className = 'muted tiny widget-tile-desc';
+      desc.textContent = m.description;
+      card.appendChild(desc);
+    }
+
+    // What it was allowed to reach. Shown as plain words rather than hidden behind a
+    // details: "what can this thing do" is the question a gallery has to answer on sight.
+    const grants = Array.isArray(rec.grants) ? rec.grants : [];
+    const badges = document.createElement('div');
+    badges.className = 'widget-tile-grants';
+    if (grants.length) {
+      for (const g of grants) {
+        const b = document.createElement('span');
+        b.className = 'widget-grant';
+        b.textContent = g;
+        badges.appendChild(b);
+      }
+    } else {
+      const b = document.createElement('span');
+      b.className = 'widget-grant none';
+      b.textContent = 'no access to your data';
+      badges.appendChild(b);
+    }
+    card.appendChild(badges);
+
+    const stage = document.createElement('div');
+    stage.className = 'widget-tile-stage';
+    card.appendChild(stage);
+    // Chromium-only by construction: the sandbox page ships only where manifest sandbox
+    // pages exist, and mountWidget returns null rather than rendering a broken frame.
+    const mounted = mountWidget(stage, rec);
+    if (mounted) widgetMounts.push(mounted);
+    else {
+      const note = document.createElement('p');
+      note.className = 'muted tiny';
+      note.textContent = 'Widgets need a sandbox page, which this browser build does not ship.';
+      stage.appendChild(note);
+    }
+    host.appendChild(card);
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -147,6 +263,9 @@ function wireTabs() {
     // actually shown, so a user who never opens Activity never pays for it.
     if (name === 'activity') { renderObservability(); renderUsage(); renderActivity(); }
     if (name === 'plugins') { renderPlugins(); loadRoutingForm(); renderRouting(); renderRoutingModels(); }
+    // Same lazy rule: each widget is a sandboxed iframe, so a user who never opens this tab
+    // never mounts one.
+    if (name === 'widgets') renderWidgetsGallery();
     if (name === 'channels') renderChannels();
   };
   const exists = (name) => !!document.querySelector(`.tab[data-tab="${name}"]`);
@@ -219,6 +338,105 @@ const TAB_ALIAS = {
   gateway: { tab: 'privacy', section: 'pv-gateway' },
 };
 
+/**
+ * Every panel that is more than one thing, as a bar instead of a scroll.
+ *
+ * The rule, and the reason a couple of panels are absent from this table: a bar is only worth
+ * its own row of chrome when there is somewhere to go. API and Channels are a single card
+ * each, so a one-tab bar there would be decoration that costs a line of vertical space and
+ * teaches nothing. Everything else gets one, in the order the panel already reads in — the
+ * bar is a table of contents for the page, not a re-ordering of it.
+ *
+ * Agents is absent for a different reason than API and Channels: it has two cards, but the
+ * first one ("ChatPanel local") is what makes the second one populate. Putting them on
+ * separate tabs hides the cause from the effect — you would read "no agents found" with no
+ * sight of the bridge status that explains it. They stay on one page.
+ *
+ * `requires` names an element whose visibility gates the tab (see js/subtabs.js): the
+ * gateway's config before it connects, and the machine's skill folders before the bridge
+ * reports any. Those tabs are shown DISABLED, so the feature stays discoverable.
+ */
+const PANEL_SUBTABS = {
+  mcp: { bar: 'tl-subtabs', groups: [
+    { id: 'websearch', label: 'Web search', target: 'tl-websearch' },
+    { id: 'suggestions', label: 'Smart suggestions', target: 'tl-suggestions' },
+    { id: 'mcp', label: 'MCP servers', target: 'tl-mcp' },
+    { id: 'discover', label: 'Discover', target: 'tl-discover' },
+  ] },
+  skills: { bar: 'sk-subtabs', groups: [
+    { id: 'skills', label: 'Skills', target: 'sk-skills' },
+    { id: 'sources', label: 'On this machine', target: 'skill-sources-card', requires: 'skill-sources-card' },
+  ] },
+  workspace: { bar: 'ws-subtabs', groups: [
+    { id: 'memory', label: 'Memory', target: 'ws-memory' },
+    { id: 'notes', label: 'Notes', target: 'ws-notes' },
+    { id: 'meetings', label: 'Meetings', target: 'ws-meetings' },
+    { id: 'history', label: 'Chat history', target: 'ws-history' },
+  ] },
+  activity: { bar: 'ac-subtabs', groups: [
+    { id: 'access', label: 'Storage & access', target: 'obs-card' },
+    { id: 'totals', label: 'Totals', target: 'ac-totals' },
+    { id: 'activity', label: 'Activity', target: 'ac-activity' },
+  ] },
+  plugins: { bar: 'pl-subtabs', groups: [
+    { id: 'routing', label: 'Model routing', target: 'pl-routing' },
+    { id: 'plugins', label: 'Plugins', target: 'pl-plugins' },
+  ] },
+  license: { bar: 'lic-subtabs', groups: [
+    { id: 'plan', label: 'Plan', target: 'license-card' },
+    { id: 'prefs', label: 'Preferences', target: 'lic-prefs' },
+    { id: 'about', label: 'About & updates', target: 'about-card' },
+    { id: 'backup', label: 'Backup & restore', target: 'backup-card' },
+  ] },
+};
+
+/**
+ * The Privacy & Gateway panel, as a bar instead of a scroll.
+ *
+ * Eight sections, three of them nested inside the gateway config, and the only way to find
+ * one was to open summaries until the right one appeared. Order is deliberate: what protects
+ * you WITHOUT any extra software first (redaction, internal sites), then the gateway and
+ * everything it adds — so the tab bar reads as the same story the panel already tells.
+ *
+ * `requires: 'gw-config'` marks the tabs whose content only exists once the gateway is
+ * connected; those are shown disabled rather than hidden, so the features are still
+ * discoverable when the gateway is not running.
+ */
+const PRIVACY_SUBTABS = [
+  // Gateway leads: it is the thing the tab is named for, the thing that has to be installed
+  // before five of the tabs behind it mean anything, and the one people arrive here looking
+  // for. The old order was the panel's scroll order, which put the gateway third and its
+  // status below two sections that do not depend on it.
+  { id: 'gateway', label: 'Gateway', target: 'pv-gateway' },
+  { id: 'redaction', label: 'Redaction', target: 'pv-redaction' },
+  { id: 'gw-redaction', label: 'Gateway redaction', target: 'gw-sec-redaction', requires: 'gw-config' },
+  { id: 'routing', label: 'Routing', target: 'gw-sec-routing', requires: 'gw-config' },
+  { id: 'internal', label: 'Internal sites', target: 'pv-boundary' },
+  { id: 'history', label: 'History indexing', target: 'gw-sec-history' },
+  { id: 'models', label: 'Models', target: 'pv-models', requires: 'gw-config' },
+  { id: 'monitor', label: 'Monitor', target: 'gw-sec-monitor', requires: 'gw-config' },
+  { id: 'test', label: 'Test', target: 'gw-sec-test', requires: 'gw-config' },
+];
+let privacySubtabs = null;
+// panel name → the bar's controller, so a deep link can ask any of them to reveal a section.
+const panelSubtabs = new Map();
+
+async function wireAllSubtabs() {
+  // One dynamic import for every bar: the module is ~5 KB and no bar is needed to paint the
+  // first tab, so it stays off the settings page's static graph entirely.
+  const { wireSubtabs } = await import('./js/subtabs.js');
+  const build = (panel, barId, groups) => {
+    const root = document.querySelector(`.panel[data-panel="${panel}"]`);
+    const bar = document.getElementById(barId);
+    if (!root || !bar) return null;
+    const ctl = wireSubtabs({ root, bar, groups, storageKey: `cp:settings:subtab:${panel}` });
+    panelSubtabs.set(panel, ctl);
+    return ctl;
+  };
+  privacySubtabs = build('privacy', 'pv-subtabs', PRIVACY_SUBTABS);
+  for (const [panel, { bar, groups }] of Object.entries(PANEL_SUBTABS)) build(panel, bar, groups);
+}
+
 // Land ON a section, not merely on the panel that contains it. Opens every collapsed
 // <details> above the target first — a closed summary hides the very control the link
 // promised. A target inside a container that is hidden for a reason (the gateway config
@@ -227,6 +445,13 @@ const TAB_ALIAS = {
 function jumpToSection(id, { flash = true } = {}) {
   let el = id && document.getElementById(id);
   if (!el) return;
+  // A deep link (#gateway, the panel's "open settings" buttons) can point INTO a sub-tab
+  // that is not the visible one. Switch to it first — scrolling to a hidden element lands
+  // nowhere and reads as a dead link.
+  // Any bar, not just Privacy's: "Manage NER models", the Pro chip's #license link and the
+  // workspace aliases all point INTO a sub-tab that may not be the visible one, and scrolling
+  // to a hidden element lands nowhere.
+  for (const ctl of panelSubtabs.values()) if (ctl.revealFor(el)) break;
   const openAncestors = (node) => {
     for (let n = node; n; n = n.parentElement) if (n.tagName === 'DETAILS') n.open = true;
   };
@@ -1505,6 +1730,108 @@ function renderBridge() {
 
 // The one place a person can see what ChatPanel is running locally: the bridge (your
 // agents + skills) and the gateway (an optional upgrade — redaction, routing, voice).
+/**
+ * How to install each local component — in the card that reports it is missing.
+ *
+ * The commands used to live in a <details> further down the page, and the status card said
+ * "install it with the commands below". That is one more thing to find at the exact moment
+ * someone has been told something is not working, and the first instruction they met was a
+ * macOS curl line even on Windows.
+ *
+ * So: the host OS leads, and the row that is NOT running opens itself.
+ */
+const INSTALL_COMMANDS = {
+  bridge: [
+    { os: 'windows', label: 'Windows · PowerShell', cmd: 'irm https://dl.chatpanel.net/bridge/install.ps1 | iex' },
+    { os: 'unix', label: 'macOS / Linux', cmd: 'curl -fsSL https://dl.chatpanel.net/bridge/install.sh | bash' },
+    { os: 'any', label: 'Have Node? Run it without installing', cmd: 'npx @chatpanel/bridge' },
+  ],
+  gateway: [
+    { os: 'windows', label: 'Windows · PowerShell', cmd: 'irm https://dl.chatpanel.net/gateway/install.ps1 | iex' },
+    { os: 'unix', label: 'macOS / Linux', cmd: 'curl -fsSL https://dl.chatpanel.net/gateway/install.sh | bash' },
+    { os: 'any', label: 'With Node — any OS', cmd: 'npm i -g @chatpanel/gateway && chatpanel-gateway --install' },
+  ],
+};
+
+/**
+ * Which OS's command to show first.
+ *
+ * userAgentData.platform where it exists, then the UA string — NOT navigator.platform, which
+ * misreports itself on Apple Silicon. An unknown host is not a problem: the list simply keeps
+ * its declared order, and every command is still on screen.
+ */
+function hostOs() {
+  const p = navigator.userAgentData?.platform || '';
+  const ua = navigator.userAgent || '';
+  if (/win/i.test(p) || /Windows/i.test(ua)) return 'windows';
+  if (/mac|linux/i.test(p) || /Mac OS X|Linux|X11/i.test(ua)) return 'unix';
+  return '';
+}
+
+// Commands for one component, this machine's first.
+function installFor(which) {
+  const os = hostOs();
+  const list = INSTALL_COMMANDS[which] || [];
+  if (!os) return list;
+  return [...list].sort((a, b) => (b.os === os) - (a.os === os));
+}
+
+/**
+ * The install block for one runtime row: a <details> that is OPEN when the thing is missing.
+ *
+ * Built with DOM calls rather than innerHTML because the command strings would otherwise be
+ * interpolated into markup — they contain `&&` and `|`, and a Copy button that hands over
+ * HTML-escaped text pastes something that does not run.
+ */
+function installBlock(which, { running }) {
+  const wrap = document.createElement('details');
+  wrap.className = 'runtime-install';
+  // Kept as an id so testBridge() can still say "here is how" by opening this block, which
+  // is where the commands live now that they no longer sit in a separate section below.
+  wrap.id = `${which}-install-help`;
+  wrap.open = !running; // not installed → show me how; installed → stay out of the way
+  const sum = document.createElement('summary');
+  sum.textContent = running ? 'Reinstall or update' : `Install the ${which}`;
+  wrap.appendChild(sum);
+
+  for (const { label, cmd } of installFor(which)) {
+    const line = document.createElement('div');
+    line.className = 'install-line';
+    const cap = document.createElement('div');
+    cap.className = 'install-label';
+    cap.textContent = label;
+    const box = document.createElement('div');
+    box.className = 'install-cmd';
+    const code = document.createElement('code');
+    code.textContent = cmd; // textContent, so the command is the command
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'btn ghost install-copy';
+    copy.textContent = 'Copy';
+    copy.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(cmd);
+        copy.textContent = 'Copied';
+      } catch {
+        // The clipboard can be refused (permissions, no focus). Say so rather than claiming
+        // success — the user is about to paste nothing into a terminal.
+        copy.textContent = 'Press Ctrl/⌘+C';
+      }
+      setTimeout(() => { copy.textContent = 'Copy'; }, 1600);
+    };
+    box.append(code, copy);
+    line.append(cap, box);
+    wrap.appendChild(line);
+  }
+  const after = document.createElement('p');
+  after.className = 'muted tiny install-after';
+  after.textContent = running
+    ? 'Re-running the installer upgrades in place and keeps your settings.'
+    : 'Run it in a terminal, then press Recheck above — no restart needed.';
+  wrap.appendChild(after);
+  return wrap;
+}
+
 // The framing is the point — bridge up + gateway absent is COMPLETE, not a warning.
 async function renderLocalRuntime({ recheck = false } = {}) {
   const root = $('local-runtime');
@@ -1524,12 +1851,18 @@ async function renderLocalRuntime({ recheck = false } = {}) {
   const agentCount = (bridgeState?.agents || []).filter((a) => a.available).length;
   const skillCount = bridgeState?.skills?.count;
 
-  const row = ({ cls, name, on, statusText, detail, cta }) => {
+  const row = ({ cls, name, on, statusText, detail, cta, install, next }) => {
     const el = document.createElement('div');
-    el.className = `runtime-row ${cls}${on ? ' on' : ''}`;
+    // `next` = "this is the step to do now". Only ever one row at a time, so it reads as a
+    // recommendation rather than as decoration.
+    el.className = `runtime-row ${cls}${on ? ' on' : ''}${next ? ' next' : ''}`;
     const dot = `<span class="runtime-dot"></span>`;
-    const head = `<div class="runtime-head">${dot}<b>${name}</b><span class="runtime-status">${statusText}</span></div>`;
+    const badge = next ? '<span class="runtime-next">Next step</span>' : '';
+    const head = `<div class="runtime-head">${dot}<b>${name}</b><span class="runtime-status">${statusText}</span>${badge}</div>`;
     el.innerHTML = `${head}<div class="runtime-detail">${detail}</div>${cta ? `<div class="runtime-cta">${cta}</div>` : ''}`;
+    // Appended, not interpolated: the commands carry `&&` and `|`, and a Copy button that
+    // hands over HTML-escaped text pastes something that does not run.
+    if (install) el.appendChild(installBlock(install, { running: on }));
     return el;
   };
 
@@ -1542,7 +1875,9 @@ async function renderLocalRuntime({ recheck = false } = {}) {
       : 'Not running',
     detail: bridgeOn
       ? `Your local coding agents and skills.${Number.isFinite(agentCount) ? ` ${agentCount} agent${agentCount === 1 ? '' : 's'} ready` : ''}${Number.isFinite(skillCount) ? ` · ${skillCount} skill${skillCount === 1 ? '' : 's'} discoverable` : ''}.`
-      : 'Runs your local coding agents (Claude Code, Codex, …) and makes your skills discoverable. Install it with the commands below.',
+      : 'Runs your local coding agents (Claude Code, Codex, …) and makes your skills discoverable.',
+    install: 'bridge',
+    next: !bridgeOn, // nothing local works without this, so it is the step until it is done
   }));
   // Gateway — the optional upgrade. Absent is normal.
   root.appendChild(row({
@@ -1552,6 +1887,11 @@ async function renderLocalRuntime({ recheck = false } = {}) {
       ? 'The privacy upgrade: PII redaction, model routing, and voice — in front of everything above.'
       : 'An optional upgrade that adds PII redaction, model routing and voice. You don\'t need it for local agents and skills.',
     cta: gwOn ? '' : '<a href="#gateway" class="runtime-link">What the gateway adds →</a>',
+    install: 'gateway',
+    // Once the bridge is up, the gateway is the next thing worth doing — and only then.
+    // Highlighting it while the bridge is still missing would compete with the step that
+    // actually has to happen first (the gateway needs the bridge running).
+    next: bridgeOn && !gwOn,
   }));
 
   // The honest summary line, so "gateway not running" never reads as broken.
@@ -1858,6 +2198,31 @@ function fillGatewayForm(cfg) {
   $('gw-tools-cap').value = cfg.tools?.maxPerTurn ?? 8;
   $('gw-tools-narrowall').checked = !!cfg.tools?.narrowAll;
   setGwDetectorRows();
+  maybeSeedDestinations();
+}
+
+/**
+ * Give a freshly configured gateway something to route to.
+ *
+ * The destinations ARE the APIs and agents the user already set up, so an empty list is not a
+ * choice — it is a gateway that has never been told it may use them, and it presents as
+ * "Test a prompt" showing no models at all. Seeded once, then never again: a deliberate
+ * "none" must stay none. See js/gateway-dests.js.
+ */
+async function maybeSeedDestinations() {
+  const available = availableDestinations();
+  const { shouldSeedDestinations, seedDestinations } = await import('./js/gateway-dests.js');
+  if (!shouldSeedDestinations({
+    current: gatewayDests, seeded: !!settings.ui?.gatewayDestsSeeded, available,
+  })) return;
+  gatewayDests = seedDestinations(available, {
+    pro: isPro(license),
+    cap: FREE_LIMITS.gatewayDestinations,
+    preferId: settings.activeAgentId,
+  });
+  settings = await saveSettings({ ...settings, ui: { ...settings.ui, gatewayDestsSeeded: true } });
+  renderDestinations();
+  autoSaveGateway();
 }
 
 // Show the Free lifetime redaction usage on the gateway (read-only).
@@ -1949,6 +2314,7 @@ async function refreshGateway() {
     status.textContent = `✕ Not running yet — install it below to enable local dictation, PII detection & routing.`;
     status.className = 'status err';
     $('gw-config').classList.add('hidden');
+    privacySubtabs?.refresh(); // the gateway-only tabs become unavailable
     $('gw-preview')?.classList.remove('hidden'); // show the "what you get" discovery panel
     setSectionBadge('pv-gateway-badge', 'Not installed', 'off');
     return;
@@ -1991,6 +2357,7 @@ async function refreshGateway() {
     status.innerHTML = `✓ Connected — v${gatewayState.version} · backend: <strong>${gatewayState.backend}</strong> · ${gatewayState.pro?.unlocked ? 'Pro' : 'Free'}`;
     fillGatewayForm(cfg);
     $('gw-config').classList.remove('hidden'); // the real config replaces the preview
+    privacySubtabs?.refresh(); // …and the gateway-only tabs become selectable
     $('gw-token-row')?.classList.add('hidden'); // authorized — hide the manual token fallback
     $('gw-token-hint')?.classList.add('hidden');
     renderGatewayMonitor(gatewayState);
@@ -2786,8 +3153,29 @@ function wireGateway() {
 
 async function refreshBridgeState() {
   bridgeState = await checkBridge(settings.bridgeUrl);
+  await syncDiscoveredAgents();
   renderBridgeAgents();
   renderBridgeUpdate();
+}
+
+/**
+ * Switch the built-in CLI agents to match what the bridge actually found.
+ *
+ * The same reconciliation the panel does, on the page where a person is looking at the
+ * switches. Without it, someone who installs and opens Settings before ever opening the
+ * panel sees nine agents all switched off with nothing to explain it.
+ *
+ * Gated on bridge.ok: an unreachable bridge reports nothing, and reading that as "nothing is
+ * installed" would switch off every agent the user has. Only agents nobody has decided about
+ * by hand move — the .ba-enabled handler clears that marker. See js/target-choice.js.
+ */
+async function syncDiscoveredAgents() {
+  if (!bridgeState?.ok) return;
+  const { reconcileAutoEnable } = await import('./js/target-choice.js');
+  const { changed, agents } = reconcileAutoEnable(settings.agents, bridgeState.agents);
+  if (!changed) return;
+  settings.agents = agents;
+  await saveSettings(settings);
 }
 
 // Show a "bridge update available" notice when /health reports a newer release.
@@ -2847,10 +3235,15 @@ async function testBridge() {
   status.className = 'status';
   bridgeState = await checkBridge(url);
   if (!bridgeState.ok) {
-    status.textContent = `✕ Not reachable (${bridgeState.reason || 'no response'}). Install or start the bridge — see the commands below.`;
+    status.textContent = `✕ Not reachable (${bridgeState.reason || 'no response'}). Install or start the bridge — the commands are in “ChatPanel local” above.`;
     status.className = 'status err';
+    // The commands live in the status card at the top of this tab now, so point AT them —
+    // telling someone to look for instructions is the step this change exists to remove.
     const help = $('bridge-install-help');
-    if (help) help.open = true; // reveal the macOS/Linux + Windows + npx commands
+    if (help) {
+      help.open = true;
+      help.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
     renderBridgeAgents();
     return;
   }
@@ -3079,6 +3472,10 @@ function bridgeAgentCard(agent) {
 
   q('.ba-enabled').onchange = async () => {
     agent.enabled = q('.ba-enabled').checked;
+    // The user has now decided about this agent, so stop following the bridge for it: an
+    // agent switched off here must not come back because its CLI reappeared on PATH, and one
+    // switched on must not vanish because /health was slow. See js/target-choice.js.
+    delete agent.autoEnable;
     syncCardSummary();
     await saveSettings(settings);
   };
@@ -4089,6 +4486,9 @@ async function renderSkillSources() {
   // SEARCH is running, keep it visible: "no matches" is an answer, and a section that
   // vanished as you typed would read as a bug.
   card.classList.toggle('hidden', !live.length && !skillSourceQuery.trim());
+  // The "On this machine" sub-tab is gated on this card, so the bar has to be told when the
+  // bridge starts (or stops) reporting skill folders. See js/subtabs.js.
+  panelSubtabs.get('skills')?.refresh();
   root.replaceChildren();
 
   let shown = 0;
@@ -4549,6 +4949,8 @@ function renderPrefs() {
   $('pref-live-notes').value = String(settings.ui.liveNotesIntervalMin ?? 2);
   $('pref-meeting-window').value = String(settings.ui.meetingWindowMin ?? 0);
   $('pref-meeting-summary-style').value = settings.ui.meetingSummaryStyle === 'detailed' ? 'detailed' : 'concise';
+  $('pref-alert-sound').checked = settings.ui.alertSound !== false;
+  renderMonitorPrefs();
   // Spoken commands. `from` is a security control, so it is stored and shown exactly as
   // chosen — never inferred from whether a name happens to be filled in.
   const voice = settings.ui.voice || {};
@@ -4556,6 +4958,7 @@ function renderPrefs() {
   $('pref-voice-wake').value = voice.wakeWord || 'ChatPanel';
   $('pref-voice-from').value = ['me', 'anyone', 'off'].includes(voice.from) ? voice.from : 'me';
   $('pref-voice-names').value = (Array.isArray(voice.selfNames) ? voice.selfNames : []).join(', ');
+  renderWakePreview();
   // Internal sites — a REACH ceiling, not a redaction rule.
   //
   // The built-ins are TOGGLES, not lines in a textarea. Hand-editing a list that contains
@@ -5009,6 +5412,102 @@ async function renderStorageHealth() {
   const meetingLabel = `${health.meetings} recorded meeting${health.meetings === 1 ? '' : 's'}`;
   el.textContent = `${meetingLabel} · ${health.bytesLabel} stored locally. No automatic meeting-count retention cap.`;
 }
+/**
+ * What the wake word will actually listen for, as it is typed.
+ *
+ * The matching is deliberately forgiving — punctuation and spacing are stripped, several
+ * alternatives can be listed, and a near-miss from the transcriber still counts — and none of
+ * that is visible in a text box. So the box says it: the alternatives it parsed, and that
+ * spacing and punctuation do not matter. Wrong wake words are otherwise discovered in a
+ * meeting, which is the worst possible place.
+ */
+/**
+ * The same wake phrase spelt the ways a transcriber might produce it.
+ *
+ * Matching strips spacing and punctuation, which is easy to state and hard to believe — so
+ * the preview shows it happening to the user's OWN phrase instead of asserting it about a
+ * generic one.
+ */
+function spokenVariants(phrase) {
+  const words = String(phrase || '').trim().split(/\s+/).filter(Boolean);
+  const out = new Set([words.join(' ')]);
+  if (words.length > 1) {
+    out.add(`${words[0]}, ${words.slice(1).join(' ')}`); // the comma people actually say
+    out.add(words.join(''));                             // and the run-together transcription
+  } else if (words[0]?.length > 5) {
+    // One long word is exactly what speech-to-text splits: "chatpanel" → "chat panel".
+    const mid = Math.ceil(words[0].length / 2);
+    out.add(`${words[0].slice(0, mid)} ${words[0].slice(mid)}`);
+  }
+  return [...out].slice(0, 3).map((v) => `“${v}”`).join(', ');
+}
+
+async function renderWakePreview() {
+  const el = $('pref-voice-wake-preview');
+  const input = $('pref-voice-wake');
+  if (!el || !input) return;
+  const { compileWake } = await import('./js/events/voice-intents.js');
+  try {
+    // `labels`, not `phrases`. The compiled phrase is squashed to letters — "okchatpanel" —
+    // and echoing THAT back was worse than saying nothing: it is neither what the user typed
+    // nor anything they would ever say, so it read as the setting having been mangled.
+    const { labels } = compileWake(input.value.trim() || 'ChatPanel');
+    const quoted = labels.map((p) => `“${p}”`).join(', ');
+    // Show the tolerance on THEIR words rather than on a generic example — "does it accept my
+    // comma?" is answered by seeing their own phrase spelt back both ways.
+    // A short phrase is a real hazard, not a style note: "siri" is four letters and ordinary
+    // speech trips it. Allowed — it is the user's call — but said out loud here rather than
+    // discovered as a meeting that keeps interrupting itself.
+    const short = labels.filter((p) => p.replace(/[^\p{L}\p{N}]/gu, '').length < 5);
+    const caution = short.length
+      ? ` ${short.map((p) => `“${p}”`).join(', ')} ${short.length > 1 ? 'are' : 'is'} short — ordinary speech may trip ${short.length > 1 ? 'them' : 'it'}.`
+      : '';
+    el.textContent = labels.length > 1
+      ? `Listens for ${quoted} — say any of them, however you space or punctuate it.${caution}`
+      : `Listens for ${quoted} — ${spokenVariants(labels[0])} all work. Add more, separated by commas.${caution}`;
+    el.className = short.length ? 'status warn' : 'muted sm';
+  } catch {
+    // compileWake throws only for a phrase under three letters — say which rule was broken.
+    el.textContent = 'Too short — a wake word needs at least 3 letters, or ordinary speech will trip it.';
+    el.className = 'status err';
+  }
+}
+
+/**
+ * The live-monitor controls, and what each choice COSTS.
+ *
+ * "Sources" is an abstraction nobody can weigh. "last 5 min of transcript + summary — no
+ * tools, fastest" is a decision someone can make, so the line under the checkboxes says which
+ * one they have made. The model picker offers everything configured: the right answer here is
+ * usually the smallest model the user has, which is rarely the one they chat with.
+ */
+async function renderMonitorPrefs() {
+  const sel = $('pref-monitor-model');
+  if (!sel) return;
+  const { monitorProfile, describeMonitorProfile } = await import('./js/monitor-profile.js');
+  const p = monitorProfile(settings);
+  sel.replaceChildren();
+  sel.add(new Option('Same as the conversation', ''));
+  for (const t of [...(settings.endpoints || []), ...(settings.agents || [])]) {
+    if (t.enabled === false) continue;
+    if (t.kind !== 'bridge' && !t.model) continue; // cannot answer
+    sel.add(new Option(t.name || t.model || t.id, t.id));
+  }
+  // A model that was deleted must not silently read as "same as the conversation".
+  if (p.targetId && ![...sel.options].some((o) => o.value === p.targetId)) {
+    sel.add(new Option(`${p.targetId} (no longer configured)`, p.targetId));
+  }
+  sel.value = p.targetId;
+  $('pref-monitor-window').value = String(p.windowMin);
+  $('pref-monitor-summary').checked = p.sources.summary;
+  $('pref-monitor-findings').checked = p.sources.findings;
+  $('pref-monitor-web').checked = p.sources.web;
+  $('pref-monitor-history').checked = p.sources.history;
+  $('pref-monitor-mcp').checked = p.sources.mcp;
+  const cost = $('pref-monitor-cost');
+  if (cost) cost.textContent = `Each monitor answer reads: ${describeMonitorProfile(p)}`;
+}
+
 async function savePrefs() {
   settings.ui.theme = $('pref-theme').value;
   settings.ui.language = $('pref-language').value;
@@ -5042,6 +5541,19 @@ async function savePrefs() {
   settings.ui.liveNotesIntervalMin = Number($('pref-live-notes').value);
   settings.ui.meetingWindowMin = Number($('pref-meeting-window').value);
   settings.ui.meetingSummaryStyle = $('pref-meeting-summary-style').value === 'detailed' ? 'detailed' : 'concise';
+  settings.ui.alertSound = $('pref-alert-sound').checked;
+  settings.ui.monitors = {
+    ...(settings.ui.monitors || {}),
+    targetId: $('pref-monitor-model').value || '',
+    windowMin: Number($('pref-monitor-window').value) || 5,
+    sources: {
+      summary: $('pref-monitor-summary').checked,
+      findings: $('pref-monitor-findings').checked,
+      web: $('pref-monitor-web').checked,
+      history: $('pref-monitor-history').checked,
+      mcp: $('pref-monitor-mcp').checked,
+    },
+  };
   settings.ui.voice = {
     ...(settings.ui.voice || {}),
     enabled: $('pref-voice-enabled').checked,
@@ -5388,6 +5900,7 @@ function wire() {
   $('add-endpoint').onclick = addEndpoint;
   $('add-agent').onclick = addBridgeAgent;
   $('local-recheck').onclick = () => renderLocalRuntime({ recheck: true });
+  $('wg-refresh').onclick = () => renderWidgetsGallery();
   // The "what the gateway adds" link jumps to the Gateway section, it doesn't navigate away.
   $('local-runtime').addEventListener('click', (e) => {
     const a = e.target.closest('a.runtime-link');
@@ -5465,6 +5978,34 @@ function wire() {
   $('pref-live-notes').onchange = savePrefs;
   $('pref-meeting-window').onchange = savePrefs;
   $('pref-meeting-summary-style').onchange = savePrefs;
+  // Save AND demonstrate: an alert switch that gives no sample is one you can only test by
+  // setting a timer and waiting for it.
+  for (const id of ['pref-monitor-model', 'pref-monitor-window', 'pref-monitor-summary',
+    'pref-monitor-findings', 'pref-monitor-web', 'pref-monitor-history', 'pref-monitor-mcp']) {
+    // Save, then re-render — the cost line under the checkboxes has to move with them, or it
+    // is describing the profile you had a moment ago.
+    $(id).onchange = async () => { await savePrefs(); renderMonitorPrefs(); };
+  }
+  $('pref-alert-sound').onchange = async () => {
+    await savePrefs();
+    if (!$('pref-alert-sound').checked) return;
+    // A page has AudioContext already — play it here rather than opening an offscreen
+    // document to do what this context can do directly.
+    const { playAlert } = await import('./js/alert-sound.js');
+    playAlert().catch(() => {});
+  };
+  // THE VOICE FIELDS WERE NEVER WIRED. Every other pref on this page saves on change; these
+  // four did not, so a wake word you typed was persisted only if you happened to touch some
+  // OTHER preference afterwards — which reads, correctly, as "it doesn't save". `change` on a
+  // text input fires on blur/Enter, the same moment the rest of the page saves.
+  $('pref-voice-enabled').onchange = savePrefs;
+  $('pref-voice-wake').onchange = savePrefs;
+  $('pref-voice-from').onchange = savePrefs;
+  $('pref-voice-names').onchange = savePrefs;
+  // …and say, as it is typed, what will actually trigger. A wake word is matched fuzzily
+  // against a live transcript, so "did it take my comma?" is a question the box should answer
+  // rather than leave to a meeting.
+  $('pref-voice-wake').oninput = renderWakePreview;
   { const a = $('meetings-open-skills'); if (a) a.onclick = (e) => { e.preventDefault(); document.querySelector('[data-tab="skills"]')?.click(); }; }
   $('priv-mode').onchange = () => { savePrefs(); renderPrefs(); };
   $('priv-scope-chat').onchange = savePrefs;
@@ -5688,10 +6229,30 @@ function wireAutoBackup(restoreBackupData) {
   }
   const hourText = (st) => ` · daily at ${st.hour % 12 || 12}${st.hour < 12 ? 'am' : 'pm'}`;
   const destinationText = (value) => value === 'drive' ? 'Google Drive' : value === 'both' ? 'Downloads + Google Drive' : 'Downloads → ChatPanel Backups';
+  // How long ago something happened, in the roughest useful unit. A persisted error with no
+  // age reads as "this is happening now" for as long as it is on screen — which is how a
+  // failure from weeks ago kept being reported as a current one.
+  const ago = (ts) => {
+    if (!ts) return '';
+    const mins = Math.round((Date.now() - ts) / 60000);
+    if (mins < 2) return 'just now';
+    if (mins < 60) return `${mins} minutes ago`;
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return `${hrs} hour${hrs === 1 ? '' : 's'} ago`;
+    const days = Math.round(hrs / 24);
+    return `${days} day${days === 1 ? '' : 's'} ago`;
+  };
   const showState = (st) => {
     if (!st.enabled) return setStatus(status, 'Daily schedule is off.', '');
     if (!st.passphrase) return setStatus(status, 'Paused — set the backup password again on this device.', 'err');
-    if (st.lastError) return setStatus(status, '✕ ' + st.lastError, 'err');
+    if (st.lastError) {
+      // A stale failure is not a current one. Say WHEN, and say that earlier backups (if any)
+      // are still on disk — an error alone reads as "you have no backup".
+      const when = ago(st.lastErrorAt);
+      const had = st.lastAt ? ` Your last successful backup (${fmt(st.lastAt)}) is still there.` : '';
+      setStatus(status, `✕ ${st.lastError}${when ? ` (${when})` : ''}${had} Press “Back up now” to try again.`, 'err');
+      return;
+    }
     const gatewayWarning = st.lastGatewayError ? ` Gateway indexing warning: ${st.lastGatewayError}.` : '';
     setStatus(status, `On 🔒 compressed + encrypted${hourText(st)} — ${destinationText(st.destination)}. Last completed backup: ${fmt(st.lastAt)}${fmtSize(st.lastBytes)}.${gatewayWarning}`, st.lastAt ? 'ok' : '');
   };

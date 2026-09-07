@@ -17,7 +17,7 @@
 
 import { defineRule } from './events/rules.js';
 import {
-  compileWake, defaultVoiceIntents, commandsFromSegments, DEFAULT_WAKE,
+  compileWake, defaultVoiceIntents, commandsFromSegments, DEFAULT_WAKE, refineSpokenCommand,
 } from './events/voice-intents.js';
 
 // The bus type a transcript delta is offered under. NOT an event-schema type: the log's
@@ -48,7 +48,12 @@ export const DEFAULT_VOICE = Object.freeze({
  */
 export function voiceSettings(config) {
   const v = config || {};
-  const wakeWord = String(v.wakeWord || DEFAULT_VOICE.wakeWord).trim() || DEFAULT_VOICE.wakeWord;
+  // Kept as the user TYPED it — including any commas. compileWake splits alternatives
+  // ("ok chatpanel, hey chat panel") and strips punctuation itself, so normalizing here would
+  // only be a second place for the two to disagree. An array is accepted too, for a client
+  // that stores it that way.
+  const raw = Array.isArray(v.wakeWord) ? v.wakeWord.join(', ') : String(v.wakeWord ?? '');
+  const wakeWord = raw.trim() || DEFAULT_VOICE.wakeWord;
   const from = COMMAND_SOURCES.includes(v.from) ? v.from : DEFAULT_VOICE.from;
   const selfNames = (Array.isArray(v.selfNames) ? v.selfNames : String(v.selfNames || '').split(','))
     .map((n) => String(n || '').trim())
@@ -60,6 +65,10 @@ export function voiceSettings(config) {
 // name, Teams and Zoom often leave it as "You". Both have to count, or the feature works on
 // one platform and silently never fires on the others.
 const SELF_LABELS = /^(you|me|myself|you \(you\)|me \(me\))$/i;
+
+// Re-exported: callers already take the voice vocabulary from this module, and a second
+// import path for one function is how two call sites end up refining differently.
+export { refineSpokenCommand };
 
 const norm = (s) => String(s || '').trim().toLowerCase();
 
@@ -128,11 +137,27 @@ export const voiceCommandRule = defineRule({
  */
 export function createVoiceActions(map = {}) {
   const actions = new Map(Object.entries(map));
+  // What to do with a command no intent matched. The parser marks those `needsModel` and has
+  // always said the host may pay for a small model to read them — this is where that host
+  // finally exists. Separate from bind() because it is not an intent: it is the absence of one.
+  let onUnrecognised = null;
   return {
     bind(intentId, fn) { actions.set(intentId, fn); return () => actions.delete(intentId); },
+    fallback(fn) { onUnrecognised = fn; return () => { onUnrecognised = null; }; },
     has: (intentId) => actions.has(intentId),
     async run(command) {
       const fn = actions.get(command.intent);
+      if (!fn && command.needsModel && onUnrecognised) {
+        try {
+          const result = await onUnrecognised(command);
+          // A fallback that declines (the model said "they were just talking") is NOT a
+          // failure — reporting it as one would toast at the user every time they finished a
+          // sentence near the wake word.
+          return result ? { ok: true, result, command } : { ok: false, reason: 'not-a-request', command };
+        } catch (e) {
+          return { ok: false, reason: 'failed', error: e?.message || String(e), command };
+        }
+      }
       if (!fn) return { ok: false, reason: command.intent ? 'no-action' : 'not-understood', command };
       try {
         const result = await fn(command);

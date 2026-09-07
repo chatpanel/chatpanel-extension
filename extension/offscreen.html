@@ -2,8 +2,10 @@
 <html lang="en">
   <head><meta charset="utf-8" /><title>ChatPanel — in-browser model</title></head>
   <body>
-    <!-- Hidden offscreen document that hosts the WebLLM engine (it has WebGPU and
-         persists independently of the side panel). See js/offscreen-webllm.js. -->
-    <script type="module" src="js/offscreen-webllm.js"></script>
+    <!-- Hidden offscreen document: the extension's one place with WebGPU and an audio
+         output that outlive the side panel. It loads a small ROUTER, not the engine — the
+         6.3 MB WebLLM runtime is imported on the first message that needs it, so a timer
+         that only wants to make a sound does not pay for it. See js/offscreen.js. -->
+    <script type="module" src="js/offscreen.js"></script>
   </body>
 </html>

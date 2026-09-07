@@ -7,6 +7,10 @@
 // resolveTarget/canUseAgent from providers + store + license) and holds NO editor state,
 // so it stays reusable — the same appointment logic a gateway/bridge could offer.
 
+// The shared "which model will actually answer" ordering — the same one the panel, the
+// scribe and suggestions use. Notes had its own answer, and its own answer was the bug.
+import { orderTargets } from './target-choice.js';
+
 // Role → routing preference. Consumed by the pure router's appoint().
 export const SWARM_ROLES = {
   editor: { id: 'editor', prefer: 'cheap' },
@@ -52,15 +56,64 @@ export function swarmCandidates(deps, settings, license) {
   return out;
 }
 
-// → { resolved, mode, label } for a role, or null. Falls back to the active agent so a
-// single-model user still gets every co-writer.
-export async function roleAgent(deps, settings, license, roleId) {
+/**
+ * Every model this role could run on, best first — the appointment, then the fallbacks.
+ *
+ * THE CHOICE THE USER ALREADY MADE COMES FIRST. This used to hand the role straight to
+ * appoint(), which ranks by inferred model TIER and knows nothing about what the user
+ * selected in the panel or about what is installed on the machine. So a user whose only
+ * working agent was Codex got the Editor appointed to an API card they had configured but
+ * could not reach, and the only lever they had was to DISABLE the card — which is exactly
+ * how it was reported. Tier routing is a real feature and it is kept, but it is now an
+ * OPT-IN one: it leads only for a role the user has explicitly pinned (swarmOverrides()).
+ * Unpinned, the panel's active model leads and appointment is a fallback behind it.
+ *
+ * Returns a LIST rather than one answer so callers can rotate past a model that will not
+ * answer — "at least it should rotate to the model that is working" — using the shared
+ * chain in js/model-fallback.js.
+ */
+export async function roleAgents(deps, settings, license, roleId, { bridgeAgents = null } = {}) {
   const router = await getRouter();
   // Never route to a DISABLED model (enabled:false is "hidden from pickers"); appoint()
   // further drops license-gated ones (usable:false).
   const cands = swarmCandidates(deps, settings, license).filter((c) => c.enabled !== false);
+  const pinned = swarmOverrides()[roleId] || '';
   const appt = router.appoint(SWARM_ROLES[roleId], cands, { overrides: swarmOverrides() });
-  const target = appt ? deps.getTarget(settings, appt.id) : deps.getTarget(settings, settings.activeAgentId);
-  if (!target || !deps.canUseAgent(license, settings, target)) return null;
-  return { resolved: deps.resolveTarget(target, settings), mode: appt?.mode || 'api', label: target.name || appt?.model || '' };
+
+  // One ordered list of ids: the pin (if any), then the panel's active model, then the
+  // appointment, then everything else that could answer — reachable CLIs before missing ones.
+  const ordered = orderTargets(settings, {
+    prefer: pinned,
+    license,
+    canUseAgent: deps.canUseAgent,
+    bridgeAgents,
+  });
+  const ids = [...new Set([
+    ...(pinned ? [pinned] : []),
+    settings?.activeAgentId || '',
+    ...(appt ? [appt.id] : []),
+    ...ordered.map((t) => t.id),
+  ].filter(Boolean))];
+
+  const out = [];
+  for (const id of ids) {
+    const target = deps.getTarget(settings, id);
+    // getTarget substitutes on a miss, so check we got the id we asked for — otherwise a
+    // deleted pin would silently re-add whatever the substitute happens to be.
+    if (!target || target.id !== id) continue;
+    if (!deps.canUseAgent(license, settings, target)) continue;
+    if (target.enabled === false) continue;
+    out.push({
+      resolved: deps.resolveTarget(target, settings),
+      mode: (appt && appt.id === id && appt.mode) || 'api',
+      label: target.name || (appt && appt.id === id ? appt.model : '') || '',
+    });
+  }
+  return out;
+}
+
+// → { resolved, mode, label } for a role, or null. The head of roleAgents(); kept because
+// most callers want one model and the rotation belongs at the ones that stream.
+export async function roleAgent(deps, settings, license, roleId, opts = {}) {
+  return (await roleAgents(deps, settings, license, roleId, opts))[0] || null;
 }

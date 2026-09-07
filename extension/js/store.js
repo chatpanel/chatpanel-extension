@@ -8,10 +8,9 @@
 //
 // All functions are async and safe to call from the side panel or options page.
 
-import { exportMeetings, importMeetings } from './store-meetings.js';
-import { exportNotes, importNotes } from './store-notes.js';
-import { exportNotesConfig, importNotesConfig } from './notes-config.js';
-import { exportOAuthTokens, importOAuthTokens } from './oauth.js';
+// meetings, notes, the Notes config and the OAuth sign-ins are NOT imported here. They serve
+// backup only, and this module is on every entry point's first-paint graph — see
+// js/backup-payload.js, which they now arrive through like the other late stores.
 import { sealJSON, openJSON } from './secret-crypto.js';
 // Shared vocabulary: a tag typed on a chat has to BE the tag typed on a note.
 import { normalizeTags, sameTags } from './events/tags.js';
@@ -32,7 +31,7 @@ export const uid = () =>
 // so it's safe to ship them as built-ins.
 export function defaultSettings() {
   return {
-    version: 9,
+    version: 10,
     bridgeUrl: 'http://127.0.0.1:4319',
     // Optional. The bridge authenticates the extension by Origin; this is only for the setups
     // that cannot carry one. Sealed at rest like an API key — see SECRET_FIELDS.
@@ -54,7 +53,13 @@ export function defaultSettings() {
     // pick). Others remain visible in the picker but require Pro. The free endpoint
     // is the in-browser model, so the free experience needs zero external setup.
     freeEndpointId: 'in-browser',
-    freeAgentId: 'claude-code',
+    // EMPTY, deliberately. This used to name 'claude-code', which handed every Free user a
+    // CLI they may well not have installed as their one unlocked local agent — and shipping
+    // Claude Code as the first built-in meant it was also what every fallback landed on. An
+    // unset slot is claimed by the first local agent the bridge reports as actually PRESENT
+    // (see adoptFreeAgentSlot in the panel), so a machine with only Codex gets Codex. The
+    // user can still change it in Settings; once they do, their pick is what stays.
+    freeAgentId: '',
     // Endpoints — the one place for API models: a connection (provider + base
     // URL + key) with a chosen model and optional system prompt/tuning. Chat
     // with one directly; no separate "agent" needed.
@@ -86,7 +91,16 @@ export function defaultSettings() {
       },
     ],
     // Agents — the local bridge (CLI) agents: Claude Code, Codex, Antigravity, Pi,
-    // OpenCode, Hermes, Kiro, Copilot. Each appears only when its CLI is on PATH.
+    // OpenCode, Hermes, Kiro, Copilot.
+    //
+    // ALL SHIP SWITCHED OFF. A machine has one of these, maybe two; advertising nine in the
+    // picker meant eight entries that cannot answer, and it meant every "first in the list"
+    // fallback in the product landed on Claude Code — the first built-in — whether or not
+    // Claude Code was installed. `autoEnable: true` is the third state that makes off-by-
+    // default workable: "no human has an opinion about me yet, follow the bridge". The panel
+    // switches these on as /health finds them and off as it stops finding them, and the
+    // marker is cleared the moment the user flips the switch themselves, so a deliberate
+    // choice is never revised by a poll. See reconcileAutoEnable in js/target-choice.js.
     agents: [
       {
         id: 'claude-code',
@@ -98,6 +112,9 @@ export function defaultSettings() {
         permissionMode: 'default',
         useLocalConfig: true,
         builtin: true,
+        // OFF until the bridge says this CLI is on the machine. See autoEnable below.
+        enabled: false,
+        autoEnable: true,
       },
       {
         id: 'codex',
@@ -109,6 +126,9 @@ export function defaultSettings() {
         permissionMode: 'default',
         useLocalConfig: true,
         builtin: true,
+        // OFF until the bridge says this CLI is on the machine. See autoEnable below.
+        enabled: false,
+        autoEnable: true,
       },
       {
         id: 'antigravity',
@@ -120,6 +140,9 @@ export function defaultSettings() {
         permissionMode: 'default',
         useLocalConfig: true,
         builtin: true,
+        // OFF until the bridge says this CLI is on the machine. See autoEnable below.
+        enabled: false,
+        autoEnable: true,
       },
       {
         id: 'pi',
@@ -131,6 +154,9 @@ export function defaultSettings() {
         permissionMode: 'default',
         useLocalConfig: true,
         builtin: true,
+        // OFF until the bridge says this CLI is on the machine. See autoEnable below.
+        enabled: false,
+        autoEnable: true,
       },
       {
         id: 'opencode',
@@ -142,6 +168,9 @@ export function defaultSettings() {
         permissionMode: 'default',
         useLocalConfig: true,
         builtin: true,
+        // OFF until the bridge says this CLI is on the machine. See autoEnable below.
+        enabled: false,
+        autoEnable: true,
       },
       {
         id: 'hermes',
@@ -153,6 +182,9 @@ export function defaultSettings() {
         permissionMode: 'default',
         useLocalConfig: true,
         builtin: true,
+        // OFF until the bridge says this CLI is on the machine. See autoEnable below.
+        enabled: false,
+        autoEnable: true,
       },
       {
         id: 'kiro',
@@ -164,6 +196,9 @@ export function defaultSettings() {
         permissionMode: 'default',
         useLocalConfig: true,
         builtin: true,
+        // OFF until the bridge says this CLI is on the machine. See autoEnable below.
+        enabled: false,
+        autoEnable: true,
       },
       {
         id: 'copilot',
@@ -175,6 +210,9 @@ export function defaultSettings() {
         permissionMode: 'default',
         useLocalConfig: true,
         builtin: true,
+        // OFF until the bridge says this CLI is on the machine. See autoEnable below.
+        enabled: false,
+        autoEnable: true,
       },
       {
         id: 'deepseek-harness',
@@ -186,6 +224,9 @@ export function defaultSettings() {
         permissionMode: 'default',
         useLocalConfig: true,
         builtin: true,
+        // OFF until the bridge says this CLI is on the machine. See autoEnable below.
+        enabled: false,
+        autoEnable: true,
       },
     ],
     skills: defaultSkills(),
@@ -211,6 +252,10 @@ export function defaultSettings() {
       // machine. 'me' matches the "You"/"Me" caption label plus `selfNames` (Google Meet
       // resolves "You" to the real name, so that list is how it is recognised there).
       voice: { enabled: true, wakeWord: 'ChatPanel', from: 'me', selfNames: [] },
+      // A timer that finishes silently is a timer that did not go off, so this is ON — but a
+      // chiming browser is unwelcome in a shared office, so it is a real switch, not a
+      // constant. Read in background.js deliverNotify.
+      alertSound: true,
       // Topic extraction: when enabled, ChatPanel extracts durable graph topics
       // after chats/meetings change. Blank targetId means the current active
       // model/agent; a specific target id pins extraction to that configured model.
@@ -601,6 +646,24 @@ function mergeSettings(base, stored) {
   if ((!stored.version || stored.version < 9) && out.ui.webSearch) {
     out.ui.webSearch.tabFallback = false;
   }
+  // v10: built-in CLI agents are discovery-gated (see the `agents` note in defaultSettings).
+  // Older installs have them all silently enabled, so stamp the marker onto the ones the user
+  // has never touched. Deliberately does NOT change `enabled` here: this runs on a plain
+  // settings read, which knows nothing about what is installed. The panel flips them only
+  // once the bridge has actually answered, so an offline bridge can never empty the picker.
+  if (!stored.version || stored.version < 10) {
+    out.agents = (out.agents || []).map((a) => (
+      a && a.builtin && a.kind === 'bridge' && a.autoEnable === undefined
+        ? { ...a, autoEnable: true }
+        : a
+    ));
+  }
+  // Not a migration — a repair that has to run on EVERY read, because the id can be
+  // orphaned at any time by deleting the endpoint or agent it names, not just by an
+  // upgrade. Here rather than in each caller so the panel, the settings page, the notes
+  // page and the service worker all agree on what the active model is. See
+  // repairActiveAgentId().
+  out.activeAgentId = repairActiveAgentId(out);
   out.version = base.version;
   return out;
 }
@@ -709,21 +772,56 @@ export function getAgent(settings, id) {
   return settings.agents.find((a) => a.id === id) || settings.agents[0];
 }
 
-// A "chat target" is anything you can talk to: an endpoint (its default model),
-// a model agent (a persona over an endpoint), or a bridge agent. The side-panel
-// picker offers all three; this resolves a stored id back to the object, with a
-// sensible fallback so the panel always has something to talk to.
+// Auto is a CHOICE, not a configured model, so it is in neither list — but activeAgentId
+// can hold it, and a repair that did not know that would "fix" it into one fixed model on
+// every settings read. Here, not in the panel: the store decides what ids are real.
+export const ROUTER_TARGET_ID = 'router:auto';
+
+// The target with exactly this id, or null — for callers where the ANSWER MATTERS (which
+// model runs this job / this autocomplete). getTarget() substitutes on a miss, which is
+// right for a picker and wrong everywhere else: a substitute that reads as a choice is how
+// a deleted endpoint silently became "everything runs on Claude Code".
+export function findTarget(settings, id) {
+  if (!id) return null;
+  return (settings?.endpoints || []).find((e) => e.id === id)
+    || (settings?.agents || []).find((a) => a.id === id)
+    || null;
+}
+
+// A "chat target" is anything you can talk to: an endpoint, a persona over one, or a bridge
+// agent. Resolves a stored id, with a fallback so the picker always has something.
+//
+// THE FALLBACK ORDER IS THE POINT. It used to try the first BRIDGE agent before any
+// endpoint, so a miss landed on `claude-code` — the first built-in — on machines with no
+// Claude Code installed. Callers needing the user's ACTUAL choice use findTarget().
 export function getTarget(settings, id) {
-  const eps = settings.endpoints || [];
-  const ags = settings.agents || [];
+  const eps = settings?.endpoints || [];
+  const ags = settings?.agents || [];
+  const on = (t) => t.enabled !== false;
   return (
-    eps.find((e) => e.id === id) ||
-    ags.find((a) => a.id === id) ||
-    ags.find((a) => a.kind === 'bridge') ||
+    findTarget(settings, id) ||
+    eps.find((e) => on(e) && e.model) ||          // a connection the user gave a model to
+    ags.find((a) => on(a) && a.kind === 'bridge') || // a CLI: might not be installed, but can answer
+    eps.find(on) ||                               // an endpoint with no model chosen — can't answer
     eps[0] ||
     ags[0] ||
     null
   );
+}
+
+// The active id, repaired if it no longer names anything.
+//
+// activeAgentId is a stored id and the things it names are deletable, so deleting the
+// endpoint you were chatting with left it pointing at nothing — unnoticed, because
+// getTarget() answered with a substitute that every caller took for the user's choice:
+// prompt-assist, inline autocomplete, scheduled jobs and the meeting scribe all quietly
+// moved to whichever target happened to be first. Repaired at READ time so every surface
+// inherits it. Pure and idempotent; the panel persists it on its next settings write.
+export function repairActiveAgentId(settings) {
+  const id = settings?.activeAgentId;
+  if (id === ROUTER_TARGET_ID) return id; // Auto is real, it is just not a stored model
+  if (findTarget(settings, id)) return id;
+  return getTarget(settings, null)?.id || '';
 }
 
 // Flatten a target (+ settings) into the { kind, baseUrl, apiKey, model, … }
@@ -785,7 +883,9 @@ export async function createConversation({ agentId, title } = {}) {
   // side panel opens.
   return {
     id: uid(),
-    title: title || 'New chat',
+    // Clamped at the door: a job's name comes from a spoken command, and a spoken command is
+    // as long as the person kept talking.
+    title: clampTitle(title),
     agentId: agentId || null,
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -843,7 +943,7 @@ export async function saveConversation(conv) {
 export async function renameConversation(id, title) {
   const conv = await getConversation(id);
   if (!conv) return;
-  conv.title = title;
+  conv.title = clampTitle(title, conv.title || 'New chat');
   await saveConversation(conv);
 }
 
@@ -882,8 +982,13 @@ const BACKUP_TYPE = 'chatpanel-backup';
 // mistake, so say so instead of writing a backup that silently omits the user's memory: a
 // backup you discover is incomplete at restore time is worse than one that refused to run.
 function requireBackupExtras(extras, fn) {
-  if (!extras || typeof extras.exportMemories !== 'function') {
-    throw new Error(`${fn}() needs backupExtras — import js/backup-payload.js and pass it.`);
+  // Checked by NAME, not just presence: a caller that passes a stale extras object (one built
+  // before a store moved behind this seam) would otherwise fail deep inside the export with a
+  // "not a function" and a half-written backup, instead of here with the fix in the message.
+  const need = ['exportMemories', 'exportMeetings', 'exportNotes', 'exportNotesConfig', 'exportOAuthTokens'];
+  const missing = need.filter((k) => typeof extras?.[k] !== 'function');
+  if (missing.length) {
+    throw new Error(`${fn}() needs backupExtras — import js/backup-payload.js and pass it (missing: ${missing.join(', ')}).`);
   }
 }
 
@@ -945,9 +1050,9 @@ export async function importConversations(data, { mode = 'merge' } = {}) {
 export async function exportAllData(extras) {
   requireBackupExtras(extras, 'exportAllData');
   const conv = await exportConversations();
-  const meetings = await exportMeetings();
-  const notes = await exportNotes(); // v5 — user notes as a third first-class source
-  const notesConfig = await exportNotesConfig(); // v6 — Notes UI + co-writer config (localStorage)
+  const meetings = await extras.exportMeetings();
+  const notes = await extras.exportNotes(); // v5 — user notes as a third first-class source
+  const notesConfig = await extras.exportNotesConfig(); // v6 — Notes UI + co-writer config (localStorage)
   // v7 — memory. Small, but the most expensive thing to lose: it is what the user TAUGHT
   // ChatPanel, and unlike a chat or a note there is no way to reconstruct it from anywhere else.
   // v8 — widgets, jobs and the vault, which arrived after v7 and a restore would otherwise
@@ -959,7 +1064,7 @@ export async function exportAllData(extras) {
   // worker on the auto-backup alarm, where that throws. See js/backup-payload.js.
   const memories = await extras.exportMemories();
   const settings = await getSettings();
-  const oauthTokens = await exportOAuthTokens(); // endpoint sign-ins (v4) — see SECURITY note above
+  const oauthTokens = await extras.exportOAuthTokens(); // endpoint sign-ins (v4) — see SECURITY note above
   const [widgets, jobs, vault] = await Promise.all([
     extras.exportWidgets().catch(() => null),
     extras.exportJobs().catch(() => null),
@@ -995,14 +1100,14 @@ export async function importAllData(data, {
 } = {}) {
   requireBackupExtras(extras, 'importAllData');
   const conversations = await importConversations(data, { mode }); // validates the file
-  const meetings = await importMeetings(data.meetings, { mode });
-  const notes = await importNotes(data.notes, { mode }); // v5+; older backups have no notes
+  const meetings = await extras.importMeetings(data.meetings, { mode });
+  const notes = await extras.importNotes(data.notes, { mode }); // v5+; older backups have no notes
   // v7+. Merge reconciles rather than appends, so restoring the same backup twice is a no-op
   // instead of doubling every memory.
   const memories = await extras.importMemories(data.memories, { mode });
   // v6+: Notes UI + co-writer config (localStorage). Older backups have none.
   if (includeSettings && data.notesConfig && typeof data.notesConfig === 'object') {
-    await importNotesConfig(data.notesConfig, { mode });
+    await extras.importNotesConfig(data.notesConfig, { mode });
   }
   let settings = false;
   if (includeSettings && data.settings && typeof data.settings === 'object') {
@@ -1014,7 +1119,7 @@ export async function importAllData(data, {
   // OAuth tokens (v4+) ride along so restored endpoints stay signed in. Honor the
   // same merge/replace mode as the rest of the backup.
   if (includeOAuthTokens && data.oauthTokens && typeof data.oauthTokens === 'object') {
-    await importOAuthTokens(data.oauthTokens, { mode });
+    await extras.importOAuthTokens(data.oauthTokens, { mode });
   }
   // v8+. Widgets are the user's own features, so they restore with the main data. Jobs are
   // machine configuration (a schedule that wakes THIS device), and the vault is credentials
@@ -1029,10 +1134,18 @@ export async function importAllData(data, {
   return { conversations, meetings, notes, memories, settings, widgets, jobs, vault };
 }
 
+// The single length a chat title may be. Auto-titling from a first message already used it;
+// every OTHER way a title gets set — a job's name, a meeting thread, a rename — did not, and
+// an unbounded title is a list row that never ends and a confirm dialog that fills the panel
+// with transcript and pushes its own buttons off-screen.
+export const MAX_TITLE_LEN = 48;
+export function clampTitle(text, fallback = 'New chat') {
+  const clean = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!clean) return fallback;
+  return clean.length > MAX_TITLE_LEN ? `${clean.slice(0, MAX_TITLE_LEN - 1)}…` : clean;
+}
 function titleFrom(text) {
-  const clean = (text || '').replace(/\s+/g, ' ').trim();
-  if (!clean) return 'New chat';
-  return clean.length > 48 ? clean.slice(0, 47) + '…' : clean;
+  return clampTitle(text);
 }
 
 // Export one conversation as Markdown (used by the history "export" button AND the

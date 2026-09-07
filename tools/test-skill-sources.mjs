@@ -12,6 +12,10 @@ import { trustOf } from '../extension/js/events/skill-manifest.js';
 const settingsJs = readFileSync(new URL('../extension/settings.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../extension/settings.html', import.meta.url), 'utf8');
 const providers = readFileSync(new URL('../extension/js/providers.js', import.meta.url), 'utf8');
+// checkBridge moved OUT of providers.js into its own dependency-free module: reading one
+// localhost JSON must not pull the model layer onto the panel's boot path. providers still
+// re-exports it, so callers are unchanged — but the implementation is here now.
+const bridgeHealth = readFileSync(new URL('../extension/js/bridge-health.js', import.meta.url), 'utf8');
 const skillOriginLabelSrc = readFileSync(new URL('../extension/js/skill-source-bridge.js', import.meta.url), 'utf8');
 
 // A bridge that answers, standing in for the real one.
@@ -100,7 +104,9 @@ function reg({ supported = true, skills = REC, fail = null } = {}) {
 }
 
 // --- the extension wiring ------------------------------------------------------------
-assert.match(providers, /skills: json\.skills \|\| null/, 'checkBridge must surface the /health capability flag.');
+assert.match(bridgeHealth, /skills: json\.skills \|\| null/, 'checkBridge must surface the /health capability flag.');
+assert.match(providers, /export \{ checkBridge \} from '\.\/bridge-health\.js';/,
+  'and providers must keep re-exporting it — settings.js and notes.js import it from there.');
 assert.match(html, /id="skill-sources-card"/, 'the Skills tab needs somewhere to show them');
 assert.match(html, /id="skill-sources-card" *[^>]*class="card hidden"|class="card hidden" id="skill-sources-card"/, 'the section starts hidden — an absent source shows nothing');
 assert.match(settingsJs, /createSkillSourceRegistry/, 'settings should build the registry');

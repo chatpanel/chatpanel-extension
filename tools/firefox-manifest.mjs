@@ -93,8 +93,9 @@ export const CHROMIUM_ONLY_FILES = Object.freeze([
   // exactly what must never happen.
   'sandbox.html',
   'js/sandbox-runner.js',
-  'offscreen.html',         // host page for the offscreen WebLLM engine
-  'js/offscreen-webllm.js', // its entry point (statically imports the bundle below)
+  'offscreen.html',         // host page: the offscreen WebLLM engine + the timer alert sound
+  'js/offscreen.js',        // its router — lazily imports whichever of the two is needed
+  'js/offscreen-webllm.js', // the engine half (statically imports the bundle below)
   // The WebLLM runtime. Dead weight on Firefox in the most literal sense: its runtime
   // requires maxStorageBuffersPerShaderStage = 10 and Firefox reports the WebGPU spec
   // default of 8, so the engine can never initialize there (see js/webgpu-support.js).

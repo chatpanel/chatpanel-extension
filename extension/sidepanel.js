@@ -7,6 +7,10 @@ import {
   getSettings,
   defaultSettings,
   getTarget,
+  clampTitle,
+  findTarget,
+  repairActiveAgentId,
+  ROUTER_TARGET_ID,
   resolveTarget,
   getIndex,
   getConversation,
@@ -77,7 +81,7 @@ import {
 } from './js/store-monitors.js';
 import { renderMarkdown } from './js/markdown.js';
 import { combineSystemPrompt, sourceCitationSystem } from './js/tool-hints.js';
-import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
+import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeAgentToAdopt, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
 import { createVault } from './js/pii-redact.js';
 import { setPiiEntitlement, redactOnce, restore as restorePii, redactionFromSettings } from './js/pii-pipeline.js';
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
@@ -102,6 +106,21 @@ function isTouchPanel() {
     && globalThis.matchMedia?.('(pointer: coarse)').matches === true;
 }
 import { assistPrompt } from './js/assist.js';
+// One ordering of "which model will actually answer", shared with Notes and suggestions —
+// the licence gate, the has-a-model gate and bridge health, applied once. See its header.
+import { bestTarget, reconcileAutoEnable } from './js/target-choice.js';
+// A live monitor's context + model policy. Static and tiny (no imports of its own): it decides
+// what a monitor turn assembles, so it has to be there before the first one runs.
+import * as monitorProfileMod from './js/monitor-profile.js';
+// One fetch, no dependencies, ~2 KB — static on purpose. init() calls it on every open, so a
+// dynamic import here would buy nothing and cost a round trip. See js/bridge-health.js.
+import { checkBridge } from './js/bridge-health.js';
+// The meeting scribe's cadence, as arithmetic over what a tick observed. Its own module
+// because the delay used to be inferred from a cache's size, and inferring it is what
+// produced a four-second model-call loop — see js/scribe-cadence.js.
+import {
+  nextScribeDelay, shouldSkipMeeting, SCRIBE_BUSY_RETRY_MS,
+} from './js/scribe-cadence.js';
 // NB: page-tools.js + canvas-adapters.js (and their page-actions / draw.io / tldraw
 // transitive graph, ~130KB) are heavy and only needed when "Act on page" actually
 // runs — they're dynamic-imported inside pageToolProvider() to keep them OFF the
@@ -1128,6 +1147,7 @@ async function init() {
     // The rail button for everything ChatPanel will do unprompted. Same idle slot, same
     // reason: nobody's first paint should wait on a list of scheduled jobs.
     import('./js/jobs-panel.js')
+      .then((m) => { jobsPane = m; return m; })
       .then((m) => m.wireJobsPane({
         registerPane,
         toast,
@@ -1212,8 +1232,12 @@ async function init() {
       // The worker hit a job it cannot finish alone (it needs a model).
       drainPendingJobs();
     } else if (msg?.type === 'CP_JOB_FIRED') {
-      // A notify job with no notifications permission to deliver it — say it here instead.
-      toast(`${msg.title}${msg.body ? ` — ${msg.body}` : ''}`, 6000);
+      // EVERY fired timer, not just one that had no notification to deliver it. A panel that
+      // is open and shows nothing while the OS pops a toast is the panel telling you it did
+      // not happen. Six seconds, and it names the job, so a glance is enough.
+      toast(`⏰ ${msg.title}${msg.body ? ` — ${msg.body}` : ''}`, 6000);
+      // The Jobs pane lists what each job has done; if it is open, its run just landed.
+      jobsPane?.refreshJobRuns?.(msg.jobId);
     } else if (msg?.type === 'CP_MEETING_DELTA' && msg.meetingId) {
       // New speech, pushed the moment it is durable. Everything on this path is free and
       // local — no model, no storage read — so it can afford to run on every flush.
@@ -1291,32 +1315,44 @@ function currentAgent() {
   const id = state.conv?.agentId || state.settings.activeAgentId;
   // The router is a choice, not a configured model, so `getTarget` will never find it.
   if (id === ROUTER_TARGET.id) return ROUTER_TARGET;
-  return getTarget(state.settings, id);
+  // An OLD conversation can name a target that has since been deleted. Prefer the active
+  // choice over getTarget()'s generic substitute: "the model you are using now" is a much
+  // better answer for a stale thread than "whichever target happens to be first".
+  return findTarget(state.settings, id) || getTarget(state.settings, state.settings.activeAgentId);
 }
 
 // On Free, the active agent must be one of the unlocked slots. If it isn't
 // (default points elsewhere, or the user downgraded from Pro), repoint to the
 // free agent slot so chatting never targets a locked agent.
 function ensureUsableActiveAgent() {
-  // If the active target was disabled in Settings, move to the first enabled one so
-  // chat doesn't point at a hidden/disabled model (applies to all tiers).
-  const active = getTarget(state.settings, state.settings.activeAgentId);
-  if (active && active.enabled === false) {
-    const next =
-      (state.settings.endpoints || []).find((e) => e.enabled !== false)?.id ||
-      (state.settings.agents || []).find((a) => a.kind === 'bridge' && a.enabled !== false)?.id;
-    if (next) { state.settings.activeAgentId = next; updateSettings({ activeAgentId: next }); }
+  // FIRST: is the stored id still a real thing? getSettings() repairs it on read, but the
+  // panel also mutates state.settings in memory (and the user can delete the active
+  // endpoint from the settings page while the panel is open), so the repair is applied
+  // here too — and PERSISTED, which the read-side repair deliberately does not do.
+  // Without this the id stays dangling forever and every getTarget() below answers with a
+  // substitute that reads as the user's choice.
+  const repaired = repairActiveAgentId(state.settings);
+  if (repaired && repaired !== state.settings.activeAgentId) {
+    state.settings.activeAgentId = repaired;
+    updateSettings({ activeAgentId: repaired });
   }
-  if (isPro(state.license)) return;
-  const cur = getTarget(state.settings, state.settings.activeAgentId);
-  if (cur && canUseAgent(state.license, state.settings, cur)) return;
-  // Prefer the free ENDPOINT when the current target is an endpoint, or when the
-  // bridge isn't running: dropping an API user onto a local CLI agent they may not
-  // have installed is a worse landing than their own configured model.
-  const preferEndpoint = !cur || cur.kind !== 'bridge' || !state.bridge?.ok;
-  const id = preferEndpoint
-    ? freeEndpointId(state.settings) || freeAgentId(state.settings)
-    : freeAgentId(state.settings) || freeEndpointId(state.settings);
+  // Is where we are pointing still somewhere we can go? Disabled (switched off in Settings,
+  // any tier), or locked (Free, pointing at a Pro-only target after a downgrade).
+  const cur = findTarget(state.settings, state.settings.activeAgentId);
+  const usable = cur
+    && cur.enabled !== false
+    && (isPro(state.license) || canUseAgent(state.license, state.settings, cur));
+  if (usable || isRouterTarget({ id: state.settings.activeAgentId })) return;
+  // ONE ordered answer, shared with Notes, suggestions and the scribe: the licence gate, the
+  // "an endpoint with no model cannot answer" gate and bridge health all applied in the same
+  // place. The hand-rolled preferEndpoint heuristic this replaces knew about the first two
+  // and not the third, which is how a Free user could be landed on a local CLI that was not
+  // installed — the single worst destination, and the one we ship first in the list.
+  const id = bestTarget(state.settings, {
+    license: state.license,
+    canUseAgent,
+    bridgeAgents: state.bridge?.agents,
+  })?.id;
   if (id && id !== state.settings.activeAgentId) {
     state.settings.activeAgentId = id;
     updateSettings({ activeAgentId: id });
@@ -1361,9 +1397,50 @@ function agentAvailability(target) {
 }
 
 async function refreshBridge() {
-  const { checkBridge } = await import('./js/providers.js');
+  // js/bridge-health.js, NOT providers.js. This runs in init() on every panel open, and
+  // reaching for the model layer to read one localhost JSON pulled 382 KB across 25 modules
+  // onto the boot path — undoing, in one line, the deferral the rest of this file is built
+  // around. The health check has no dependencies at all.
   state.bridge = await checkBridge(state.settings.bridgeUrl);
+  syncDiscoveredAgents(); // must run BEFORE the slot is claimed — it decides what is enabled
+  adoptFreeAgentSlot();
   renderAgentName();
+}
+
+/**
+ * Switch the built-in CLI agents on and off to match what is actually installed.
+ *
+ * Gated on `bridge.ok`, and that guard is the whole safety of this: an unreachable bridge
+ * returns no agent list, and treating that as "nothing is installed" would switch off every
+ * agent the user has the moment the bridge was slow to start. Only a real answer from
+ * /health moves anything, and only for agents nobody has decided about by hand
+ * (autoEnable — see js/target-choice.js).
+ */
+function syncDiscoveredAgents() {
+  if (!state.bridge?.ok) return;
+  const { changed, agents } = reconcileAutoEnable(state.settings.agents, state.bridge.agents);
+  if (!changed) return; // no write, so no storage event and no re-render storm
+  state.settings.agents = agents;
+  updateSettings({ agents });
+}
+
+/**
+ * Claim an empty Free CLI slot for an agent that is actually on this machine.
+ *
+ * Free is one API provider and one local agent — the user's pick of each. But the slot ships
+ * empty and something has to fill it, and filling it with the first BUILT-IN meant filling it
+ * with Claude Code, on machines with no Claude Code installed. /health is the first moment we
+ * know what is really there, so that is where the slot is claimed.
+ *
+ * Only ever fills an EMPTY slot (see freeAgentToAdopt), so a user who has chosen keeps their
+ * choice — including a choice of an agent that happens to be offline right now.
+ */
+function adoptFreeAgentSlot() {
+  const id = freeAgentToAdopt(state.settings, state.bridge?.agents);
+  if (!id) return;
+  state.settings.freeAgentId = id;
+  updateSettings({ freeAgentId: id });
+  ensureUsableActiveAgent(); // the newly unlocked agent may be a better active target
 }
 
 $('agent-routed')?.addEventListener('click', () => {
@@ -1380,7 +1457,9 @@ $('agent-routed')?.addEventListener('click', () => {
  * nothing downstream needs to know routing exists to remember that you chose it.
  */
 export const ROUTER_TARGET = Object.freeze({
-  id: 'router:auto',
+  // The id lives in the store, because the store is what has to recognise it as real when
+  // it repairs a dangling activeAgentId — see repairActiveAgentId().
+  id: ROUTER_TARGET_ID,
   name: 'Auto',
   kind: 'router',
   description: 'Picks the best available model for each message.',
@@ -3744,6 +3823,11 @@ async function jobs() {
   return jobsMod;
 }
 
+// js/jobs-panel.js once the idle callback in init() has loaded it; null before that. Held so
+// a settings change can push a freshly written skill into the Jobs form without importing
+// the pane earlier than it would have loaded anyway.
+let jobsPane = null;
+
 // Run the model half of one job. Deliberately built on the same pieces as a monitor turn —
 // one target resolution, one toolset, one redaction vault — rather than a second turn path
 // that would drift away from the guarded one.
@@ -3856,7 +3940,21 @@ async function runJobTurn(job, { why = '', event = null, match = null, matches =
   }
   // Already on screen, in the thread — a toast offering to open what you are reading is noise.
   if (thread && showing()) return;
-  toastAction(`${job.name} ran${why ? ` — ${why}` : ''}`, 'Open', () => openConversation(conv.id), 6000);
+  // SHOW IT, don't just offer it.
+  //
+  // A six-second toast is the whole of what an unattended run produced, and a toast you were
+  // not looking at is a run that "did nothing" — reported exactly that way: "I saw it in Jobs
+  // but nothing happened in the panel". So when the panel is IDLE (the chat on screen is
+  // empty, which is what a freshly-opened panel always is) the job's answer is opened. When
+  // the user is in the middle of their own conversation it stays a toast: pulling someone out
+  // of what they are typing is worse than a missed notification.
+  const idle = !state.conv || !(state.conv.messages || []).some((mm) => mm.role === 'user' || mm.role === 'assistant');
+  if (idle) {
+    await openConversation(conv.id).catch(() => {});
+    toast(`⏱ ${job.name} ran${why ? ` — ${why}` : ''}`, 5000);
+    return;
+  }
+  toastAction(`${job.name} ran${why ? ` — ${why}` : ''}`, 'Open', () => openConversation(conv.id), 8000);
 }
 
 /**
@@ -3868,7 +3966,9 @@ async function runJobTurn(job, { why = '', event = null, match = null, matches =
  */
 function nameThreadForMeeting(conv, { event = null, job = null } = {}) {
   if (conv.title && conv.title !== 'New chat') return;
-  conv.title = event?.title || state.liveMeeting?.title || job?.name || conv.title;
+  // clampTitle, like every other title path: a job created by voice takes its name from what
+  // was said, and what was said has no length limit.
+  conv.title = clampTitle(event?.title || state.liveMeeting?.title || job?.name || conv.title, conv.title);
 }
 
 /**
@@ -4021,9 +4121,11 @@ async function meetingJobContext(event, match, { matches = null, jobId = '' } = 
 async function textJobContext(event, { matches = null, match = null, jobId = '' } = {}) {
   if (!event?.source) return '';
   const batch = (matches?.length ? matches : [match]).filter(Boolean);
-  const lines = batch
-    .map((b) => String(b?.segment?.text || b?.why || '').trim())
-    .filter(Boolean)
+  // Deduped BEFORE it becomes an instruction: a growing caption arrives as a series of
+  // prefixes of one sentence, and listing all of them asked the model the same question four
+  // times. See dedupeTriggerLines.
+  const { dedupeTriggerLines } = await import('./js/text-triggers.js');
+  const lines = dedupeTriggerLines(batch.map((b) => b?.segment?.text || b?.why || ''))
     .map((t) => `- “${t}”`);
   if (!lines.length) return '';
   const where = event.source === 'note' ? 'note' : 'chat';
@@ -4389,8 +4491,12 @@ async function voiceRuntime() {
       // an unattended action has to clear. Timers and reminders are recognised and
       // reported until the scheduler can hold them (docs/feature-f5-scheduler.md).
       actions.bind('voice:monitor', async (cmd) => {
-        await addMonitor({ kind: 'qa', prompt: cmd.args.prompt });
-        return { message: `Watching: ${cmd.args.prompt}` };
+        // The REQUEST, not everything after the wake word. A spoken monitor arrived as the
+        // whole utterance — preamble, request and thinking-aloud — so the monitor watched a
+        // paragraph and answered accordingly. See refineSpokenCommand.
+        const { request } = vc.refineSpokenCommand(cmd.args.prompt);
+        await addMonitor({ kind: 'qa', prompt: request || cmd.args.prompt });
+        return { message: `Watching: ${request || cmd.args.prompt}` };
       });
       // Timers and reminders became possible the moment jobs got somewhere durable to live:
       // both are `notify` actions, so the service worker finishes them with the panel shut.
@@ -4407,16 +4513,152 @@ async function voiceRuntime() {
       // has, so the job points AT the skill rather than copying its prompt.
       actions.bind('voice:schedule', async (cmd) => {
         const m = await jobs();
-        const spec = m.bindSkill(m.jobFromCommand(cmd, { now: Date.now() }), enabledSkills(state.settings?.skills));
+        // Refined HERE, not in jobs.js: that module is on the service worker's graph, which
+        // cannot defer anything, and the voice vocabulary is 37 KB. This is the one place
+        // that already has it loaded — it is what heard the command.
+        const { request } = vc.refineSpokenCommand(cmd.args.target);
+        const refined = { ...cmd, args: { ...cmd.args, target: request || cmd.args.target } };
+        const spec = m.bindSkill(m.jobFromCommand(refined, { now: Date.now() }), enabledSkills(state.settings?.skills));
         if (!spec) return { message: `Couldn’t schedule “${cmd.args.target}”` };
         await m.putJob(spec);
         return { message: `${spec.name} — ${jobWhenLabel(spec)}` };
+      });
+      // THE OTHER HALF OF `needsModel`.
+      //
+      // Anything no intent matched used to end as reason:'not-understood' — which in practice
+      // meant a job or monitor whose name and prompt were the whole utterance, preamble and
+      // thinking-aloud included. The free pass (refineSpokenCommand) handles the clear cases;
+      // when it declines to choose between several questions, a MODEL reads it. On the
+      // monitor's own model, which the user picked for being fast, because this is a one-shot
+      // classification happening while people are still talking.
+      actions.fallback(async (cmd) => {
+        // The command PLUS what followed it, up to the next address. The intents deliberately
+        // parse a tight span — that is what stops a timer's duration being read from four
+        // sentences away — but a model reading an unrecognised request should see the words
+        // around it, because the question often trails a sentence of preamble.
+        const wide = [cmd.command || '', cmd.rest || ''].filter(Boolean).join(' ').trim();
+        const spoken = vc.refineSpokenCommand(wide);
+        if (!spoken.request) return null;
+        let refined = spoken.ambiguous ? await refineSpokenWithModel(spoken.request) : null;
+        // No model, a refusal, or a failure → the deterministic reading. Never nothing: the
+        // user did say something, and silently dropping it is the failure this replaces.
+        if (!refined) refined = { request: spoken.request, name: spoken.name, kind: 'question' };
+        if (refined.kind === 'none') return null; // the model says they were just talking
+        return runSpokenRequest(refined);
       });
       voiceMod = { vc, engine: await rules.ruleEngine(), actions };
       return voiceMod;
     })();
   }
   return voiceLoading;
+}
+
+/**
+ * Ask a model which of several spoken questions was the request.
+ *
+ * On the MONITOR's model (see js/monitor-profile.js): this runs mid-meeting and is a
+ * single-sentence classification, so it wants the fastest thing configured, not whatever the
+ * conversation is pointed at. Returns null on any failure — no model, no answer, unparseable
+ * JSON — and the caller falls back to the deterministic reading rather than to nothing.
+ *
+ * No tools, low temperature, tight cap: this must cost about as much as one sentence.
+ */
+/**
+ * Do the thing that was asked for — as the thing it IS.
+ *
+ * EVERYTHING WAS BECOMING A MONITOR. A spoken question ("how is the weather in Fairview?")
+ * created a card that watched the meeting for an answer; a request to take notes created a
+ * card that watched the meeting for notes; naming a skill did nothing at all. Reported
+ * exactly: "Everything, either it's a monitor or a job, but not really a question that
+ * actually gets typed into the message your agent, and didn't invoke the skills."
+ *
+ * A monitor is for something ONGOING. A question wants an answer once, in the chat, and the
+ * user's own words for what that should feel like are the specification: "as if I type it, so
+ * it should be like a hands-free experience". So a question goes through the SAME path a
+ * typed one does — the composer and send() — which is also why it inherits skills, tools,
+ * redaction and history without any of that being re-implemented here.
+ */
+async function runSpokenRequest(refined) {
+  const input = $('input');
+  // NEVER CLOBBER A DRAFT. Someone mid-sentence in the composer is the one person who is
+  // definitely paying attention, and losing their words to a spoken command would be far
+  // worse than the command waiting. Offer it instead.
+  const busy = !!input?.value.trim() || state.streams.has(state.conv?.id);
+
+  if (refined.kind === 'skill') {
+    const skill = (enabledSkills(state.settings?.skills) || [])
+      .find((sk) => (sk.name || '').toLowerCase() === refined.skill.toLowerCase())
+      || (enabledSkills(state.settings?.skills) || [])
+        .find((sk) => (sk.name || '').toLowerCase().includes(refined.skill.toLowerCase()));
+    if (!skill) return { message: `No skill called “${refined.skill}”` };
+    if (busy) { toastAction(`Run “${skill.name}”?`, 'Run', () => runSpokenSkill(skill, refined), 8000); return { message: `“${skill.name}” is ready` }; }
+    await runSpokenSkill(skill, refined);
+    return { message: `Running “${skill.name}”` };
+  }
+
+  if (refined.kind === 'note') {
+    // Through the CHAT, not through a raw capture. "Take notes on what we discussed" asks for
+    // something written up, and the turn already has the note-writing tool, the meeting
+    // context and the redaction harness — dumping the transcript into the Inbox instead would
+    // be a different, worse thing wearing the same name.
+    const ask = `${refined.request}\n\n(Write this up as a note and save it with the note tool.)`;
+    if (busy) { toastAction(refined.name, 'Take notes', () => askSpoken(ask), 8000); return { message: `Heard: ${refined.name}` }; }
+    await askSpoken(ask);
+    return { message: `Taking notes — ${refined.name}` };
+  }
+
+  if (refined.kind === 'monitor') {
+    await addMonitor({ kind: 'qa', prompt: refined.request, title: refined.name });
+    return { message: `Watching: ${refined.name}` };
+  }
+
+  // question — the default, and the one that was missing.
+  if (busy) {
+    toastAction(refined.name, 'Ask it', () => askSpoken(refined.request), 8000);
+    return { message: `Heard: ${refined.name}` };
+  }
+  await askSpoken(refined.request);
+  return { message: `Asked: ${refined.name}` };
+}
+
+/** Put it in the composer and send — the hands-free equivalent of typing it. */
+async function askSpoken(text) {
+  const input = $('input');
+  if (!input) return;
+  input.value = text;
+  autoGrow();
+  await send();
+}
+
+/** Fill the composer from a skill exactly as the 🎓 menu does, then send it. */
+async function runSpokenSkill(skill, refined) {
+  await applySkill(skill);
+  const input = $('input');
+  // applySkill parks the caret where {{input}} was; a spoken run has no typed argument, so
+  // what the skill needs is the request itself when the prompt expects one.
+  if (input && !input.value.trim()) input.value = refined.request;
+  await send();
+}
+
+async function refineSpokenWithModel(utterance) {
+  try {
+    const profile = monitorProfileMod.monitorProfile(state.settings);
+    const chosen = (profile.targetId && findTarget(state.settings, profile.targetId))
+      || getTarget(state.settings, state.settings.activeAgentId);
+    const resolved = resolveTarget(chosen, state.settings);
+    if (!resolved) return null;
+    const { refinementPrompt, parseRefinement } = await import('./js/events/voice-intents.js');
+    let out = '';
+    await streamChat({
+      agent: { ...resolved, systemPrompt: 'Return only JSON. No prose, no code fences.', temperature: 0, maxTokens: 200 },
+      messages: [{ role: 'user', content: refinementPrompt(utterance) }],
+      settings: state.settings,
+      onDelta: (d) => { out += d; },
+    });
+    return parseRefinement(out);
+  } catch {
+    return null; // a refinement that fails must not lose the command it was refining
+  }
 }
 
 async function onMeetingDelta(meetingId, segments) {
@@ -5001,8 +5243,11 @@ const ACCUMULATES = (m) => m?.kind !== 'tldr';
 
 // Only the last few, and trimmed: this rides along on every tick, so the whole history
 // would grow the prompt without bound as the meeting runs long.
-function priorFindingsText(m) {
-  const found = (m.findings || []).slice(-8);
+function priorFindingsText(m, profile) {
+  // Budgeted by the profile: an hour-old monitor has dozens of findings, and replaying all of
+  // them grows the prompt on every tick without improving the answer. The card still shows
+  // every one — this is only what the model is reminded of so it stops repeating itself.
+  const found = profile ? monitorProfileMod.recentFindings(m.findings, profile) : (m.findings || []).slice(-8);
   if (!found.length) return '';
   return found
     .map((f, i) => `${i + 1}. ${String(f.text || '').slice(0, 700)}`)
@@ -5018,7 +5263,7 @@ function deltaInstruction(prior) {
   ].join('\n\n');
 }
 
-function monitorPrompt(m, summary, transcript, prior = '') {
+function monitorPrompt(m, summary, transcript, prior = '', { hasTools = false } = {}) {
   if (m.kind === 'tldr') {
     return [
       'You are maintaining a SHORT running TL;DR of a LIVE meeting'
@@ -5031,14 +5276,21 @@ function monitorPrompt(m, summary, transcript, prior = '') {
     const sk = (state.settings?.skills || []).find((s) => s.id === m.skillId);
     return [
       sk?.prompt || 'Summarize the relevant part of this meeting.',
-      'Apply the instruction above to the LIVE meeting. The running summary + recent transcript below are your PRIMARY source; you MAY use available tools (web search, history, MCP, etc.) to verify or add context, citing outside sources. Be concise and grounded; say plainly if still unknown; never invent.',
+      // The tool sentence is CONDITIONAL now: with a lean profile there are no tools attached,
+    // and telling a model to "use web search to verify" when it has none is an instruction it
+    // can only fail — usually by narrating the attempt.
+    'Apply the instruction above to the LIVE meeting. The running summary + recent transcript below are your PRIMARY source.'
+      + (hasTools ? ' You MAY use available tools (web search, history, MCP) to verify or add context, citing outside sources.' : '')
+      + ' Be concise and grounded; say plainly if still unknown; never invent.',
       deltaInstruction(prior),
       summary && `RUNNING SUMMARY:\n${summary}`,
       `RECENT TRANSCRIPT:\n${transcript}`,
     ].filter(Boolean).join('\n\n');
   }
   return [
-    'You are tracking the user’s question as a LIVE meeting progresses, adding findings as they emerge. The meeting transcript + running summary below are your PRIMARY source — ground everything in them and prioritize what was actually said. You MAY use available tools (web search, history, MCP, etc.) to verify or fact-check claims from the meeting and add missing context, citing any outside sources. Be concise, flag what is still unknown, and never invent.',
+    'You are tracking the user’s question as a LIVE meeting progresses, adding findings as they emerge. The meeting transcript + running summary below are your PRIMARY source — ground everything in them and prioritize what was actually said.'
+      + (hasTools ? ' You MAY use available tools (web search, history, MCP) to verify or fact-check claims and add missing context, citing any outside sources.' : '')
+      + ' Answer in as few words as carry the answer. Flag what is still unknown, and never invent.',
     `QUESTION: ${m.prompt}`,
     deltaInstruction(prior),
     summary && `RUNNING SUMMARY:\n${summary}`,
@@ -5063,17 +5315,30 @@ async function runMonitor(m, { force = false } = {}) {
   // silently dropping it.
   if (!Array.isArray(m.findings)) m.findings = m.answer && !m.answer.startsWith('⚠') ? [{ t: m.ts || Date.now(), text: m.answer }] : [];
   const accumulate = ACCUMULATES(m);
-  const prior = accumulate ? priorFindingsText(m) : '';
+  // SPEED IS THE REQUIREMENT, quality is second — the opposite of a chat turn, and the reason
+  // a monitor now has a profile of its own. See js/monitor-profile.js.
+  const profile = monitorProfileMod.monitorProfile(state.settings);
+  const prior = accumulate ? priorFindingsText(m, profile) : '';
   const controller = new AbortController();
   try {
-    const transcript = rec ? meetingToText(rec, { sinceTs: Date.now() - 15 * 60_000 }) : '';
-    const summary = await getLiveNotesText(m.meetingId).catch(() => '');
-    const resolved = resolveTarget(agentForConv(conv), state.settings);
-    // Give the monitor the SAME access as a normal chat turn — web search, history,
-    // MCP + the live-transcript reader — so it can fact-check / augment the meeting
-    // against other sources. Skip only the interactive page-action tools (a
-    // background auto-refresh must not pop confirm dialogs or drive the tab).
-    const tools = await toolsetFor(resolved, { userText: m.prompt || '', pageTools: false });
+    const transcript = rec
+      ? meetingToText(rec, { sinceTs: Date.now() - monitorProfileMod.monitorWindowMs(profile) })
+      : '';
+    const summary = profile.sources.summary ? await getLiveNotesText(m.meetingId).catch(() => '') : '';
+    // The monitor's OWN model when one is set — a monitor wants the fastest thing that can
+    // read a transcript, which is rarely the model chosen for the conversation.
+    const chosen = (profile.targetId && findTarget(state.settings, profile.targetId)) || agentForConv(conv);
+    const resolved = resolveTarget(chosen, state.settings);
+    // NOT BUILT AT ALL when the profile needs none. Assembling a toolset costs the MCP
+    // handshakes and puts every tool's schema in the prompt whether or not it is called;
+    // with the lean default that is the single biggest thing standing between the question
+    // and its answer.
+    const tools = monitorProfileMod.monitorNeedsTools(profile)
+      ? monitorProfileMod.filterMonitorTools(
+          await toolsetFor(resolved, { userText: m.prompt || '', pageTools: false }),
+          profile,
+        )
+      : null;
     // Redact the transcript/PII before it leaves and restore placeholders on the way
     // back — the reversible per-conversation vault, exactly like chat turns.
     const { buildRedaction } = await import('./js/turn-tools.js'); // module-cached after first turn
@@ -5085,7 +5350,7 @@ async function runMonitor(m, { force = false } = {}) {
     let out = '';
     await streamChat({
       agent: { ...resolved, systemPrompt },
-      messages: [{ role: 'user', content: monitorPrompt(m, summary, transcript, prior) }],
+      messages: [{ role: 'user', content: monitorPrompt(m, summary, transcript, prior, { hasTools: !!tools?.specs?.length }) }],
       settings: state.settings,
       signal: controller.signal,
       tools,
@@ -5148,8 +5413,14 @@ function parseMonitorCommand(raw) {
   return { kind: mm[1].toLowerCase() === 'tldr' ? 'tldr' : 'qa', prompt: mm[2].trim() };
 }
 
-const scribeState = new Map(); // meetingId → { lastTs }
+// meetingId → { lastTs, failures, failedAt }. Bookkeeping ONLY: the tick's cadence is
+// decided by js/scribe-cadence.js from what the tick observed, never from this map's size.
+// Reading a cache to answer "did anything happen" is what produced a four-second loop.
+const scribeState = new Map();
 let scribeBusy = false;
+let scribeRan = false;      // has a tick completed this panel session? (first-look fast path)
+let scribeFailures = 0;     // consecutive ticks in which every live meeting failed
+let scribeLive = 0;         // meetings the last tick saw running (0 → cheap discovery cadence)
 
 // `force` reschedules immediately; otherwise only arms if nothing is pending.
 function scheduleLiveNotes({ force = false, delayMs } = {}) {
@@ -5157,26 +5428,43 @@ function scheduleLiveNotes({ force = false, delayMs } = {}) {
   if (!min) { stopLiveNotes(); return; }
   if (liveNotes.timer && !force) return;
   clearTimeout(liveNotes.timer);
-  liveNotes.timer = setTimeout(runLiveNotesTick, delayMs ?? (scribeState.size ? min * 60_000 : 4000));
+  const next = delayMs ?? nextScribeDelay({
+    intervalMin: min, ran: scribeRan, liveCount: scribeLive, summarized: false, failures: scribeFailures,
+  });
+  if (next == null) { stopLiveNotes(); return; }
+  liveNotes.timer = setTimeout(runLiveNotesTick, next);
 }
 
 async function runLiveNotesTick() {
   liveNotes.timer = null;
   const min = liveNotesIntervalMin();
   if (!min) return;
-  if (scribeBusy) { scheduleLiveNotes({ force: true, delayMs: 15_000 }); return; }
+  if (scribeBusy) { scheduleLiveNotes({ force: true, delayMs: SCRIBE_BUSY_RETRY_MS }); return; }
   scribeBusy = true;
+  // What this tick actually observed — the only inputs to the next delay.
+  let summarized = false;
+  let attempted = 0;
+  let failed = 0;
   try {
     let index = [];
     try { index = await getMeetingIndex(); } catch { /* none yet */ }
     const live = index.filter((e) => e.status !== 'ended');
+    scribeLive = live.length;
     renderScribeIndicator(live);
     for (const e of live) {
+      // Seeded BEFORE any work and kept across every exit below, including the throwing
+      // one: a meeting the loop cannot account for is exactly what used to drive the
+      // retry rate, so there is no longer a path that leaves one unaccounted for.
+      const st = scribeState.get(e.id) || { lastTs: 0, failures: 0, failedAt: 0 };
+      scribeState.set(e.id, st);
+      // One meeting that keeps failing (an undecryptable record, a model that is gone)
+      // must not be retried on every tick, and must not stop the others being summarised.
+      if (shouldSkipMeeting(st)) continue;
+      attempted += 1;
       try {
         const rec = await getMeeting(e.id);
         const segs = rec?.segments || [];
-        if (!segs.length) continue;
-        const st = scribeState.get(e.id) || { lastTs: 0 };
+        if (!segs.length) { st.failures = 0; continue; } // not started talking yet — not a failure
         const latestTs = segs[segs.length - 1]?.t || Date.now();
         // Merge into the evolving LIVE version (not whichever version the user is
         // currently viewing) so regenerating a summary never derails the scribe.
@@ -5184,7 +5472,7 @@ async function runLiveNotesTick() {
         const isFirst = !prev;
         if (!isFirst && latestTs <= st.lastTs) continue; // nothing new said
         const delta = meetingToText(rec, { sinceTs: isFirst ? 0 : st.lastTs });
-        if (!delta.trim()) { st.lastTs = latestTs; scribeState.set(e.id, st); continue; }
+        if (!delta.trim()) { st.lastTs = latestTs; continue; } // st is already in the map
         // THE TOGGLE HAS TO REACH THE LOOP.
         //
         // The analyzers were declared and listed in Plugins before this line existed, so
@@ -5192,7 +5480,7 @@ async function runLiveNotesTick() {
         // it does not enforce is worse than no control, and it is the same failure as a tool
         // reporting ok having done nothing. Checked BEFORE the call, so a summary the user
         // turned off costs no tokens rather than being generated and discarded.
-        if (!(await analyzerEnabled('meeting:summary'))) { st.lastTs = latestTs; scribeState.set(e.id, st); continue; }
+        if (!(await analyzerEnabled('meeting:summary'))) { st.lastTs = latestTs; continue; }
         const text = await summarizeMeeting(prev, delta, isFirst, {
           style: state.settings?.ui?.meetingSummaryStyle === 'detailed' ? 'detailed' : 'concise',
         });
@@ -5206,14 +5494,31 @@ async function runLiveNotesTick() {
           // Live monitors: re-run every standing goal for this meeting on new
           // transcript (token-lean — only here, where the scribe confirmed new content).
           if (state.liveMeeting?.id === e.id) runMeetingMonitors(e.id);
+          summarized = true;
         }
         st.lastTs = latestTs;
-        scribeState.set(e.id, st);
-      } catch { /* skip this meeting this tick, retry next */ }
+        st.failures = 0;
+      } catch (err) {
+        // Counted, not swallowed. A silent `continue` here is what made a dead model
+        // indistinguishable from a quiet meeting — and the loop chose its speed from that
+        // very ambiguity. Now it backs off, per meeting and overall.
+        failed += 1;
+        st.failures = (st.failures || 0) + 1;
+        st.failedAt = Date.now();
+        console.debug('[chatpanel] scribe', e.id, err?.message || err);
+      }
     }
   } finally {
     scribeBusy = false;
-    scheduleLiveNotes({ force: true });
+    scribeRan = true;
+    // Every attempted meeting failed → back off. One success anywhere clears it.
+    scribeFailures = attempted > 0 && failed >= attempted ? scribeFailures + 1 : 0;
+    scheduleLiveNotes({
+      force: true,
+      delayMs: nextScribeDelay({
+        intervalMin: min, ran: true, liveCount: scribeLive, summarized, failures: scribeFailures,
+      }),
+    });
   }
 }
 
@@ -6757,7 +7062,20 @@ async function analyzerEnabled(id) {
 }
 
 async function summarizeMeeting(prevNotes, deltaText, isFirst, { style = 'concise' } = {}) {
-  const agent = getTarget(state.settings, state.settings.activeAgentId);
+  // resolveTarget, not the raw target: an agent that is a persona over an endpoint carries
+  // no baseUrl/apiKey of its own, so the unresolved object was sent to streamChat with
+  // nowhere to go. And currentAgent()/findTarget rather than getTarget, because a scribe
+  // that quietly summarizes on a DIFFERENT model than the one on screen is worse than one
+  // that says it has no model — see repairActiveAgentId().
+  // The ACTIVE model, resolved. Two fixes in one line: getTarget() no longer substitutes a
+  // deleted id with the first bridge CLI (that is how the scribe came to run on Claude Code
+  // on a machine with no Claude Code, failing on every tick), and resolveTarget flattens an
+  // agent that is a persona over an endpoint — without it the unresolved object went to
+  // streamChat carrying no baseUrl or key. resolveTarget passes the router target through
+  // untouched, exactly as runJobTurn relies on.
+  const id = state.settings.activeAgentId;
+  const agent = resolveTarget(id === ROUTER_TARGET.id ? ROUTER_TARGET : getTarget(state.settings, id), state.settings);
+  if (!agent) throw new Error('No model is configured — pick one in Settings for the meeting scribe to use');
   const detailed = style === 'detailed';
   const prompt = isFirst
     ? `${detailed ? meetingNotesSkill().prompt : CONCISE_FIRST}\n\n--- MEETING TRANSCRIPT SO FAR ---\n${deltaText}`
@@ -8882,6 +9200,10 @@ function wireEvents() {
       renderHistoryContextBtn();
       renderPrivacyBtn();
       refreshBridge();
+      // A skill written in Settings → Skills has to reach the Jobs form, which is built once
+      // per panel session. Without this, scheduling a skill you just wrote was impossible
+      // until the panel was reopened. No-op before the pane has loaded (it loads at idle).
+      jobsPane?.refreshJobsSkills();
       maybeWarmSync(); // a just-enabled warm toggle should start syncing
     }
     // WARM tier: history changed → refresh the gateway index (opt-in, debounced no-op otherwise).

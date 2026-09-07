@@ -89,3 +89,35 @@ export function _reset() {
   batches.clear();
   seen.clear();
 }
+
+/**
+ * The lines a batch is really about — one entry per thing that was said.
+ *
+ * A live caption is delivered WHILE it is being said and grows across flushes, so one
+ * sentence arrives as a series of prefixes of itself. Batching collects them all, and the
+ * instruction handed to the model then listed the same utterance three or four times, each a
+ * little longer than the last. The model dutifully answered it as several questions — which
+ * is what "it's added multiple times" looks like from the outside.
+ *
+ * So: exact repeats collapse, and a line that is contained in a longer one is dropped in
+ * favour of the longer one — the finished sentence, not its prefixes. Comparison ignores case
+ * and runs of whitespace, because a transcriber varies both between flushes of the same words.
+ *
+ * Pure and order-preserving: the surviving lines stay in the order they were said, which is
+ * what makes "answer each of these in turn" mean anything.
+ */
+export function dedupeTriggerLines(texts) {
+  const kept = [];
+  const norm = (t) => String(t || '').toLowerCase().replace(/\s+/g, ' ').replace(/[.,!?;:]+$/g, '').trim();
+  for (const raw of Array.isArray(texts) ? texts : []) {
+    const text = String(raw || '').trim();
+    const key = norm(text);
+    if (!key) continue;
+    // Contained in something already kept → it is a prefix/fragment of that sentence.
+    if (kept.some((k) => k.key.includes(key))) continue;
+    // Something already kept is contained in THIS → this is the fuller version; replace it.
+    for (let i = kept.length - 1; i >= 0; i--) if (key.includes(kept[i].key)) kept.splice(i, 1);
+    kept.push({ key, text });
+  }
+  return kept.map((k) => k.text);
+}

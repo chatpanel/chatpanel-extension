@@ -126,11 +126,28 @@ const mkEngine = (admit = () => true) => {
   assert.equal(out[0].reason, 'no-action');
   assert.match(outcomeMessage(out[0]), /isn’t wired up yet/);
 
-  // An utterance the grammar does not recognise never becomes a command at all — ordinary
-  // conversation that happens to trip the wake match must not reach an action. (The shared
-  // parser drops it; this asserts the client inherits that.)
-  const unknown = scanDelta({ segments: segs('ChatPanel, do the thing with the stuff'), voice: ON, meetingId: 'm1' });
-  assert.deepEqual(unknown, []);
+  // MENTIONED vs ADDRESSED. This used to assert that an utterance the grammar does not
+  // recognise never becomes a command at all — which stopped ordinary conversation reaching an
+  // action, and also silently discarded every real request no built-in intent covers
+  // ("ChatPanel, how is the weather?"). There is no weather intent and there should not be;
+  // that case is what `needsModel` exists for, and it could never reach a handler.
+  //
+  // The line is drawn at whether the assistant was SPOKEN TO. A passing mention still produces
+  // nothing…
+  assert.deepEqual(
+    scanDelta({ segments: segs('we should talk about the chat panel roadmap next week'), voice: ON, meetingId: 'm1' }), [],
+    'a wake word used as a noun is not a command',
+  );
+  // …and an address the grammar cannot parse is handed on for a model to read, rather than
+  // acted on blindly or dropped.
+  // Ended, on purpose: an unrecognised command is only offered once the speaker has stopped.
+  // A caption is rescanned as it grows, and mid-growth "ChatPanel, set a timer" would go out
+  // as needsModel while "…for 10 minutes" arrives a moment later as a timer — one thing said,
+  // two things done. The next block asserts that invariant directly.
+  const unknown = scanDelta({ segments: segs('ChatPanel, do the thing with the stuff.'), voice: ON, meetingId: 'm1' });
+  assert.equal(unknown.length, 1, 'it was spoken to');
+  assert.equal(unknown[0].intent, null, 'no built-in intent fits');
+  assert.equal(unknown[0].needsModel, true, 'so a model must read it — and MUST NOT be guessed at');
   assert.match(outcomeMessage({ ok: false, reason: 'not-understood', command: { command: 'x' } }), /didn’t recognise/);
 }
 

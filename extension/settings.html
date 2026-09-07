@@ -24,6 +24,7 @@
           <button class="tab" data-tab="channels"><span class="tab-ico" data-icon="chat"></span> Channels</button>
           <button class="tab" data-tab="privacy"><span class="tab-ico" data-icon="privacy"></span> Privacy &amp; Gateway</button>
           <button class="tab" data-tab="activity"><span class="tab-ico" data-icon="history-clock"></span> Activity &amp; usage</button>
+          <button class="tab" data-tab="widgets"><span class="tab-ico" data-icon="sparkles"></span> Widgets</button>
           <button class="tab" data-tab="plugins"><span class="tab-ico" data-icon="plug"></span> Plugins</button>
           <button class="tab" data-tab="license"><span class="tab-ico" data-icon="sparkles"></span> Account</button>
         </aside>
@@ -95,21 +96,11 @@
           </div>
           <p class="muted">
             Use the coding agents already installed on your machine. Install &amp; start the
-            <strong>bridge</strong> (commands below), then Test. They run locally;
-            <strong>Free includes one agent</strong> — Pro unlocks Claude Code, Codex,
-            Antigravity &amp; more together.
+            <strong>bridge</strong> in <strong>ChatPanel local</strong> above, then Test. They
+            run locally, and each one appears here once the bridge finds it;
+            <strong>Free includes one agent</strong> — your pick — and Pro unlocks Claude Code,
+            Codex, Antigravity &amp; more together.
           </p>
-          <details class="tip" id="bridge-install-help">
-            <summary>Install or start the bridge</summary>
-            <pre><code># macOS / Linux — one line, no Node needed
-curl -fsSL https://dl.chatpanel.net/bridge/install.sh | bash
-
-# Windows (PowerShell) — no Node needed
-irm https://dl.chatpanel.net/bridge/install.ps1 | iex
-
-# or, if you have Node, run it without installing
-npx @chatpanel/bridge</code></pre>
-          </details>
           <div class="row">
             <label>Bridge URL</label>
             <input id="bridge-url" type="text" placeholder="http://127.0.0.1:4319" />
@@ -145,7 +136,8 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
 
       <!-- Tools: Web search + MCP servers -->
       <section class="panel hidden" data-panel="mcp">
-        <div class="card">
+        <nav id="tl-subtabs" class="subtabs" data-subtab-keep aria-label="Tools sections"></nav>
+        <div class="card" id="tl-websearch">
           <div class="card-head">
             <h2>Web search <span class="sub">— fetch live results as context for any model</span></h2>
             <div class="card-actions">
@@ -180,7 +172,7 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
           </div>
         </div>
 
-        <div class="card">
+        <div class="card" id="tl-suggestions">
           <div class="card-head">
             <h2>Smart suggestions <span class="sub">— page-specific prompt ideas on an empty chat</span></h2>
             <div class="card-actions">
@@ -199,7 +191,7 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
           </div>
         </div>
 
-        <div class="card">
+        <div class="card" id="tl-mcp">
           <div class="card-head">
             <h2>MCP tool servers <span class="sub">— external tools for your agents</span></h2>
             <div class="card-actions">
@@ -227,7 +219,7 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
           <button id="add-mcp-bottom" class="btn add-row" type="button">+ Add server</button>
         </div>
 
-        <div class="card">
+        <div class="card" id="tl-discover">
           <div class="card-head">
             <h2>Discover <span class="sub">— official registry and curated public servers</span></h2>
           </div>
@@ -248,7 +240,8 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
 
       <!-- SKILLS -->
       <section class="panel hidden" data-panel="skills">
-        <div class="card">
+        <nav id="sk-subtabs" class="subtabs" data-subtab-keep aria-label="Skills sections"></nav>
+        <div class="card" id="sk-skills">
           <div class="card-head">
             <h2>Skills <span class="sub">— reusable prompts &amp; slash-commands</span></h2>
             <div class="card-actions">
@@ -303,6 +296,7 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
 
       <!-- MEETINGS (live scribe preferences) -->
       <section class="panel hidden" data-panel="workspace">
+        <nav id="ws-subtabs" class="subtabs" data-subtab-keep aria-label="Workspace sections"></nav>
 
         <!-- MEMORY -->
         <details class="ws-section" id="ws-memory" open>
@@ -437,6 +431,45 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
             mid-meeting. Captions only — never audio or video. These settings control
             how the scribe behaves.
           </p>
+          <!-- LIVE MONITORS. Their own model and their own context, because their requirement
+               is the opposite of a chat turn's: an answer that is right but arrives after the
+               moment has passed is a wrong answer. -->
+          <div class="mon-prefs">
+            <h3 class="priv-h">Live monitors <span class="sub">— speed first</span></h3>
+            <p class="muted sm">
+              A monitor re-answers its question every time the transcript grows, while people
+              are still talking. Keep it lean: every source you add is more prompt to read and
+              more tools to describe before it can answer.
+            </p>
+            <div class="row half">
+              <div>
+                <label for="pref-monitor-model">Answer monitors with</label>
+                <select id="pref-monitor-model"></select>
+              </div>
+              <div>
+                <label for="pref-monitor-window">Transcript window</label>
+                <select id="pref-monitor-window">
+                  <option value="2">Last 2 minutes</option>
+                  <option value="5">Last 5 minutes</option>
+                  <option value="10">Last 10 minutes</option>
+                  <option value="15">Last 15 minutes</option>
+                  <option value="30">Last 30 minutes</option>
+                </select>
+              </div>
+            </div>
+            <p class="muted sm" style="margin-bottom:2px">Monitors may also read:</p>
+            <label class="check"><input type="checkbox" id="pref-monitor-summary" /> The running meeting summary</label>
+            <label class="check"><input type="checkbox" id="pref-monitor-findings" /> What this monitor already found <span class="sub">— stops it repeating itself</span></label>
+            <label class="check"><input type="checkbox" id="pref-monitor-web" /> Web search <span class="sub">— adds a tool call before it can answer</span></label>
+            <label class="check"><input type="checkbox" id="pref-monitor-history" /> Your past chats, meetings &amp; notes</label>
+            <label class="check"><input type="checkbox" id="pref-monitor-mcp" /> Your connected MCP tools <span class="sub">— the slowest option; every server is described in the prompt</span></label>
+            <p id="pref-monitor-cost" class="muted sm"></p>
+          </div>
+
+          <label class="check">
+            <input type="checkbox" id="pref-alert-sound" />
+            <span>Sound an alert when a timer or reminder fires <span class="sub">— a notification is something you look at; a timer needs to reach you when you are not looking</span></span>
+          </label>
           <div class="row half">
             <div>
               <label>Auto-refresh notes</label>
@@ -492,8 +525,9 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
           </label>
           <div class="row half">
             <div>
-              <label for="pref-voice-wake">Wake word</label>
-              <input type="text" id="pref-voice-wake" placeholder="ChatPanel" spellcheck="false" />
+              <label for="pref-voice-wake">Wake word <span class="sub">— several are fine, separated by commas</span></label>
+              <input type="text" id="pref-voice-wake" placeholder="chatpanel, ok chatpanel, hey panel" spellcheck="false" />
+              <p id="pref-voice-wake-preview" class="muted sm"></p>
             </div>
             <div>
               <label for="pref-voice-from">Act on commands from</label>
@@ -557,7 +591,7 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
            tab; it is a SECTION here (#pv-gateway) and #gateway still deep-links to it. -->
       <section class="panel hidden" data-panel="privacy">
 
-        <div class="card pv-intro">
+        <div class="card pv-intro" data-subtab-keep>
           <div class="card-head">
             <h2>Privacy &amp; Gateway <span class="sub">— what leaves this device, and in what shape</span></h2>
           </div>
@@ -584,6 +618,8 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
         </div>
 
         <!-- 1 · REDACTION (in the extension itself) -->
+        <nav id="pv-subtabs" class="subtabs" data-subtab-keep aria-label="Privacy &amp; Gateway sections"></nav>
+
         <details class="ws-section" id="pv-redaction" open>
         <summary class="ws-heading"><span class="inline-ico" data-icon="privacy"></span> Redaction — what a model actually sees
           <span class="pv-badge" id="pv-redaction-badge"></span></summary>
@@ -751,7 +787,10 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
 
         <!-- 3 · GATEWAY -->
         <details class="ws-section" id="pv-gateway">
-        <summary class="ws-heading"><span class="inline-ico" data-icon="plug"></span> Privacy Gateway — a local process that extends all of the above
+        <!-- "extends all of the above" was positional language, written when this was one long
+             scroll. In a tab bar there is no "above", and the sub-tabs to the right of this one
+             are the things it extends — so the heading says what it IS. -->
+        <summary class="ws-heading"><span class="inline-ico" data-icon="plug"></span> Privacy Gateway — an optional local process
           <span class="pv-badge" id="pv-gateway-badge">checking…</span></summary>
 
         <div class="card">
@@ -1108,7 +1147,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
 
           <!-- Sticky so "Save to gateway" is in reach from any of the sections above it —
                a long panel where the only Save is off-screen is how edits get lost. -->
-          <div class="gw-savebar">
+          <div class="gw-savebar" data-subtab-keep>
             <button type="button" id="gw-save" class="btn primary">Save to gateway</button>
             <span class="status" id="gw-save-status"></span>
           </div>
@@ -1239,6 +1278,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
       </section>
 
       <section class="panel hidden" data-panel="activity">
+        <nav id="ac-subtabs" class="subtabs" data-subtab-keep aria-label="Activity &amp; usage sections"></nav>
         <div class="card" id="obs-card">
           <div class="card-head">
             <h2>Storage &amp; agent access <span class="sub">— where your data lives, and which agents read it</span></h2>
@@ -1261,7 +1301,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
           </div>
           <div id="obs-access" class="obs-access">Loading…</div>
         </div>
-        <div class="card">
+        <div class="card" id="ac-totals">
           <div class="card-head">
             <h2>Totals <span class="sub">— every model call, including ones older than the runs below</span></h2>
             <button id="usage-refresh" class="btn" type="button">Refresh</button>
@@ -1284,7 +1324,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
           <p class="sub">Real counts come from each provider; a leading <b>≈</b> marks estimated tokens or an unknown price (BYO / local models). Cost is a best-effort estimate, not a bill.</p>
           <div id="usage-report">Loading…</div>
         </div>
-        <div class="card">
+        <div class="card" id="ac-activity">
           <div class="card-head">
             <h2>Activity <span class="sub">— what each run actually did, and what it cost</span></h2>
             <button id="activity-refresh" class="btn" type="button">Refresh</button>
@@ -1320,8 +1360,31 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
       </section>
 
 
-      <section class="panel hidden" data-panel="plugins">
+      <!-- WIDGETS — every small thing the model built and the user kept, on one page and
+           actually RUNNING. They were only ever reachable through a drawer in the side
+           panel, one at a time, so there was nowhere to see what you had. -->
+      <section class="panel hidden" data-panel="widgets">
         <div class="card">
+          <div class="card-head">
+            <h2>Widgets <span class="sub">— the small tools you kept, live</span></h2>
+            <div class="card-actions">
+              <button id="wg-refresh" class="btn ghost" type="button"><span class="inline-ico" data-icon="refresh"></span> Refresh</button>
+            </div>
+          </div>
+          <p class="muted">
+            Ask the side panel for something small — a timer, a unit converter, a sticky note —
+            and press <strong>＋ Keep</strong> on the result to save it here. Each one runs in a
+            sandbox with no access to your data unless you granted it, and <strong>★ Pin</strong>
+            puts it on the side-panel rail.
+          </p>
+          <div id="wg-gallery" class="widget-gallery"></div>
+          <p id="wg-empty" class="muted hidden">No widgets yet.</p>
+        </div>
+      </section>
+
+      <section class="panel hidden" data-panel="plugins">
+        <nav id="pl-subtabs" class="subtabs" data-subtab-keep aria-label="Plugins sections"></nav>
+        <div class="card" id="pl-routing">
           <div class="card-head">
             <h2>Model routing <span class="sub">— which model would answer, and why</span></h2>
             <button id="routing-refresh" class="btn" type="button">Recheck</button>
@@ -1392,7 +1455,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
           </p>
           <div id="routing-models" class="routing-models"></div>
         </div>
-        <div class="card">
+        <div class="card" id="pl-plugins">
           <div class="card-head">
             <h2>Plugins <span class="sub">— everything ChatPanel loads, and what you can switch off</span></h2>
             <button id="plugins-refresh" class="btn" type="button">Refresh</button>
@@ -1411,6 +1474,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
 
       <!-- LICENSE -->
       <section class="panel hidden" data-panel="license">
+        <nav id="lic-subtabs" class="subtabs" data-subtab-keep aria-label="Account sections"></nav>
         <div class="card" id="license-card">
           <h2>Plan</h2>
           <p class="muted">
@@ -1453,7 +1517,7 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
           <div id="license-msg" class="status"></div>
         </div>
 
-        <div class="card">
+        <div class="card" id="lic-prefs">
           <h2>Preferences</h2>
           <div class="pref-grid">
             <div class="pref-col">

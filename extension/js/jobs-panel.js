@@ -29,6 +29,12 @@ const JOB_NAME_CHARS = 60;
 let editing = null;
 // Bound by wireForm, which owns the field references. Null until the drawer is built.
 let loadIntoForm = null;
+// Rebuilds the two <select>s from the CURRENT skill list. Hoisted out of wireForm because
+// the form is built exactly once (build() is memoized on `el`) and the skills behind it are
+// not: a skill written in Settings → Skills after the panel loaded had no way of reaching
+// this dropdown, so "run my new skill on a schedule" was simply not offered until the panel
+// was closed and reopened. See refreshJobsSkills().
+let repaintForm = () => {};
 let stopEditing = () => { editing = null; };
 let el = null;
 let onToast = () => {};
@@ -255,6 +261,7 @@ function wireForm() {
     (text.hidden ? when : text).focus();
   };
 
+  repaintForm = paint;
   stopEditing = () => { editing = null; text.value = ''; param.value = ''; paint(); };
   cancel.onclick = () => { stopEditing(); renderJobs(); };
 
@@ -497,10 +504,37 @@ function describe(job) {
 
 export async function openJobs() {
   build().classList.remove('hidden');
+  // Repaint before showing: the form is built once per panel session, so without this the
+  // "What to do" list is frozen at whatever skills existed when the panel opened.
+  repaintForm();
   await renderJobs();
+}
+
+/**
+ * The skill list changed — re-offer it.
+ *
+ * Called by the panel when chatpanel:settings changes, so a skill created in another tab
+ * appears here even while the pane is already open. paint() preserves the current selection
+ * and falls back cleanly when the selected skill is the one that just disappeared, so this
+ * is safe to call at any time, including mid-edit.
+ */
+export function refreshJobsSkills() {
+  if (el) repaintForm();
 }
 export function closeJobs() { el?.classList.add('hidden'); }
 export function jobsOpen() { return !!el && !el.classList.contains('hidden'); }
+
+/**
+ * A job just ran — repaint the list if it is on screen.
+ *
+ * Called by the panel when the worker reports a fired timer. Cheap and guarded: a pane that
+ * was never opened has no DOM to update, and one that is closed will re-read on open anyway.
+ * Without it, a timer firing while the Jobs pane is open leaves the pane showing the run
+ * BEFORE it — the pane says "last run: yesterday" while the toast says otherwise.
+ */
+export function refreshJobRuns() {
+  if (el && !el.classList.contains('hidden')) renderJobs().catch(() => {});
+}
 
 /** Register the rail pane. The panel owns the rail; this owns everything behind the button. */
 export function wireJobsPane({ registerPane, toast = () => {}, skills = () => [], openConversation = null } = {}) {
