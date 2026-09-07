@@ -57,7 +57,7 @@ import { webgpuSupport } from './js/webgpu-support.js';
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth, localBytesInUse } from './js/storage-health.js';
-import { checkGateway, getGatewayConfig, getGatewayLogs, getGatewayObservability, clearGatewayHistory, setGatewayConfig, ensureGatewayEntitlement, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getTtsModels, setTtsModel, getTtsVoices, saveTtsVoice, deleteTtsVoice, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
+import { checkGateway, getGatewayConfig, getGatewayLogs, getGatewayObservability, clearGatewayHistory, setGatewayConfig, ensureGatewayEntitlement, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getTtsModels, setTtsModel, getTtsVoices, saveTtsVoice, updateTtsVoice, deleteTtsVoice, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
 import { createVault, redactText } from './js/pii-redact.js';
 import { detectEntities } from './js/pii-detect.js';
 import {
@@ -2907,7 +2907,10 @@ let _recorder = null;
 // A recording that failed to save is KEPT. The user already did the work of
 // speaking; making them do it again because the model was still loading is the
 // kind of small cruelty that makes a feature feel broken.
-let _pendingSample = null;   // { pcm, name, seconds }
+let _pendingSample = null;   // { pcm, name, seconds, replaceId? }
+// Which voice the in-progress take is replacing, if any. Held separately from
+// _pendingSample because it must survive the recording, which has no sample yet.
+let _replaceTarget = null;
 
 function renderTtsVoiceList(data) {
   const host = $('gw-tts-voices');
@@ -2933,6 +2936,8 @@ function renderTtsVoiceList(data) {
         <strong style="flex:1 1 auto">${esc(v.name)}</strong>
         <span class="status">${esc(when)} · ${esc(note)}</span>
         <button type="button" class="btn gw-tts-voice-play" data-id="${esc(v.id)}"${usable ? '' : ' disabled'}>Preview</button>
+        <button type="button" class="btn gw-tts-voice-rename" data-id="${esc(v.id)}" data-name="${esc(v.name)}">Rename</button>
+        <button type="button" class="btn gw-tts-voice-redo" data-id="${esc(v.id)}" data-name="${esc(v.name)}">Re-record</button>
         <button type="button" class="btn gw-tts-voice-del" data-id="${esc(v.id)}">Delete</button>
       </div>
     </div>`;
@@ -2944,6 +2949,12 @@ function renderTtsVoiceList(data) {
   // about what it sounds like.
   host.querySelectorAll('.gw-tts-voice-play').forEach((b) => {
     b.onclick = () => previewTtsVoice(`custom:${b.dataset.id}`);
+  });
+  host.querySelectorAll('.gw-tts-voice-rename').forEach((b) => {
+    b.onclick = () => renameSavedVoice(b.dataset.id, b.dataset.name);
+  });
+  host.querySelectorAll('.gw-tts-voice-redo').forEach((b) => {
+    b.onclick = () => toggleVoiceRecording({ replaceId: b.dataset.id, name: b.dataset.name });
   });
 }
 
@@ -2975,6 +2986,23 @@ async function refreshTtsVoices() {
   }
 }
 
+// Renaming keeps the id, so nothing that references this voice has to be updated.
+async function renameSavedVoice(id, current) {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const st = $('gw-tts-voice-status');
+  if (!url || !id) return;
+  const next = prompt('Rename this voice', current || '');
+  if (next === null) return;                       // cancelled
+  const clean = next.trim();
+  if (!clean || clean === current) return;
+  try {
+    await updateTtsVoice(url, { id, name: clean });
+    st.className = 'status ok'; st.textContent = `✓ Renamed to "${clean}"`;
+    await refreshTtsVoices();
+    await refreshTtsModels();
+  } catch (e) { st.className = 'status err'; st.textContent = `Rename failed: ${e.message}`; }
+}
+
 async function deleteSavedVoice(id, name) {
   const url = normalizeGatewayUrl($('gw-url').value);
   const st = $('gw-tts-voice-status');
@@ -2998,16 +3026,22 @@ async function savePendingSample() {
   const btn = $('gw-tts-record');
   const url = normalizeGatewayUrl($('gw-url').value);
   if (!_pendingSample || !url) return;
-  const { pcm, seconds } = _pendingSample;
+  const { pcm, seconds, replaceId } = _pendingSample;
   const name = ($('gw-tts-voice-name').value || '').trim() || _pendingSample.name;
   st.className = 'status'; st.textContent = `Deriving a voice print from ${seconds.toFixed(1)}s…`;
   btn.disabled = true;
   try {
-    await saveTtsVoice(url, { name, pcm });
+    // Re-recording UPDATES in place — same id — so anything already using this
+    // voice keeps working and simply sounds like the new take.
+    if (replaceId) await updateTtsVoice(url, { id: replaceId, name, pcm });
+    else await saveTtsVoice(url, { name, pcm });
     _pendingSample = null;
     $('gw-tts-voice-name').value = '';
     btn.textContent = 'Record';
-    st.className = 'status ok'; st.textContent = `✓ Saved "${name}" — the recording itself was discarded.`;
+    st.className = 'status ok';
+    st.textContent = replaceId
+      ? `✓ Re-recorded "${name}" — anything using it now sounds like the new take.`
+      : `✓ Saved "${name}" — the recording itself was discarded.`;
     await refreshTtsVoices();
     await refreshTtsModels();
   } catch (e) {
@@ -3031,14 +3065,23 @@ async function savePendingSample() {
 // One button, three states — Record, Stop, and Save again if a save did not land.
 // A separate Stop that only appears mid-recording is a control you hunt for while
 // the clock runs.
-async function toggleVoiceRecording() {
+async function toggleVoiceRecording(opts = {}) {
   const btn = $('gw-tts-record');
   const st = $('gw-tts-voice-status');
   const url = normalizeGatewayUrl($('gw-url').value);
   if (!url) { st.className = 'status err'; st.textContent = 'Set the gateway URL first.'; return; }
 
   // A previous attempt is still in hand — retry it rather than recording over it.
-  if (_pendingSample && !_recorder) return savePendingSample();
+  // (Not when the caller explicitly asked to re-record a specific voice.)
+  if (_pendingSample && !_recorder && !opts.replaceId) return savePendingSample();
+
+  // Re-recording an existing voice: remember which, and pre-fill its name so the
+  // field shows what is being replaced rather than looking like a new entry.
+  const replaceId = opts.replaceId || null;
+  if (replaceId && !_recorder) {
+    $('gw-tts-voice-name').value = opts.name || '';
+    _pendingSample = null;
+  }
 
   if (_recorder) {
     const rec = _recorder;
@@ -3053,13 +3096,20 @@ async function toggleVoiceRecording() {
       st.textContent = `Only ${secs.toFixed(1)}s — record at least ${MIN_SECONDS}s, or the voice print is mostly room noise.`;
       return;
     }
-    _pendingSample = { pcm, seconds: secs, name: ($('gw-tts-voice-name').value || '').trim() || `Voice ${new Date().toLocaleTimeString()}` };
+    _pendingSample = {
+      pcm,
+      seconds: secs,
+      replaceId: _replaceTarget,
+      name: ($('gw-tts-voice-name').value || '').trim() || `Voice ${new Date().toLocaleTimeString()}`,
+    };
+    _replaceTarget = null;
     return savePendingSample();
   }
 
   try {
     const { startRecording, TARGET_SECONDS } = await import('./js/voice-record.js');
     _pendingSample = null; // recording again deliberately replaces the held sample
+    _replaceTarget = replaceId; // survives until the take is turned into a sample
     const meter = $('gw-tts-meter');
     const fill = $('gw-tts-meter-fill');
     meter?.classList.remove('hidden');
@@ -3074,7 +3124,10 @@ async function toggleVoiceRecording() {
       onAutoStop: () => { setTimeout(() => { if (_recorder) toggleVoiceRecording(); }, 0); },
     });
     btn.textContent = 'Stop';
-    st.className = 'status'; st.textContent = `Recording… stops on its own after ${TARGET_SECONDS}s.`;
+    st.className = 'status';
+    st.textContent = replaceId
+      ? `Re-recording "${opts.name || 'this voice'}" — stops on its own after ${TARGET_SECONDS}s.`
+      : `Recording… stops on its own after ${TARGET_SECONDS}s.`;
   } catch (e) {
     _recorder = null;
     st.className = 'status err';
@@ -3548,7 +3601,8 @@ function wireGateway() {
   $('gw-det-url').oninput = setGwDetectorRows; // live cloud-warning for a manual URL
   $('gw-save').onclick = saveGateway;
   $('gw-tts-preview').onclick = () => previewTtsVoice();
-  $('gw-tts-record').onclick = toggleVoiceRecording;
+  // Explicit call: the handler takes options, and a MouseEvent is not one.
+  $('gw-tts-record').onclick = () => toggleVoiceRecording();
   $('gw-pro-activate').onclick = activateGatewayPro;
   $('gw-dest-all').onclick = () => { gatewayDests = availableDestinations(); renderDestinations(); autoSaveGateway(); };
   $('gw-dest-none').onclick = () => { gatewayDests = []; renderDestinations(); autoSaveGateway(); };

@@ -135,6 +135,17 @@ export async function saveTtsVoice(baseUrl, { name, pcm }) {
   });
 }
 
+// Rename or re-record an EXISTING voice. The id is preserved by the gateway, so
+// anything already pointing at `custom:<id>` keeps working — which is the whole
+// reason these are updates rather than delete-and-recreate.
+export async function updateTtsVoice(baseUrl, { id, name, pcm }) {
+  return jfetch(`${normalizeGatewayUrl(baseUrl)}/tts/voices`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, ...(name ? { name } : {}), ...(pcm ? { pcm: Array.from(pcm) } : {}) }),
+  });
+}
+
 export async function deleteTtsVoice(baseUrl, id) {
   return jfetch(`${normalizeGatewayUrl(baseUrl)}/tts/voices?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

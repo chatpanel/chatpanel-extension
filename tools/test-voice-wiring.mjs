@@ -246,6 +246,16 @@ const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
   // And a failed save must not cost the recording.
   assert.match(settings2, /_pendingSample/, 'a failed save must keep the sample for a retry');
   assert.match(settings2, /Save again/, 'and the button must offer that retry');
+
+  // A first take is often poor. Renaming and re-recording must UPDATE in place —
+  // the id is what config and clients hold as `custom:<id>`, so delete-and-recreate
+  // would silently orphan every reference to it.
+  assert.match(settings2, /gw-tts-voice-rename/, 'a saved voice must be renameable');
+  assert.match(settings2, /gw-tts-voice-redo/, 'and re-recordable');
+  assert.match(settings2, /updateTtsVoice/, 'both must go through the update call, not delete + create');
+  assert.ok(!/deleteTtsVoice\([^)]*\)[\s\S]{0,200}saveTtsVoice/.test(settings2),
+    're-recording must not be implemented as delete-then-create — that changes the id');
+  assert.match(read('js/gateway.js'), /export async function updateTtsVoice/, 'the client needs an update call');
 }
 
-console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, mute + signal-driven waveform, TTS search wired, recorded voices confirmed + mic released, auto-stop + phonetic prompt + retry keeps the take, waveform follows mic AND speaker, thinking streams, rendering never writes config');
+console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, mute + signal-driven waveform, TTS search wired, recorded voices confirmed + mic released, auto-stop + phonetic prompt + retry keeps the take, waveform follows mic AND speaker, thinking streams, rendering never writes config, voices rename + re-record in place');
