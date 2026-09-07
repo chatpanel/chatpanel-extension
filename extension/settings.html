@@ -1086,6 +1086,29 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
 
           <div class="card">
             <div class="card-head">
+              <h2>Text-to-speech <span class="sub">— Read aloud &amp; voice conversation, on-device</span></h2>
+            </div>
+            <p class="muted sm">The voice behind <strong>Read aloud</strong> on any answer and the
+              <strong>voice conversation</strong> button. Runs in-process on this machine —
+              text never leaves it. Without this, ChatPanel falls back to your browser's built-in
+              voice, which also stays on-device but sounds noticeably more robotic.</p>
+            <div id="gw-tts-models" class="model-list"></div>
+            <p class="status" id="gw-tts-models-status">—</p>
+            <div class="field row" style="margin-top:8px">
+              <label style="min-width:auto">Voice</label>
+              <select id="gw-tts-voice"></select>
+              <button id="gw-tts-preview" class="btn" type="button" title="Hear this voice">Preview</button>
+            </div>
+            <p class="muted sm" id="gw-tts-voice-note" style="margin:4px 0 0"></p>
+            <div class="field row" style="margin-top:8px">
+              <label style="min-width:auto">Precision (quantization)</label>
+              <select id="gw-tts-dtype"></select>
+            </div>
+            <p class="muted sm" id="gw-tts-dtype-note" style="margin:4px 0 0"></p>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
               <h2>Speaker model <span class="sub">— diarization for meeting transcription</span></h2>
             </div>
             <p class="muted sm">Tells voices apart for <strong>meeting transcription</strong> — labels each line

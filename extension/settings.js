@@ -57,7 +57,7 @@ import { webgpuSupport } from './js/webgpu-support.js';
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth, localBytesInUse } from './js/storage-health.js';
-import { checkGateway, getGatewayConfig, getGatewayLogs, getGatewayObservability, clearGatewayHistory, setGatewayConfig, ensureGatewayEntitlement, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
+import { checkGateway, getGatewayConfig, getGatewayLogs, getGatewayObservability, clearGatewayHistory, setGatewayConfig, ensureGatewayEntitlement, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getTtsModels, setTtsModel, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
 import { createVault, redactText } from './js/pii-redact.js';
 import { detectEntities } from './js/pii-detect.js';
 import {
@@ -2364,6 +2364,7 @@ async function refreshGateway() {
     renderNerStatus(gatewayState.ner);
     refreshNerModels();
     refreshSttModels();
+    refreshTtsModels();
     refreshDiarizeModel();
   } catch (e) {
     const isAuth = /admin route|token required|403/i.test(e.message || '');
@@ -2653,6 +2654,167 @@ async function selectSttModel(id, dtype) {
     if (data && data.state === 'error') { st.className = 'status err'; st.textContent = 'Model failed to load — try a smaller one.'; return; }
   }
   if (my === _sttPollToken) { st.className = 'status'; st.textContent = 'Still downloading… it will switch when ready.'; }
+}
+
+// ── TTS (read-aloud / voice) model manager — mirrors the STT one above ──────────
+// Two independent choices here, which is why the POST takes a patch: the MODEL is a
+// download, the VOICE is a ~500 KB style bank. Picking a different voice must not
+// re-download 90 MB, and switching model must not silently reset the voice.
+function renderTtsModels(data) {
+  const host = $('gw-tts-models');
+  if (!host) return;
+  const esc = (s) => escapeHtml(String(s == null ? '' : s));
+  const active = data?.active || null;
+  const dl = data?.progress || null;
+  const rows = (data?.available || []).map((m) => {
+    const isActive = m.id === active;
+    const downloading = dl && dl.model === m.id;
+    const meta = [
+      m.tier ? esc(TIER_LABEL[m.tier] || m.tier) : '',
+      esc(m.lang),
+      m.approxMB ? `~${m.approxMB} MB` : '',
+      m.ramMB ? `~${(m.ramMB / 1024).toFixed(1)} GB RAM` : '',
+      m.installed && !isActive ? 'installed' : '',
+    ].filter(Boolean).join(' · ');
+    const label = downloading
+      ? `Downloading… ${dl.pct || 0}%`
+      : isActive ? 'In use' : (m.installed ? 'Use' : `Download${m.approxMB ? ` (~${m.approxMB} MB)` : ''}`);
+    const bar = downloading
+      ? `<div class="dl-bar"><div class="dl-bar-fill" style="width:${Math.max(3, dl.pct || 0)}%"></div></div>
+         <p class="muted sm" style="margin:2px 0 0">${dl.file ? esc(dl.file) + ' · ' : ''}${dl.pct || 0}% — you can keep working.</p>`
+      : '';
+    return `<div class="entity">
+      <div class="entity-head">
+        <strong style="flex:1 1 auto">${esc(m.label || m.id)}</strong>
+        <span class="status">${meta}</span>
+        <button type="button" class="btn ${isActive ? '' : 'primary'} gw-tts-use" data-id="${esc(m.id)}" ${isActive || downloading ? 'disabled' : ''}>${label}</button>
+      </div>
+      <p class="muted sm" style="margin:0">${esc(m.note || '')}</p>
+      ${bar}
+    </div>`;
+  });
+  host.innerHTML = rows.join('') || '<p class="muted sm">No models available.</p>';
+  host.querySelectorAll('.gw-tts-use').forEach((b) => { b.onclick = () => selectTtsModel({ id: b.dataset.id }); });
+  renderTtsVoices(data);
+  renderTtsDtype(data);
+}
+
+// Each voice is its own small download, so the picker says which are already here —
+// otherwise choosing one looks broken for the few seconds it is fetching.
+function renderTtsVoices(data) {
+  const sel = $('gw-tts-voice');
+  const note = $('gw-tts-voice-note');
+  if (!sel) return;
+  const voices = data?.voices || [];
+  const cur = data?.voice || '';
+  sel.innerHTML = voices.map((v) => {
+    const bits = [v.grade ? `grade ${v.grade}` : '', v.installed ? 'installed' : 'downloads on first use'].filter(Boolean).join(' · ');
+    return `<option value="${escapeHtml(v.id)}"${v.id === cur ? ' selected' : ''}>${escapeHtml(v.label)} — ${escapeHtml(bits)}</option>`;
+  }).join('') || '<option value="">—</option>';
+  if (note) {
+    const v = voices.find((x) => x.id === cur);
+    note.textContent = v?.note || (voices.length ? 'Grades are Kokoro’s own quality ratings. Each voice is a ~500 KB download.' : '');
+  }
+  sel.onchange = () => selectTtsModel({ voice: sel.value });
+}
+
+function renderTtsDtype(data) {
+  const sel = $('gw-tts-dtype');
+  const note = $('gw-tts-dtype-note');
+  if (!sel) return;
+  const opts = data?.dtypes || [{ id: 'auto', label: 'Auto (recommended)' }];
+  const cur = data?.dtype || 'auto';
+  const wasm = data?.runtime === 'wasm';
+  sel.innerHTML = opts.map((o) => {
+    const disabled = wasm && o.id !== 'auto' && o.id !== 'fp32'; // only fp32 loads on WASM
+    return `<option value="${escapeHtml(o.id)}"${o.id === cur ? ' selected' : ''}${disabled ? ' disabled' : ''}>${escapeHtml(o.label)}${disabled ? ' — native only' : ''}</option>`;
+  }).join('');
+  if (note) {
+    const curNote = (opts.find((o) => o.id === cur) || {}).note || '';
+    note.textContent = curNote + (data?.loadedDtype ? `  ·  currently loaded: ${data.loadedDtype}` : '');
+  }
+  sel.onchange = () => selectTtsModel({ dtype: sel.value });
+}
+
+async function refreshTtsModels() {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const st = $('gw-tts-models-status');
+  if (!url) return null;
+  try {
+    const data = await getTtsModels(url);
+    renderTtsModels(data);
+    if (st) {
+      st.className = 'status';
+      st.textContent = data.progress ? `Downloading ${data.progress.model} — ${data.progress.pct || 0}%…` : '';
+    }
+    return data;
+  } catch (e) {
+    // A gateway older than 0.6.50 has no /tts route. Say what to do, not what broke —
+    // this is exactly the state where the panel is using the browser voice instead.
+    if (st) {
+      st.className = 'status';
+      st.textContent = /404/.test(e.message)
+        ? 'This gateway has no text-to-speech yet — update it (0.6.50+) and restart to use the local voice.'
+        : `Models: ${e.message}`;
+    }
+    return null;
+  }
+}
+
+let _ttsPollToken = 0;
+async function selectTtsModel(patch) {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const st = $('gw-tts-models-status');
+  if (!url || !patch) return;
+  const my = ++_ttsPollToken;
+  st.className = 'status';
+  st.textContent = patch.id ? `Switching to ${patch.id}…` : patch.voice ? `Voice: ${patch.voice}…` : 'Applying…';
+  try {
+    await setTtsModel(url, patch);
+  } catch (e) { st.className = 'status err'; st.textContent = `Failed: ${e.message}`; return; }
+  // Only a MODEL change downloads, so only that needs the poll loop; a voice or
+  // precision change is immediate and one refresh tells the truth.
+  if (!patch.id) { await refreshTtsModels(); if (my === _ttsPollToken) { st.className = 'status ok'; st.textContent = '✓ Saved'; } return; }
+  for (let i = 0; i < 450 && my === _ttsPollToken; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    if (my !== _ttsPollToken) return;
+    const data = await refreshTtsModels();
+    if (data && data.active === patch.id && data.state === 'ready') { st.className = 'status ok'; st.textContent = `✓ Using ${patch.id}`; return; }
+    if (data && data.state === 'error') { st.className = 'status err'; st.textContent = 'Model failed to load.'; return; }
+  }
+  if (my === _ttsPollToken) { st.className = 'status'; st.textContent = 'Still downloading… it will switch when ready.'; }
+}
+
+// Hearing the voice is the only way to choose one, and it doubles as the proof that
+// the whole local path works — model loaded, voice fetched, audio played.
+async function previewTtsVoice() {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const st = $('gw-tts-models-status');
+  const voice = $('gw-tts-voice')?.value;
+  if (!url) return;
+  st.className = 'status'; st.textContent = 'Synthesizing…';
+  try {
+    const res = await fetch(`${url}/tts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'This is the ChatPanel voice, running on your machine.', voice }),
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { msg = (await res.json())?.error?.message || msg; } catch { /* not json */ }
+      throw new Error(msg);
+    }
+    const src = URL.createObjectURL(await res.blob());
+    const audio = new Audio(src);
+    audio.onended = () => URL.revokeObjectURL(src);
+    await audio.play();
+    st.className = 'status ok'; st.textContent = '✓ Played';
+  } catch (e) {
+    st.className = 'status err';
+    // First use downloads the model, which can take a minute — say so rather than
+    // letting a timeout read as a failure.
+    st.textContent = `Preview failed: ${e.message}${/not ready|timed? out/i.test(e.message) ? ' — the first use downloads the model; try again shortly.' : ''}`;
+  }
 }
 
 // ── Speaker (diarization) model — a single model with a Download / In-use button.
@@ -3077,6 +3239,7 @@ function wireGateway() {
   $('gw-det-backend').onchange = () => { setGwDetectorRows(); renderNerStatus(gatewayState && gatewayState.ner); };
   $('gw-det-url').oninput = setGwDetectorRows; // live cloud-warning for a manual URL
   $('gw-save').onclick = saveGateway;
+  $('gw-tts-preview').onclick = previewTtsVoice;
   $('gw-pro-activate').onclick = activateGatewayPro;
   $('gw-dest-all').onclick = () => { gatewayDests = availableDestinations(); renderDestinations(); autoSaveGateway(); };
   $('gw-dest-none').onclick = () => { gatewayDests = []; renderDestinations(); autoSaveGateway(); };

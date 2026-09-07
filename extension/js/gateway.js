@@ -99,6 +99,25 @@ export async function setSttModel(baseUrl, id, dtype) {
   });
 }
 
+// TTS (read-aloud / voice conversation) — same shape as the STT pair above. GET →
+// { active, state, progress, available:[...], voice, voices:[...], dtype, dtypes }.
+// A gateway older than 0.6.50 has no /tts route and 404s here, which the caller
+// turns into "update the gateway" rather than an error.
+export async function getTtsModels(baseUrl) {
+  return jfetch(`${normalizeGatewayUrl(baseUrl)}/tts/models`);
+}
+
+// `patch` may carry any of { id, voice, dtype }. They are independent on purpose:
+// picking a different VOICE must not re-download the model, and switching model
+// must not silently reset the voice.
+export async function setTtsModel(baseUrl, patch = {}) {
+  return jfetch(`${normalizeGatewayUrl(baseUrl)}/tts/models`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+}
+
 // Speaker (diarization) model — the "who said what" model for meeting
 // transcription. GET → { active, state, progress, available:[{id,label,approxMB,
 // installed}] }; POST force-downloads it (explicit user action).

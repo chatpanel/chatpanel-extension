@@ -95,4 +95,27 @@ const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
   assert.ok(!readAloud.includes("import('./voice-mode.js')"), 'read-aloud must not depend on voice mode — the Speak button works without it');
 }
 
-console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free');
+// ── the Gateway settings TTS manager ───────────────────────────────────────────
+// Same class of failure, different page: a model picker whose ids drifted renders
+// into nothing and reads as "the gateway has no TTS".
+{
+  const settingsHtml = read('settings.html');
+  const settings = read('settings.js');
+  const sIds = new Set([...settingsHtml.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+  const referenced = new Set([...settings.matchAll(/\$\(\s*'(gw-tts-[^']+)'\s*\)/g)].map((m) => m[1]));
+  assert.ok(referenced.size >= 5, `expected the TTS manager to reference several ids, saw ${referenced.size}`);
+  for (const id of referenced) {
+    assert.ok(sIds.has(id), `settings.html has no #${id}, but settings.js reaches for it — the control would be silently dead`);
+  }
+  // The three managers in the Models section must all refresh together; a fourth
+  // that is never called renders an empty card that looks like an unsupported gateway.
+  assert.match(settings, /refreshTtsModels\(\)/, 'refreshTtsModels must be called on load, beside the STT and speaker ones');
+  assert.ok(/refreshSttModels\(\);\s*\n\s*refreshTtsModels\(\);/.test(settings),
+    'refreshTtsModels should load with the other model managers, not on its own path');
+  // Preview is the only way to actually hear a voice before choosing it.
+  assert.match(settings, /\$\('gw-tts-preview'\)\.onclick/, 'the Preview button must be wired');
+  // An older gateway 404s /tts/models; that must read as "update it", not as an error.
+  assert.match(settings, /404.*text-to-speech|text-to-speech.*404/s, 'a 404 from /tts/models must tell the user to update the gateway');
+}
+
+console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired');

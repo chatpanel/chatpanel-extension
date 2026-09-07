@@ -84,7 +84,13 @@ const BUDGET = {
   // reasoning the panel does — including parseVideoId and the note on why an unreadable video
   // raises instead of quietly degrading into a page capture. The layers themselves are pinned
   // off it in OFF_LIMITS.
-  'settings.js': 1180,
+  // 1180 → 1190 for the text-to-speech model manager, which sits beside the STT and speaker
+  // managers already on this graph and is built the same way — a model list, a voice picker,
+  // a precision picker and a Preview. It is page CONTENT, not a deferred capability: the
+  // Models section refreshes its three managers together on load, and a fourth that lazy-
+  // loaded would show an empty card until it arrived. Settings is also not the latency
+  // surface — sidepanel.js is, and the voice engines are pinned off THAT graph below.
+  'settings.js': 1190,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was
