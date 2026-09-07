@@ -231,22 +231,33 @@ export async function transcriptViaInnertube(videoId, { language = '', languages
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res;
   };
-  let apiKey = '';
-  try {
-    apiKey = innertubeApiKeyFromHtml(await (await get(`https://www.youtube.com/watch?v=${videoId}`)).text());
-  } catch {
-    return null;
-  }
-  const req = innertubePlayerRequest(videoId, { apiKey });
-  if (!req) return null;
+  const askPlayer = async (apiKey) => {
+    const req = innertubePlayerRequest(videoId, { apiKey });
+    if (!req) return null;
+    try {
+      return await (await get(req.url, { method: req.method, headers: req.headers, body: req.body })).json();
+    } catch {
+      return null;
+    }
+  };
 
-  let player;
-  try {
-    player = await (await get(req.url, { method: req.method, headers: req.headers, body: req.body })).json();
-  } catch {
-    return null;
+  // NO KEY. The key is published in the watch page, and fetching that page to read one string
+  // costs 1.5 MB and ~700 ms — on the send path, inside the composer's send lock, where it
+  // read to the user as "Enter does nothing". The endpoint accepts the request without it:
+  // measured at ~300 ms for the player call AND the captions together. The keyed path stays
+  // as a fallback for the day that stops being true.
+  let player = await askPlayer('');
+  let tracks = captionTracksFromPlayerResponse(player);
+  if (!tracks.length) {
+    let apiKey = '';
+    try {
+      apiKey = innertubeApiKeyFromHtml(await (await get(`https://www.youtube.com/watch?v=${videoId}`)).text());
+    } catch { /* offline, or YouTube refused the page — nothing more to try */ }
+    if (apiKey) {
+      player = await askPlayer(apiKey);
+      tracks = captionTracksFromPlayerResponse(player);
+    }
   }
-  const tracks = captionTracksFromPlayerResponse(player);
   // NOT an error, and not "no captions" either: a stale client version returns exactly this.
   // The caller falls through to the panel route rather than telling the user there are none.
   if (!tracks.length) return null;

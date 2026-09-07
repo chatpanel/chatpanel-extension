@@ -51,6 +51,24 @@ assert.ok(readTranscript.parameters.properties.language, 'read_transcript cannot
 assert.ok(readTranscript.parameters.properties.timestamps, 'timestamps cannot be turned off');
 assert.deepEqual(readTranscript.parameters.required, [], 'the common case must need no arguments');
 
+// A URL NEEDS NO TAB, AND THE MODEL HAS TO KNOW THAT. Without it the only way to reach a
+// video the user was not already on is `navigate` — and one real turn did exactly that:
+// read_transcript failed, so it navigated the user's tab to YouTube and read it there. The
+// user's page is not scratch space for a fetch that takes 350 ms.
+assert.ok(readTranscript.parameters.properties.url, 'read_transcript cannot be given a video to read');
+assert.match(readTranscript.description, /PASS A URL/);
+assert.match(readTranscript.description, /do NOT need to open or\s+.{0,12}navigate to it/,
+  'nothing tells the model to stop navigating');
+assert.match(PAGE_AUTOMATION_SYSTEM, /read_transcript \{"url":"…"\} — do NOT navigate to it/,
+  'the resident manual still leaves navigating as the way to reach another video');
+
+// And the failure message must point at the way forward, not read as "give up".
+const pageToolsSrc = read('../extension/js/page-tools.js');
+assert.match(pageToolsSrc, /Pass \{"url":"…"\} to read a specific video — you do NOT need to/,
+  'the no-transcript error still tells the model only what it cannot do');
+assert.match(pageToolsSrc, /async function urlTranscript/, 'there is no tab-free path behind the tool');
+
+
 // THE DEFAULT PATH MATTERS MORE THAN THE EXPLICIT ONE. A model asked to summarise reaches
 // for read_page; if that returns the comment thread, a correctly-specified read_transcript
 // it never called has saved nobody.

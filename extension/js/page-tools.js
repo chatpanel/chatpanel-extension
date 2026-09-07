@@ -65,7 +65,9 @@ export const PAGE_AUTOMATION_SYSTEM =
   // wrong, because a page WAS read and it DID contain text.
   'ON A VIDEO PAGE (YouTube) the spoken words are NOT in the DOM — reading it returns the ' +
   'comment thread and the recommendation rail. read_page on a video tab returns the ' +
-  'TRANSCRIPT instead; call read_transcript when you need a particular caption language. ' +
+  'TRANSCRIPT instead. For a video that is NOT the current tab, call ' +
+  'read_transcript {"url":"…"} — do NOT navigate to it: navigating replaces the page the ' +
+  'user is looking at, and the transcript is fetched directly in under a second. ' +
   'Never summarise a video from its page text or its title.\n' +
   'ON A PDF TAB read_page returns the DOCUMENT, page by page with [page N] markers — the ' +
   'other page tools cannot touch it, because Chrome renders PDFs in a viewer extensions may ' +
@@ -373,16 +375,23 @@ export const PAGE_TOOL_SPECS = [
   {
     name: 'read_transcript',
     description:
-      'READ A VIDEO\'S TRANSCRIPT — the spoken words, timestamped. Use this on a YouTube tab '
-      + 'whenever the task is to summarise, quote or answer questions about the VIDEO. '
-      + 'read_page on a video tab already returns this, so you only need read_transcript to '
-      + 'ask for a specific caption LANGUAGE or to drop the timestamps. The words are NOT in '
-      + 'the page: reading the DOM of a video page returns the comment thread and the '
-      + 'recommendation rail, which is a different document that will confidently answer the '
-      + 'wrong question. Returns `[m:ss]`-prefixed paragraphs, so you can cite a moment.',
+      'READ A VIDEO\'S TRANSCRIPT — the spoken words, timestamped. Use this whenever the task '
+      + 'is to summarise, quote or answer questions about a VIDEO. '
+      + 'PASS A URL for any video that is not the current tab — you do NOT need to open or '
+      + 'navigate to it, and you should not: navigating replaces the page the user is looking '
+      + 'at, and this fetches the captions directly in well under a second. With no url it '
+      + 'reads the current tab. '
+      + 'The words are NOT in the page: reading the DOM of a video page returns the comment '
+      + 'thread and the recommendation rail, which is a different document that will '
+      + 'confidently answer the wrong question. Returns `[m:ss]`-prefixed paragraphs, so you '
+      + 'can cite a moment.',
     parameters: {
       type: 'object',
       properties: {
+        url: {
+          type: 'string',
+          description: 'The video to read (any YouTube watch/share/shorts/embed link). Omit to read the current tab.',
+        },
         language: {
           type: 'string',
           description: 'BCP-47 code for the caption track you want (e.g. "en", "de"). Defaults to English, falling back to whatever the video has.',
@@ -801,20 +810,7 @@ async function tabTranscript(tabId, { maxChars, ...opts } = {}) {
   if (!looksLikeVideoHost(await tabUrl(tabId))) return null;
   const { transcriptFromTab } = await import('./youtube-transcript.js');
   const doc = await transcriptFromTab(tabId, { ...opts, ...(maxChars ? { maxChars } : {}) }).catch(() => null);
-  if (!doc) return null;
-  // The tool result is the DOCUMENT, not the attachment: no id, no chip title, and the
-  // language/duration stated so the model can say what it read.
-  return {
-    kind: 'transcript',
-    title: doc.title,
-    url: doc.url,
-    language: doc.language,
-    generated: doc.generated,
-    durationSec: doc.durationSec,
-    segments: doc.segments,
-    chars: doc.chars,
-    text: doc.text,
-  };
+  return doc ? shapeTranscript(doc) : null;
 }
 
 /**
@@ -840,6 +836,35 @@ async function tabPdf(tabId, { maxChars } = {}) {
     ...(doc.scanned
       ? { scanned: true, note: 'This PDF has no text layer — it is a scan or a set of page images. Reading it would need OCR. Say so rather than guessing from the filename.' }
       : {}),
+    text: doc.text,
+  };
+}
+
+/**
+ * The transcript for a URL, with no tab involved.
+ *
+ * The whole point of the fetch route (js/youtube-transcript.js): two small requests, no
+ * player, no sound, and the user's tab left exactly where it was.
+ */
+async function urlTranscript(url, { maxChars, ...opts } = {}) {
+  if (!looksLikeVideoHost(url)) return null;
+  const { transcriptFromUrl } = await import('./youtube-transcript.js');
+  const doc = await transcriptFromUrl(url, { ...opts, ...(maxChars ? { maxChars } : {}) }).catch(() => null);
+  return doc ? shapeTranscript(doc) : null;
+}
+
+function shapeTranscript(doc) {
+  // The tool result is the DOCUMENT, not the attachment: no id, no chip title, and the
+  // language/duration stated so the model can say what it read.
+  return {
+    kind: 'transcript',
+    title: doc.title,
+    url: doc.url,
+    language: doc.language,
+    generated: doc.generated,
+    durationSec: doc.durationSec,
+    segments: doc.segments,
+    chars: doc.chars,
     text: doc.text,
   };
 }
@@ -985,15 +1010,23 @@ export function makePageToolExecutor(tabId, { cdp = false, adapter = null, devJs
         return JSON.stringify(await calibrateTurn(tabId, { delta: input?.delta, viewportWidth: vp?.w }));
       }
       if (name === 'read_transcript') {
-        const doc = await tabTranscript(tabId, {
+        const opts = {
           language: String(input?.language || ''),
           timestamps: input?.timestamps !== false,
           maxChars: Number(input?.maxChars) || undefined,
-        });
+        };
+        // A URL NEEDS NO TAB. Without this the only way to reach a video the user was not
+        // already on was `navigate` — which replaces the page they are looking at, to read
+        // something we can fetch in under a second. One real turn did exactly that: failed
+        // here, navigated the user's tab to YouTube, then read it.
+        const url = String(input?.url || '').trim();
+        const doc = url ? await urlTranscript(url, opts) : await tabTranscript(tabId, opts);
         if (!doc) {
           return JSON.stringify({
-            error: 'No transcript available for this tab — it is not a video page, or the video has no captions. '
-              + 'Use read_page to read the page itself.',
+            error: url
+              ? `No transcript for ${url} — the link may not be a video, or it has no captions of any kind.`
+              : 'This tab is not a video page. Pass {"url":"…"} to read a specific video — you do NOT need to '
+                + 'navigate to it. To read this page instead, use read_page.',
           });
         }
         return JSON.stringify(doc);

@@ -55,6 +55,7 @@ import {
 } from './js/context.js';
 import { getSuggestions, getMeetingSuggestions, fallbacksFor, targetKey } from './js/suggestions.js';
 import { createFallbackChain } from './js/model-fallback.js';
+import { looksLikeVideoHost } from './js/source-kind.js';
 // warm-sync.js is dynamic-imported in maybeWarmSync() — it drags in the history-rag subgraph.
 import {
   meetingToText,
@@ -7560,6 +7561,11 @@ async function autoAttachUrls(text) {
     if (state.attachments.find((a) => a.url === url)) continue;
     // First URL is free; additional ones need Pro (multi-context).
     if (state.attachments.length >= FREE_LIMITS.attachmentsPerMessage && !can(state.license, 'multiTab')) break;
+    // SAY THAT SOMETHING IS HAPPENING. This runs inside send()'s lock, so while a URL is
+    // being read every further Enter is swallowed by design — and with nothing on screen
+    // that reads as "the Enter key is broken". It is the only step here that can take a
+    // visible moment, and it was the only one that said nothing.
+    toast(looksLikeVideoHost(url) ? 'Reading the transcript…' : 'Reading the link…', 3000);
     try {
       const att = await captureUrl(url);
       state.attachments.push(att);
