@@ -33,7 +33,25 @@ export const FALLBACK_SUGGESTIONS = [
 
 const CACHE_PREFIX = 'cpSugg:';
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // per-origin, so re-opening a site is free
+// Must equal MAX_SUGGESTIONS in @chatpanel/events/extraction.js, which is what the prompt
+// asks for and what the parser enforces. Not imported: this module is on the side panel's
+// FIRST PAINT, and the structured layer it lives in is 50 KB that no panel needs to paint —
+// so the schema is `await import()`ed at the two call sites below instead, and a test asserts
+// the two numbers still agree.
 const MAX_ITEMS = 4;
+
+/** The schema, its prompt block and its reader — loaded only when a suggestion is generated. */
+async function loadSuggestionSchema() {
+  const [extraction, structured] = await Promise.all([
+    import('./events/extraction.js'),
+    import('./events/structured.js'),
+  ]);
+  return {
+    schema: extraction.SUGGESTIONS_SCHEMA,
+    parse: extraction.parseSuggestions,
+    block: structured.describeSchema(extraction.SUGGESTIONS_SCHEMA),
+  };
+}
 
 // --------------------------------------------------------------------------
 // Public API
@@ -67,7 +85,7 @@ export async function getSuggestions({ tab, settings, signal, force = false, sou
   const provider = PROVIDERS[settings.ui?.suggestions?.provider] || PROVIDERS.byo;
   try {
     const meta = await siteMetadata(tab);
-    const items = await provider({ meta, settings, signal });
+    const items = await provider({ meta, settings, signal, sourceId });
     if (items.length >= 2) {
       if (origin) cacheSet(origin, items); // fire-and-forget
       return { items, source: 'model' };
@@ -88,27 +106,25 @@ export async function getSuggestions({ tab, settings, signal, force = false, sou
 export async function getMeetingSuggestions({ meeting, settings, signal } = {}) {
   if (!suggestionCandidates(settings).length) return { items: [], source: 'nomodel' };
   if (!meeting || (!meeting.summary && !meeting.transcript)) return { items: [], source: 'fallback' };
+  const { schema, block } = await loadSuggestionSchema();
   const sys =
     'You are assisting during a LIVE meeting. Suggest 4 short, specific CLARIFYING QUESTIONS the ' +
     'user might want answered or kept watch on as the call continues — open decisions, owners, ' +
     'risks, deadlines, unclear points. Each 3–9 words, phrased as a question, grounded ONLY in the ' +
-    'summary/transcript provided (never invent). Respond with ONLY a JSON array of 4 strings.';
+    `summary/transcript provided (never invent).\n\n${block}`;
   const user = `Meeting: ${meeting.title || 'Meeting'}\n\nRUNNING SUMMARY:\n${meeting.summary || '(none yet)'}`
-    + `\n\nRECENT TRANSCRIPT:\n${String(meeting.transcript || '').slice(-4000)}\n\nReturn a JSON array of 4 question strings.`;
-  const { items } = await runWithFallback(settings, async (agent) => {
-    let out = '';
-    await (await loadStreamChat())({
-      agent: { ...agent, systemPrompt: sys },
-      settings,
-      signal,
-      // WHICH THREAD THIS BELONGS TO. 264 of 1,215 turns in a real export had no parent id
-      // and every one of them was a suggestion — work done for a conversation, filed under
-      // nothing. A turn with no parent cannot be grouped, so it is not merely untidy.
-      usage: { surface: 'suggestion', sourceId },
-      messages: [{ role: 'user', content: user }],
-      onDelta: (d) => (out += d),
-    });
-    return parsePrompts(out);
+    + `\n\nRECENT TRANSCRIPT:\n${String(meeting.transcript || '').slice(-4000)}`;
+  const { items } = await askForSuggestions(settings, {
+    schema,
+    system: sys,
+    prompt: user,
+    signal,
+    // WHICH THREAD THIS BELONGS TO. A turn with no parent cannot be grouped. This read a bare
+    // `sourceId` declared on getSuggestions — a DIFFERENT function — so it threw, the chain
+    // read the throw as "candidate failed", and the feature never ran while cooling every
+    // candidate it shares with page suggestions. See tools/test-suggestion-fallback.mjs.
+    usage: { surface: 'suggestion', sourceId: meeting.id || null },
+    max: MAX_ITEMS,
   });
   return { items, source: items.length ? 'model' : 'fallback' };
 }
@@ -119,28 +135,22 @@ export async function getMeetingSuggestions({ meeting, settings, signal } = {}) 
 
 const PROVIDERS = {
   // Bring-your-own: generate via the user's configured model.
-  byo: async ({ meta, settings, signal }) => {
+  byo: async ({ meta, settings, signal, sourceId = null }) => {
     if (!suggestionCandidates(settings).length) return [];
+    const { schema, block } = await loadSuggestionSchema();
     const sys =
       'You suggest things a user might ask an AI assistant about the web page they are ' +
       'currently viewing. You are given ONLY lightweight page metadata — never the page ' +
       'body. Propose 4 short, specific, genuinely useful prompts (each 3–7 words, an ' +
-      'imperative or a question) tailored to what this kind of page is for. ' +
-      'Respond with ONLY a JSON array of 4 strings, nothing else.';
-    const user = `Page metadata:\n${JSON.stringify(meta)}\n\nReturn a JSON array of 4 prompt strings.`;
-    // Same chain as everywhere else: a dead local model falls through to the next
-    // candidate instead of ending the feature.
-    const { items } = await runWithFallback(settings, async (agent) => {
-      let out = '';
-      await (await loadStreamChat())({
-        agent: { ...agent, systemPrompt: sys },
-        settings,
-        signal,
-        usage: { surface: 'suggestion', sourceId: meeting?.id || null },
-        messages: [{ role: 'user', content: user }],
-        onDelta: (d) => (out += d),
-      });
-      return parsePrompts(out);
+      'imperative or a question) tailored to what this kind of page is for.\n\n' + block;
+    // Threaded in, rather than read off a `meeting` that was never in scope here.
+    const { items } = await askForSuggestions(settings, {
+      schema,
+      system: sys,
+      prompt: `Page metadata:\n${JSON.stringify(meta)}`,
+      signal,
+      usage: { surface: 'suggestion', sourceId },
+      max: MAX_ITEMS,
     });
     return items;
   },
@@ -204,10 +214,31 @@ function pickSuggestionAgent(settings) {
 // single-pick-and-give-up bug, so the behaviour lives in one place now.
 const chain = createFallbackChain({ key: targetKey });
 
-/** Try each candidate until one answers. `{ items }` is empty when all of them failed. */
-async function runWithFallback(settings, run) {
-  const { result } = await chain.run(suggestionCandidates(settings), run);
-  return { items: result || [] };
+/**
+ * Ask through the ONE structured-call path, over every candidate in order.
+ *
+ * This was a private wrapper around its own streamChat, which made suggestions the one
+ * structured call that never asked a server to ENFORCE the shape: adding `response_format`
+ * risked the chain reading a 400 on an unsupported body as a dead model. runStructured keeps
+ * those apart itself, so the ladder and the chain compose instead of fighting.
+ */
+async function askForSuggestions(settings, { schema, prompt, system, signal, usage, max }) {
+  const { parse } = await loadSuggestionSchema();
+  const { runStructured } = await import('./structured-call.js');
+  const got = await runStructured({
+    candidates: suggestionCandidates(settings),
+    chain,
+    schema,
+    prompt,
+    system,
+    settings,
+    signal,
+    usage,
+    maxTokens: 400,
+  });
+  // The schema already coerced it; parse applies the suggestion-specific tidying (numbering
+  // and quotes a model adds despite being told not to) and the cap.
+  return { items: got ? parse(got.text, { max }) : [] };
 }
 
 /** Test-only: forget which candidates are cooling off. */
@@ -264,33 +295,6 @@ function originOf(u) {
   try { return new URL(u).origin; } catch { return ''; }
 }
 
-// Extract up to MAX_ITEMS clean prompt strings from a model reply. Prefers a JSON
-// array; falls back to splitting lines and stripping bullets/numbering/quotes.
-function parsePrompts(text) {
-  if (!text) return [];
-  let arr = null;
-  const m = text.match(/\[[\s\S]*\]/);
-  if (m) { try { arr = JSON.parse(m[0]); } catch { /* not JSON */ } }
-  if (!Array.isArray(arr)) {
-    arr = text
-      .split('\n')
-      .map((s) => s.replace(/^[\s\-*\d.)"']+/, '').replace(/["']+\s*$/, '').trim())
-      .filter(Boolean);
-  }
-  const seen = new Set();
-  const out = [];
-  for (let s of arr) {
-    if (typeof s !== 'string') continue;
-    s = s.trim().replace(/^["']|["']$/g, '').slice(0, 80).trim();
-    const key = s.toLowerCase();
-    if (!s || seen.has(key)) continue;
-    seen.add(key);
-    out.push(s);
-    if (out.length >= MAX_ITEMS) break;
-  }
-  return out;
-}
-
 // Per-origin session cache (cleared when the browser closes).
 async function cacheGet(origin) {
   try {
@@ -310,8 +314,3 @@ async function cacheSet(origin, items) {
   } catch { /* best effort */ }
 }
 
-/** The turn runner, fetched when a turn is actually run. Module resolution is cached, so
- *  the first call pays once and the rest are free. */
-async function loadStreamChat() {
-  return (await import('./providers.js')).streamChat;
-}

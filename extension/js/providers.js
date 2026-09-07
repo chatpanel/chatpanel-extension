@@ -23,7 +23,7 @@ import { sanitizeUnicode } from './sanitize.js';
 // itself, shared so the gateway and bridge answer 'what did the model read' the same way.
 import { makeSourceStore, manifestText, readSource, approxTokens } from './events/sources-retrieval.js';
 import { extractUrls } from './events/sources.js';
-import { detectEntities, normalizeEntities, EXTRACT_SYS, parseJsonLoose, withTimeout } from './pii-detect.js';
+import { detectEntities, normalizeEntities, EXTRACT_SYS, withTimeout } from './pii-detect.js';
 import { createVault, redactText, restoreText, redactionSummary } from './pii-redact.js';
 import { combineSystemPrompt, toolStatus } from './tool-hints.js';
 import { getTarget, resolveTarget } from './store.js';
@@ -1050,9 +1050,49 @@ function isLocalAgent(agent) {
 // endpoint is detected via its OpenAI-compatible connection; a bridge CLI is driven
 // through dispatchStream. All paths fail open (return []) so a slow/broken detector
 // never blocks the chat.
+/**
+ * Record that the agent-backed detector saw RAW text.
+ *
+ * The `endpoint`/`openai` backends report through @chatpanel/pii's onEgress hook; this one
+ * runs through dispatchStream instead, so it reports here. All three land in one list —
+ * "what left this device" must not depend on which backend the user happened to pick.
+ */
+function logDetectorEgress(target, t0, text, err) {
+  const host = (() => { try { return new URL(String(target.baseUrl || '')).host; } catch { return target.kind === 'bridge' ? 'cli' : ''; } })();
+  import('./access-log.js').then((m) => m.recordAccess({
+    client: 'redaction',
+    tool: `detect:agent@${host || 'local'}`,
+    ok: !err,
+    ms: Date.now() - t0,
+    error: err ? String(err.message || err).slice(0, 200) : '',
+    counts: { chars: String(text || '').length },
+  })).catch(() => {});
+}
+
 async function detectForChat(sample, cfg, settings, signal, { strict = false } = {}) {
   const det = (cfg && cfg.detection) || {};
-  if (det.backend !== 'agent') return detectEntities(sample, cfg, { signal, strict });
+  if (det.backend !== 'agent') {
+    // A local NER service or an OpenAI-compatible detector, driven by @chatpanel/pii. It ships
+    // zero dependencies on purpose, so the structured layer is handed IN rather than imported
+    // there — which is what gets a llama.cpp-served gemma a grammar-constrained answer instead
+    // of a paragraph.
+    const [{ ENTITIES_SCHEMA, entitiesFormat }, { describeSchema, coerce: coerceStructured }] = await Promise.all([
+      import('./events/extraction.js'), import('./events/structured.js'),
+    ]);
+    const { detectorEgressHook } = await import('./access-log.js');
+    return detectEntities(sample, cfg, {
+      signal,
+      strict,
+      // The one hop that sees RAW text. Recorded so "what left this device" has an answer
+      // without the gateway running — the fact and counts only, never the text.
+      onEgress: detectorEgressHook('redaction'),
+      structured: {
+        block: describeSchema(ENTITIES_SCHEMA),
+        format: (mode) => entitiesFormat(mode),
+        parse: (text) => coerceStructured(text, ENTITIES_SCHEMA)?.value ?? null,
+      },
+    });
+  }
   // A configured API/agent: drive it through the SAME transport as chat — correct
   // base URL / auth / headers for endpoints, the CLI for bridge agents — with a
   // strict JSON-extraction prompt, then parse the entities out of its reply.
@@ -1060,10 +1100,16 @@ async function detectForChat(sample, cfg, settings, signal, { strict = false } =
   if (!target) { if (strict) throw new Error('No API / agent selected for the detector'); return []; }
   const capped = String(sample || '').slice(0, det.maxChars || 8000);
   if (capped.trim().length < 8) return [];
+  // The shape comes from the shared schema, which is the same object used to build the
+  // response_format below — so what the model is asked for, what the server enforces and what
+  // the parser accepts are one definition rather than three.
+  const { ENTITIES_SCHEMA, entitiesFormat } = await import('./events/extraction.js');
+  const { describeSchema, coerce } = await import('./events/structured.js');
+  const sys = `${EXTRACT_SYS}\n\n${describeSchema(ENTITIES_SCHEMA)}`;
   // The instruction goes in BOTH the system prompt and the user turn: agentic CLIs
   // (Claude Code / Codex) often only *append* a custom system prompt, so the inline
   // copy makes them far likelier to emit the JSON we parse.
-  const prompt = `${EXTRACT_SYS}\n\nText to analyze:\n"""\n${capped}\n"""\n\nRespond with ONLY the JSON object.`;
+  const prompt = `${sys}\n\nText to analyze:\n"""\n${capped}\n"""`;
   const timeoutMs = det.timeoutMs || (target.kind === 'bridge' ? 20000 : 4000);
   // On OpenAI-compatible endpoints, force JSON mode (response_format) so even small
   // local models (phi4-mini, gemma) emit valid JSON instead of prose. Bridge CLIs
@@ -1071,31 +1117,51 @@ async function detectForChat(sample, cfg, settings, signal, { strict = false } =
   // Meter the detector too — it's a real (Pro) model call. Tagged 'redaction' so
   // its token spend is visible alongside chat/notes/meetings.
   const detModel = det.model || target.model;
+  const detT0 = Date.now();
   const onDetectEvent = (ev) => {
     if (ev && ev.type === 'usage') import('./usage-meter.js').then((m) => m.recordUsageEvent(ev, { surface: 'redaction', agentId: target.agentId || target.name || null })).catch(() => {});
   };
-  const ask = (jsonMode) => withTimeout(dispatchStream({
-    agent: {
-      ...target, systemPrompt: EXTRACT_SYS, temperature: 0,
-      maxTokens: det.maxTokens || 256, model: detModel,
-      ...(jsonMode ? { extraBody: { ...(target.extraBody || {}), response_format: { type: 'json_object' } } } : {}),
-    },
-    messages: [{ role: 'user', content: prompt }],
-    settings, signal, onEvent: onDetectEvent,
-  }), timeoutMs, signal);
+  const ask = (mode) => {
+    const fmt = entitiesFormat(mode);
+    return withTimeout(dispatchStream({
+      agent: {
+        ...target, systemPrompt: sys, temperature: 0,
+        maxTokens: det.maxTokens || 256, model: detModel,
+        ...(fmt ? { extraBody: { ...(target.extraBody || {}), ...fmt } } : {}),
+      },
+      messages: [{ role: 'user', content: prompt }],
+      settings, signal, onEvent: onDetectEvent,
+    }), timeoutMs, signal);
+  };
   let text = '';
   try {
     let out;
     if (target.kind !== 'bridge') {
-      // JSON mode first; if the server rejects response_format, retry without it.
-      try { out = await ask(true); }
-      catch (e) { if (/abort|timeout/i.test((e && e.message) || '')) throw e; out = await ask(false); }
+      // GRAMMAR FIRST, then plain JSON mode, then nothing. `json_schema` constrains the
+      // decoder to this exact shape — the difference between a 3B local model that answers
+      // correctly and one that writes a paragraph — but plenty of OpenAI-compatible servers
+      // reject the field, and older ones only know `json_object`. Each rung is tried once and
+      // an abort or a timeout stops the walk, because neither is the server's opinion of the
+      // request body.
+      const rungs = ['schema', 'object', 'none'];
+      for (const mode of rungs) {
+        try { out = await ask(mode); break; }
+        catch (e) {
+          if (/abort|timeout/i.test((e && e.message) || '')) throw e;
+          if (mode === 'none') throw e;
+        }
+      }
     } else {
-      out = await ask(false);
+      // A bridge CLI has no request body we control — the prompt carries the whole contract.
+      out = await ask('none');
     }
     text = typeof out === 'string' ? out : (out && out.text) || '';
-  } catch (e) { if (strict) throw e; return []; }
-  const parsed = parseJsonLoose(text);
+    logDetectorEgress(target, detT0, text, null);
+  } catch (e) { logDetectorEgress(target, detT0, '', e); if (strict) throw e; return []; }
+  // The shared coercer, so this detector inherits every repair the product has learned: a
+  // code fence, a preamble, single quotes, a trailing comma, "none" as a whole answer.
+  const got = coerce(text, ENTITIES_SCHEMA);
+  const parsed = got ? got.value : null;
   if (!parsed) {
     // Distinguish "replied but not JSON" from "empty" so the Test button can say
     // something useful instead of a misleading "no entities".

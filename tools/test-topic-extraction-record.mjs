@@ -8,8 +8,9 @@
 import assert from 'node:assert/strict';
 import {
   topicSourceTextForConversation, topicSourcesForConversation,
-  topicSourcesForMeeting, topicExtractionPrompt,
+  topicSourcesForMeeting,
 } from '../extension/js/topic-extraction.js';
+import { topicExtractionPrompt } from '../extension/js/topic-extraction-model.js';
 import { turnSpecFor } from '../extension/js/providers.js';
 
 const conv = {

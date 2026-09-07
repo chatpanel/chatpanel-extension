@@ -101,9 +101,18 @@ export function parseJsonLoose(s) {
   try { return JSON.parse(String(s).slice(a, b + 1)); } catch { return null; }
 }
 
+// The instruction WITHOUT the shape. The shape now comes from ENTITIES_SCHEMA in
+// `@chatpanel/events` — the one object that renders the prompt block, builds the
+// `response_format` a server enforces, and reads the reply. INJECTED, not imported: this
+// package ships zero dependencies so the bridge can vendor it. A host without it still works.
 export const EXTRACT_SYS = 'You extract sensitive entities from text for redaction. '
-  + 'Return ONLY JSON: {"entities":[{"value":"<verbatim text>","type":"PERSON|ORG|LOCATION|ID|EMAIL|PHONE|OTHER"}]}. '
   + 'Copy each value exactly as it appears. Include people, organizations, locations, and account/ID numbers. No commentary, no code fences.';
+
+const FALLBACK_SHAPE = 'Return ONLY JSON: {"entities":[{"value":"<verbatim text>",'
+  + '"type":"PERSON|ORG|LOCATION|ID|EMAIL|PHONE|OTHER"}]}. No commentary, no code fences.';
+
+// The seam: { block, format(mode), parse(text) }. Absent, everything below behaves as before.
+const NO_STRUCTURE = Object.freeze({ block: '', format: null, parse: null });
 
 async function detectViaEndpoint(text, det, signal, fetchImpl) {
   const res = await fetchImpl(det.url, {
@@ -116,7 +125,7 @@ async function detectViaEndpoint(text, det, signal, fetchImpl) {
   return normalizeEntities(await res.json(), det.types);
 }
 
-async function detectViaOpenAI(text, det, signal, fetchImpl) {
+async function detectViaOpenAI(text, det, signal, fetchImpl, structured = NO_STRUCTURE) {
   const base = String(det.url || '').replace(/\/$/, '');
   // Build the chat URL the SAME way the chat path does. An OpenAI-compatible baseUrl
   // already ends in /v1 (Ollama, OpenRouter, NVIDIA, OpenAI…) → only add
@@ -125,25 +134,70 @@ async function detectViaOpenAI(text, det, signal, fetchImpl) {
   const url = /\/chat\/completions$/.test(base) ? base
     : /\/v\d+$/.test(base) ? `${base}/chat/completions`
       : `${base}/v1/chat/completions`;
-  const res = await fetchImpl(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(det.apiKey ? { Authorization: `Bearer ${det.apiKey}` } : {}) },
-    body: JSON.stringify({
-      model: det.model || 'local',
-      temperature: 0,
-      max_tokens: det.maxTokens || 256,
-      messages: [{ role: 'system', content: EXTRACT_SYS }, { role: 'user', content: text }],
-    }),
-    signal,
-  });
-  if (!res.ok) throw new Error(`detect HTTP ${res.status}`);
-  const json = await res.json();
+  const sys = `${EXTRACT_SYS}\n\n${structured.block || FALLBACK_SHAPE}`;
+  const ask = async (mode) => {
+    const fmt = structured.format ? structured.format(mode) : null;
+    const res = await fetchImpl(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(det.apiKey ? { Authorization: `Bearer ${det.apiKey}` } : {}) },
+      body: JSON.stringify({
+        model: det.model || 'local',
+        temperature: 0,
+        max_tokens: det.maxTokens || 256,
+        messages: [{ role: 'system', content: sys }, { role: 'user', content: text }],
+        ...(fmt || {}),
+      }),
+      signal,
+    });
+    // 400/422 is the server saying it does not understand the body — a different thing from
+    // being down, and the only one worth retrying with a weaker one.
+    if (!res.ok) { const e = new Error(`detect HTTP ${res.status}`); e.status = res.status; throw e; }
+    return res.json();
+  };
+
+  // Grammar first, then plain JSON mode, then nothing. `json_schema` constrains the decoder to
+  // this exact shape — the difference between a 3B local model that answers and one that
+  // writes a paragraph — but many servers reject the field, so each rung is tried once.
+  let json = null;
+  if (structured.format) {
+    for (const mode of ['schema', 'object', 'none']) {
+      try { json = await ask(mode); break; }
+      catch (e) { if (mode === 'none' || (e.status !== 400 && e.status !== 422)) throw e; }
+    }
+  } else {
+    json = await ask('none');
+  }
   const content = json?.choices?.[0]?.message?.content ?? json?.content ?? '';
-  return normalizeEntities(parseJsonLoose(content), det.types);
+  // The schema-aligned reader when the host has one; the loose slice otherwise.
+  const parsed = structured.parse ? structured.parse(content) : parseJsonLoose(content);
+  return normalizeEntities(parsed, det.types);
+}
+
+// Never throws: an egress record that could break redaction is worse than no record.
+function report(onEgress, det, sent, t0, count, err) {
+  if (typeof onEgress !== 'function') return;
+  try {
+    onEgress({
+      backend: det.backend || '',
+      host: hostOf(det.url),
+      chars: sent.length,
+      entities: count,
+      ms: Date.now() - t0,
+      ok: !err,
+      error: err ? String(err.message || err).slice(0, 200) : '',
+    });
+  } catch { /* observability must never be the reason detection fails */ }
 }
 
 // Returns [{value, type}] spans for `text`, or [] (fail-open) on any error/timeout.
-export async function detectEntities(text, cfg, { signal, fetchImpl = globalThis.fetch, strict = false } = {}) {
+// `onEgress` reports that RAW text left for a detector — the FACT, never the text. This is
+// the one call that sends un-redacted content off the device (you cannot redact before you
+// have detected); it is SSRF-guarded but was logged nowhere, and det.url accepts any public
+// host. Injected, like `structured`: this package has no logger. The record carries the HOST
+// (never the full URL, which can hold a token) and counts — never values.
+const hostOf = (u) => { try { return new URL(String(u)).host; } catch { return ''; } };
+
+export async function detectEntities(text, cfg, { signal, fetchImpl = globalThis.fetch, strict = false, structured = NO_STRUCTURE, onEgress = null } = {}) {
   const det = cfg?.detection;
   if (!det || !det.backend || det.backend === 'off' || !det.url || typeof fetchImpl !== 'function') return [];
   const capped = String(text || '').slice(0, det.maxChars || 8000);
@@ -158,7 +212,11 @@ export async function detectEntities(text, cfg, { signal, fetchImpl = globalThis
     // is the normal case. A blocked URL fails open (deterministic-only), or surfaces
     // to the Test button in strict mode.
     assertEndpointUrl(det.url);
-    ents = await withTimeout(run(capped, det, signal, fetchImpl), det.timeoutMs || 1500, signal);
+    const t0 = Date.now();
+    try {
+      ents = await withTimeout(run(capped, det, signal, fetchImpl, structured), det.timeoutMs || 1500, signal);
+      report(onEgress, det, capped, t0, ents.length, null);
+    } catch (e) { report(onEgress, det, capped, t0, 0, e); throw e; }
   } catch (e) {
     if (strict) throw e; // surface errors to the Test button
     ents = []; // otherwise fail open — deterministic redaction still applies

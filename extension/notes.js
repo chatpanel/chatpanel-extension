@@ -2052,6 +2052,9 @@ function scheduleNoteTopics() {
 async function maybeExtractNoteTopics(rec) {
   if (!rec?.id || noteTopicJobs.has(rec.id)) return;
   const te = await import('./js/topic-extraction.js');
+  // The model hop is a separate module so the structured-output layer stays off the first
+  // paint of every page that only needs a deterministic topic helper.
+  const tem = await import('./js/topic-extraction-model.js');
   const text = te.topicSourceTextForNote(rec);
   if (!text) return;
   const hash = te.contentHash(text);
@@ -2075,13 +2078,13 @@ async function maybeExtractNoteTopics(rec) {
         const deps = await agentDeps();
         await deps.streamChat({
           agent: { ...target, systemPrompt: 'Return only valid JSON. Do not include markdown fences.', temperature: 0.2, maxTokens: 500 },
-          messages: [{ role: 'user', content: te.topicExtractionPrompt({ kind: 'note', title: rec.title || 'Note', text }) }],
+          messages: [{ role: 'user', content: tem.topicExtractionPrompt({ kind: 'note', title: rec.title || 'Note', text }) }],
           settings,
           onDelta: (d) => { out += d; },
           onEvent: () => {},
           usage: { surface: 'note', sourceId: rec.id },
         });
-        const parsed = te.parseTopicExtractionResponse(out);
+        const parsed = tem.parseTopicExtractionResponse(out);
         if (parsed.length) { items = parsed; fallback = false; }
       } catch { /* fall through to deterministic */ }
     }

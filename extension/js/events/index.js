@@ -78,7 +78,22 @@ export {
   parseDuration, parseClock, parseWhen, parseNumberWords, normalizeSpeech, tokenize, editDistance,
   defineVoiceIntent, createVoiceIntentRegistry, defaultVoiceIntents, BUILTIN_VOICE_INTENTS,
   timerIntent, reminderIntent, scheduleIntent, noteIntent, monitorIntent,
+  REFINEMENT_SCHEMA, refinementPrompt, refinementFormat, parseRefinement, refinementStream, settleRefinement,
+  refineSpokenCommand, isFillerSentence, gistText, gistOpening,
 } from './voice-intents.js';
+export {
+  MAX_TOPICS, MAX_TOPIC_CHARS, TOPICS_SCHEMA, topicsSchema, topicsPrompt, topicsFormat, parseTopics,
+  normalizeTopic, normalizeTopics, topicsStream,
+  ENTITY_TYPES, ENTITIES_SCHEMA, entitiesPrompt, entitiesFormat, parseEntities, coerceEntities, entitiesStream,
+  MAX_SUGGESTIONS, MAX_SUGGESTION_CHARS, SUGGESTIONS_SCHEMA, suggestionsPrompt, suggestionsFormat,
+  parseSuggestions, suggestionsStream,
+} from './extraction.js';
+export {
+  FIELD_TYPES, RESPONSE_MODES, StructuredError,
+  defineSchema, describeSchema, toJsonSchema, responseFormat,
+  unfence, findJson, rewriteJson, repairJson, isNothing,
+  coerce, parseStructured, createStructuredStream,
+} from './structured.js';
 export { explainMcpError, packageFromArgs } from './mcp-errors.js';
 export { createManifest, ManifestError, SOURCES } from './manifest.js';
 export { createKernel, meetDecisions, KernelError, REQUIRED_PLUGINS, ALLOW_ALL } from './kernel.js';

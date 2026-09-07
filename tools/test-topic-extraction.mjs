@@ -5,15 +5,14 @@ import {
   contentHash,
   fallbackTopicItems,
   insightTopicItemsFromNotes,
-  parseTopicExtractionResponse,
   shouldExtractTopics,
   topicDisplayForMeetingSource,
   topicDisplayForSource,
   topicItemsForDisplay,
-  topicExtractionPrompt,
   topicSourceTextForConversation,
   topicSourceTextForMeeting,
 } from '../extension/js/topic-extraction.js';
+import { parseTopicExtractionResponse, topicExtractionPrompt } from '../extension/js/topic-extraction-model.js';
 
 const parsed = parseTopicExtractionResponse(`
 \`\`\`json
@@ -94,7 +93,11 @@ assert.match(insightMeetingText, /INSIGHTS/);
 assert.doesNotMatch(insightMeetingText, /This transcript body should not be needed/);
 
 const prompt = topicExtractionPrompt({ kind: 'meeting', title: 'Redis planning', text: meetingText });
-assert.match(prompt, /Return only JSON/);
+// The shape is no longer hand-typed here — it is rendered from TOPICS_SCHEMA, so asserting
+// on the schema block is asserting that the prompt and the parser still share one definition.
+assert.match(prompt, /Return ONLY a JSON object/);
+assert.match(prompt, /"topics": \[string, …\]/);
+assert.match(prompt, /at most 15 items/);
 assert.match(prompt, /8 to 15 topics/);
 assert.match(prompt, /Redis planning/);
 

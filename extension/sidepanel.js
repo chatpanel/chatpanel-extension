@@ -3232,7 +3232,10 @@ function topicTarget(fallbackId = '') {
  *        'other'.
  */
 async function extractTopicItems(kind, title, text, fallbackId = '', { context = [], sourceId = '' } = {}) {
-  const { fallbackTopicItems, topicExtractionPrompt, parseTopicExtractionResponse } = await import('./js/topic-extraction.js');
+  const { fallbackTopicItems } = await import('./js/topic-extraction.js');
+  // The model hop lives in its own module so the 50 KB structured-output layer stays off
+  // settings.js's first paint — topic-extraction.js is reachable from it.
+  const { topicExtractionPrompt, parseTopicExtractionResponse } = await import('./js/topic-extraction-model.js');
   const target = topicTarget(fallbackId);
   if (!target) return { items: fallbackTopicItems(text, 10), fallback: true, targetId: '' };
   let out = '';
@@ -4709,15 +4712,22 @@ async function refineSpokenWithModel(utterance) {
       || getTarget(state.settings, state.settings.activeAgentId);
     const resolved = resolveTarget(chosen, state.settings);
     if (!resolved) return null;
-    const { refinementPrompt, parseRefinement } = await import('./js/events/voice-intents.js');
-    let out = '';
-    await streamChat({
-      agent: { ...resolved, systemPrompt: 'Return only JSON. No prose, no code fences.', temperature: 0, maxTokens: 200 },
-      messages: [{ role: 'user', content: refinementPrompt(utterance) }],
+    const { REFINEMENT_SCHEMA, refinementPrompt, settleRefinement } = await import('./js/events/voice-intents.js');
+    const { runStructured } = await import('./js/structured-call.js');
+    // Through the shared capability rather than by hand, which is what gets this call the
+    // things it never had: the server asked to ENFORCE the shape where it can (json_schema,
+    // then json_object, then nothing for a bridge CLI), the walk down that ladder paid once
+    // per endpoint rather than per utterance, and the schema-aligned reader instead of a
+    // slice between the first '{' and the last '}'.
+    const got = await runStructured({
+      target: resolved,
+      schema: REFINEMENT_SCHEMA,
+      prompt: refinementPrompt(utterance),
       settings: state.settings,
-      onDelta: (d) => { out += d; },
+      maxTokens: 200,
+      usage: { surface: 'voice', background: true },
     });
-    return parseRefinement(out);
+    return got ? settleRefinement(got.value) : null;
   } catch {
     return null; // a refinement that fails must not lose the command it was refining
   }

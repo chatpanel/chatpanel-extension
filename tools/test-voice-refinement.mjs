@@ -98,7 +98,14 @@ assert.ok(fn, 'refineSpokenWithModel not found');
 assert.match(fn, /monitorProfileMod\.monitorProfile\(state\.settings\)/,
   "it must run on the MONITOR's model — the user picked that one for being fast, and this is "
   + 'a one-shot classification while people are still talking');
-assert.match(fn, /temperature: 0, maxTokens: 200/, 'tight and deterministic; this is extraction');
+// Through the shared structured-output capability, not by hand. That is what gets this call
+// the server-enforced shape (json_schema → json_object → nothing), the ladder paid once per
+// endpoint rather than per utterance, and the schema-aligned reader — none of which it had
+// while it was building its own request and slicing between the first '{' and the last '}'.
+assert.match(fn, /runStructured\(\{/, 'the refinement must go through js/structured-call.js');
+assert.match(fn, /schema: REFINEMENT_SCHEMA/, 'and be described by the shared schema, not a hand-typed shape');
+assert.match(fn, /maxTokens: 200/, 'tight; this is extraction, not conversation');
+assert.doesNotMatch(fn, /temperature: [1-9]/, 'deterministic — runStructured defaults to 0');
 assert.doesNotMatch(fn, /tools/, 'a classification needs no tools');
 assert.match(fn, /return null; \/\/ a refinement that fails/, 'a failed refinement must not lose the command');
 

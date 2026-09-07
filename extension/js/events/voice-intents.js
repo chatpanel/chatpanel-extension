@@ -35,6 +35,10 @@
 // timestamps come from the host's own timezone via Date. That is the only environmental
 // input, and it is the one users would be astonished to see normalised away.
 
+import {
+  defineSchema, describeSchema, responseFormat, coerce, createStructuredStream,
+} from './structured.js';
+
 export class VoiceIntentError extends Error {
   constructor(code, message) { super(message); this.name = 'VoiceIntentError'; this.code = code; }
 }
@@ -361,17 +365,47 @@ export function refineSpokenCommand(text, { maxName = 48 } = {}) {
  * Deliberately a tiny, single-shot classification with a strict output shape: it runs on a
  * fast model while a meeting is happening, so it must cost about as much as one sentence.
  */
+/**
+ * The shape of the answer, declared ONCE.
+ *
+ * It used to be typed twice — as prose inside the prompt string and again as a list of enum
+ * values thirty lines below in the parser — with nothing making the two agree. Adding a kind
+ * to one and not the other is a silent, permanent bug: the model answers correctly and the
+ * parser maps it to "question" forever. Now the prompt is rendered from this and the parser
+ * coerces onto it, so there is only one place a field exists.
+ */
+export const REFINEMENT_SCHEMA = defineSchema({
+  name: 'voice_refinement',
+  fields: {
+    request: {
+      type: 'string', required: true, max: 400,
+      describe: 'the one thing they actually want done, in their own words, one sentence',
+    },
+    name: { type: 'string', max: 48, describe: 'a label of at most 6 words' },
+    kind: {
+      type: 'enum',
+      values: ['question', 'monitor', 'note', 'skill', 'none'],
+      // An unknown kind becomes a QUESTION — the least surprising thing to do with something
+      // someone asked for, and the only kind that is undone by ignoring the answer. Guessing
+      // "monitor" instead would leave a card watching the meeting that nobody asked for.
+      default: 'question',
+      describe: 'the SMALLEST kind that does what they asked',
+    },
+    skill: { type: 'string', max: 80, describe: 'the skill name, only when kind is skill' },
+  },
+  // "none" is a real answer and the most important one to honour: it is how the model says
+  // "they were just talking", which is the case that produced junk jobs. It arrives two ways —
+  // as the whole reply, and as the value of `request` — and both are this.
+  nothing: { request: '', name: '', kind: 'none', skill: '' },
+});
+
 export function refinementPrompt(utterance) {
   return [
     'A person spoke to their assistant during a meeting. Below is everything they said after',
     'the wake word, transcribed live — so it contains false starts, thinking aloud, and',
     'sometimes several questions where only one is the request.',
     '',
-    'Return ONLY a JSON object, no prose and no code fences:',
-    '{"request":"<the one thing they actually want done, in their own words, one sentence>",',
-    ' "name":"<a label of at most 6 words>",',
-    ' "kind":"<question|monitor|note|skill|none>",',
-    ' "skill":"<the skill name, only when kind is skill>"}',
+    describeSchema(REFINEMENT_SCHEMA),
     '',
     'Pick the SMALLEST kind that does what they asked:',
     '  question — answer it once, now. The DEFAULT for anything they want to know.',
@@ -389,44 +423,69 @@ export function refinementPrompt(utterance) {
 }
 
 /**
+ * The body fragment that makes a capable endpoint enforce the shape server-side.
+ * Null for an agent CLI, which has no such control — the prompt and the repair pass carry it.
+ */
+export function refinementFormat(mode = 'schema') { return responseFormat(REFINEMENT_SCHEMA, { mode }); }
+
+/**
  * Read the model's answer back, defensively.
  *
- * Returns null for anything that is not a usable refinement, so the caller falls back to the
- * deterministic pass rather than acting on a hallucinated request. A model that wraps its JSON
- * in a code fence is common enough to handle rather than punish.
+ * Everything generic — code fences, a prose preamble, single quotes, a trailing comma, the
+ * word "none" in place of an object, a key spelled `Request` — is handled by the shared
+ * coercer, which means every OTHER structured call in the product gets those repairs too.
+ * What stays here is only what is true of THIS answer and no other.
+ *
+ * Returns null for anything unusable, so the caller falls back to the deterministic pass
+ * rather than acting on a hallucinated request.
  */
-// The ways a model says "they were not asking for anything", as a whole answer or as the
-// request itself. Anchored, so a real request that merely CONTAINS one of these survives.
-const NO_REQUEST = /^(?:none|n\/a|na|nothing|no request|null|-{1,3}|\.)\s*\.?$/i;
-
 export function parseRefinement(text) {
-  const raw = String(text || '').trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
-  // A small model told to answer "none" often answers "none" — as prose, with no JSON at all.
-  // Reading that as unparseable made the caller fall back to the deterministic reading and
-  // act on something the model had just said was not a request.
-  if (NO_REQUEST.test(raw)) return { request: '', name: '', kind: 'none', skill: '' };
-  const start = raw.indexOf('{');
-  const end = raw.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-  let obj;
-  try { obj = JSON.parse(raw.slice(start, end + 1)); } catch { return null; }
-  const request = String(obj?.request || '').trim();
-  // …and when it DOES return JSON it will sometimes put the word in the request field too:
-  // {"request":"none","kind":"question"}. Sent verbatim, that is a chat message reading
-  // "none" — which is exactly what a user saw, several times.
-  if (NO_REQUEST.test(request)) return { request: '', name: '', kind: 'none', skill: '' };
-  // An unknown kind becomes a QUESTION — the least surprising thing to do with something
-  // someone asked for, and the only kind that is undone by ignoring the answer. Guessing
-  // "monitor" instead would leave a card watching the meeting that nobody asked for.
-  const kind = ['question', 'monitor', 'note', 'skill', 'none'].includes(obj?.kind) ? obj.kind : 'question';
-  // "none" is a real answer and the most important one to honour: it is how the model says
-  // "they were just talking", which is the case that produced junk jobs.
-  if (kind === 'none' || !request) return { request: '', name: '', kind: 'none' };
-  const name = String(obj?.name || '').trim() || request;
-  const skill = String(obj?.skill || '').trim().slice(0, 80);
+  const got = coerce(text, REFINEMENT_SCHEMA);
+  if (!got) return null;
+  return settleRefinement(got.value);
+}
+
+/**
+ * The two rules that are about voice commands rather than about JSON.
+ *
+ * Shared with the streaming reader below, because a rule applied on the final answer and not
+ * on the partial one is a rule the user watches the UI break. Exported because a caller that
+ * fetches the answer through the generic structured-call capability gets the raw coerced
+ * object and still needs these — the rules must not live only inside one of two paths.
+ */
+export function settleRefinement(v) {
+  if (!v) return null;
+  const request = String(v.request || '').trim();
+  if (v.kind === 'none' || !request) return { request: '', name: '', kind: 'none', skill: '' };
   // A "skill" with no name is a question — there is nothing to run.
-  const settled = kind === 'skill' && !skill ? 'question' : kind;
-  return { request, name: name.length > 48 ? `${name.slice(0, 47)}…` : name, kind: settled, skill };
+  const kind = v.kind === 'skill' && !v.skill ? 'question' : v.kind;
+  return { request, name: String(v.name || '').trim() || request, kind, skill: v.skill || '' };
+}
+
+/**
+ * The same answer, AS IT ARRIVES.
+ *
+ * A refinement is asked for mid-meeting while someone is waiting to see whether they were
+ * heard, and the standing rule is that every model output streams with visible progress. The
+ * `settled` set is what makes that safe: `request` can be shown growing, and `kind` — which
+ * decides whether a monitor gets created — is only acted on once the model has closed it.
+ *
+ *     const s = refinementStream({ onChange: (v, settled) => paint(v, settled) });
+ *     await stream({ …, onDelta: (d) => s.push(d) });
+ *     const final = s.end().value;   // already settled, or null
+ */
+export function refinementStream({ onChange = null } = {}) {
+  const inner = createStructuredStream(REFINEMENT_SCHEMA, {
+    onChange: onChange ? (v, settled) => onChange(settleRefinement(v), settled) : null,
+  });
+  const wrap = (snap) => ({ ...snap, value: settleRefinement(snap.value) });
+  return {
+    push: (chunk) => wrap(inner.push(chunk)),
+    end: () => wrap(inner.end()),
+    snapshot: () => wrap(inner.snapshot()),
+    reset: () => inner.reset(),
+    get text() { return inner.text; },
+  };
 }
 
 /**
@@ -1099,7 +1158,12 @@ export function commandsFromSegments(segments, {
       //
       // The words are what does not move. Two different commands in one breath still differ;
       // the same command through fifty flushes is one request.
-      key: `voice:${meetingId}:${parsed.intent || 'ask'}:${parsed.ms ?? parsed.when ?? ''}:${gistText(found.command)}`,
+      // The OPENING, not the whole sentence: a live caption keeps growing ("…10 seconds",
+      // then "…10 seconds and then", then "…and then we moved on"), and gistText over the
+      // full text moves with every one of those — which is the very bug this key exists to
+      // stop, just later in the sentence. The intent and its resolved duration are already
+      // in the key, so two genuinely different commands still differ.
+      key: `voice:${meetingId}:${parsed.intent || 'ask'}:${parsed.ms ?? parsed.when ?? ''}:${gistOpening(found.command)}`,
     });
     }
   }

@@ -7762,13 +7762,20 @@ async function renderObservability() {
     : '';
   storageEl.innerHTML = lagHint + [hot, warm, cold].map((t) => obsTierCard(formatBytes, t)).join('');
 
-  // AGENT ACCESS — the cross-agent read log from the gateway.
-  if (!obs) {
+  // WHAT LEFT THIS DEVICE — the gateway's cross-agent read log, PLUS this browser's own.
+  //
+  // One list, deliberately. The extension records the one call that sends RAW, pre-redaction
+  // text off the machine (entity detection — you cannot redact before you have detected), and
+  // that happens whether or not the gateway is running. A user asking "what left my machine"
+  // should not have to know which component made the call, so the two are merged and sorted
+  // by time rather than shown as two tables.
+  const local = await import('./js/access-log.js').then((m) => m.accessRows()).catch(() => []);
+  const access = [...(obs?.access || []), ...local].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  if (!obs && !local.length) {
     accessEl.innerHTML = `<p class="muted tiny">The gateway isn't running, so there's no cross-agent access to show. Start it to let Codex, Claude Code and other CLIs search your history — and to see every read here. <a href="#" id="obs-gw-jump">Set up the gateway →</a></p>`;
     $('obs-gw-jump')?.addEventListener('click', (e) => { e.preventDefault(); openGatewaySection(); });
     return;
   }
-  const access = obs.access || [];
   if (!access.length) {
     accessEl.innerHTML = `<p class="muted tiny">No tool calls recorded since the gateway last started. This log is <b>in-memory</b> — it resets whenever the gateway restarts (e.g. an update), and it fills only when an agent actually runs a query, not just from being connected. Run a history search in a connected agent (Codex, Claude&nbsp;Code, OpenCode) and it appears here: which agent, which tool, when. <a href="#" id="obs-gw-jump">Manage connected agents →</a></p>`;
     $('obs-gw-jump')?.addEventListener('click', (e) => { e.preventDefault(); openGatewaySection(); });

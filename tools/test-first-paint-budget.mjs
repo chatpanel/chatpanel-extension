@@ -42,7 +42,19 @@ const BUDGET = {
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one
   // that touches a dozen call sites and belongs in its own change rather than this one.
-  'settings.js': 1163,
+  //
+  // 1163 → 1170 for the detector's two new capabilities, both reached through providers.js:
+  //   • a structured-output seam in @chatpanel/pii, so an OpenAI-compatible detector is asked
+  //     to ENFORCE the entity shape rather than merely told about it — the difference between
+  //     a small local model that answers and one that writes a paragraph;
+  //   • egress recording, because detection is the ONE call that sends RAW pre-redaction text
+  //     off the device and it was logged nowhere (js/access-log.js).
+  // Neither drags weight onto this graph: the 50 KB structured layer and access-log.js are
+  // both `await import()`ed at their call sites, which test-structured-call.mjs and
+  // test-access-log.mjs assert. The ~7 KB is the code and its reasoning, and shaving the
+  // reasoning to fit a byte budget is the wrong trade. Headroom is deliberate — the previous
+  // ceiling landed on 1166.0/1166, which fails on the next comment anyone writes.
+  'settings.js': 1170,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was
