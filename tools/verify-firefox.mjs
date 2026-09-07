@@ -98,7 +98,12 @@ if (csp) {
 const GUARDED = {
   'chrome.sidePanel': ['js/side-panel.js'],
   'api.sidePanel': ['js/side-panel.js', 'js/browser-api.js'],
-  'chrome.offscreen': ['js/webllm.js'],
+  // ONE module owns the offscreen document: js/offscreen-host.js. It used to be
+  // js/webllm.js, and this list was not moved with it — so the preflight blocked every
+  // release on the module that IS the feature detection (`hasOffscreen()` gates each
+  // path, and test-firefox-parity.mjs asserts that it does).
+  'chrome.offscreen': ['js/offscreen-host.js'],
+  'api.offscreen': ['js/browser-api.js'],
   'api.debugger': ['js/page-actions-cdp.js', 'js/browser-api.js'],
   'chrome.debugger': [],
 };
