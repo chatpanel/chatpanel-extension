@@ -388,7 +388,12 @@ export const REFINEMENT_SCHEMA = defineSchema({
     name: { type: 'string', max: 48, describe: 'a label of at most 6 words' },
     kind: {
       type: 'enum',
-      values: ['question', 'monitor', 'note', 'skill', 'timer', 'none'],
+      // 'action' is here because it was MISSING, and the gap was silent. A browser command
+      // ("go to google.com and search for chat panel") is not something they want to KNOW, so
+      // it does not read as a question — and the only other bucket that fitted a rambling,
+      // narrated demo was "none", which is dropped without a word. Spoken four different ways
+      // in one meeting, it did nothing every time while the timer beside it worked.
+      values: ['question', 'action', 'monitor', 'note', 'skill', 'timer', 'none'],
       // An unknown kind becomes a QUESTION — the least surprising thing to do with something
       // someone asked for, and the only kind that is undone by ignoring the answer. Guessing
       // "monitor" instead would leave a card watching the meeting that nobody asked for.
@@ -413,6 +418,7 @@ export function refinementPrompt(utterance) {
     '',
     'Pick the SMALLEST kind that does what they asked:',
     '  question — answer it once, now. The DEFAULT for anything they want to know.',
+    '  action   — DO something in the browser or an app ("go to google.com and search for X").',
     '  monitor  — only if they asked to be told as the meeting CONTINUES ("let me know if",',
     '             "keep an eye on"). A one-off question is NOT a monitor.',
     '  note     — they asked for notes written down ("take notes on", "write that up").',
@@ -480,6 +486,36 @@ export function settleRefinement(v) {
     return { request, name, kind: 'timer', skill: '', ms: d.ms };
   }
   return { request, name, kind, skill: v.skill || '' };
+}
+
+/**
+ * Did the user's own spoken words name this host?
+ *
+ * The authority test for a hands-free browser command. A URL a MODEL picked is
+ * attacker-influenced by construction — it has been reading page text and meeting captions —
+ * so it gets a confirmation dialog. A URL whose host the USER said out loud has already been
+ * reviewed by the only person that dialog would have asked, and a modal in a side panel is
+ * exactly what nobody in a meeting is looking at: "go to google.com and search for chat
+ * panel" was spoken four ways in one call and did nothing every time.
+ *
+ * Deliberately strict. The full hostname always counts ("google.com"). The bare first label
+ * counts ONLY for a two-label host, so saying "docs" can never authorise `docs.evil.test` —
+ * anything deeper has to be said in full.
+ *
+ * Shared rather than written in the panel because it is a pure decision with no platform in
+ * it: the bridge relays the same page tools, and a second copy of an authority rule is a
+ * second answer to "may this happen".
+ */
+export function spokenNamesHost(url, spoken) {
+  const said = String(spoken || '').toLowerCase();
+  if (!said) return false;
+  let host;
+  try { host = new URL(url).hostname.toLowerCase().replace(/^www\./, ''); } catch { return false; }
+  if (!host) return false;
+  if (said.includes(host)) return true;
+  const labels = host.split('.');
+  if (labels.length !== 2) return false;
+  return new RegExp(`\\b${labels[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(said);
 }
 
 /**

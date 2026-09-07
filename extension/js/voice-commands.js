@@ -255,6 +255,12 @@ export function createVoiceDrain({
   };
 }
 
+// A command can be two whole sentences (MAX_COMMAND_SENTENCES), and a toast is one line.
+const clip = (s, n = 60) => {
+  const t = String(s || '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? `${t.slice(0, n - 1).replace(/\s+\S*$/, '')}…` : t;
+};
+
 /** What to tell the user, in one short line. */
 export function outcomeMessage(outcome) {
   const c = outcome?.command || {};
@@ -266,6 +272,17 @@ export function outcomeMessage(outcome) {
       return `Heard “${c.command}” — ${c.label || 'that'} isn’t wired up yet.`;
     case 'not-understood':
       return `Heard “${c.command}” — I didn’t recognise that command.`;
+    case 'not-a-request':
+      // SILENCE WAS THE BUG. This case used to fall through to '' on the reasoning that a
+      // fallback which declines is not a failure — true of the parse, false of the experience:
+      // a browser command spoken four ways in one meeting produced nothing at all, four times,
+      // which is indistinguishable from not being heard.
+      //
+      // The noise that reasoning feared belonged to 'not-you', which is refused BEFORE dispatch
+      // and re-offered on every flush (hence its `seen` set). This one is dispatched, so the
+      // engine's dedup on the command key has already spent it: one line per distinct thing
+      // actually said to us, never a repeat.
+      return `Heard “${clip(c.command)}” — I couldn’t tell what you wanted done.`;
     case 'already-fired':
       return '';   // a redelivered flush; saying anything would be noise
     case 'disabled':

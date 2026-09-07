@@ -211,6 +211,54 @@ const pageActionNeedsConfirm = (name) => !READONLY_PAGE_TOOLS.has(name);
 // opening or navigating to another is outside it — with a URL chosen by a model that has been
 // reading meeting captions and page text. Approved one at a time, and never marks trust.
 const ALWAYS_CONFIRM_TOOLS = new Set(['eval_js', 'open_tab', 'navigate']);
+
+// THE ONE EXCEPTION, AND WHY IT IS SAFE.
+//
+// The paragraph above is right about a model-chosen URL. It is not right about a URL the USER
+// named out loud: "go to google.com and search for chat panel" is the whole review, said by
+// the person the dialog would have asked, and answering it with a modal in a side panel they
+// are not looking at is how a spoken browser command became four silent failures in one
+// meeting. `open_tab` only — never `navigate` (it replaces the page they are on) and never
+// `eval_js`.
+//
+// The check is against the SPOKEN TEXT, not the model's answer, which is what makes it
+// unsteerable: a caption injected by another participant cannot put a host into words this
+// user did not say, and the voice path already refuses commands that are not theirs
+// (`from: 'me'`). A host they did not name still gets the dialog.
+//
+// Set by askSpoken immediately before send(), consumed by send() — so a TYPED turn can never
+// inherit it, and neither can the next spoken one.
+let pendingSpokenText = '';
+let spokenTurnText = '';
+
+/**
+ * May this action skip the dialog because the user said so out loud?
+ *
+ * `open_tab` and nothing else, on a turn a spoken command started, to a host named in the
+ * user's own words. Every other answer is false, including every typed turn — the module is
+ * only reached when `spokenTurnText` is set, so nothing is loaded and nothing is decided on a
+ * path that has no spoken authority to weigh.
+ */
+async function spokenAuthorityFor(name, input) {
+  if (name !== 'open_tab' || !spokenTurnText) return false;
+  try {
+    // Already in the module cache: the only way spokenTurnText is set is that this same module
+    // parsed the command that set it.
+    const { spokenNamesHost } = await import('./js/events/voice-intents.js');
+    if (!spokenNamesHost(input?.url, spokenTurnText)) return false;
+  } catch { return false; }
+  // Said out loud rather than clicked, so it is SAID BACK. The user has to be able to see that
+  // the browser went somewhere on their say-so, and where.
+  toast(`🌐 Opening ${String(input?.url || '')} — you asked for it out loud`, 4000);
+  logEvent('capability.activated', {
+    capability: 'page.actions',
+    classUsed: 'R',
+    granted: true,
+    reason: 'spoken-by-user',
+  });
+  return true;
+}
+
 const originOf = (url) => { try { return new URL(url).origin; } catch { return ''; } };
 /** The origin a tab is on RIGHT NOW; the turn's original origin if it cannot be read. */
 async function currentTabOrigin(tabId, fallback = '') {
@@ -504,6 +552,7 @@ async function pageToolProvider(resolvedAgent) {
     }
     return basePageExecute(name, input, meta);
   };
+  const timedExecute = withTimeout(baseExecute);
   const guardedExecute = async (name, input, meta) => {
     const confirmOn = state.settings.ui?.pageActionConfirm !== false; // default ON
     // WHERE THE TAB IS NOW, not where it was when the turn started. `pageOrigin` is resolved
@@ -520,8 +569,14 @@ async function pageToolProvider(resolvedAgent) {
     // moved to, so it only counts while the tab has not moved.
     const stillThere = liveOrigin === pageOrigin;
     const ungranted = !(siteGranted && stillThere) && !trustedActionOrigins.has(liveOrigin);
-    const needs = always || ungranted
-      || (confirmOn && pageActionNeedsConfirm(name) && !trustedActionOrigins.has(liveOrigin));
+    // …UNLESS the user said the destination out loud, which is the review the dialog exists to
+    // collect. Short-circuits the SITE checks too, and it has to: `open_tab` touches nothing on
+    // the current page, so gating it on whether meet.google.com is trusted asks the wrong
+    // question — and in a meeting the answer is always "no". `open_tab` only; see
+    // spokenAuthorityFor.
+    const spokenOk = await spokenAuthorityFor(name, input);
+    const needs = !spokenOk && (always || ungranted
+      || (confirmOn && pageActionNeedsConfirm(name) && !trustedActionOrigins.has(liveOrigin)));
     if (needs) {
       const host = liveOrigin ? liveOrigin.replace(/^https?:\/\//, '') : 'this page';
       const decision = await confirmPageAction(describePageAction(name, input, host));
@@ -555,7 +610,14 @@ async function pageToolProvider(resolvedAgent) {
         }
       }
     }
-    return baseExecute(name, input, meta);
+    // THE CLOCK STARTS AFTER THE ANSWER, not before the question.
+    //
+    // The timeout used to wrap this whole function, dialog included, so the 45 seconds a page
+    // action gets to respond were being spent waiting for a HUMAN to notice a modal in a side
+    // panel. Someone in a meeting who looked over a minute later found the prompt still up and
+    // the action already reported as timed out — "hit an allow-for-this-site prompt but no
+    // browser opened". A person deciding is not a page failing to respond.
+    return timedExecute(name, input, meta);
   };
   // PROGRESSIVE DISCLOSURE. Registering all ~20 page schemas costs ~3,300 tokens on every
   // turn with a web tab open, paid whether or not the turn touches the page — and on a
@@ -578,7 +640,9 @@ async function pageToolProvider(resolvedAgent) {
   const { withGuidance } = await import('./js/group-dispatch.js');
   return {
     specs: [buildDispatchSpec(specs)],
-    execute: withGuidance(makeDispatchExecutor(specs, withTimeout(guardedExecute)), system),
+    // No withTimeout here — it wraps `baseExecute` inside the guard, so the confirmation
+    // dialog is not on the clock. See the comment at the end of guardedExecute.
+    execute: withGuidance(makeDispatchExecutor(specs, guardedExecute), system),
     // SAY THAT IT CAN, AND SAY WHERE.
     //
     // The deferred manual opened by asserting the connection is real ("these are the ONLY
@@ -2432,6 +2496,11 @@ function maybeWarmSync({ immediate = false } = {}) {
 }
 
 async function send({ steer = false } = {}) {
+  // CONSUMED, before the first await. A spoken command hands its own words to the turn it is
+  // about to start (see askSpoken); every other send clears them, so a typed turn can never
+  // pick up authority left behind by a spoken one, and neither can the next spoken turn.
+  spokenTurnText = pendingSpokenText;
+  pendingSpokenText = '';
   // If the user hits Send/Enter before the cold first-run init finishes, wait for it
   // rather than throwing on an unset conversation/state (the fresh-install race).
   if (!composerReady) await composerReadyPromise;
@@ -4823,6 +4892,24 @@ async function runSpokenRequest(refined) {
     return { message: `Watching: ${refined.name}` };
   }
 
+  // DOING something is not asking about something, and the classification had no word for it.
+  //
+  // "Okay chat panel, go to google.com and search for chat panel" was spoken four ways in one
+  // meeting and nothing happened any of the four times. There was no `action` kind, so the
+  // model had to choose between "question" (which the prompt reserves for what they want to
+  // KNOW) and "none" (thinking aloud) — and a narrated demo reads exactly like the latter,
+  // which is returned as null and toasts nothing at all.
+  //
+  // It runs through the composer like a question, because that is the path that already has
+  // the page tools, the confirm gate and the redaction harness on it. What differs is the
+  // spoken authority recorded below: the words the USER said, which is what lets a `open_tab`
+  // to a host they named go ahead without a dialog nobody in a meeting is looking at.
+  if (refined.kind === 'action') {
+    if (busy) { toastAction(refined.name, 'Do it', () => askSpoken(refined.request, { spoken: refined.request }), 8000); return { message: `Heard: ${refined.name}` }; }
+    await askSpoken(refined.request, { spoken: refined.request });
+    return { message: `Doing: ${refined.name}` };
+  }
+
   // question — the default, and the one that was missing.
   if (busy) {
     toastAction(refined.name, 'Ask it', () => askSpoken(refined.request), 8000);
@@ -4832,8 +4919,13 @@ async function runSpokenRequest(refined) {
   return { message: `Asked: ${refined.name}` };
 }
 
-/** Put it in the composer and send — the hands-free equivalent of typing it. */
-async function askSpoken(text) {
+/**
+ * Put it in the composer and send — the hands-free equivalent of typing it.
+ *
+ * `spoken` is the user's OWN words for this request, handed to the turn as authority (see
+ * `spokenTurnText`). Only an action carries it: a question has nothing to authorise.
+ */
+async function askSpoken(text, { spoken = '' } = {}) {
   const input = $('input');
   // Never send a non-request. A model told to answer kind "none" will sometimes put the word
   // in the request field as well, and sending that verbatim is a chat message reading "none"
@@ -4844,6 +4936,7 @@ async function askSpoken(text) {
   if (!input) return;
   input.value = ask;
   autoGrow();
+  pendingSpokenText = spoken;
   await send();
 }
 

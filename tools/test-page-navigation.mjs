@@ -71,6 +71,63 @@ const search = read('js/web-search.js');
   assert.match(panel, /case 'navigate': return `Leave \$\{host\} and go to/);
 }
 
+// ── …except where the user themselves said where to go ────────────────────
+//
+// The dialog is the review of a MODEL-chosen URL, and it is the right answer for one. It is
+// the wrong answer for a URL the user said out loud: "okay chat panel, go to google.com and
+// search for chat panel" was spoken four ways in one meeting and nothing happened any of the
+// four times, because the review was a modal in a side panel nobody in a call is looking at.
+//
+// The narrowing has to be exactly this narrow, so each half is asserted.
+{
+  const { spokenNamesHost } = await import('../extension/js/events/voice-intents.js');
+  const spoken = 'go to google.com and search for chat panel';
+  assert.equal(spokenNamesHost('https://www.google.com/search?q=chat+panel', spoken), true,
+    'the host the user named, said in full');
+  assert.equal(spokenNamesHost('https://www.google.com/search?q=x', 'go to google and search for x'), true,
+    'or by its name, for a two-label host');
+  // The whole point: the URL is model-chosen, so a host the user never uttered still asks.
+  assert.equal(spokenNamesHost('https://evil.test/?q=secrets', spoken), false,
+    'a destination they did not name is not authorised by the ones they did');
+  assert.equal(spokenNamesHost('https://docs.evil.test/', 'open docs for me'), false,
+    'and a bare label never authorises a deeper host — "docs" is not docs.evil.test');
+  assert.equal(spokenNamesHost('https://mail.google.com/', 'open google'), false,
+    'not even a subdomain of one they named');
+  assert.equal(spokenNamesHost('https://google.com/', ''), false, 'nothing spoken authorises nothing');
+
+  // The panel side: one tool, one source of words, and the words are the USER's.
+  const fn = /async function spokenAuthorityFor[\s\S]*?\n}/.exec(panel)[0];
+  assert.match(fn, /name !== 'open_tab'/, 'open_tab only — navigate replaces the page they are on');
+  assert.match(fn, /!spokenTurnText/, 'and only on a turn a spoken command started');
+  assert.match(fn, /spokenNamesHost\(input\?\.url, spokenTurnText\)/,
+    'checked against the SPOKEN text, not the model’s answer — that is what makes it unsteerable');
+  assert.match(fn, /toast\(/, 'and the browser never goes anywhere silently');
+  // Consumed before the first await, so a typed turn cannot inherit spoken authority.
+  assert.match(panel, /spokenTurnText = pendingSpokenText;\n  pendingSpokenText = '';/,
+    'every send clears it — a typed turn must never carry a spoken turn’s authority');
+  assert.match(panel, /const spokenOk = await spokenAuthorityFor\(name, input\);/);
+  assert.match(panel, /const needs = !spokenOk && \(always \|\| ungranted/,
+    'it short-circuits the SITE checks too: open_tab touches nothing on the current page, so '
+    + '"is meet.google.com trusted" is the wrong question and in a meeting the answer is always no');
+  // eval_js and navigate keep every gate they had.
+  assert.doesNotMatch(fn, /eval_js|navigate/, 'the exception must not name any other tool');
+}
+
+// ── a person deciding is not a page failing to respond ─────────────────────
+//
+// The 45s page-action timeout used to wrap the confirmation dialog as well, so the seconds an
+// action gets to respond were spent waiting for a human to notice a modal. Someone who looked
+// over a minute later found the prompt still up and the action already reported timed out.
+{
+  assert.match(panel, /const timedExecute = withTimeout\(baseExecute\);/,
+    'the clock wraps the execution');
+  assert.doesNotMatch(panel, /withTimeout\(guardedExecute\)/, 'and not the question');
+  const guard = /const guardedExecute = async[\s\S]*?\n  \};/.exec(panel)[0];
+  assert.match(guard, /return timedExecute\(name, input, meta\);/, 'the clock starts after the answer');
+  assert.ok(guard.indexOf('confirmPageAction') < guard.indexOf('timedExecute'),
+    'in that order — the dialog first, then the timed run');
+}
+
 // ── a grant does not survive the page moving ───────────────────────────────
 //
 // `pageOrigin` is resolved once, when the tools are built. That was already slightly wrong —

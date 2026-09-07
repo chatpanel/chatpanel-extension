@@ -23,14 +23,22 @@ const { refinementPrompt, parseRefinement } = await import('../extension/js/even
   assert.match(p, /weather in Fairview/, 'the utterance must actually be in the prompt');
   assert.match(p, /do not answer it/, 'this is extraction, not the turn');
   assert.match(p, /Never invent a request that is not there/, 'the failure mode is a confident hallucination');
-  // Six kinds to describe rather than three, so it grew — but it must stay a classification,
-  // not a briefing. This runs on the fast model while people are still talking.
-  assert.ok(p.length < 1600, `the prompt is ${p.length} chars — this runs mid-meeting`);
-  for (const kind of ['question', 'monitor', 'note', 'skill', 'timer', 'none']) {
+  // Seven kinds to describe rather than three, so it grew — but it must stay a classification,
+  // not a briefing. This runs on the fast model while people are still talking. One line each:
+  // the budget is deliberately just above what the list costs, so an eighth kind is a decision
+  // rather than a drift.
+  assert.ok(p.length < 1700, `the prompt is ${p.length} chars — this runs mid-meeting`);
+  for (const kind of ['question', 'action', 'monitor', 'note', 'skill', 'timer', 'none']) {
     assert.ok(p.includes(kind), `the model must be told about "${kind}"`);
   }
   assert.match(p, /A one-off question is NOT a monitor/,
     'everything became a monitor — that is the sentence that stops it');
+  // WITHOUT `action` THERE IS NOWHERE TO PUT A BROWSER COMMAND. "Go to google.com and search
+  // for chat panel" is not something they want to KNOW, so it does not read as a question —
+  // and the only bucket left for a narrated demo is "none", which is dropped silently. It was
+  // spoken four ways in one meeting and did nothing every time.
+  assert.match(p, /action .*— DO something in the browser/,
+    'a spoken request to DO something must have a kind of its own');
 }
 
 // ── the parse is defensive, because a model's JSON often is not ──────────────────
@@ -74,9 +82,22 @@ assert.match(
 );
 assert.match(
   vc, /reason: 'not-a-request'/,
-  'a fallback that DECLINES is not a failure — reporting it as one would toast at the user '
-  + 'every time they finished a sentence near the wake word',
+  'a fallback that DECLINES is a distinct outcome, not an error',
 );
+// …and it is SAID. It used to fall through to '' — so a browser command spoken four ways in
+// one meeting produced nothing at all, four times, which is what "it didn't work" meant. The
+// noise this was avoiding belongs to 'not-you', which is refused before dispatch and re-offered
+// on every flush; this one is deduped by the engine on the command key.
+{
+  const { outcomeMessage } = await import('../extension/js/voice-commands.js');
+  const said = outcomeMessage({ ok: false, reason: 'not-a-request', command: { command: 'go to google.com and search for chat panel' } });
+  assert.match(said, /couldn’t tell what you wanted/i, 'a declined command must not be silent');
+  assert.ok(said.length < 120, `one line, not two sentences of transcript — got ${said.length}`);
+  assert.equal(
+    outcomeMessage({ ok: false, reason: 'already-fired', command: { command: 'x' } }), '',
+    'while a redelivery still says nothing',
+  );
+}
 
 // ── and the panel binds it, on the fast model, falling back rather than losing it ─
 const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
@@ -302,9 +323,15 @@ console.log('bounded commands: ok');
   assert.match(router, /if \(refined\.kind === 'skill'\)/, 'a named skill must be run');
   assert.match(router, /if \(refined\.kind === 'note'\)/, 'notes must be written, not watched for');
   assert.match(router, /if \(refined\.kind === 'monitor'\)/, 'and a monitor is still a monitor');
+  // DOING is not ASKING. A browser command routed as a question still reached the chat, but the
+  // model rarely called it one — the prompt reserves "question" for what they want to KNOW —
+  // so it landed on "none" and was dropped without a word.
+  assert.match(router, /if \(refined\.kind === 'action'\)/, 'a spoken request to DO something has its own branch');
+  assert.match(router, /askSpoken\(refined\.request, \{ spoken: refined\.request \}\)/,
+    'and it hands the turn the user’s OWN words — that is what authorises a named destination');
   // The question path is the DEFAULT and the one that was missing — it must fall through to
   // the chat rather than being one more branch that ends in addMonitor.
-  const afterMonitor = router.slice(router.indexOf("kind === 'monitor'"));
+  const afterMonitor = router.slice(router.indexOf("kind === 'action'"));
   assert.match(afterMonitor, /await askSpoken\(refined\.request\)/, 'a question is asked, in the chat');
   assert.equal(
     (router.match(/addMonitor\(/g) || []).length, 1,
