@@ -54,8 +54,23 @@ const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
   assert.match(loop, /openMic/, 'the listener must be opened once per session');
   assert.ok(!/stopListen\?\.\(\);[\s\S]{0,80}runTurn/.test(loop),
     'the mic must not be closed before a turn — barge-in depends on it staying open');
-  assert.match(loop, /MIN_BARGE_IN_WORDS/, 'a one-word fragment must not count as an interruption');
-  assert.ok(!html.includes('voice-interrupt'), 'the Interrupt button is replaced by just talking');
+  assert.match(loop, /MIN_BARGE_IN_WORDS/, 'a one-word TRANSCRIPT fragment must not count as an interruption');
+
+  // Interruption by VOICE fires on energy, not on a transcript — a transcript only
+  // arrives after you pause, by which point you have finished your sentence into a
+  // still-talking assistant. The button stays as the fallback for a quiet voice or
+  // a headset whose echo cancellation is too good.
+  assert.match(mode, /createVad\(/, 'voice mode must run a voice-activity detector');
+  assert.match(mode, /lowBandEnergy\(micBins\)/, 'fed from the microphone every frame');
+  assert.match(mode, /if \(fired && speakingNow\) interruptFromVoice\(\)/, 'and interrupt when it fires during speech');
+  assert.ok(idsInHtml.has('voice-interrupt'), 'the Interrupt button must exist as the fallback');
+  assert.match(panel, /\$\('voice-interrupt'\)\.onclick/, 'and be wired');
+  // A voice conversation must wait LONGER for a sentence to finish than dictation:
+  // each final is sent as a question, so a mid-thought pause would send half of it.
+  assert.match(mode, /endSilenceMs: END_SILENCE_MS/, 'voice mode must pass its own end-of-sentence window');
+  const ms = Number(mode.match(/const END_SILENCE_MS = (\d+)/)?.[1]);
+  assert.ok(ms >= 1000 && ms <= 3000, `END_SILENCE_MS is ${ms}; it must be well above dictation's 700ms and inside the gateway's clamp`);
+  assert.match(read('js/dictation.js'), /endSilenceMs: endSilenceMs \|\| undefined/, 'dictation must forward it to the session');
 }
 
 // ── the waveform is signal-driven, and honest when there is no signal ─────────
@@ -199,7 +214,7 @@ function loopSrc() { return read('js/voice-loop.js'); }
   assert.match(read('js/gateway.js'), /export async function updateTtsVoice/, 'the client needs an update call');
 }
 
-console.log('✓ voice wiring: ids exist and are wired, voice is INLINE (no overlay) and replaces the composer, barge-in is automatic, speech starts before generation ends, waveform follows mic AND speaker, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, TTS search wired, recorded voices confirmed + mic released, rename + re-record in place, rendering never writes config');
+console.log('✓ voice wiring: ids exist and are wired, voice is INLINE (no overlay) and replaces the composer, barge-in fires on voice energy (button as fallback), sentence window longer than dictation, speech starts before generation ends, waveform follows mic AND speaker, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, TTS search wired, recorded voices confirmed + mic released, rename + re-record in place, rendering never writes config');
 
 // ── the waveform must be sized from its box, not from fixed attributes ─────────
 // A canvas with width="560" stretched by CSS into a ~350px panel draws squashed

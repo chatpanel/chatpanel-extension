@@ -34,6 +34,12 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
   ]);
   const { createSpeech, speakStream } = speechMod;
   const { waveShape, smoothLevels, POINTS, LAYERS } = await import('./voice-wave.js');
+  const { createVad, lowBandEnergy } = await import('./voice-vad.js');
+
+  // In a conversation every final is SENT as a question, so a mid-thought pause
+  // must not commit half a sentence. Dictation into a text box keeps the shorter
+  // default; here we wait longer for the person to actually finish.
+  const END_SILENCE_MS = 1400;
   const [ear, mouth] = await Promise.all([
     resolveDictationProvider({ gatewayUrl }),
     resolveEngine({ gatewayUrl }),
@@ -61,6 +67,9 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
   let raf = 0;
   let micSource = () => null;
   let currentState = () => 'listening';
+  const vad = createVad();
+  // Filled in once the loop exists; the draw loop is defined before it.
+  let interruptFromVoice = () => {};
   const reduceMotion = () => !!globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
 
   function startWave() {
@@ -88,6 +97,7 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
     const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#6aa9ff';
     const level = new Float32Array(POINTS);
     let bins = null;
+    let micBins = null;
     let t = 0;
 
     // Three bands stacked about the centre line, each at its own frequency and
@@ -162,7 +172,8 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
       // silent, but not null — so a null-check made it win forever and the mic
       // never showed again after the first reply. That was the "animation stops
       // after a follow-up question" report.
-      const an = currentState() === 'speaking'
+      const speakingNow = currentState() === 'speaking';
+      const an = speakingNow
         ? (speaker.analyser?.() || null)
         : (micSource() || null);
       if (an) {
@@ -171,6 +182,19 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
         smoothLevels(level, bins);
       } else {
         smoothLevels(level, null);
+      }
+
+      // BARGE-IN BY VOICE. The microphone is read every frame regardless of what is
+      // being DISPLAYED, because interruption must trigger on the fact that you
+      // started talking — not on a transcript, which only arrives after you pause.
+      // The VAD learns the room's floor while the assistant is quiet and fires
+      // when sustained energy rises well above it during speech.
+      const mic = micSource();
+      if (mic) {
+        if (!micBins || micBins.length !== mic.frequencyBinCount) micBins = new Uint8Array(mic.frequencyBinCount);
+        mic.getByteFrequencyData(micBins);
+        const fired = vad.feed(lowBandEnergy(micBins));
+        if (fired && speakingNow) interruptFromVoice();
       }
       paint(LAYERS.map((_, k) => waveShape({ t, level, height: h, motion, layer: k })));
     };
@@ -205,6 +229,7 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
         provider: ear.provider,
         gatewayUrl,
         lang: settings?.ui?.dictation?.lang || undefined,
+        endSilenceMs: END_SILENCE_MS,
         onInterim,
         onFinal,
         onError: ({ message }) => toast?.(`✕ ${message || 'Voice input failed'}`, 2800),
@@ -225,6 +250,10 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
   });
 
   currentState = () => loop.state();
+  interruptFromVoice = () => {
+    try { speaker.stop(); } catch { /* nothing playing */ }
+    loop.interrupt();
+  };
   bar()?.classList.remove('hidden');
   el('btn-voice')?.setAttribute('aria-pressed', 'true');
   document.body?.classList.add('voice-active');

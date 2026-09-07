@@ -9225,9 +9225,11 @@ function wireEvents() {
   $('btn-mic').onclick = toggleDictation;
   $('btn-voice').onclick = toggleVoiceMode;
   $('voice-stop').onclick = stopVoiceMode;
-  // No Interrupt button: talking over the assistant interrupts it, which is what
-  // people do to each other and try first anyway.
   $('voice-mute').onclick = () => voiceSession?.toggleMute();
+  // Talking over the assistant is the primary way to interrupt; the button is the
+  // fallback for a quiet voice, a noisy room, or a headset whose echo cancellation
+  // is doing too good a job.
+  $('voice-interrupt').onclick = () => voiceSession?.interrupt();
   $('btn-mcp').onclick = (e) => {
     e.stopPropagation();
     const m = $('mcp-tools-menu');

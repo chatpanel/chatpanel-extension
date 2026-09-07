@@ -176,6 +176,7 @@ const OFF_LIMITS = {
   'js/voice-mode.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/voice-record.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/voice-wave.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/voice-vad.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/providers.js': ['sidepanel.js'],
   'js/qr.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/bridge-update.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],

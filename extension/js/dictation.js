@@ -170,7 +170,7 @@ function createBrowserDictation({
 const CHUNK_MS = 400; // post cadence — small enough to feel live, big enough to be cheap
 
 function createGatewayDictation({
-  lang, gatewayUrl, redact = false, diarize = false, speakerLabel = null,
+  lang, gatewayUrl, redact = false, diarize = false, speakerLabel = null, endSilenceMs = undefined,
   onStart, onInterim, onFinal, onEnd, onError, onStatus,
 } = {}) {
   const base = String(gatewayUrl || DEFAULT_GATEWAY_URL).replace(/\/+$/, '');
@@ -306,7 +306,9 @@ function createGatewayDictation({
         const r = await fetch(`${base}/stt/sessions`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ lang: lang || undefined, redact: !!redact, diarize: !!diarize, speakerLabel: speakerLabel || undefined }),
+          // `endSilenceMs`: how long a pause commits a segment. A voice conversation
+          // asks for more than dictation does, because each final is SENT.
+          body: JSON.stringify({ lang: lang || undefined, redact: !!redact, diarize: !!diarize, speakerLabel: speakerLabel || undefined, endSilenceMs: endSilenceMs || undefined }),
         });
         if (!r.ok) throw new Error((await r.json().catch(() => null))?.error?.message || `HTTP ${r.status}`);
         sid = (await r.json()).id;
