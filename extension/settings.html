@@ -1122,13 +1122,16 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
             <p class="muted sm">Record a few seconds of speech and the gateway derives a
               <strong>voice print</strong> from it — 512 numbers. The <strong>recording itself is never
               stored</strong>, and neither the audio nor the print ever leaves this machine.
-              Needs a model that can use one: only <strong>SpeechT5</strong> above can, so pick it first.</p>
-            <p class="muted sm"><strong>Be warned about how close it gets.</strong> SpeechT5 was trained
-              against a different kind of voice print than the one this gateway computes, so it borrows
-              your pitch and timbre only loosely — most people say <em>it does not sound like them</em>.
-              What it does give you is a consistent voice of your own: the same recording always produces
-              the same voice, and different people produce clearly different ones. A closer match needs a
-              model built for cloning; that is tracked as a follow-up.</p>
+              Needs a model that can use one — pick <strong>Pocket TTS</strong> above.</p>
+            <p class="muted sm"><strong>Two models can do this, and they are not equally good.</strong>
+              <strong>Pocket TTS</strong> is built for cloning: it encodes your sample into something the
+              model speaks <em>from</em>, so it reproduces you, and it is the fastest model here.
+              <strong>SpeechT5</strong> only borrows your pitch and timbre from a voice print it was not
+              trained on — most people say it does not sound like them. It is kept for anyone already
+              using it.</p>
+            <p class="muted sm">Both prints are computed while you record, so a voice saved now works with
+              either model. Voices saved before Pocket TTS was installed have only the SpeechT5 print —
+              record those again to use them here.</p>
             <div id="gw-tts-voices" class="model-list"></div>
             <!-- Read this while recording. It is chosen for phonetic COVERAGE, not
                  meaning — the embedding is only as good as the range of sounds in it. -->

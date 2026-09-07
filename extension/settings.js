@@ -2881,10 +2881,15 @@ function renderTtsVoiceList(data) {
     // Say plainly when a saved voice cannot currently be used, rather than listing
     // it as if selecting it would do something.
     const usable = data?.usable !== false;
+    // A voice saved before Pocket TTS existed carries only the SpeechT5 print, and
+    // selecting it under Pocket TTS would fail — say so on the row instead.
+    const kinds = Array.isArray(v.kinds) ? v.kinds : [];
+    const clones = kinds.includes('pocket-mimi');
+    const note = usable ? (clones ? 'clones your voice' : 'SpeechT5 only — re-record for Pocket TTS') : 'needs a cloning model';
     return `<div class="entity">
       <div class="entity-head">
         <strong style="flex:1 1 auto">${esc(v.name)}</strong>
-        <span class="status">${esc(when)}${usable ? '' : ' · needs SpeechT5'}</span>
+        <span class="status">${esc(when)} · ${esc(note)}</span>
         <button type="button" class="btn gw-tts-voice-play" data-id="${esc(v.id)}"${usable ? '' : ' disabled'}>Preview</button>
         <button type="button" class="btn gw-tts-voice-del" data-id="${esc(v.id)}">Delete</button>
       </div>
