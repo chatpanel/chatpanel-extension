@@ -41,6 +41,7 @@ const ALIAS = {
   lock:'lock', pro:'lock', 'external-link':'external-link', external:'external-link',
   queued:'hourglass', loading:'hourglass', pending:'hourglass', keyboard:'keyboard', typed:'keyboard',
   play:'play', refresh:'rotate-cw', reload:'rotate-cw', retry:'rotate-cw',
+  speak:'volume-2', 'read-aloud':'volume-2', voice:'volume-2', speaking:'volume-2',
   mcp:'plug', plug:'plug', download:'download', copy:'copy', clipboard:'clipboard', delete:'trash-2',
   bot:'bot', agent:'bot', calendar:'calendar', date:'calendar', image:'image', screenshot:'camera',
   thinking:'brain', brain:'brain', pin:'pin', tldr:'pin', numbers:'hash', tag:'hash', hash:'hash',

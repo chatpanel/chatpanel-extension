@@ -1870,6 +1870,7 @@ function renderMessage(m) {
   const copy = miniBtn('Copy', () => navigator.clipboard.writeText(m.content));
   actions.appendChild(copy);
   if (m.role === 'assistant' && !m.pending) {
+    actions.appendChild(speakBtn(m));
     actions.appendChild(miniBtn('Retry', () => retryFrom(m)));
   }
   if (m.role === 'user' && !m.queued) {
@@ -1877,6 +1878,27 @@ function renderMessage(m) {
   }
   wrap.appendChild(actions);
   return wrap;
+}
+
+// Read this answer aloud. The same button becomes Stop while it is speaking — one
+// control, because a second one that only appears mid-playback is a control you have
+// to hunt for at the exact moment you want it. The behaviour lives in
+// js/read-aloud.js and is dynamic-imported: nothing about speech is on first paint.
+function speakBtn(m) {
+  const b = miniBtn(icon('speak'), () => onSpeakClick(m), 'Read aloud');
+  b.dataset.speakFor = m.id;
+  return b;
+}
+
+async function onSpeakClick(m) {
+  const ra = await import('./js/read-aloud.js');
+  ra.registerSpeakIcons({ speak: icon('speak'), stop: icon('stop') });
+  await ra.speakMessage(m.id, m.content, {
+    gatewayUrl: state.settings?.gatewayUrl || state.settings?.ui?.warmSearch?.url || undefined,
+    voice: state.settings?.ui?.speech?.voice || undefined,
+    speed: state.settings?.ui?.speech?.speed || undefined,
+    toast,
+  });
 }
 
 function updateBubble(m) {
@@ -3119,6 +3141,68 @@ function makeDownloadUx(paint) {
 
 // Streams a response into `conv` (which may not be the one on screen). UI is only
 // touched when conv is the active conversation, so concurrent chats don't fight.
+// A finished answer, for anything that has to ACT on it rather than just show it.
+// Voice mode is the first such caller: it cannot speak a reply until the reply
+// exists, and runStream is deliberately not awaited by send() so the panel stays
+// usable during a turn. One-shot listeners, so nothing accumulates.
+//
+// Only runStream fires this — runJobTurn and runWatchStream finish assistant
+// messages too, but neither is the turn a person just spoke. The timeout is the
+// safety net for exactly that asymmetry: if a turn ever takes a path that does not
+// notify, voice mode gives up and listens again instead of waiting forever with the
+// mic closed, which is indistinguishable from a crash.
+const turnWaiters = new Set();
+const TURN_WAIT_MS = 180_000;
+function notifyTurnDone(assistant) {
+  for (const fn of [...turnWaiters]) { try { fn(assistant); } catch { /* one bad waiter must not block the rest */ } }
+}
+function awaitTurn() {
+  return new Promise((resolve) => {
+    const fn = (a) => { clearTimeout(t); turnWaiters.delete(fn); resolve(a); };
+    const t = setTimeout(() => fn(null), TURN_WAIT_MS);
+    turnWaiters.add(fn);
+  });
+}
+
+// ── Voice conversation (voice↔voice) ──────────────────────────────────────────
+// The session lives in js/voice-mode.js and is dynamic-imported on the first click:
+// none of it — nor dictation, speech or the loop — belongs on first paint. What
+// stays here is only what the panel owns: element lookup, toast, and the one thing
+// voice-mode cannot do for itself, which is take a turn.
+let voiceSession = null;
+
+async function toggleVoiceMode() {
+  if (voiceSession?.isRunning()) { stopVoiceMode(); return; }
+  const { startVoiceMode } = await import('./js/voice-mode.js');
+  voiceSession = await startVoiceMode({
+    gatewayUrl: state.settings?.gatewayUrl || state.settings?.ui?.warmSearch?.url || undefined,
+    settings: state.settings,
+    el: $,
+    toast,
+    openMicPermission: () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL('mic-permission.html') });
+      toast('Allow the microphone in the new tab, then start voice again', 3600);
+    },
+    // One turn: put the words in the composer, send, and wait for the answer.
+    // awaitTurn() is registered BEFORE send(), or a fast reply lands first and the
+    // loop waits forever for a turn that already finished.
+    sendTurn: async (text) => {
+      const input = $('input');
+      input.value = text;
+      autoGrow();
+      const done = awaitTurn();
+      await send();
+      const assistant = await done;
+      return assistant?.error ? '' : (assistant?.content || '');
+    },
+  });
+}
+
+function stopVoiceMode() {
+  try { voiceSession?.stop(); } catch { /* already stopped */ }
+  voiceSession = null;
+}
+
 async function runStream(agent, assistant, conv) {
   const controller = new AbortController();
   state.streams.set(conv.id, { controller, started: Date.now(), lastEvent: '' });
@@ -3288,6 +3372,7 @@ async function runStream(agent, assistant, conv) {
     if (dl) { dl.stop(); dl = null; } // never leave the download-tip timer running
     if (raf) cancelAnimationFrame(raf);
     assistant.pending = false;
+    notifyTurnDone(assistant); // voice mode waits here for something to speak
     state.streams.delete(conv.id);
     ensureActivityTimer();
     if (conv.id === state.conv.id) {
@@ -9011,6 +9096,10 @@ function wireEvents() {
   };
   $('btn-assist').onclick = improvePrompt;
   $('btn-mic').onclick = toggleDictation;
+  $('btn-voice').onclick = toggleVoiceMode;
+  $('voice-stop').onclick = stopVoiceMode;
+  $('voice-close').onclick = stopVoiceMode;
+  $('voice-interrupt').onclick = () => voiceSession?.interrupt();
   $('btn-mcp').onclick = (e) => {
     e.stopPropagation();
     const m = $('mcp-tools-menu');

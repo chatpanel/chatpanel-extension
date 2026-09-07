@@ -192,6 +192,7 @@
           <button id="btn-copy-chat" class="tool-btn" title="Copy chat as Markdown" aria-label="Copy chat as Markdown" data-icon="clipboard"></button>
           <button id="btn-assist" class="tool-btn" title="Improve my prompt with AI" aria-label="Improve prompt" data-icon="assist"></button>
           <button id="btn-mic" class="tool-btn mic-btn" title="Dictate (voice → text)" aria-label="Dictate" aria-pressed="false" data-icon="mic"></button>
+          <button id="btn-voice" class="tool-btn" title="Voice conversation — talk, listen, repeat" aria-label="Voice conversation" aria-pressed="false" data-icon="speak"></button>
           <button id="btn-send" class="send-btn" title="Send" aria-label="Send" data-icon="send"></button>
           <button id="btn-stop" class="send-btn stop hidden" title="Stop" aria-label="Stop" data-icon="stop"></button>
         </div>
@@ -251,6 +252,20 @@
 
     <!-- URL paste prompt -->
     <div id="toast" class="toast hidden"></div>
+
+    <!-- Voice conversation overlay. Everything it shows is derived from ONE state
+       (listening | thinking | speaking) so it can never disagree with the loop. -->
+    <div id="voice-overlay" class="voice-overlay hidden" role="dialog" aria-modal="true" aria-label="Voice conversation">
+      <button id="voice-close" class="voice-close" title="End voice conversation" aria-label="End voice conversation" data-icon="close"></button>
+      <div class="voice-orb" id="voice-orb" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="voice-state" id="voice-state">Listening…</div>
+      <p class="voice-caption" id="voice-caption"></p>
+      <div class="voice-actions">
+        <button id="voice-interrupt" class="voice-btn">Interrupt</button>
+        <button id="voice-stop" class="voice-btn primary">Done</button>
+      </div>
+      <p class="voice-privacy" id="voice-privacy"></p>
+    </div>
 
     <script type="module" src="sidepanel.js"></script>
   </body>

@@ -345,6 +345,12 @@ html.surface-tab .topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
 .msg:hover .msg-actions { opacity: 1; }
 .mini-btn { background: none; border: none; color: var(--text-dim); font-size: 11px; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
 .mini-btn:hover { background: var(--bg-soft); }
+/* Speaking: the button pulses so the source of the voice is obvious at a glance —
+   with several answers on screen, "which one is talking" is otherwise a guess. */
+.mini-btn.speaking { color: var(--accent); }
+.mini-btn.speaking .ico { animation: speak-pulse 1.4s ease-in-out infinite; }
+@keyframes speak-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .55; transform: scale(.88); } }
+@media (prefers-reduced-motion: reduce) { .mini-btn.speaking .ico { animation: none; } }
 .msg-edit { display: flex; flex-direction: column; gap: 6px; max-width: 85%; }
 .msg.user .msg-edit { align-self: flex-end; width: 85%; }
 .msg-edit-input { width: 100%; box-sizing: border-box; resize: none; font: inherit; font-size: 14px; line-height: 1.4; color: var(--text); background: var(--bg-soft); border: 1px solid var(--accent); border-radius: 12px; padding: 10px 12px; outline: none; }
@@ -1100,3 +1106,60 @@ html.surface-tab .topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
 .job-run { display: flex; align-items: baseline; gap: 6px; padding: 4px 0; border-top: 1px solid var(--border); font-size: 11.5px; }
 .job-run-why { flex: 1; color: var(--text); }
 .job-run-bad { color: var(--danger); }
+
+/* ── Voice conversation overlay ───────────────────────────────────────────────
+   One state (listening | thinking | speaking) drives the orb, the label and the
+   caption together, so the animation can never say something different from what
+   the loop is actually doing — the failure that makes a voice UI feel broken. */
+.voice-overlay {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+  padding: 24px; text-align: center;
+  background: var(--bg); color: var(--text);
+}
+.voice-overlay.hidden { display: none; }
+.voice-close { position: absolute; top: 12px; right: 12px; background: none; border: none; color: var(--text-dim); cursor: pointer; padding: 6px; border-radius: 8px; }
+.voice-close:hover { background: var(--bg-soft); color: var(--text); }
+
+/* Three concentric rings. They breathe while listening, spin while thinking, and
+   pulse in time with speech — different motions, not just different colours, so
+   the state is readable at a glance and without relying on colour alone. */
+.voice-orb { position: relative; width: 132px; height: 132px; display: grid; place-items: center; }
+.voice-orb span {
+  position: absolute; border-radius: 50%;
+  border: 2px solid var(--accent);
+  opacity: .35;
+}
+.voice-orb span:nth-child(1) { width: 60px; height: 60px; }
+.voice-orb span:nth-child(2) { width: 94px; height: 94px; opacity: .22; }
+.voice-orb span:nth-child(3) { width: 128px; height: 128px; opacity: .12; }
+
+.voice-overlay[data-state="listening"] .voice-orb span { animation: voice-breathe 2.4s ease-in-out infinite; }
+.voice-overlay[data-state="listening"] .voice-orb span:nth-child(2) { animation-delay: .25s; }
+.voice-overlay[data-state="listening"] .voice-orb span:nth-child(3) { animation-delay: .5s; }
+@keyframes voice-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.12); } }
+
+.voice-overlay[data-state="thinking"] .voice-orb span { border-style: dashed; animation: voice-spin 3.2s linear infinite; }
+.voice-overlay[data-state="thinking"] .voice-orb span:nth-child(2) { animation-direction: reverse; animation-duration: 4.4s; }
+@keyframes voice-spin { to { transform: rotate(360deg); } }
+
+.voice-overlay[data-state="speaking"] .voice-orb span { animation: voice-pulse 1s ease-in-out infinite; }
+.voice-overlay[data-state="speaking"] .voice-orb span:nth-child(2) { animation-delay: .12s; }
+.voice-overlay[data-state="speaking"] .voice-orb span:nth-child(3) { animation-delay: .24s; }
+@keyframes voice-pulse { 0%, 100% { transform: scale(1); opacity: .35; } 50% { transform: scale(1.22); opacity: .7; } }
+
+/* Motion is the whole signal here, so with it suppressed the ring still has to say
+   which state it is in — otherwise reduced-motion users get three identical circles. */
+@media (prefers-reduced-motion: reduce) {
+  .voice-orb span { animation: none !important; }
+  .voice-overlay[data-state="thinking"] .voice-orb span { border-style: dashed; }
+  .voice-overlay[data-state="speaking"] .voice-orb span { opacity: .75; }
+}
+
+.voice-state { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+.voice-caption { color: var(--text-dim); font-size: 13px; margin: 0; max-width: 34ch; min-height: 2.6em; line-height: 1.35; }
+.voice-actions { display: flex; gap: 10px; margin-top: 4px; }
+.voice-btn { background: var(--bg-soft); border: 1px solid var(--border); color: var(--text); border-radius: 999px; padding: 9px 20px; font-size: 13px; cursor: pointer; }
+.voice-btn:hover { border-color: var(--accent); }
+.voice-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.voice-privacy { color: var(--text-dim); font-size: 11.5px; margin: 2px 0 0; opacity: .85; }

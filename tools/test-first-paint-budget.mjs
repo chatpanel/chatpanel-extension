@@ -55,7 +55,15 @@ const BUDGET = {
   // on this graph and on no other) plus the chip in renderMessage, which is first paint by
   // definition — restoring a conversation draws these bubbles. The previous ceiling had 0.6 KB
   // left under it, which fails on the next comment anyone writes; this one leaves ~3.7 KB.
-  'sidepanel.js': 806,
+  // 806 → 812 for voice out and voice conversation. The engines are all deferred and pinned
+  // OFF this graph below — js/speech.js, js/read-aloud.js, js/voice-loop.js, js/voice-mode.js
+  // are `await import()`ed from the Speak button and the voice button, and dictation.js
+  // already was. What lands here is only what first paint genuinely needs: speakBtn(), which
+  // renderMessage calls for every assistant bubble it draws, the ~20-line toggleVoiceMode
+  // shim that does nothing but import the session, the turn-completion notifier runStream
+  // fires, and one more Lucide glyph in icons.js. ~4 KB, most of it comment, and the engine
+  // behind it stays off. Leaves ~5 KB of headroom.
+  'sidepanel.js': 812,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one
@@ -135,6 +143,13 @@ const OFF_LIMITS = {
   // is an async user action that cannot tell the difference. Three modules used to pull this
   // statically (sidepanel, suggestions, assist) — deferring any two of them saved nothing,
   // which is why this is asserted rather than remembered.
+  // Voice: every one of these is action-only (a Speak button, or the voice button).
+  // Pinned off ALL entry points so a future static import fails here rather than
+  // quietly costing every panel open ~460 KB of ONNX-adjacent plumbing.
+  'js/speech.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/read-aloud.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/voice-loop.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/voice-mode.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/providers.js': ['sidepanel.js'],
   'js/qr.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/bridge-update.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
