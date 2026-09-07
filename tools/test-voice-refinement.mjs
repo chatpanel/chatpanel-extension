@@ -23,10 +23,10 @@ const { refinementPrompt, parseRefinement } = await import('../extension/js/even
   assert.match(p, /weather in Fairview/, 'the utterance must actually be in the prompt');
   assert.match(p, /do not answer it/, 'this is extraction, not the turn');
   assert.match(p, /Never invent a request that is not there/, 'the failure mode is a confident hallucination');
-  // Five kinds to describe rather than three, so it grew — but it must stay a classification,
+  // Six kinds to describe rather than three, so it grew — but it must stay a classification,
   // not a briefing. This runs on the fast model while people are still talking.
   assert.ok(p.length < 1600, `the prompt is ${p.length} chars — this runs mid-meeting`);
-  for (const kind of ['question', 'monitor', 'note', 'skill', 'none']) {
+  for (const kind of ['question', 'monitor', 'note', 'skill', 'timer', 'none']) {
     assert.ok(p.includes(kind), `the model must be told about "${kind}"`);
   }
   assert.match(p, /A one-off question is NOT a monitor/,
@@ -362,6 +362,21 @@ console.log('bounded commands: ok');
   // someone asked for, and the only kind undone by ignoring the answer. Guessing "monitor"
   // would leave a card watching the meeting that nobody asked for.
   assert.equal(parseRefinement('{"request":"x","kind":"wibble"}').kind, 'question');
+}
+
+{
+  // A SPOKEN TIMER ENDS UP WHERE TIMERS LIVE. Reported: "it said after one minute it will
+  // notify us… it didn't notify, by the way. I said it will, but it didn't." The request was
+  // classified as a question, went to the chat, and the agent answered it by running `sleep
+  // 60` in a sandbox — a process with no path back to the user.
+  const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  assert.match(panel, /refined\.kind === 'timer' && refined\.ms/, 'the panel handles a refined timer');
+  assert.match(panel, /intent: 'voice:timer', args: \{ ms: refined\.ms/, 'as a job, through the same builder a recognised one uses');
+  const { settleRefinement, REFINEMENT_SCHEMA } = await import('../extension/js/events/voice-intents.js');
+  assert.ok(REFINEMENT_SCHEMA.fields.kind.values.includes('timer'), 'and the model may say so');
+  assert.equal(settleRefinement({ request: 'set a one minute timer', kind: 'timer' }).ms, 60_000);
+  assert.equal(settleRefinement({ request: 'when is the standup', kind: 'timer' }).kind, 'question',
+    'a timer with no duration is a question about time, not a job with no time');
 }
 
 console.log('spoken routing: ok');

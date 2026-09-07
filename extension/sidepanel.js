@@ -4591,6 +4591,21 @@ async function runSpokenRequest(refined) {
     return { message: `Taking notes — ${refined.name}` };
   }
 
+  // A TIMER THE GRAMMAR MISSED, put where timers live.
+  //
+  // This used to arrive as a question, so it went to the chat — and an agent asked to set a
+  // timer answers by running `sleep 60` in its own sandbox and saying it will notify. It
+  // cannot: nothing connects that process back to the user, and the promised alert never
+  // came. A job does connect — the service worker fires it with the panel shut.
+  if (refined.kind === 'timer' && refined.ms) {
+    const m = await jobs();
+    const spec = m.jobFromCommand(
+      { intent: 'voice:timer', args: { ms: refined.ms, at: Date.now() + refined.ms, label: refined.name } },
+      { now: Date.now() },
+    );
+    if (spec) { await m.putJob(spec); return { message: `${spec.name} — ${jobWhenLabel(spec)}` }; }
+  }
+
   if (refined.kind === 'monitor') {
     await addMonitor({ kind: 'qa', prompt: refined.request, title: refined.name });
     return { message: `Watching: ${refined.name}` };

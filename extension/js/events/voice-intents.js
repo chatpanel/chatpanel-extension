@@ -388,7 +388,7 @@ export const REFINEMENT_SCHEMA = defineSchema({
     name: { type: 'string', max: 48, describe: 'a label of at most 6 words' },
     kind: {
       type: 'enum',
-      values: ['question', 'monitor', 'note', 'skill', 'none'],
+      values: ['question', 'monitor', 'note', 'skill', 'timer', 'none'],
       // An unknown kind becomes a QUESTION — the least surprising thing to do with something
       // someone asked for, and the only kind that is undone by ignoring the answer. Guessing
       // "monitor" instead would leave a card watching the meeting that nobody asked for.
@@ -417,6 +417,7 @@ export function refinementPrompt(utterance) {
     '             "keep an eye on"). A one-off question is NOT a monitor.',
     '  note     — they asked for notes written down ("take notes on", "write that up").',
     '  skill    — they named a saved skill ("use the summarize skill"); put its name in `skill`.',
+    '  timer    — alerted after an AMOUNT OF TIME ("set a one minute"); keep it in `request`.',
     '  none     — not asking for anything: thinking aloud, or talking ABOUT the assistant.',
     'Never invent a request that is not there — return "none". Keep `request` close to their',
     'words; do not answer it.',
@@ -462,8 +463,23 @@ export function settleRefinement(v) {
   const request = String(v.request || '').trim();
   if (v.kind === 'none' || !request) return { request: '', name: '', kind: 'none', skill: '' };
   // A "skill" with no name is a question — there is nothing to run.
-  const kind = v.kind === 'skill' && !v.skill ? 'question' : v.kind;
-  return { request, name: String(v.name || '').trim() || request, kind, skill: v.skill || '' };
+  let kind = v.kind === 'skill' && !v.skill ? 'question' : v.kind;
+  const name = String(v.name || '').trim() || request;
+  // A TIMER IS RESOLVED HERE, not by whatever runs the request.
+  //
+  // A spoken timer the grammar missed used to arrive as a plain question, so it went to the
+  // chat — where an agent answered it by running `sleep 60` in its own sandbox and saying it
+  // would notify. It cannot: nothing connects that process back to the user. Reading the
+  // duration here turns it back into a job the product itself owns and can fire.
+  //
+  // No duration means the model called it a timer without one, and a timer with no duration
+  // is a question about time. Downgraded rather than dropped.
+  if (kind === 'timer') {
+    const d = parseDuration(request);
+    if (!d) return { request, name, kind: 'question', skill: '' };
+    return { request, name, kind: 'timer', skill: '', ms: d.ms };
+  }
+  return { request, name, kind, skill: v.skill || '' };
 }
 
 /**
@@ -616,13 +632,21 @@ const FRACTION = { half: 0.5, quarter: 0.25 };
 export function parseNumberWords(words) {
   if (!words.length) return null;
   let total = null;
+  // THE TWO-MINUTE ONE-MINUTE TIMER. The article used to set the count to 1 outright, and
+  // everything after it ADDS — so "set a one minute timer", which is how most people say it,
+  // came out as 1 + 1 = two minutes. Reported as "I asked for a 1-minute timer, it didn't
+  // work": it worked, twice as long, which looks exactly like not working.
+  //
+  // The article is now only a count when nothing else supplies one. "A minute" is still a
+  // minute; "a one minute" is one minute, not two.
+  let article = false;
   for (let i = 0; i < words.length; i++) {
     const w = words[i];
     if (w === 'and' || w === 'of') continue; // "two AND a half", "a quarter OF an hour"
     // "an hour" is one hour. "A quarter of an hour" is a quarter, and "two and A half" is
     // 2.5 — in both of those the article belongs to the fraction, not to the count.
     if (w === 'a' || w === 'an') {
-      if (total === null && !(words[i + 1] in FRACTION)) total = 1;
+      if (total === null && !(words[i + 1] in FRACTION)) article = true;
       continue;
     }
     if (w in FRACTION) { total = (total ?? 0) + FRACTION[w]; continue; }
@@ -631,7 +655,7 @@ export function parseNumberWords(words) {
     if (/^\d+(?:\.\d+)?$/.test(w)) { total = (total ?? 0) + Number(w); continue; }
     return null;
   }
-  return total;
+  return total ?? (article ? 1 : null);
 }
 
 const UNIT_MS = {
@@ -935,9 +959,23 @@ export const timerIntent = defineVoiceIntent({
   description: 'Starts a countdown and alerts when it finishes.',
   examples: ['set a timer for 10 minutes', 'start a 90 second timer', 'timer for an hour and a half'],
   match: (command, { now = Date.now() } = {}) => {
-    if (!/\btimers?\b/i.test(command)) return null;
     const d = parseDuration(command);
     if (!d) return null;
+    // THE MISSING HEAD NOUN. "Okay ChatPanel, set a 1-minute timer" reached the scanner as
+    // "set a one minute." — the word this pattern was keyed on was still being said. With no
+    // intent it went to the model, which answered a spoken timer by running `sleep 60` in a
+    // sandbox and promising a notification it had no way to deliver.
+    //
+    // So a SET verb whose only content is a duration is a timer: nothing else is ever said
+    // that way. Anything left over after the duration and the plumbing words means it is
+    // something else — "set a 5 minute meeting" is a meeting — and still needs the noun.
+    if (!/\btimers?\b/i.test(command)) {
+      if (!/^(?:set|start|make|create|put)\b/i.test(command.trim())) return null;
+      const rest = (command.slice(0, d.start) + ' ' + command.slice(d.end))
+        .replace(/\b(set|start|make|create|put|a|an|the|for|please|to|of|and|half|quarter|this|that|time|up|on|me)\b/gi, ' ')
+        .replace(/[^\p{L}\p{N}]+/gu, '');
+      if (rest) return null;
+    }
     // "timer for the standup" — whatever is left once the duration and the plumbing words
     // are removed is what the timer is FOR, and a labelled timer is the difference between
     // three anonymous countdowns and three useful ones.
@@ -975,7 +1013,10 @@ export const noteIntent = defineVoiceIntent({
   description: 'Appends a line to the meeting notes.',
   examples: ['note that we agreed to ship on Friday', 'take a note: budget is approved'],
   match: (command) => {
-    const m = /^(?:take\s+a\s+note|make\s+a\s+note|note)\b[\s:,-]*(?:that\s+)?(.+)$/i.exec(command.trim());
+    // "Take THE NOTES of whatever we spoke so far" — the plural, the definite article and
+    // "of" instead of "that" were all misses, so the request went to the model, which spent
+    // four tool calls hunting for a transcript before writing anything.
+    const m = /^(?:(?:take|make|write|jot|add)\s+(?:down\s+)?(?:a\s+|the\s+|some\s+)?notes?|(?:write|jot)\s+down|notes?)\b[\s:,-]*(?:down\s+)?(?:that\s+|of\s+|on\s+|about\s+|from\s+)?(.+)$/i.exec(command.trim());
     const text = m && tidy(m[1]);
     return text ? { text } : null;
   },
@@ -988,7 +1029,10 @@ export const monitorIntent = defineVoiceIntent({
   examples: ['watch for whether we agree a date', 'keep an eye on the pricing question', 'track who owns the migration'],
   classUsed: 'C', // it starts model turns for the rest of the meeting — say so
   match: (command) => {
-    const m = /^(?:watch\s+(?:out\s+)?for|watch|keep\s+an\s+eye\s+on|track|monitor)\b[\s:,-]*(?:whether\s+|if\s+|for\s+)?(.+)$/i.exec(command.trim());
+    // "Start a live monitor about…" is how it was asked for in the very demo of the feature,
+    // and it matched nothing: every pattern here began at the verb, so the noun form —
+    // start/set up a monitor — fell through to the model and no card was ever created.
+    const m = /^(?:(?:start|set\s+up|create|begin|add|open|run)\s+(?:a\s+|the\s+|an\s+)?(?:live\s+|new\s+)?(?:monitor|monitoring|watch|tracker)|watch\s+(?:out\s+)?for|watch|keep\s+an\s+eye\s+on|track|monitor|monitoring)\b[\s:,-]*(?:whether\s+|if\s+|for\s+|on\s+|about\s+|that\s+)?(.+)$/i.exec(command.trim());
     const prompt = m && tidy(m[1]);
     return prompt && prompt.length > 2 ? { prompt } : null;
   },
