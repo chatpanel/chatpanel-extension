@@ -214,4 +214,9 @@ console.log('✓ voice wiring: ids exist and are wired, voice is INLINE (no over
   const mode2 = read('js/voice-mode.js');
   assert.match(mode2, /devicePixelRatio/, 'the backing store must account for the device pixel ratio');
   assert.match(mode2, /getBoundingClientRect/, 'and be measured from the element box');
+  // The shape is pure maths in its own module precisely because two versions of it
+  // drew a flat line — see tools/test-voice-wave.mjs.
+  assert.match(mode2, /waveShape/, 'the drawing must use the tested shape function');
+  assert.ok(!/Math\.sin\([^)]*\)\s*\*\s*Math\.sin/.test(mode2),
+    'the idle amplitude must not be a product of two sines — it spends most of its time near zero');
 }

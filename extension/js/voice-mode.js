@@ -33,6 +33,7 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
     import('./voice-loop.js'), import('./read-aloud.js'), import('./speech.js'),
   ]);
   const { createSpeech, speakStream } = speechMod;
+  const { waveShape, smoothLevels, POINTS } = await import('./voice-wave.js');
   const [ear, mouth] = await Promise.all([
     resolveDictationProvider({ gatewayUrl }),
     resolveEngine({ gatewayUrl }),
@@ -49,17 +50,17 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
   };
 
   // ── waveform ────────────────────────────────────────────────────────────────
-  // A mirrored, smoothed band driven by whatever is making sound: the microphone
-  // while you talk, the speaker while it answers. Both are real AnalyserNodes, so
-  // the shape tracks the signal — a band animating on a timer beside speech it is
-  // not measuring reads as lag in the audio rather than in the animation. The
-  // source is re-read each frame because neither analyser exists when the loop is
-  // armed.
+  // Driven by whatever is making sound: the microphone while you talk, the
+  // speaker while it answers. Both are real AnalyserNodes, so the band tracks the
+  // signal — one animating on a timer beside speech it is not measuring reads as
+  // lag in the audio rather than in the animation. The source is re-read each
+  // frame because neither analyser exists when the loop is armed.
+  //
+  // The SHAPE lives in js/voice-wave.js as pure maths, because the two versions
+  // that drew a flat line were numeric bugs invisible from reading the code.
   let raf = 0;
   let micSource = () => null;
   const reduceMotion = () => !!globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-
-  const POINTS = 72;
 
   function startWave() {
     const cv = el('voice-wave');
@@ -67,9 +68,9 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
     const ctx2d = cv.getContext('2d');
     if (!ctx2d) return;
 
-    // The backing store has to match the CSS box, or the drawing is stretched and
-    // blurry. A fixed 560-wide canvas squashed into a ~350px panel is why the first
-    // version looked like nothing was there at all.
+    // The backing store must match the CSS box, or the drawing is stretched and
+    // blurry — a fixed-size canvas squashed into a ~350px panel is what made the
+    // first version invisible.
     let w = 0, h = 0, dpr = 1;
     const resize = () => {
       const rect = cv.getBoundingClientRect();
@@ -85,42 +86,13 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
 
     const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#6aa9ff';
     const level = new Float32Array(POINTS);
-    const curve = new Float32Array(POINTS);
-    let buf = null;
+    let bins = null;
     let t = 0;
 
-    const shape = () => {
-      const an = speaker.analyser?.() || micSource() || null;
-      if (an) {
-        if (!buf || buf.length !== an.frequencyBinCount) buf = new Uint8Array(an.frequencyBinCount);
-        an.getByteFrequencyData(buf);
-      }
-      const maxAmp = h * 0.44;
-      for (let i = 0; i < POINTS; i++) {
-        let v = 0;
-        if (an && buf) {
-          // Speech energy sits low, so a linear sweep spends most of the width on
-          // hiss that never moves. Squaring the index weights the low end.
-          const from = Math.floor((i / POINTS) ** 2 * buf.length);
-          const to = Math.max(from + 1, Math.floor(((i + 1) / POINTS) ** 2 * buf.length));
-          let sum = 0;
-          for (let j = from; j < to; j++) sum += buf[j];
-          v = (sum / (to - from)) / 255;
-        }
-        // Fast to rise so a syllable lands crisply, slow to fall so the band does
-        // not flicker between words.
-        level[i] += (v - level[i]) * (v > level[i] ? 0.5 : 0.12);
-        // A travelling ripple when there is nothing to measure, so the bar reads as
-        // live and waiting rather than broken.
-        const idle = 0.12 * Math.abs(Math.sin(i * 0.22 - t * 0.05)) * Math.abs(Math.sin(i * 0.07 + t * 0.017));
-        const taper = Math.sin((Math.PI * (i + 0.5)) / POINTS) ** 0.7;
-        curve[i] = Math.max(idle, Math.max(0, level[i])) * taper * maxAmp;
-      }
-    };
-
-    // One filled band mirrored about the centre line, outlined over the fill —
-    // far easier to read at this height than a row of hairline bars.
-    const paint = () => {
+    // One filled band mirrored about the centre, smoothed with quadratics through
+    // midpoints and outlined over a gradient — far easier to read at this height
+    // than a row of hairline bars.
+    const paint = (curve) => {
       const mid = h / 2;
       const x = (i) => (i / (POINTS - 1)) * w;
       ctx2d.clearRect(0, 0, w, h);
@@ -131,7 +103,6 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
 
       ctx2d.beginPath();
       ctx2d.moveTo(0, mid - curve[0]);
-      // Quadratics through midpoints: smooth without real spline maths.
       for (let i = 1; i < POINTS; i++) {
         const cx = (x(i - 1) + x(i)) / 2;
         ctx2d.quadraticCurveTo(x(i - 1), mid - curve[i - 1], cx, mid - (curve[i - 1] + curve[i]) / 2);
@@ -153,10 +124,9 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
     };
 
     if (reduceMotion()) {
-      // Draw one static band rather than leaving the space empty, then stop.
+      // Draw one static band rather than leaving the space blank, then stop.
       resize();
-      for (let i = 0; i < POINTS; i++) curve[i] = h * 0.05;
-      paint();
+      paint(waveShape({ t: 0, height: h }));
       return;
     }
 
@@ -165,8 +135,16 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
       resize();
       if (!w || !h) return;
       t += 1;
-      shape();
-      paint();
+      // The speaker wins while it plays — that is what the user is hearing.
+      const an = speaker.analyser?.() || micSource() || null;
+      if (an) {
+        if (!bins || bins.length !== an.frequencyBinCount) bins = new Uint8Array(an.frequencyBinCount);
+        an.getByteFrequencyData(bins);
+        smoothLevels(level, bins);
+      } else {
+        smoothLevels(level, null);
+      }
+      paint(waveShape({ t, level, height: h }));
     };
     draw();
   }
