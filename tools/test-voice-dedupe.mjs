@@ -15,7 +15,17 @@ assert.match(src, /VOICE_ACTED_MAX/, 'and capped, so a long meeting cannot grow 
 // SEMANTIC. Per-utterance identity is not enough: captions split one sentence across segments
 // and re-emit it, so the same request returns under a new id.
 assert.match(src, /const voiceGist = /, 'a request has an identity beyond its caption');
-assert.match(src, /VOICE_REPEAT_MS/, 'and repeats within a window are suppressed');
+// One window, and a long one. Two minutes was SHORTER than a caption entry lives — a
+// monologue keeps one entry alive and re-scanned for minutes, so a duplicate timer arrived
+// three minutes later, cleared the window, and fired. The same words, and the same opening
+// through a revised transcription, now stay done for twenty.
+assert.match(src, /VOICE_SAME_MS/, 'and repeats within a window are suppressed');
+assert.match(src, /const VOICE_SAME_MS = 20 \* 60_000;/, 'longer than a caption entry lives');
+assert.doesNotMatch(src, /VOICE_REPEAT_MS/, 'the short window it replaced must be gone, not merely unused');
+// The looser identity is the OPENING of the request: a transcriber revises its tail
+// ("…Seattle, Washington now?" -> "…Seattle, Washington?"), which used to be a new request.
+assert.match(src, /vcGistOpening/, 'a revised tail must not make a new request');
+assert.match(src, /slice\(0, 6\)/, 'matched on the opening words, which a revision leaves alone');
 
 // The guard is actually applied before dispatch, not merely defined.
 assert.match(src, /const fresh = commands\.filter\(\(c\) => voiceIsFresh\(acted, c, nowTs\)\)/, 'filtered before dispatch');

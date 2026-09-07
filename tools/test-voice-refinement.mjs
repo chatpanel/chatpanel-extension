@@ -294,7 +294,12 @@ console.log('bounded commands: ok');
   // "As if I type it" is literal: the composer and send(), so a spoken question inherits
   // skills, tools, redaction and history without any of it being re-implemented here.
   const ask = /async function askSpoken\([\s\S]*?\n\}/.exec(panel)?.[0] || '';
-  assert.match(ask, /input\.value = text;/, 'it goes in the composer');
+  assert.match(ask, /input\.value = ask;/, 'it goes in the composer');
+  // NEVER a non-request. A model told to answer kind "none" will sometimes put the word in
+  // the request field too, and sending that verbatim is a chat message reading "none" — which
+  // is what a user saw, several times over. This is the last gate before the composer.
+  assert.match(ask, /\^\(\?:none\|n\\\/a\|nothing\|null/, 'a no-op word must not become a message');
+  assert.match(ask, /if \(!ask \|\|/, 'and neither must an empty one');
   assert.match(ask, /await send\(\);/, 'and through the same send a typed one uses');
 
   // A skill runs through applySkill — the same path the 🎓 menu uses, so variables,
@@ -443,11 +448,11 @@ console.log('spoken duplicates: ok');
 
   // 2 — replay the whole thing through the panel's freshness rules. Each distinct request
   //     must act exactly ONCE, no matter how many flushes carried it.
-  const VOICE_REPEAT_MS = 120_000;
   const VOICE_SAME_MS = 20 * 60_000;
+  const opening = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').slice(0, 6).join(' ');
   const gist = (c) => (c.intent
     ? `gist:${c.meetingId}:${c.intent}:${c.ms ?? c.when ?? ''}`
-    : `gist:${c.meetingId}:ask:${String(c.command || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 120)}`);
+    : `gist:${c.meetingId}:ask:${opening(c.command)}`);
   const acted = new Map();
   const ran = [];
   let now = 1_000_000;
@@ -457,7 +462,7 @@ console.log('spoken duplicates: ok');
       const said = acted.get(c.key);
       if (said && now - said < VOICE_SAME_MS) continue;
       const at = acted.get(gist(c));
-      if (at && now - at < VOICE_REPEAT_MS) continue;
+      if (at && now - at < VOICE_SAME_MS) continue;
       acted.set(c.key, now);
       acted.set(gist(c), now);
       ran.push(c.command);
@@ -476,7 +481,7 @@ console.log('spoken duplicates: ok');
       const said = acted.get(c.key);
       if (said && now - said < VOICE_SAME_MS) continue;
       const at = acted.get(gist(c));
-      if (at && now - at < VOICE_REPEAT_MS) continue;
+      if (at && now - at < VOICE_SAME_MS) continue;
       acted.set(c.key, now);
       acted.set(gist(c), now);
       ran.push(c.command);
@@ -486,3 +491,63 @@ console.log('spoken duplicates: ok');
 }
 
 console.log('one utterance one action: ok');
+
+// ── "You: none" ─────────────────────────────────────────────────────────────────
+//
+// A chat full of messages reading exactly "none", each answered "Meeting context received.
+// No request was included." A small model told to answer kind "none" says "none" — sometimes
+// as prose with no JSON at all, sometimes as JSON with the word in the REQUEST field. Both
+// reached the composer.
+{
+  // JSON that says none in the wrong field.
+  for (const bad of ['{"request":"none","kind":"question"}', '{"request":"N/A","kind":"question"}',
+    '{"request":"nothing","kind":"question"}', '{"request":"-","kind":"question"}']) {
+    assert.equal(parseRefinement(bad).kind, 'none', `${bad} is not a request`);
+    assert.equal(parseRefinement(bad).request, '');
+  }
+  // Prose with no JSON at all — this used to parse as null, so the caller fell back to the
+  // deterministic reading and acted on something the model had just called a non-request.
+  for (const prose of ['none', 'None.', 'n/a', 'nothing', '  none  ']) {
+    assert.equal(parseRefinement(prose)?.kind, 'none', `bare "${prose}" must mean none, not "unparseable"`);
+  }
+  // A real request that merely CONTAINS one of those words is untouched.
+  assert.equal(parseRefinement('{"request":"is there nothing scheduled today?","kind":"question"}').kind, 'question');
+  assert.match(parseRefinement('{"request":"none of the builds passed, why?","kind":"question"}').request, /builds passed/);
+
+  // And the composer has its own gate, because this must not depend on the classifier.
+  const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  const ask = /async function askSpoken\([\s\S]*?\n\}/.exec(panel)?.[0] || '';
+  assert.match(ask, /const ask = String\(text \|\| ''\)\.trim\(\);/);
+  assert.match(ask, /if \(!ask \|\| \/\^\(\?:none/, 'the last gate before send()');
+}
+
+// ── THE SAME REQUEST, RE-TRANSCRIBED ────────────────────────────────────────────
+//
+// A transcriber does not only append; it REVISES. "How is the weather in Seattle, Washington
+// now?" came back as "How is the weather in Seattle, Washington?" on a later flush — different
+// words, a different key, and the same question queued twice. So did a note request.
+{
+  const { gistOpening, OPENING_WORDS } = await import('../extension/js/events/voice-intents.js');
+  assert.equal(OPENING_WORDS, 6);
+  const revised = [
+    ['How is the weather in Seattle, Washington now?', 'How is the weather in Seattle, Washington?'],
+    ['Take notes on whatever we spoke about so far.', 'Take notes on whatever we spoke about.'],
+    ['Set a timer for thirty seconds please', 'set a timer for thirty seconds'],
+  ];
+  for (const [a, b] of revised) {
+    assert.equal(gistOpening(a), gistOpening(b), `a revised tail must not make a new request:\n  ${a}\n  ${b}`);
+  }
+  // …while genuinely different requests stay different.
+  assert.notEqual(gistOpening('How is the weather in Seattle?'), gistOpening('How is the weather in Denver?'));
+  assert.notEqual(gistOpening('Take notes on the meeting'), gistOpening('Summarize the meeting so far'));
+  assert.equal(gistOpening(''), '');
+
+  // The panel keeps its own copy (it is on the first-paint graph); the two must agree.
+  const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  const inline = /const vcGistOpening = [\s\S]*?;\n/.exec(panel)?.[0] || '';
+  assert.ok(inline, 'vcGistOpening not found');
+  assert.match(inline, /slice\(0, 6\)/, 'the same six words as the contract');
+  assert.match(inline, /replace\(\/\[\^a-z0-9\]\+\/g, ' '\)/, 'and the same normalisation');
+}
+
+console.log('non-requests and re-transcription: ok');

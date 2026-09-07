@@ -4443,7 +4443,6 @@ const VOICE_ACTED_MAX = 500;
 // what a user sees as an unstoppable stream. Asking twice for the same thing within a couple
 // of minutes is a duplicate, not a second intention; anyone who really wants two identical
 // timers can add one from the Jobs panel.
-const VOICE_REPEAT_MS = 120_000;
 /**
  * How long the EXACT same words stay done.
  *
@@ -4486,7 +4485,15 @@ async function loadVoiceActed() {
  */
 const voiceGist = (c) => (c.intent
   ? `gist:${c.meetingId}:${c.intent}:${c.ms ?? c.when ?? ''}`
-  : `gist:${c.meetingId}:ask:${String(c.command || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 120)}`);
+  // The OPENING of the request, not all of it. A transcriber does not only append — it
+  // REVISES: "How is the weather in Seattle, Washington now?" came back as "How is the
+  // weather in Seattle, Washington?" on a later flush, which is different words, a different
+  // key, and the same question asked twice.
+  : `gist:${c.meetingId}:ask:${vcGistOpening(c.command)}`);
+// Inlined rather than imported: voiceGist runs on every scanned command and this module is on
+// the panel's first paint. Kept identical to gistOpening in the shared contract.
+const vcGistOpening = (t) => String(t || '')
+  .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').slice(0, 6).join(' ');
 
 /** Should this command run? False if this exact utterance, or the same request, already did. */
 function voiceIsFresh(acted, command, now) {
@@ -4494,8 +4501,11 @@ function voiceIsFresh(acted, command, now) {
   const said = acted.get(command.key);
   if (said && now - said < VOICE_SAME_MS) return false;
   // The looser match — same intent and duration, different words — on a shorter leash.
+  // The looser match — a revised transcription, or the same intent and duration through
+  // different words — on the SAME long window. Two minutes was shorter than a caption entry
+  // lives, so a duplicate timer arrived three minutes later and cleared it.
   const at = acted.get(voiceGist(command));
-  return !(at && now - at < VOICE_REPEAT_MS);
+  return !(at && now - at < VOICE_SAME_MS);
 }
 
 async function rememberVoiceActed(commands, now) {
@@ -4670,8 +4680,14 @@ async function runSpokenRequest(refined) {
 /** Put it in the composer and send — the hands-free equivalent of typing it. */
 async function askSpoken(text) {
   const input = $('input');
+  // Never send a non-request. A model told to answer kind "none" will sometimes put the word
+  // in the request field as well, and sending that verbatim is a chat message reading "none"
+  // — which is what a user saw, several times over. The contract drops these too; this is the
+  // last gate before the composer, and the one that must not be bypassed.
+  const ask = String(text || '').trim();
+  if (!ask || /^(?:none|n\/a|nothing|null|-{1,3}|\.)$/i.test(ask)) return;
   if (!input) return;
-  input.value = text;
+  input.value = ask;
   autoGrow();
   await send();
 }

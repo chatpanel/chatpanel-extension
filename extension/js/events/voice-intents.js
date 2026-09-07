@@ -395,14 +395,26 @@ export function refinementPrompt(utterance) {
  * deterministic pass rather than acting on a hallucinated request. A model that wraps its JSON
  * in a code fence is common enough to handle rather than punish.
  */
+// The ways a model says "they were not asking for anything", as a whole answer or as the
+// request itself. Anchored, so a real request that merely CONTAINS one of these survives.
+const NO_REQUEST = /^(?:none|n\/a|na|nothing|no request|null|-{1,3}|\.)\s*\.?$/i;
+
 export function parseRefinement(text) {
   const raw = String(text || '').trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
+  // A small model told to answer "none" often answers "none" — as prose, with no JSON at all.
+  // Reading that as unparseable made the caller fall back to the deterministic reading and
+  // act on something the model had just said was not a request.
+  if (NO_REQUEST.test(raw)) return { request: '', name: '', kind: 'none', skill: '' };
   const start = raw.indexOf('{');
   const end = raw.lastIndexOf('}');
   if (start < 0 || end <= start) return null;
   let obj;
   try { obj = JSON.parse(raw.slice(start, end + 1)); } catch { return null; }
   const request = String(obj?.request || '').trim();
+  // …and when it DOES return JSON it will sometimes put the word in the request field too:
+  // {"request":"none","kind":"question"}. Sent verbatim, that is a chat message reading
+  // "none" — which is exactly what a user saw, several times.
+  if (NO_REQUEST.test(request)) return { request: '', name: '', kind: 'none', skill: '' };
   // An unknown kind becomes a QUESTION — the least surprising thing to do with something
   // someone asked for, and the only kind that is undone by ignoring the answer. Guessing
   // "monitor" instead would leave a card watching the meeting that nobody asked for.
@@ -973,6 +985,20 @@ function parseShortest(command, intents, now) {
  */
 export const gistText = (text) => String(text || '')
   .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 160);
+
+/**
+ * The OPENING of a request — a looser identity than its full words.
+ *
+ * A transcriber does not only append; it REVISES. "How is the weather in Seattle, Washington
+ * now?" became "How is the weather in Seattle, Washington?" on a later flush — different
+ * words, a different key, and the same question asked twice. The first few words are what a
+ * revision leaves alone.
+ *
+ * Six is chosen against the failure it exists to stop: long enough that two genuinely
+ * different requests rarely share an opening, short enough to survive the tail being rewritten.
+ */
+export const OPENING_WORDS = 6;
+export const gistOpening = (text) => gistText(text).split(' ').slice(0, OPENING_WORDS).join(' ');
 
 /** How many commands one transcript delta may produce. */
 export const MAX_COMMANDS_PER_DELTA = 3;
