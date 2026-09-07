@@ -1,43 +1,38 @@
-// Voice↔voice: listen → send → speak → listen, until the user stops it.
+// Voice↔voice: listen, answer, speak — with the microphone open throughout.
 //
-// Phase 4 of docs/voice-pipeline.md is explicit that this stage is COMPOSITION, not
-// new primitives — dictation.js already listens, the panel already sends, speech.js
-// already speaks. What was missing is the part that is genuinely hard: the state
-// machine that decides when each one runs, and that never gets stuck.
+// The first version closed the mic before thinking and reopened it after speaking,
+// which made barge-in impossible: there was nothing listening while the assistant
+// talked, so interrupting needed a button. Keeping the mic open the whole session
+// turns that into the natural behaviour — you talk, it stops.
 //
-// So this module owns exactly that and nothing else. Every platform capability is
-// INJECTED (the same rule page-capability.js and loop.js follow), which is why it
-// runs under `node --test` with three fakes and no browser.
+// So the states are about what the ASSISTANT is doing, not whether we are
+// recording:
 //
-//   createVoiceLoop({ listen, send, speak, onState, onError })
-//     listen({ onInterim, onFinal }) -> stopFn   start the mic; call onFinal(text)
-//     send(text)                     -> Promise<string>   the assistant's reply
-//     speak(text)                    -> Promise<void>     resolves when audio ends
-//     onState({ state, text })       'idle'|'listening'|'thinking'|'speaking'
+//   idle ──start──> listening ──you speak──> thinking ──reply──> speaking ─┐
+//                       ▲                        │                         │
+//                       └────────────────────────┴─── you speak again ─────┘
+//                                          (barge-in cancels whatever is running)
 //
-// The states are a cycle with one escape hatch (stop) reachable from all of them:
-//
-//   idle → listening → thinking → speaking ─┐
-//            ▲                              │
-//            └──────────────────────────────┘
-//
-// Two rules keep it from wedging, and both are the kind of bug you only find at 2am
-// with a microphone open:
-//   • Every transition is guarded by a RUN TOKEN. stop() bumps it, so a transcript,
-//     a reply or an audio-end from a cancelled run is dropped instead of restarting
-//     a loop the user just ended.
-//   • Any failure returns to `listening` (or `idle` if stopped), never to a state
-//     with no way out. A voice UI that dies silently is indistinguishable from one
-//     that is still listening, and the user keeps talking to nothing.
+// Everything platform-shaped is injected, which is why this has tests and needs no
+// microphone to run:
+//   listen({ onInterim, onFinal }) -> stopFn   opened ONCE per session
+//   send(text, { onDelta })        -> Promise<string>
+//   speakStream()                  -> { push, end, stop, done }
+//   onState({ state, text })       'idle' | 'listening' | 'thinking' | 'speaking' | 'muted'
 
 export const VOICE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'muted'];
 
-export function createVoiceLoop({ listen, send, speak, onState, onError } = {}) {
+// A barge-in has to be SPEECH, not a cough or the tail of our own audio leaking
+// past echo cancellation. Two words is the cheapest filter that survives both.
+const MIN_BARGE_IN_WORDS = 2;
+
+export function createVoiceLoop({ listen, send, speakStream, onState, onError } = {}) {
   let state = 'idle';
-  let token = 0;
-  let stopListen = null;
   let running = false;
   let muted = false;
+  let stopListen = null;
+  let turnToken = 0;      // bumped to abandon the turn in flight
+  let speaking = null;    // the live speak queue, if any
 
   const setState = (s, text) => {
     if (state === s && text === undefined) return;
@@ -45,64 +40,95 @@ export function createVoiceLoop({ listen, send, speak, onState, onError } = {}) 
     try { onState?.({ state: s, text }); } catch { /* a UI error must not break the loop */ }
   };
 
-  const fail = (e, mine) => {
-    if (token !== mine) return;
+  const fail = (e) => {
     try { onError?.(typeof e === 'string' ? e : e?.message || 'voice failed'); } catch { /* ignore */ }
   };
 
-  async function turn(mine, text) {
-    if (token !== mine || !text) return;
-    setState('thinking', text);
-    let reply = '';
-    try {
-      reply = await send(text);
-    } catch (e) {
-      fail(e, mine);
-      return cycle(mine);            // a failed send must not end the conversation
-    }
-    if (token !== mine) return;
-    if (reply && String(reply).trim()) {
-      setState('speaking', reply);
-      try {
-        await speak(reply);
-      } catch (e) {
-        fail(e, mine);               // speech failed; the answer still arrived
-      }
-    }
-    return cycle(mine);
+  // Abandon whatever the assistant is doing, without touching the microphone.
+  function cancelTurn() {
+    turnToken++;
+    if (speaking) { try { speaking.stop(); } catch { /* not playing */ } speaking = null; }
   }
 
-  function cycle(mine) {
-    if (token !== mine || !running) return;
-    // Muted means the mic is CLOSED, not merely ignored. A loop that keeps
-    // recording and discards the text still ships room noise to the STT engine
-    // every turn, and on the browser provider that means shipping it to a vendor —
-    // so mute has to stop the listener, not filter its output.
-    if (muted) { setState('muted'); return; }
-    setState('listening');
+  async function runTurn(said) {
+    const mine = ++turnToken;
+    setState('thinking', said);
+
+    // Speak sentences as they are generated rather than after the whole answer.
+    // On a long reply, waiting costs the entire generation in silence.
+    const queue = speakStream();
+    speaking = queue;
+    let started = false;
+
+    let reply = '';
     try {
-      stopListen = listen({
-        onInterim: (t) => { if (token === mine) setState('listening', t); },
-        onFinal: (t) => {
-          if (token !== mine) return;
-          const said = String(t || '').trim();
-          if (!said) return;         // silence, or a discarded partial — keep listening
-          try { stopListen?.(); } catch { /* already stopped */ }
-          stopListen = null;
-          turn(mine, said);
+      reply = await send(said, {
+        onDelta: (partial) => {
+          if (turnToken !== mine) return;
+          if (!started && String(partial || '').trim()) { started = true; }
+          setState(started ? 'speaking' : 'thinking', partial);
+          queue.push(partial);
         },
       });
     } catch (e) {
-      fail(e, mine);
+      if (turnToken === mine) { fail(e); queue.stop(); speaking = null; back(); }
+      return;
+    }
+    if (turnToken !== mine) return; // barged in while generating
+
+    // A send that never emitted deltas still has an answer to speak.
+    if (reply) queue.push(reply);
+    queue.end();
+    if (String(reply || '').trim()) setState('speaking', reply);
+    try {
+      await queue.done;
+    } catch (e) { fail(e); }
+    if (turnToken !== mine) return;
+    speaking = null;
+    back();
+  }
+
+  // Where the loop rests between turns — listening, unless the user muted it.
+  function back() {
+    if (!running) return;
+    setState(muted ? 'muted' : 'listening');
+  }
+
+  function openMic() {
+    try {
+      stopListen = listen({
+        onInterim: (t) => {
+          if (!running || muted) return;
+          // Only caption partials while we are waiting for them; during an answer
+          // they are the barge-in about to happen, and showing them competes with
+          // the reply on screen.
+          if (state === 'listening') setState('listening', t);
+        },
+        onFinal: (t) => {
+          if (!running || muted) return;
+          const said = String(t || '').trim();
+          if (!said) return;
+          if (state === 'thinking' || state === 'speaking') {
+            // Barge-in. Require real words: a single fragment is usually our own
+            // audio leaking past echo cancellation, and cutting the assistant off
+            // for that is worse than ignoring it.
+            if (said.split(/\s+/).filter(Boolean).length < MIN_BARGE_IN_WORDS) return;
+            cancelTurn();
+          }
+          runTurn(said);
+        },
+      });
+    } catch (e) {
+      fail(e);
       stopAll();
     }
   }
 
   function stopAll() {
-    token++;
+    cancelTurn();
     running = false;
     muted = false; // a new session starts with the mic open, not silently deaf
-    try { stopListen?.(); } catch { /* already stopped */ }
+    try { stopListen?.(); } catch { /* not listening */ }
     stopListen = null;
     setState('idle');
   }
@@ -110,22 +136,19 @@ export function createVoiceLoop({ listen, send, speak, onState, onError } = {}) 
   return {
     state: () => state,
     isRunning: () => running,
+    isMuted: () => muted,
     start() {
       if (running) return;
       running = true;
-      const mine = ++token;
-      cycle(mine);
+      openMic();
+      back();
     },
     stop: stopAll,
-    isMuted: () => muted,
     /**
-     * Close (or reopen) the microphone without ending the session — the control for
-     * a noisy room, or for saying something you do not want transcribed.
-     *
-     * Muting mid-answer is allowed and does nothing violent: the mic is already
-     * closed while thinking and speaking, so it simply means the NEXT cycle will
-     * not open it. Unmuting there is equally safe — the flag clears and the turn
-     * ends into a listening state as usual.
+     * Close the microphone without ending the session — for a noisy room, or to
+     * say something you would rather not have transcribed. Muting stops the
+     * LISTENER, not just its output: a loop that keeps recording and discards the
+     * text still ships the room to the STT engine every turn.
      */
     setMuted(on) {
       const next = !!on;
@@ -135,24 +158,18 @@ export function createVoiceLoop({ listen, send, speak, onState, onError } = {}) 
       if (muted) {
         try { stopListen?.(); } catch { /* not listening */ }
         stopListen = null;
-        // Only take over the display if the mic was what was showing; a mute
-        // pressed mid-answer must not claim the assistant stopped talking.
+        // Do not claim the assistant stopped talking; it has not.
         if (state === 'listening') setState('muted');
-      } else if (state === 'muted') {
-        cycle(++token);
+      } else {
+        openMic();
+        if (state === 'muted') setState('listening');
       }
     },
-    /**
-     * Barge-in: drop whatever is being said or thought and listen again, without
-     * ending the session. This is the button a user reaches for when the assistant
-     * is three sentences into the wrong answer.
-     */
+    /** Manual barge-in, for callers that still want a button. */
     interrupt() {
       if (!running) return;
-      const mine = ++token;
-      try { stopListen?.(); } catch { /* not listening */ }
-      stopListen = null;
-      cycle(mine); // respects mute — cycle() will not open a muted mic
+      cancelTurn();
+      back();
     },
   };
 }

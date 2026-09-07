@@ -176,6 +176,21 @@
            will receive, placeholders highlighted. View-only — the wire is always
            redacted when privacy is on, whichever view the user looks at. -->
       <div id="redact-preview" class="redact-preview hidden" aria-live="polite"></div>
+      <!-- Voice bar. Takes the composer's place while a voice conversation is
+           running: the transcript belongs in the conversation above, formatted the
+           way every other message is, not in a separate screen that shows one
+           centred line of it. -->
+      <div id="voice-bar" class="voice-bar hidden" role="status" aria-live="polite">
+        <canvas id="voice-wave" class="voice-wave" width="560" height="44" aria-hidden="true"></canvas>
+        <div class="voice-bar-row">
+          <span class="voice-bar-state" id="voice-state">Listening…</span>
+          <span class="voice-bar-spacer"></span>
+          <button id="voice-mute" class="voice-btn" aria-pressed="false">Mute</button>
+          <button id="voice-stop" class="voice-btn primary">Done</button>
+        </div>
+        <p class="voice-bar-hint" id="voice-privacy"></p>
+      </div>
+
       <div class="composer-box">
         <div class="input-wrap">
           <textarea id="input" class="input" rows="1" placeholder="Message your agent. / for skills"></textarea>
@@ -253,23 +268,6 @@
     <!-- URL paste prompt -->
     <div id="toast" class="toast hidden"></div>
 
-    <!-- Voice conversation overlay. Everything it shows is derived from ONE state
-       (listening | thinking | speaking) so it can never disagree with the loop. -->
-    <div id="voice-overlay" class="voice-overlay hidden" role="dialog" aria-modal="true" aria-label="Voice conversation">
-      <button id="voice-close" class="voice-close" title="End voice conversation" aria-label="End voice conversation" data-icon="close"></button>
-      <div class="voice-orb" id="voice-orb" aria-hidden="true"><span></span><span></span><span></span></div>
-      <!-- Drawn from the AnalyserNode on the audio actually playing, so it tracks the
-           voice instead of a timer. Hidden whenever there is no signal to read. -->
-      <canvas id="voice-wave" class="voice-wave hidden" width="560" height="72" aria-hidden="true"></canvas>
-      <div class="voice-state" id="voice-state">Listening…</div>
-      <p class="voice-caption" id="voice-caption"></p>
-      <div class="voice-actions">
-        <button id="voice-mute" class="voice-btn" aria-pressed="false">Mute</button>
-        <button id="voice-interrupt" class="voice-btn">Interrupt</button>
-        <button id="voice-stop" class="voice-btn primary">Done</button>
-      </div>
-      <p class="voice-privacy" id="voice-privacy"></p>
-    </div>
 
     <script type="module" src="sidepanel.js"></script>
   </body>

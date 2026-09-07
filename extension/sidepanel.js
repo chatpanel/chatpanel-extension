@@ -3268,17 +3268,20 @@ async function toggleVoiceMode() {
     // One turn: put the words in the composer, send, and wait for the answer.
     // awaitTurn() is registered BEFORE send(), or a fast reply lands first and the
     // loop waits forever for a turn that already finished.
-    // Partial reply text, so the overlay can show the answer forming instead of
-    // sitting on "Thinking…" until audio starts.
-    onTurnDelta,
-    sendTurn: async (text) => {
+    sendTurn: async (text, { onDelta } = {}) => {
       const input = $('input');
       input.value = text;
       autoGrow();
       const done = awaitTurn();
-      await send();
-      const assistant = await done;
-      return assistant?.error ? '' : (assistant?.content || '');
+      // The deltas are what let the loop start speaking before generation ends.
+      const offDelta = onDelta ? onTurnDelta(onDelta) : null;
+      try {
+        await send();
+        const assistant = await done;
+        return assistant?.error ? '' : (assistant?.content || '');
+      } finally {
+        offDelta?.();
+      }
     },
   });
 }
@@ -9211,8 +9214,8 @@ function wireEvents() {
   $('btn-mic').onclick = toggleDictation;
   $('btn-voice').onclick = toggleVoiceMode;
   $('voice-stop').onclick = stopVoiceMode;
-  $('voice-close').onclick = stopVoiceMode;
-  $('voice-interrupt').onclick = () => voiceSession?.interrupt();
+  // No Interrupt button: talking over the assistant interrupts it, which is what
+  // people do to each other and try first anyway.
   $('voice-mute').onclick = () => voiceSession?.toggleMute();
   $('btn-mcp').onclick = (e) => {
     e.stopPropagation();

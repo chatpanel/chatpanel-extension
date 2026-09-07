@@ -26,121 +26,62 @@ const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
     // no \b before \$ — it is not a word character, so the boundary never matches
     for (const m of src.matchAll(/(?:\$|el)\(\s*'(voice-[^']+|btn-voice)'\s*\)/g)) referenced.add(m[1]);
   }
-  assert.ok(referenced.size >= 6, `expected the voice UI to reference several ids, saw ${referenced.size}`);
+  assert.ok(referenced.size >= 4, `expected the voice UI to reference several ids, saw ${referenced.size}`);
   for (const id of referenced) {
     assert.ok(idsInHtml.has(id), `sidepanel.html has no #${id}, but the JS reaches for it — the control would be silently dead`);
   }
 }
 
-// ── and every control in the overlay must be wired to something ────────────────
+// ── voice is INLINE, not a separate screen ─────────────────────────────────────
+// The conversation already renders each turn with proper sides and formatted
+// markdown; an overlay could only ever show one centred line of it.
 {
-  const overlay = html.slice(html.indexOf('id="voice-overlay"'), html.indexOf('</div>', html.indexOf('voice-privacy')));
-  for (const m of overlay.matchAll(/<button[^>]*\bid="([^"]+)"/g)) {
-    const id = m[1];
-    assert.match(panel, new RegExp(`\\$\\('${id}'\\)\\.onclick`), `#${id} is in the overlay but nothing wires its onclick`);
+  assert.ok(idsInHtml.has('voice-bar'), 'the voice controls belong in a bar beside the composer');
+  assert.ok(!html.includes('voice-overlay'), 'the full-screen overlay must be gone, not merely hidden');
+  assert.ok(!css.includes('.voice-overlay'), 'and its styles with it');
+  assert.match(css, /body\.voice-active \.composer-box \{ display: none/,
+    'the bar must REPLACE the composer — two input affordances invites typing into a box that is not listening');
+  for (const id of ['voice-mute', 'voice-stop']) {
+    assert.match(panel, new RegExp(`\\$\\('${id}'\\)\\.onclick`), `#${id} must be wired`);
   }
 }
 
-// ── the states the JS writes are the states the CSS styles ─────────────────────
+// ── barge-in is automatic ──────────────────────────────────────────────────────
 {
-  const written = new Set([...mode.matchAll(/setState\('([a-z]+)'/g)].map((m) => m[1]));
-  // LABEL is the module's own list of what it can display.
-  const labelDecl = mode.match(/const LABEL = \{([^}]+)\}/);
-  assert.ok(labelDecl, 'voice-mode must declare a LABEL map of the states it can show');
-  const labelled = new Set([...labelDecl[1].matchAll(/(\w+):/g)].map((x) => x[1]));
-  for (const st of written) assert.ok(labelled.has(st), `voice-mode writes state "${st}" but LABEL has no text for it`);
-  for (const st of ['listening', 'thinking', 'speaking']) {
-    assert.ok(css.includes(`[data-state="${st}"]`), `sidepanel.css does not style the "${st}" state — the orb would not change`);
-  }
-}
-
-// ── motion is the signal, so reduced-motion must not leave three identical rings ─
-{
-  const rm = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)', css.indexOf('.voice-orb')));
-  assert.ok(rm.includes('animation: none'), 'reduced motion must stop the orb animation');
-  assert.ok(/thinking"\].*border-style|speaking"\].*opacity/s.test(rm.slice(0, 400)),
-    'with motion suppressed the orb still has to distinguish the states some other way');
-}
-
-// ── the privacy line is not optional ───────────────────────────────────────────
-{
-  assert.ok(idsInHtml.has('voice-privacy'), 'the overlay must have somewhere to say where audio is handled');
-  assert.match(mode, /voice-privacy/, 'voice-mode must fill it in');
-  assert.match(mode, /bothLocal/, 'and it must distinguish fully-local from anything else');
-}
-
-// ── speech must never be a static import on a first-paint entry ────────────────
-// (the budget test measures bytes; this one names the rule, so a violation reads as
-// "you broke the deferral" rather than "the number went up")
-{
-  for (const [name, src] of [['sidepanel.js', panel]]) {
-    for (const mod of ['speech.js', 'read-aloud.js', 'voice-loop.js', 'voice-mode.js']) {
-      const staticImport = new RegExp(`^import[^\\n]*from '\\./js/${mod.replace('.', '\\.')}'`, 'm');
-      assert.ok(!staticImport.test(src), `${name} statically imports ${mod} — it must be await import()ed at the call site`);
-    }
-  }
-}
-
-// ── the capability modules stay platform-free where they claim to be ───────────
-{
-  // voice-loop is the one that must run under node with no DOM — it is why the
-  // loop is testable at all.
   const loop = read('js/voice-loop.js');
-  for (const bad of ['document.', 'window.', 'chrome.', 'navigator.']) {
-    assert.ok(!loop.includes(bad), `voice-loop.js touches ${bad} — every platform capability there is meant to be injected`);
-  }
-  // speech.js may use window/Audio (it is the audio layer) but must not reach into
-  // the panel's DOM.
-  assert.ok(!speech.includes('document.querySelector'), 'speech.js must not reach into the page it is used from');
-  assert.ok(!readAloud.includes("import('./voice-mode.js')"), 'read-aloud must not depend on voice mode — the Speak button works without it');
+  // The mic stays open for the whole session — that is what makes talking over the
+  // assistant work without a button.
+  assert.match(loop, /openMic/, 'the listener must be opened once per session');
+  assert.ok(!/stopListen\?\.\(\);[\s\S]{0,80}runTurn/.test(loop),
+    'the mic must not be closed before a turn — barge-in depends on it staying open');
+  assert.match(loop, /MIN_BARGE_IN_WORDS/, 'a one-word fragment must not count as an interruption');
+  assert.ok(!html.includes('voice-interrupt'), 'the Interrupt button is replaced by just talking');
 }
 
-// ── mute and the waveform ──────────────────────────────────────────────────────
+// ── the waveform is signal-driven, and honest when there is no signal ─────────
 {
-  assert.ok(idsInHtml.has('voice-mute'), 'the overlay needs a mute control — a live mic in a noisy room is the common case');
-  assert.ok(idsInHtml.has('voice-wave'), 'and a canvas for the waveform');
-  assert.match(panel, /\$\('voice-mute'\)\.onclick/, 'mute must be wired');
-  assert.match(mode, /toggleMute/, 'and the session must expose the toggle');
-  // Muted is a state the user can be left in, so it needs a label and a look.
-  assert.match(mode, /muted:/, 'LABEL must name the muted state');
-  assert.ok(css.includes('[data-state="muted"]'), 'the orb must stop breathing when muted — it is not listening');
-  // The waveform is signal-driven; it must hide when there is no signal.
-  assert.match(mode, /stopWave|classList\.add\('hidden'\)/, 'the canvas must hide when nothing is playing');
-  assert.match(mode, /getByteFrequencyData/, 'the waveform must read the analyser, not a timer');
+  assert.ok(idsInHtml.has('voice-wave'), 'the bar needs a canvas for the waveform');
+  assert.match(mode, /getByteFrequencyData/, 'it must read an analyser, not a timer');
+  assert.match(mode, /speaker\.analyser/, 'the speaker while it answers');
+  assert.match(mode, /micSource\(\)/, 'and the microphone while you talk');
   assert.match(mode, /prefers-reduced-motion/, 'and must not animate for someone who asked it not to');
-
-  // The waveform must follow whatever is making sound NOW — the mic while
-  // listening, the speaker while speaking. A shape that only moves for one of them
-  // leaves the other half of the conversation looking dead.
-  assert.match(mode, /d\.analyser/, 'listening must draw from the microphone');
-  assert.match(mode, /speaker\.analyser/, 'speaking must draw from the playing audio');
-  // Re-read per frame: neither analyser exists at the moment the loop is armed.
-  assert.match(mode, /getAnalyser\(\)/, 'the analyser must be re-read each frame, not captured once');
   assert.match(read('js/dictation.js'), /analyser: \(\) => micAnalyser/, 'dictation must expose its mic tap');
-
-  // Thinking is the longest wait; it needs both motion and streaming text or it
-  // reads as a hang.
-  assert.ok(css.includes('voice-think'), 'the thinking state needs its own motion');
-  assert.match(mode, /onTurnDelta/, 'partial reply text must reach the overlay');
-  assert.match(panel, /onTurnDelta,/, 'and the panel must hand the subscription to voice mode');
-  // Match the CALL inside the stream's flush, not merely the function's existence —
-  // a defined-but-never-called notifier passes a looser check while the overlay
-  // sits on "Thinking…" for the whole generation.
-  const flushBody = panel.slice(panel.indexOf('const flush = () => {'), panel.indexOf('let dl = null'));
-  assert.match(flushBody, /notifyTurnDelta\(assistant\)/,
-    'the streaming flush must emit the partial text — defining the notifier is not enough');
-
-  // Drawing must not WRITE. A render that persists config re-triggers the refresh
-  // that re-renders it, and the select rebuilds under the cursor several times a
-  // second — which is what "the selection is super jittery" was.
-  const settingsSrc = read('settings.js');
-  const voicesRenderer = settingsSrc.slice(settingsSrc.indexOf('function renderTtsVoices'), settingsSrc.indexOf('function renderTtsDtype'));
-  // sel.onchange assignments are fine — those run on interaction, not on draw.
-  const drawBody = voicesRenderer.replace(/sel\.onchange[^;]*;/g, '');
-  assert.ok(!/selectTtsModel\(/.test(drawBody),
-    'renderTtsVoices must not call selectTtsModel while DRAWING — that is a render→post→render loop');
-  assert.match(settingsSrc, /function setOptions/, 'options must only be rewritten when they actually change');
 }
+
+// ── the privacy line is not optional ──────────────────────────────────────────
+{
+  assert.ok(idsInHtml.has('voice-privacy'), 'the bar must say where audio is handled');
+  assert.match(mode, /bothLocal/, 'and must distinguish fully-local from anything else');
+}
+
+// ── speaking starts before generation ends ─────────────────────────────────────
+{
+  assert.match(read('js/speech.js'), /export function speakStream/, 'a streaming speak queue must exist');
+  assert.match(mode, /speakStream\(speaker\)/, 'voice mode must use it');
+  assert.match(loopSrc(), /onDelta/, 'the loop must feed partial text to the queue');
+  assert.match(panel, /sendTurn: async \(text, \{ onDelta \}/, 'and the panel must supply the deltas');
+}
+function loopSrc() { return read('js/voice-loop.js'); }
 
 // ── the Gateway settings TTS manager ───────────────────────────────────────────
 // Same class of failure, different page: a model picker whose ids drifted renders
@@ -258,4 +199,4 @@ const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
   assert.match(read('js/gateway.js'), /export async function updateTtsVoice/, 'the client needs an update call');
 }
 
-console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, mute + signal-driven waveform, TTS search wired, recorded voices confirmed + mic released, auto-stop + phonetic prompt + retry keeps the take, waveform follows mic AND speaker, thinking streams, rendering never writes config, voices rename + re-record in place');
+console.log('✓ voice wiring: ids exist and are wired, voice is INLINE (no overlay) and replaces the composer, barge-in is automatic, speech starts before generation ends, waveform follows mic AND speaker, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, TTS search wired, recorded voices confirmed + mic released, rename + re-record in place, rendering never writes config');

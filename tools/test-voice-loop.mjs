@@ -1,151 +1,223 @@
-// The voice loop's failure modes are all "it got stuck with the mic open" — which
-// looks exactly like "it is listening", so the user keeps talking to nothing. Every
-// test here is about a transition that must still happen when something went wrong.
+// The voice loop's failures are all about TIMING and CANCELLATION, and they all
+// look the same from the outside: a mic that is open but going nowhere. Every test
+// here is a transition that must still happen when something went wrong.
 import assert from 'node:assert/strict';
 import { createVoiceLoop, VOICE_STATES } from '../extension/js/voice-loop.js';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+const settle = async () => { for (let i = 0; i < 8; i++) await tick(); };
 
-// A rig with three fakes: a mic we can feed transcripts to, a model, and a mouth.
-function rig({ send, speak } = {}) {
+// A rig with three fakes: a mic we feed transcripts to, a model, and a mouth.
+// `send` may stream via onDelta; `hold` lets a test freeze a turn mid-flight.
+function rig({ reply = (t) => `reply to ${t}`, stream = false, hold = false } = {}) {
   const states = [];
+  const spoken = [];
   let mic = null;
-  let stopped = 0;
+  let opens = 0, closes = 0;
+  let release = null;
+
   const loop = createVoiceLoop({
-    listen: (h) => { mic = h; return () => { mic = null; stopped++; }; },
-    send: send || (async (t) => `reply to ${t}`),
-    speak: speak || (async () => {}),
+    listen: (h) => { mic = h; opens++; return () => { mic = null; closes++; }; },
+    send: async (text, { onDelta } = {}) => {
+      if (hold) await new Promise((r) => { release = () => r(); });
+      const out = reply(text);
+      if (stream) {
+        let acc = '';
+        for (const part of String(out).split(' ')) { acc += (acc ? ' ' : '') + part; onDelta?.(acc); await tick(); }
+      }
+      return out;
+    },
+    speakStream: () => {
+      let ended = false;
+      let resolveDone;
+      const done = new Promise((r) => { resolveDone = r; });
+      return {
+        push: (t) => { if (!ended) spoken.push(['push', t]); },
+        end: () => { ended = true; spoken.push(['end']); resolveDone(); },
+        stop: () => { ended = true; spoken.push(['stop']); resolveDone(); },
+        done,
+      };
+    },
     onState: ({ state, text }) => states.push(text === undefined ? state : `${state}:${text}`),
     onError: (m) => states.push(`error:${m}`),
   });
-  return { loop, states, say: (t) => mic?.onFinal(t), partial: (t) => mic?.onInterim(t), listening: () => !!mic, stops: () => stopped };
+  return {
+    loop, states, spoken,
+    say: (t) => mic?.onFinal(t),
+    partial: (t) => mic?.onInterim(t),
+    listening: () => !!mic,
+    opens: () => opens,
+    closes: () => closes,
+    release: () => release?.(),
+  };
 }
 
-// ── the happy cycle ────────────────────────────────────────────────────────────
+// ── the mic stays open ─────────────────────────────────────────────────────────
+// This is the whole point of the redesign: without it, barge-in needs a button.
 {
   const r = rig();
   r.loop.start();
-  assert.equal(r.loop.state(), 'listening');
-  r.say('what is the weather');
-  await tick(); await tick(); await tick();
-  assert.deepEqual(r.states.filter((s) => VOICE_STATES.includes(s.split(':')[0]) && !s.includes(':')),
-    ['listening', 'listening'], 'it must return to listening for the next turn');
-  assert.ok(r.states.some((s) => s.startsWith('thinking:what is the weather')));
-  assert.ok(r.states.some((s) => s.startsWith('speaking:reply to')));
-  assert.equal(r.loop.state(), 'listening');
-  assert.ok(r.listening(), 'the mic must be open again');
+  assert.ok(r.listening(), 'starts listening');
+  r.say('hello there');
+  await settle();
+  assert.ok(r.listening(), 'the mic must stay open through thinking and speaking');
+  assert.equal(r.opens(), 1, 'and must not be reopened per turn');
+  assert.equal(r.loop.state(), 'listening', 'and the loop returns to listening');
   r.loop.stop();
-  assert.equal(r.loop.state(), 'idle');
+  assert.equal(r.closes(), 1, 'stop closes it exactly once');
 }
 
-// ── silence must not start a turn ──────────────────────────────────────────────
+// ── barge-in ───────────────────────────────────────────────────────────────────
 {
-  let sent = 0;
-  const r = rig({ send: async (t) => { sent++; return 'x'; } });
+  const r = rig({ hold: true });
   r.loop.start();
-  r.say('   '); r.say(''); r.say(null);
-  await tick();
-  assert.equal(sent, 0, 'blank transcripts must never reach the model');
-  assert.equal(r.loop.state(), 'listening');
-  r.loop.stop();
-}
-
-// ── interim text updates the UI without ending the turn ───────────────────────
-{
-  const r = rig();
-  r.loop.start();
-  r.partial('what is the');
-  assert.ok(r.states.includes('listening:what is the'), 'interim text should surface for the caption');
-  assert.equal(r.loop.state(), 'listening');
-  r.loop.stop();
-}
-
-// ── a failing model keeps the conversation alive ──────────────────────────────
-{
-  const r = rig({ send: async () => { throw new Error('model offline'); } });
-  r.loop.start();
-  r.say('hello');
-  await tick(); await tick();
-  assert.ok(r.states.includes('error:model offline'), 'the user must be told');
-  assert.equal(r.loop.state(), 'listening', 'a failed send must NOT end the session');
-  r.loop.stop();
-}
-
-// ── a failing voice still continues: the answer arrived, only the audio failed ─
-{
-  const r = rig({ speak: async () => { throw new Error('no audio device'); } });
-  r.loop.start();
-  r.say('hello');
-  await tick(); await tick(); await tick();
-  assert.ok(r.states.includes('error:no audio device'));
-  assert.equal(r.loop.state(), 'listening');
-  r.loop.stop();
-}
-
-// ── stop() during "thinking": a late reply must not restart the mic ───────────
-{
-  let release;
-  const r = rig({ send: () => new Promise((res) => { release = () => res('late answer'); }) });
-  r.loop.start();
-  r.say('question');
+  r.say('first question');
   await tick();
   assert.equal(r.loop.state(), 'thinking');
+  r.say('actually never mind tell me something else');
+  await settle();
+  r.release();                       // the first answer lands late
+  await settle();
+  assert.ok(r.spoken.some(([k]) => k === 'stop'), 'the abandoned turn must be stopped');
+  // Identify the cancelled turn by its TEXT: pushes after the stop belong to the
+  // NEW turn and are expected, but the first question's answer must never be said.
+  const saidTexts = r.spoken.filter(([k]) => k === 'push').map(([, t]) => String(t));
+  assert.ok(!saidTexts.some((t) => t.includes('first question')),
+    `a cancelled turn must not speak its late answer — heard ${JSON.stringify(saidTexts)}`);
   r.loop.stop();
-  release();                       // the model answers after the user quit
-  await tick(); await tick();
-  assert.equal(r.loop.state(), 'idle', 'a cancelled run must stay idle');
-  assert.equal(r.listening(), false, 'the mic must NOT reopen after stop()');
-  assert.ok(!r.states.some((s) => s.startsWith('speaking')), 'and it must not speak the late answer');
 }
 
-// ── stop() during "speaking": audio ending must not restart the loop ──────────
+// A single stray word is usually our own audio leaking past echo cancellation.
+// Cutting the assistant off for that is worse than ignoring it.
 {
-  let endAudio;
-  const r = rig({ speak: () => new Promise((res) => { endAudio = res; }) });
+  const r = rig({ hold: true });
+  r.loop.start();
+  r.say('tell me a story');
+  await tick();
+  assert.equal(r.loop.state(), 'thinking');
+  r.say('the');                      // one word — not a barge-in
+  await tick();
+  assert.equal(r.loop.state(), 'thinking', 'a one-word fragment must not interrupt');
+  r.say('stop please');              // two words — a real interruption
+  await settle();
+  assert.ok(r.spoken.some(([k]) => k === 'stop'), 'real speech must interrupt');
+  r.loop.stop();
+}
+
+// ── speaking starts DURING generation ──────────────────────────────────────────
+{
+  const r = rig({ stream: true, reply: () => 'One two three four five' });
+  r.loop.start();
+  r.say('say something');
+  await settle();
+  const pushes = r.spoken.filter(([k]) => k === 'push').map(([, t]) => t);
+  assert.ok(pushes.length > 1, 'partial text must reach the speaker as it streams, not once at the end');
+  assert.ok(r.states.some((s) => s.startsWith('speaking:')), 'and the UI must say it is speaking');
+  assert.ok(r.spoken.some(([k]) => k === 'end'), 'the queue must be closed when generation finishes');
+  r.loop.stop();
+}
+
+// A send that never streams still has to be spoken.
+{
+  const r = rig({ stream: false, reply: () => 'A complete answer.' });
   r.loop.start();
   r.say('question');
-  await tick(); await tick();
-  assert.equal(r.loop.state(), 'speaking');
-  r.loop.stop();
-  endAudio();
-  await tick(); await tick();
-  assert.equal(r.loop.state(), 'idle');
-  assert.equal(r.listening(), false);
-}
-
-// ── interrupt(): barge in mid-answer, keep the session ───────────────────────
-{
-  let endAudio;
-  const r = rig({ speak: () => new Promise((res) => { endAudio = res; }) });
-  r.loop.start();
-  r.say('long question');
-  await tick(); await tick();
-  assert.equal(r.loop.state(), 'speaking');
-  r.loop.interrupt();
-  assert.equal(r.loop.state(), 'listening', 'interrupt returns to listening');
-  assert.ok(r.loop.isRunning(), 'and does NOT end the session');
-  endAudio();                       // the abandoned audio finishes late
-  await tick(); await tick();
-  assert.equal(r.loop.state(), 'listening', 'the stale audio-end must not double-advance');
+  await settle();
+  assert.ok(r.spoken.some(([k, t]) => k === 'push' && t === 'A complete answer.'),
+    'a non-streaming send must still be spoken');
   r.loop.stop();
 }
 
-// ── start() twice is a no-op, not two microphones ────────────────────────────
+// ── silence and noise ──────────────────────────────────────────────────────────
 {
   const r = rig();
   r.loop.start();
-  r.loop.start();
-  r.loop.start();
+  r.say('   '); r.say(''); r.say(null);
+  await settle();
+  assert.equal(r.spoken.length, 0, 'blank transcripts must never start a turn');
   assert.equal(r.loop.state(), 'listening');
   r.loop.stop();
-  assert.equal(r.stops(), 1, 'only one listener should ever have been opened');
 }
 
-// ── a mic that refuses to start ends cleanly instead of hanging ──────────────
+// ── failures keep the conversation alive ───────────────────────────────────────
 {
+  const r = rig({ reply: () => { throw new Error('model offline'); } });
+  r.loop.start();
+  r.say('hello');
+  await settle();
+  assert.ok(r.states.includes('error:model offline'), 'the user must be told');
+  assert.equal(r.loop.state(), 'listening', 'a failed send must NOT end the session');
+  assert.ok(r.listening(), 'and must not close the mic');
+  r.loop.stop();
+}
+
+// ── mute closes the mic; it does not merely discard ────────────────────────────
+{
+  const r = rig();
+  r.loop.start();
+  r.loop.setMuted(true);
+  assert.equal(r.listening(), false, 'muting must stop the listener, not filter it');
+  assert.equal(r.loop.state(), 'muted');
+  assert.ok(r.loop.isRunning(), 'and must not end the session');
+  r.loop.setMuted(false);
+  assert.ok(r.listening(), 'unmuting reopens it');
+  assert.equal(r.loop.state(), 'listening');
+  r.loop.setMuted(true); r.loop.setMuted(true);
+  assert.equal(r.closes(), 2, 'muting twice must not close a listener twice');
+  r.loop.stop();
+  assert.equal(r.loop.isMuted(), false, 'stop clears mute — the next session is not silently deaf');
+}
+
+// Muting mid-answer must not claim the assistant stopped talking.
+{
+  const r = rig({ hold: true });
+  r.loop.start();
+  r.say('a question');
+  await tick();
+  r.loop.setMuted(true);
+  assert.equal(r.loop.state(), 'thinking', 'a mute mid-answer must not hijack the display');
+  r.release();
+  await settle();
+  assert.equal(r.loop.state(), 'muted', 'but the turn ends into muted');
+  r.loop.stop();
+}
+
+// ── stop beats everything in flight ────────────────────────────────────────────
+{
+  const r = rig({ hold: true });
+  r.loop.start();
+  r.say('question');
+  await tick();
+  r.loop.stop();
+  r.release();
+  await settle();
+  assert.equal(r.loop.state(), 'idle', 'a cancelled run must stay idle');
+  assert.equal(r.listening(), false, 'the mic must not reopen after stop');
+}
+
+// ── interrupt() still works for callers that want a button ────────────────────
+{
+  const r = rig({ hold: true });
+  r.loop.start();
+  r.say('question');
+  await tick();
+  r.loop.interrupt();
+  assert.equal(r.loop.state(), 'listening', 'interrupt returns to listening');
+  assert.ok(r.loop.isRunning(), 'without ending the session');
+  r.loop.stop();
+}
+
+// ── double start is a no-op, and a broken mic lands in idle ───────────────────
+{
+  const r = rig();
+  r.loop.start(); r.loop.start(); r.loop.start();
+  assert.equal(r.opens(), 1, 'only one listener may ever be opened');
+  r.loop.stop();
+
   const loop = createVoiceLoop({
     listen: () => { throw new Error('mic blocked'); },
-    send: async () => 'x', speak: async () => {},
+    send: async () => 'x',
+    speakStream: () => ({ push() {}, end() {}, stop() {}, done: Promise.resolve() }),
     onState: () => {}, onError: () => {},
   });
   loop.start();
@@ -153,82 +225,5 @@ function rig({ send, speak } = {}) {
   assert.equal(loop.isRunning(), false);
 }
 
-// ── mute ───────────────────────────────────────────────────────────────────────
-// Mute must CLOSE the mic, not filter its output. A loop that keeps recording and
-// throws the text away still ships room noise to the STT engine every turn — and on
-// the browser provider that means shipping it to a vendor.
-{
-  const r = rig();
-  r.loop.start();
-  assert.ok(r.listening(), 'starts listening');
-  r.loop.setMuted(true);
-  assert.equal(r.listening(), false, 'muting must stop the listener, not just ignore it');
-  assert.equal(r.loop.state(), 'muted');
-  assert.ok(r.loop.isRunning(), 'and must NOT end the session');
-  r.loop.setMuted(false);
-  assert.ok(r.listening(), 'unmuting reopens the mic');
-  assert.equal(r.loop.state(), 'listening');
-  r.loop.stop();
-}
-
-// Muting mid-answer is allowed, and must not claim the assistant stopped talking.
-{
-  let endAudio;
-  const r = rig({ speak: () => new Promise((res) => { endAudio = res; }) });
-  r.loop.start();
-  r.say('question');
-  await tick(); await tick();
-  assert.equal(r.loop.state(), 'speaking');
-  r.loop.setMuted(true);
-  assert.equal(r.loop.state(), 'speaking', 'a mute pressed mid-answer must not hijack the display');
-  endAudio();
-  await tick(); await tick();
-  assert.equal(r.loop.state(), 'muted', 'but the turn must end into muted, not reopen the mic');
-  assert.equal(r.listening(), false);
-  r.loop.stop();
-}
-
-// Unmuting while the assistant is still talking just clears the flag; the turn
-// ends into listening as usual.
-{
-  let endAudio;
-  const r = rig({ speak: () => new Promise((res) => { endAudio = res; }) });
-  r.loop.start();
-  r.loop.setMuted(true);
-  r.loop.setMuted(false);
-  r.say('question');
-  await tick(); await tick();
-  r.loop.setMuted(true);
-  r.loop.setMuted(false);
-  endAudio();
-  await tick(); await tick();
-  assert.equal(r.loop.state(), 'listening');
-  r.loop.stop();
-}
-
-// Interrupt while muted must not sneak the mic back open.
-{
-  const r = rig();
-  r.loop.start();
-  r.loop.setMuted(true);
-  r.loop.interrupt();
-  assert.equal(r.listening(), false, 'barge-in must respect mute');
-  assert.equal(r.loop.state(), 'muted');
-  r.loop.stop();
-}
-
-// Redundant calls are no-ops, and a new session never starts silently deaf.
-{
-  const r = rig();
-  r.loop.start();
-  r.loop.setMuted(true);
-  r.loop.setMuted(true);
-  assert.equal(r.stops(), 1, 'muting twice must not stop a listener twice');
-  r.loop.stop();
-  assert.equal(r.loop.isMuted(), false, 'stop() clears mute — the next session opens with the mic on');
-  r.loop.start();
-  assert.equal(r.loop.state(), 'listening');
-  r.loop.stop();
-}
-
-console.log('✓ voice-loop: full cycle, silence ignored, interim captions, send/speak failures survive, stop beats late reply + late audio, barge-in keeps session, double-start safe, mic failure lands idle, mute closes the mic and survives mid-answer');
+assert.deepEqual(VOICE_STATES, ['idle', 'listening', 'thinking', 'speaking', 'muted']);
+console.log('✓ voice-loop: mic stays open, barge-in cancels (and ignores one-word echo), speaks while generating, silence ignored, failures survive, mute closes the mic, stop beats late replies');

@@ -103,6 +103,78 @@ export function stripForSpeech(md) {
     .trim();
 }
 
+/**
+ * A speaking QUEUE fed while the reply is still being generated.
+ *
+ * Waiting for a complete answer before making any sound costs the whole
+ * generation in silence — on a long reply that is most of the interaction. Text
+ * arrives as a growing string, so this holds a cursor into it, hands over every
+ * COMPLETE sentence as it appears, and speaks them back to back.
+ *
+ *   const q = speakStream(speaker);
+ *   q.push(partialText);   // called repeatedly with the growing reply
+ *   q.end();               // generation finished
+ *   await q.done;          // resolves when the last sentence has been spoken
+ *
+ * Only complete sentences are released: synthesizing a half-clause produces a
+ * voice that trails off mid-thought and then restarts, which is worse than a
+ * slightly later start.
+ */
+export function speakStream(speaker, { onSpeaking } = {}) {
+  let spoken = 0;        // how much of the text has been queued
+  let text = '';
+  let ended = false;
+  let chain = Promise.resolve();
+  let stopped = false;
+  let resolveDone;
+  const done = new Promise((r) => { resolveDone = r; });
+
+  const enqueue = (chunk) => {
+    if (!chunk || stopped) return;
+    chain = chain.then(async () => {
+      if (stopped) return;
+      onSpeaking?.(chunk);
+      try { await speaker.speak(chunk); } catch { /* one bad chunk must not stall the rest */ }
+    });
+  };
+
+  const drain = () => {
+    const pending = text.slice(spoken);
+    if (!pending) return;
+    // A sentence is only finished when a terminator is followed by whitespace or
+    // the end of the generation — "e.g." mid-sentence must not trigger a chunk.
+    const re = /[^.!?]*[.!?]+(?=\s|$)/g;
+    let m, last = 0;
+    while ((m = re.exec(pending)) !== null) last = m.index + m[0].length;
+    if (!last) return;
+    const ready = pending.slice(0, last).trim();
+    spoken += last;
+    if (ready) enqueue(ready);
+  };
+
+  return {
+    push(next) {
+      if (stopped) return;
+      text = String(next || '');
+      drain();
+    },
+    end() {
+      if (ended || stopped) return;
+      ended = true;
+      // Whatever is left has no terminator — say it anyway; the generation is over.
+      const tail = text.slice(spoken).trim();
+      if (tail) { spoken = text.length; enqueue(tail); }
+      chain.then(() => resolveDone());
+    },
+    stop() {
+      stopped = true;
+      try { speaker.stop(); } catch { /* nothing playing */ }
+      resolveDone();
+    },
+    done,
+  };
+}
+
 export function createSpeech(opts = {}) {
   const provider = opts.provider || 'browser';
   return provider === 'gateway' ? createGatewaySpeech(opts) : createBrowserSpeech(opts);

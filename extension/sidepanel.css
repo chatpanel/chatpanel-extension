@@ -1107,107 +1107,34 @@ html.surface-tab .topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
 .job-run-why { flex: 1; color: var(--text); }
 .job-run-bad { color: var(--danger); }
 
-/* ── Voice conversation overlay ───────────────────────────────────────────────
-   One state (listening | thinking | speaking) drives the orb, the label and the
-   caption together, so the animation can never say something different from what
-   the loop is actually doing — the failure that makes a voice UI feel broken. */
-.voice-overlay {
-  position: fixed; inset: 0; z-index: 60;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
-  padding: 24px; text-align: center;
-  background: var(--bg); color: var(--text);
+/* ── Voice bar ─────────────────────────────────────────────────────────────────
+   Voice used to be a full-screen overlay, which meant the conversation — already
+   rendered with proper left/right bubbles and formatted markdown — was hidden
+   behind a single centred line of it. The bar takes the composer's place instead,
+   so you watch the actual chat and the controls sit where every other control is. */
+.voice-bar {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px; margin: 0;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-soft);
 }
-.voice-overlay.hidden { display: none; }
-.voice-close { position: absolute; top: 12px; right: 12px; background: none; border: none; color: var(--text-dim); cursor: pointer; padding: 6px; border-radius: 8px; }
-.voice-close:hover { background: var(--bg-soft); color: var(--text); }
-
-/* Three concentric rings. They breathe while listening, spin while thinking, and
-   pulse in time with speech — different motions, not just different colours, so
-   the state is readable at a glance and without relying on colour alone. */
-.voice-orb { position: relative; width: 132px; height: 132px; display: grid; place-items: center; }
-.voice-orb span {
-  position: absolute; border-radius: 50%;
-  border: 2px solid var(--accent);
-  opacity: .35;
-}
-.voice-orb span:nth-child(1) { width: 60px; height: 60px; }
-.voice-orb span:nth-child(2) { width: 94px; height: 94px; opacity: .22; }
-.voice-orb span:nth-child(3) { width: 128px; height: 128px; opacity: .12; }
-
-.voice-overlay[data-state="listening"] .voice-orb span { animation: voice-breathe 2.4s ease-in-out infinite; }
-.voice-overlay[data-state="listening"] .voice-orb span:nth-child(2) { animation-delay: .25s; }
-.voice-overlay[data-state="listening"] .voice-orb span:nth-child(3) { animation-delay: .5s; }
-@keyframes voice-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.12); } }
-
-/* Thinking is the LONGEST wait in the loop, so it gets the most deliberate motion:
-   the rings counter-rotate and breathe at once, which reads as work in progress
-   rather than a stalled dashed circle. A perfect circle shows no rotation at all,
-   hence the dash pattern — the dashes are what you actually see turning. */
-.voice-overlay[data-state="thinking"] .voice-orb span {
-  border-style: dashed;
-  animation: voice-spin 3.2s linear infinite, voice-think 2.6s ease-in-out infinite;
-}
-.voice-overlay[data-state="thinking"] .voice-orb span:nth-child(2) { animation-direction: reverse, normal; animation-duration: 4.4s, 2.6s; animation-delay: 0s, .3s; }
-.voice-overlay[data-state="thinking"] .voice-orb span:nth-child(3) { animation-duration: 6s, 2.6s; animation-delay: 0s, .6s; }
-@keyframes voice-spin { to { transform: rotate(360deg); } }
-@keyframes voice-think { 0%, 100% { opacity: .18; } 50% { opacity: .5; } }
-
-.voice-overlay[data-state="speaking"] .voice-orb span { animation: voice-pulse 1s ease-in-out infinite; }
-.voice-overlay[data-state="speaking"] .voice-orb span:nth-child(2) { animation-delay: .12s; }
-.voice-overlay[data-state="speaking"] .voice-orb span:nth-child(3) { animation-delay: .24s; }
-@keyframes voice-pulse { 0%, 100% { transform: scale(1); opacity: .35; } 50% { transform: scale(1.22); opacity: .7; } }
-
-/* Motion is the whole signal here, so with it suppressed the ring still has to say
-   which state it is in — otherwise reduced-motion users get three identical circles. */
-@media (prefers-reduced-motion: reduce) {
-  .voice-orb span { animation: none !important; }
-  .voice-overlay[data-state="thinking"] .voice-orb span { border-style: dashed; }
-  .voice-overlay[data-state="speaking"] .voice-orb span { opacity: .75; }
-}
-
-.voice-state { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
-.voice-caption { color: var(--text-dim); font-size: 13px; margin: 0; max-width: 34ch; min-height: 2.6em; line-height: 1.35; }
-.voice-actions { display: flex; gap: 10px; margin-top: 4px; }
-.voice-btn { background: var(--bg-soft); border: 1px solid var(--border); color: var(--text); border-radius: 999px; padding: 9px 20px; font-size: 13px; cursor: pointer; }
+.voice-bar.hidden { display: none; }
+.voice-wave { width: 100%; height: 44px; display: block; }
+.voice-bar-row { display: flex; align-items: center; gap: 8px; }
+.voice-bar-spacer { flex: 1 1 auto; }
+.voice-bar-state { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.voice-bar-hint { margin: 0; font-size: 11.5px; color: var(--text-dim); }
+.voice-btn { background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 999px; padding: 6px 14px; font-size: 12.5px; cursor: pointer; }
 .voice-btn:hover { border-color: var(--accent); }
 .voice-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-.voice-privacy { color: var(--text-dim); font-size: 11.5px; margin: 2px 0 0; opacity: .85; }
-
-/* The waveform is drawn from the playing audio's AnalyserNode, so it only appears
-   when there is a real signal to read — the browser-voice fallback has none, and a
-   bar chart animating on a timer next to speech it is not measuring looks broken. */
-.voice-wave { width: min(100%, 560px); height: 72px; display: block; }
-.voice-wave.hidden { display: none; }
-
-/* Caption: follows the AUDIO chunk being spoken, not the whole reply, so what is on
-   screen is what you are hearing. Fixed height so the layout does not jump between
-   a one-line and a three-line chunk. */
-.voice-caption { transition: opacity .18s ease; }
-.voice-overlay[data-state="speaking"] .voice-caption { color: var(--text); }
-.voice-caption.enter { animation: voice-cap-in .22s ease both; }
-@keyframes voice-cap-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-@media (prefers-reduced-motion: reduce) { .voice-caption.enter { animation: none; } }
-
-/* Muted: the orb must not keep breathing as if it were listening. */
-.voice-overlay[data-state="muted"] .voice-orb span { animation: none; opacity: .12; border-style: dotted; }
 .voice-btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 
+/* The state reads at a glance from colour as well as words — you are looking at
+   the conversation, not at this line. */
+.voice-bar[data-state="listening"] .voice-bar-state { color: var(--accent); }
+.voice-bar[data-state="thinking"] .voice-bar-state { color: var(--text-dim); }
+.voice-bar[data-state="muted"] .voice-bar-state { color: var(--text-dim); }
 
-/* The orb and the waveform describe the same moment, so they share a colour and
-   sit on one vertical rhythm rather than reading as two separate widgets. */
-.voice-overlay[data-state="listening"] .voice-wave,
-.voice-overlay[data-state="speaking"] .voice-wave { opacity: 1; }
-.voice-wave { opacity: .85; transition: opacity .2s ease; }
-
-/* While listening the orb shrinks back and lets the waveform carry the signal —
-   two things pulsing at different rates to the same voice looks like a fault. */
-.voice-overlay[data-state="listening"] .voice-orb { transform: scale(.72); opacity: .75; }
-.voice-overlay[data-state="speaking"] .voice-orb { transform: scale(.86); }
-.voice-orb { transition: transform .3s ease, opacity .3s ease; }
-
-/* Thinking has no waveform to show — nothing is making sound — so the caption
-   carries it, and it gets room to grow as the answer streams in. */
-.voice-overlay[data-state="thinking"] .voice-caption { min-height: 4.2em; font-size: 13.5px; }
-@media (prefers-reduced-motion: reduce) {
-  .voice-orb, .voice-wave { transition: none; }
-}
+/* The bar TAKES THE PLACE of the composer rather than stacking above it: two
+   input affordances at once invites typing into a box that is not listening. */
+body.voice-active .composer-box { display: none; }
