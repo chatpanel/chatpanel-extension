@@ -5855,7 +5855,7 @@ function renderGateBadges() {
   ['add-endpoint', 'add-endpoint-bottom'].forEach((id) => badgeButton($(id), endpointAddLocked()));
   // MCP: free can search/discover + add one; adding beyond the free limit is Pro.
   const mcpLocked = mcpAddLocked();
-  ['add-mcp', 'import-mcp'].forEach((id) => { const b = $(id); if (b) { badgeButton(b, mcpLocked); b.classList.toggle('locked', mcpLocked); } });
+  ['add-mcp', 'add-mcp-bottom', 'import-mcp'].forEach((id) => { const b = $(id); if (b) { badgeButton(b, mcpLocked); b.classList.toggle('locked', mcpLocked); } });
   // Meetings: Pro-only.
   const mLocked = !can(license, 'liveMeetings');
   const md = $('open-meetings-dashboard');
@@ -5914,6 +5914,10 @@ function wire() {
   $('add-endpoint-bottom').onclick = addEndpoint;
   $('add-agent-bottom').onclick = addBridgeAgent;
   $('add-mcp').onclick = addMcpServer;
+  // The bottom one existed in the markup and was wired NOWHERE — a real button, correctly
+  // styled, that did nothing when clicked. It is the one you reach for, too: with a server
+  // expanded the header button is off the top of the screen, which is why it was added.
+  $('add-mcp-bottom').onclick = addMcpServer;
   $('add-websearch').onclick = addWebSearchEngine;
   $('import-mcp').onclick = () => {
     if (mcpAddLocked()) return upsell(`Free includes ${FREE_LIMITS.mcpServers} MCP server. Upgrade to Pro for unlimited.`);

@@ -196,3 +196,21 @@ console.log('settings markup tests passed');
 }
 
 console.log('ok — a WebLLM provider switch rebuilds the card around the stored endpoint');
+
+// A BUTTON IN THE MARKUP THAT NOTHING WIRES IS A BUTTON THAT DOES NOTHING.
+//
+// `add-mcp-bottom` shipped exactly like that: real markup, correct styling, no handler. And
+// it is the copy people actually click — the duplicate exists precisely because the header
+// button scrolls out of reach once a server is expanded. Nothing caught it, because nothing
+// was looking at whether the markup and the wiring agreed.
+const bottomButtons = [...html.matchAll(/id="([a-z0-9-]*-bottom)"/g)].map((m) => m[1]);
+assert.ok(bottomButtons.length >= 3, `expected the duplicated add-buttons, found ${bottomButtons.length}`);
+// MENTIONED IS NOT WIRED. The first version of this check looked for the id anywhere in
+// settings.js and passed with the handler deleted — because the Pro-badge list names the
+// same id. A button is wired when something is assigned to its onclick, or a listener is
+// added to it; nothing else makes a click do anything.
+for (const id of bottomButtons) {
+  const wired = new RegExp(`\\('${id}'\\)\\s*(?:\\.onclick\\s*=|\\.addEventListener\\()`).test(js)
+    || new RegExp(`'${id}'[^\\n]*onclick`).test(js);
+  assert.ok(wired, `${id} is a button in settings.html with no click handler in settings.js — it does nothing when clicked`);
+}
