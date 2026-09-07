@@ -162,6 +162,33 @@ const { stripForSpeech, splitForSpeech, resolveSpeechProvider, createSpeech, pro
   if (saved) globalThis.AudioContext = saved;
 }
 
+// pause() fires neither onended nor onerror. Without stop() settling the in-flight
+// play() itself, an interrupted chunk's promise hangs forever and everything
+// queued behind it — the next turn's speech included — waits on it.
+{
+  let ended = null;
+  globalThis.Audio = class {
+    constructor(url) { this.url = url; }
+    play() { return Promise.resolve(); }   // never fires onended: we are going to pause it
+    pause() {}
+  };
+  globalThis.fetch = async () => ({ ok: true, blob: async () => ({ __id: 'x' }) });
+  const s = createSpeech({ provider: 'gateway' });
+  const p = s.speak('Interrupted mid-sentence.');
+  await new Promise((r) => setTimeout(r, 5));   // let the fetch land and play() start
+  s.stop();
+  const settled = await Promise.race([p.then(() => 'settled'), new Promise((r) => setTimeout(() => r('HUNG'), 50))]);
+  assert.equal(settled, 'settled', 'stop() must settle the in-flight speak() — a paused chunk otherwise hangs the queue');
+  ended = true;
+  assert.ok(ended);
+  // restore the auto-ending fake for the tests below
+  globalThis.Audio = class {
+    constructor(url) { this.url = url; this.paused = false; }
+    play() { played.push(this.url); setTimeout(() => this.onended?.(), 1); return Promise.resolve(); }
+    pause() { this.paused = true; }
+  };
+}
+
 // ── stop() is the one that matters: nothing may play after it ──────────────────
 {
   played.length = 0; audioInstances = [];
@@ -206,4 +233,4 @@ const { stripForSpeech, splitForSpeech, resolveSpeechProvider, createSpeech, pro
   assert.equal(calls[1][1], 'Heading\n\nHello world.', 'browser voice gets stripped text too');
 }
 
-console.log('✓ speech: markdown stripping, latency chunking, provider ladder, ordered playback, prefetch bound, stop-after-fetch, error surfacing, browser fallback, chunk text for captions, analyser tap reaches the destination');
+console.log('✓ speech: markdown stripping, latency chunking, provider ladder, ordered playback, prefetch bound, stop-after-fetch, error surfacing, browser fallback, chunk text for captions, analyser tap reaches the destination, stop settles an in-flight chunk');

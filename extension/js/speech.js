@@ -260,8 +260,12 @@ function createGatewaySpeech({ gatewayUrl, voice, speed = 1, analyse = false, on
     return URL.createObjectURL(await res.blob());
   }
 
+  let resolvePlay = null; // settles the in-flight play() when stop() pauses it
   function play(url) {
     return new Promise((resolve, reject) => {
+      // pause() fires neither onended nor onerror, so without this a stopped chunk
+      // leaves its promise pending forever and the speak queue behind it hangs.
+      resolvePlay = resolve;
       audio = new Audio(url);
       const an = ensureAnalyser();
       if (an && actx) {
@@ -273,7 +277,7 @@ function createGatewaySpeech({ gatewayUrl, voice, speed = 1, analyse = false, on
           if (actx.state === 'suspended') actx.resume().catch(() => {});
         } catch { /* already tapped, or no Web Audio — play it plainly */ }
       }
-      audio.onended = resolve;
+      audio.onended = () => { resolvePlay = null; resolve(); };
       audio.onerror = () => reject(new Error('playback failed'));
       audio.play().catch(reject);
     });
@@ -289,6 +293,7 @@ function createGatewaySpeech({ gatewayUrl, voice, speed = 1, analyse = false, on
       try { abort?.abort(); } catch { /* no request in flight */ }
       abort = null;
       if (audio) { try { audio.pause(); } catch { /* already stopped */ } audio = null; }
+      if (resolvePlay) { const r = resolvePlay; resolvePlay = null; r(); }
     },
     async speak(text) {
       const chunks = splitForSpeech(text);

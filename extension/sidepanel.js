@@ -3265,6 +3265,11 @@ async function toggleVoiceMode() {
       chrome.tabs.create({ url: chrome.runtime.getURL('mic-permission.html') });
       toast('Allow the microphone in the new tab, then start voice again', 3600);
     },
+    // Interruption must stop the REPLY, not only its audio. Without this the old
+    // answer kept streaming into the conversation until the next question arrived
+    // and sendTurn aborted it — a second or more of text the user had just talked
+    // over. Same abort the Stop button performs.
+    abortTurn: () => { if (isActiveStreaming()) stopStream(); },
     // One turn: put the words in the composer, send, and wait for the answer.
     // awaitTurn() is registered BEFORE send(), or a fast reply lands first and the
     // loop waits forever for a turn that already finished.

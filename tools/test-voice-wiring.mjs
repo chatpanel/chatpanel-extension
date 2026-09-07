@@ -71,6 +71,17 @@ const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
   const ms = Number(mode.match(/const END_SILENCE_MS = (\d+)/)?.[1]);
   assert.ok(ms >= 1000 && ms <= 3000, `END_SILENCE_MS is ${ms}; it must be well above dictation's 700ms and inside the gateway's clamp`);
   assert.match(read('js/dictation.js'), /endSilenceMs: endSilenceMs \|\| undefined/, 'dictation must forward it to the session');
+
+  // Interrupting stops THREE things — audio, the loop's turn, and the panel's
+  // stream. Missing the third left the old answer streaming into the conversation
+  // for a second or more after the person had talked over it, until the next
+  // question arrived and aborted it as a side effect.
+  assert.match(panel, /abortTurn: \(\) => \{ if \(isActiveStreaming\(\)\) stopStream\(\); \}/, 'the panel must hand voice mode a way to abort the reply');
+  const interruptAll = mode.slice(mode.indexOf('const interruptAll = () => {'), mode.indexOf('interruptFromVoice = interruptAll'));
+  assert.match(interruptAll, /speaker\.stop\(\)/, 'interrupt must stop the audio');
+  assert.match(interruptAll, /abortTurn\?\.\(\)/, 'interrupt must abort the panel stream, not wait for the next question to do it');
+  assert.match(interruptAll, /loop\.interrupt\(\)/, 'and cancel the loop\'s turn');
+  assert.match(mode, /interrupt: interruptAll/, 'the button and the voice trigger must be the SAME path — two implementations drift');
 }
 
 // ── the waveform is signal-driven, and honest when there is no signal ─────────
@@ -214,7 +225,7 @@ function loopSrc() { return read('js/voice-loop.js'); }
   assert.match(read('js/gateway.js'), /export async function updateTtsVoice/, 'the client needs an update call');
 }
 
-console.log('✓ voice wiring: ids exist and are wired, voice is INLINE (no overlay) and replaces the composer, barge-in fires on voice energy (button as fallback), sentence window longer than dictation, speech starts before generation ends, waveform follows mic AND speaker, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, TTS search wired, recorded voices confirmed + mic released, rename + re-record in place, rendering never writes config');
+console.log('✓ voice wiring: ids exist and are wired, voice is INLINE (no overlay) and replaces the composer, barge-in fires on voice energy (button as fallback) and aborts the stream, sentence window longer than dictation, speech starts before generation ends, waveform follows mic AND speaker, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, TTS search wired, recorded voices confirmed + mic released, rename + re-record in place, rendering never writes config');
 
 // ── the waveform must be sized from its box, not from fixed attributes ─────────
 // A canvas with width="560" stretched by CSS into a ~350px panel draws squashed

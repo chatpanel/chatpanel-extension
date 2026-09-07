@@ -25,7 +25,7 @@ const LABEL = {
   idle: '',
 };
 
-export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sendTurn, openMicPermission, onTurnDelta } = {}) {
+export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sendTurn, abortTurn, openMicPermission, onTurnDelta } = {}) {
   const { micPermissionState, createDictation, resolveDictationProvider } = await import('./dictation.js');
   if (await micPermissionState() !== 'granted') { openMicPermission?.(); return null; }
 
@@ -250,10 +250,15 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
   });
 
   currentState = () => loop.state();
-  interruptFromVoice = () => {
+  // One interruption stops three things: the audio, the loop's turn, and the
+  // panel's stream. Missing the third left the old answer streaming into the
+  // conversation for a second or more after the person had talked over it.
+  const interruptAll = () => {
     try { speaker.stop(); } catch { /* nothing playing */ }
+    try { abortTurn?.(); } catch { /* nothing streaming */ }
     loop.interrupt();
   };
+  interruptFromVoice = interruptAll;
   bar()?.classList.remove('hidden');
   el('btn-voice')?.setAttribute('aria-pressed', 'true');
   document.body?.classList.add('voice-active');
@@ -271,10 +276,7 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
       if (b) { b.textContent = next ? 'Unmute' : 'Mute'; b.setAttribute('aria-pressed', String(next)); }
       return next;
     },
-    interrupt() {
-      try { speaker.stop(); } catch { /* nothing playing */ }
-      loop.interrupt();
-    },
+    interrupt: interruptAll,
     stop() {
       try { loop.stop(); } catch { /* already stopped */ }
       try { speaker.stop(); } catch { /* nothing playing */ }
