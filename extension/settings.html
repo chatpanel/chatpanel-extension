@@ -1117,6 +1117,20 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
               <select id="gw-tts-dtype"></select>
             </div>
             <p class="muted sm" id="gw-tts-dtype-note" style="margin:4px 0 0"></p>
+
+            <h3 style="margin:18px 0 6px;font-size:14px">Your voices</h3>
+            <p class="muted sm">Record a few seconds of speech and the gateway derives a
+              <strong>voice print</strong> from it — 512 numbers. The <strong>recording itself is never
+              stored</strong>, and neither the audio nor the print ever leaves this machine.
+              Needs a model that can use one: only <strong>SpeechT5</strong> above can, so pick it first.
+              It is rougher than Kokoro, and the result is <em>a distinctive voice derived from your
+              sample</em> rather than an exact impression of you.</p>
+            <div id="gw-tts-voices" class="model-list"></div>
+            <div class="field row" style="margin-top:8px">
+              <input id="gw-tts-voice-name" placeholder="Name this voice — e.g. My voice" maxlength="60" />
+              <button id="gw-tts-record" class="btn" type="button">Record</button>
+            </div>
+            <p class="status" id="gw-tts-voice-status">—</p>
           </div>
 
           <div class="card">

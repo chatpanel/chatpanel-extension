@@ -144,6 +144,39 @@ const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
   // A single-speaker model must HIDE the voice picker rather than offer choices
   // that cannot take effect.
   assert.match(settings, /supportsVoices/, 'the voice picker must react to whether the active model has voices');
+
+  // ── recorded voices ──────────────────────────────────────────────────────────
+  for (const id of ['gw-tts-voices', 'gw-tts-voice-name', 'gw-tts-record', 'gw-tts-voice-status']) {
+    assert.ok(sIds.has(id), `settings.html has no #${id} — recording a voice would be impossible`);
+  }
+  assert.match(settings, /\$\('gw-tts-record'\)\.onclick/, 'the record control must be wired');
+  assert.match(settings, /refreshTtsVoices\(\)/, 'the saved-voice list must load with the rest of the section');
+
+  // Deleting someone's voice print is permanent, so it must be confirmed.
+  assert.match(settings, /confirm\(/, 'deleting a voice print must ask first');
+  assert.match(settings, /permanently/i, 'and must say that it is permanent');
+
+  // The recorder touches getUserMedia and an AudioContext; it must stay lazy.
+  assert.ok(!/^import[^\n]*from '\.\/js\/voice-record\.js'/m.test(settings),
+    'settings.js must not statically import the recorder');
+
+  // The page must say what actually happens to the recording, in the page — not
+  // only in a commit message.
+  const t = settingsHtml;
+  assert.match(t, /never stored|never leaves|discarded/i, 'the page must state that the recording is not kept');
 }
 
-console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, mute + signal-driven waveform, TTS search wired for every registered task');
+// ── the recorder itself ────────────────────────────────────────────────────────
+{
+  const rec = read('js/voice-record.js');
+  // A settings page holding an open microphone is exactly what a privacy product
+  // must not do, so the tracks have to be stopped, not just disconnected.
+  assert.match(rec, /getTracks\(\)/, 'the mic stream must be released');
+  assert.match(rec, /t\.stop\(\)/, 'each track must be stopped');
+  // Routing a ScriptProcessor to the destination without muting echoes the mic
+  // back out of the speakers and howls.
+  assert.match(rec, /gain\.value = 0/, 'the monitoring path must be silent');
+  assert.match(rec, /MIN_SECONDS/, 'too-short samples must be rejected — the print would be room noise');
+}
+
+console.log('✓ voice wiring: every id exists, every overlay button is wired, states match CSS, reduced-motion still distinguishes them, privacy line present, no static speech imports, loop stays DOM-free, settings TTS manager wired, mute + signal-driven waveform, TTS search wired, recorded voices confirmed + mic released');

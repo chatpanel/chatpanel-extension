@@ -118,6 +118,27 @@ export async function setTtsModel(baseUrl, patch = {}) {
   });
 }
 
+// Custom TTS voices — a speaker embedding derived from a sample the user recorded.
+// The AUDIO is posted once to the LOCAL gateway, which embeds it and throws it
+// away; only the 512 floats persist, on that machine. Nothing here reaches a
+// network beyond loopback.
+export async function getTtsVoices(baseUrl) {
+  return jfetch(`${normalizeGatewayUrl(baseUrl)}/tts/voices`);
+}
+
+export async function saveTtsVoice(baseUrl, { name, pcm }) {
+  return jfetch(`${normalizeGatewayUrl(baseUrl)}/tts/voices`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    // Array.from because a Float32Array does not survive JSON.stringify as numbers.
+    body: JSON.stringify({ name, pcm: Array.from(pcm) }),
+  });
+}
+
+export async function deleteTtsVoice(baseUrl, id) {
+  return jfetch(`${normalizeGatewayUrl(baseUrl)}/tts/voices?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 // Speaker (diarization) model — the "who said what" model for meeting
 // transcription. GET → { active, state, progress, available:[{id,label,approxMB,
 // installed}] }; POST force-downloads it (explicit user action).

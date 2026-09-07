@@ -57,7 +57,7 @@ import { webgpuSupport } from './js/webgpu-support.js';
 import { parseJsonObject, prettyJson, sanitizeExtraBody, sanitizeExtraHeaders } from './js/request-options.js';
 import { clearEndpointModelState, endpointErrorAuthStatus, modelListAuthStatus } from './js/settings-endpoint.js';
 import { localStorageHealth, localBytesInUse } from './js/storage-health.js';
-import { checkGateway, getGatewayConfig, getGatewayLogs, getGatewayObservability, clearGatewayHistory, setGatewayConfig, ensureGatewayEntitlement, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getTtsModels, setTtsModel, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
+import { checkGateway, getGatewayConfig, getGatewayLogs, getGatewayObservability, clearGatewayHistory, setGatewayConfig, ensureGatewayEntitlement, normalizeGatewayUrl, parseDictionary, stringifyDictionary, getNerModels, setNerModel, getSttModels, setSttModel, getTtsModels, setTtsModel, getTtsVoices, saveTtsVoice, deleteTtsVoice, getDiarizeModel, downloadDiarizeModel, setGatewayToken, handshakeGatewayToken } from './js/gateway.js';
 import { createVault, redactText } from './js/pii-redact.js';
 import { detectEntities } from './js/pii-detect.js';
 import {
@@ -2365,6 +2365,7 @@ async function refreshGateway() {
     refreshNerModels();
     refreshSttModels();
     refreshTtsModels();
+    refreshTtsVoices();
     refreshDiarizeModel();
   } catch (e) {
     const isAuth = /admin route|token required|403/i.test(e.message || '');
@@ -2710,6 +2711,24 @@ function renderTtsVoices(data) {
   // A VITS/MMS model is single-speaker: the gateway returns no voices for it, and
   // a picker offering choices that cannot take effect is worse than no picker.
   const row = sel.closest('.field');
+  const custom = data?.customVoiceList || [];
+
+  // SpeechT5 has no built-in voices but CAN use a recorded one, so the picker is
+  // still the right control — it just lists yours instead of Kokoro's.
+  if (data?.supportsCustomVoices) {
+    if (row) row.style.display = '';
+    sel.innerHTML = custom.length
+      ? custom.map((v) => `<option value="custom:${escapeHtml(v.id)}"${data.voice === `custom:${v.id}` ? ' selected' : ''}>${escapeHtml(v.name)}</option>`).join('')
+      : '<option value="">No saved voices — record one below</option>';
+    if (note) {
+      note.textContent = custom.length
+        ? 'Speaking in a voice derived from your recording. Nothing about it leaves this machine.'
+        : 'This model speaks in a voice you record — add one under Your voices.';
+    }
+    sel.onchange = () => sel.value && selectTtsModel({ voice: sel.value });
+    return;
+  }
+
   const single = data?.supportsVoices === false || (data?.arch && data.arch !== 'style-tts2');
   if (row) row.style.display = single ? 'none' : '';
   if (single) {
@@ -2751,6 +2770,11 @@ async function refreshTtsModels() {
   if (!url) return null;
   try {
     const data = await getTtsModels(url);
+    // The picker needs both lists at once, so fetch them together rather than
+    // rendering twice and flickering between the two states.
+    if (data?.supportsCustomVoices) {
+      try { data.customVoiceList = (await getTtsVoices(url))?.voices || []; } catch { data.customVoiceList = []; }
+    }
     renderTtsModels(data);
     if (st) {
       st.className = 'status';
@@ -2823,6 +2847,128 @@ async function previewTtsVoice() {
     // First use downloads the model, which can take a minute — say so rather than
     // letting a timeout read as a failure.
     st.textContent = `Preview failed: ${e.message}${/not ready|timed? out/i.test(e.message) ? ' — the first use downloads the model; try again shortly.' : ''}`;
+  }
+}
+
+// ── Your voices — record a sample, keep the print, discard the audio ───────────
+// The recorder itself is dynamic-imported: getUserMedia and an AudioContext have
+// no business on a settings page that may never record anything.
+let _recorder = null;
+
+function renderTtsVoiceList(data) {
+  const host = $('gw-tts-voices');
+  if (!host) return;
+  const esc = (x) => escapeHtml(String(x == null ? '' : x));
+  const voices = data?.voices || [];
+  if (!voices.length) {
+    host.innerHTML = '<p class="muted sm">No saved voices yet.</p>';
+    return;
+  }
+  host.innerHTML = voices.map((v) => {
+    const when = v.createdAt ? new Date(v.createdAt).toLocaleDateString() : '';
+    // Say plainly when a saved voice cannot currently be used, rather than listing
+    // it as if selecting it would do something.
+    const usable = data?.usable !== false;
+    return `<div class="entity">
+      <div class="entity-head">
+        <strong style="flex:1 1 auto">${esc(v.name)}</strong>
+        <span class="status">${esc(when)}${usable ? '' : ' · needs SpeechT5'}</span>
+        <button type="button" class="btn gw-tts-voice-del" data-id="${esc(v.id)}">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+  host.querySelectorAll('.gw-tts-voice-del').forEach((b) => {
+    b.onclick = () => deleteSavedVoice(b.dataset.id, b.closest('.entity')?.querySelector('strong')?.textContent || '');
+  });
+}
+
+async function refreshTtsVoices() {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  if (!url) return null;
+  try {
+    const data = await getTtsVoices(url);
+    renderTtsVoiceList(data);
+    return data;
+  } catch (e) {
+    // An older gateway has no /tts/voices; that is not an error worth shouting.
+    const host = $('gw-tts-voices');
+    if (host) host.innerHTML = /404/.test(e.message)
+      ? '<p class="muted sm">Update the gateway (0.6.53+) to record your own voice.</p>'
+      : `<p class="status err">${escapeHtml(e.message)}</p>`;
+    return null;
+  }
+}
+
+async function deleteSavedVoice(id, name) {
+  const url = normalizeGatewayUrl($('gw-url').value);
+  const st = $('gw-tts-voice-status');
+  if (!url || !id) return;
+  // A voice print is about a person. Deleting it is permanent, so it is confirmed
+  // and said plainly.
+  if (!confirm(`Delete the voice "${name}"? The voice print is removed from this machine permanently.`)) return;
+  try {
+    await deleteTtsVoice(url, id);
+    st.className = 'status ok'; st.textContent = '✓ Deleted';
+    await refreshTtsVoices();
+    await refreshTtsModels();
+  } catch (e) { st.className = 'status err'; st.textContent = `Delete failed: ${e.message}`; }
+}
+
+// One button, two states — Record then Stop. A separate Stop that only appears
+// mid-recording is a control you hunt for while the clock runs.
+async function toggleVoiceRecording() {
+  const btn = $('gw-tts-record');
+  const st = $('gw-tts-voice-status');
+  const url = normalizeGatewayUrl($('gw-url').value);
+  if (!url) { st.className = 'status err'; st.textContent = 'Set the gateway URL first.'; return; }
+
+  if (_recorder) {
+    const rec = _recorder;
+    _recorder = null;
+    btn.textContent = 'Record';
+    const pcm = await rec.stop();
+    const { MIN_SECONDS, SAMPLE_RATE } = await import('./js/voice-record.js');
+    const secs = pcm.length / SAMPLE_RATE;
+    if (secs < MIN_SECONDS) {
+      st.className = 'status err';
+      st.textContent = `Only ${secs.toFixed(1)}s — record at least ${MIN_SECONDS}s, or the voice print is mostly room noise.`;
+      return;
+    }
+    const name = ($('gw-tts-voice-name').value || '').trim() || `Voice ${new Date().toLocaleTimeString()}`;
+    st.className = 'status'; st.textContent = `Deriving a voice print from ${secs.toFixed(1)}s…`;
+    try {
+      await saveTtsVoice(url, { name, pcm });
+      $('gw-tts-voice-name').value = '';
+      st.className = 'status ok'; st.textContent = `✓ Saved "${name}" — the recording was discarded.`;
+      await refreshTtsVoices();
+      await refreshTtsModels();
+    } catch (e) {
+      st.className = 'status err';
+      // Three different failures that all read as "save failed" unless separated:
+      // the gateway is too old to have the route at all, the embedder has not
+      // finished downloading, or something else went wrong.
+      st.textContent = /404|unknown_endpoint|upstream fetch failed/.test(e.message)
+        ? 'This gateway is too old for recorded voices — update it to 0.6.53+ and restart.'
+        : /embedder_not_ready|downloading/.test(e.message)
+          ? 'The speaker model is downloading (~100 MB) — try again in a moment.'
+          : `Save failed: ${e.message}`;
+    }
+    return;
+  }
+
+  try {
+    const { startRecording, MAX_SECONDS } = await import('./js/voice-record.js');
+    _recorder = await startRecording({
+      onTick: (secs) => { st.className = 'status'; st.textContent = `Recording ${secs.toFixed(1)}s — say a couple of sentences, then Stop.`; },
+    });
+    btn.textContent = 'Stop';
+    st.className = 'status'; st.textContent = `Recording… up to ${MAX_SECONDS}s.`;
+  } catch (e) {
+    _recorder = null;
+    st.className = 'status err';
+    st.textContent = /denied|NotAllowed/i.test(e.message)
+      ? 'Microphone blocked — allow it for the extension, then try again.'
+      : `Could not start recording: ${e.message}`;
   }
 }
 
@@ -3290,6 +3436,7 @@ function wireGateway() {
   $('gw-det-url').oninput = setGwDetectorRows; // live cloud-warning for a manual URL
   $('gw-save').onclick = saveGateway;
   $('gw-tts-preview').onclick = previewTtsVoice;
+  $('gw-tts-record').onclick = toggleVoiceRecording;
   $('gw-pro-activate').onclick = activateGatewayPro;
   $('gw-dest-all').onclick = () => { gatewayDests = availableDestinations(); renderDestinations(); autoSaveGateway(); };
   $('gw-dest-none').onclick = () => { gatewayDests = []; renderDestinations(); autoSaveGateway(); };

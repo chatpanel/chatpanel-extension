@@ -96,7 +96,13 @@ const BUDGET = {
   // the reason shown rather than quietly filtered — that split is the code, and why it has
   // to exist is the comment. Headroom is deliberate: the previous ceiling landed on
   // 1189.1/1190, which fails on the next sentence anyone writes here.
-  'settings.js': 1198,
+  // 1198 → 1208 for custom voices: the saved-voice list, the record/stop control and the
+  // picker branch that offers YOUR voices instead of Kokoro's when the active model takes a
+  // speaker embedding. The recorder itself — getUserMedia and an AudioContext — is in
+  // js/voice-record.js and dynamic-imported, pinned off every graph in OFF_LIMITS, so what
+  // lands here is the list and the wiring. Same deliberate headroom rule: 1196/1198 would
+  // fail on the next comment.
+  'settings.js': 1208,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was
@@ -162,6 +168,7 @@ const OFF_LIMITS = {
   'js/read-aloud.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/voice-loop.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/voice-mode.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/voice-record.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/providers.js': ['sidepanel.js'],
   'js/qr.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/bridge-update.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
