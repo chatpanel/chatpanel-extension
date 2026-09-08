@@ -7,6 +7,7 @@
 import { defineToolGroup } from '../events/tool-groups.js';
 import { historyToolProvider } from '../history-rag.js';
 import { webSearchToolProvider, webSearchOpts } from '../web-search.js';
+import { weatherToolProvider } from '../weather.js';
 import { buildToolset } from '../toolset.js';
 import { dataDispatchProvider } from '../data-dispatch.js';
 import { isPro, can } from '../license.js';
@@ -43,6 +44,11 @@ export const dataGroup = defineToolGroup({
     const manifest = await pluginManifest().catch(() => null);
     const webAllowed = !manifest || manifest.isEnabled('source:web');
     if (ctx.includeWebSearch !== false && settings?.ui?.webSearch?.enabled !== false && webAllowed) {
+      // BEFORE web_search, deliberately: order in this array is the order the model reads,
+      // and the specific tool has to come before the general one it falls back to. Behind the
+      // same switch, because it is the same permission — reaching a public service to answer
+      // a question — and a second toggle for one tool is a setting nobody would find.
+      providers.push(weatherToolProvider());
       providers.push(webSearchToolProvider(webSearchOpts(settings, pro)));
     }
     if (!providers.length) return null;
