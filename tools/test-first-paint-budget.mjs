@@ -108,7 +108,15 @@ const BUDGET = {
   // js/voice-record.js and dynamic-imported, pinned off every graph in OFF_LIMITS, so what
   // lands here is the list and the wiring. Same deliberate headroom rule: 1196/1198 would
   // fail on the next comment.
-  'settings.js': 1208,
+  // 1208 → 1220 for the "Open ChatPanel" button in the header. The 8 KB is js/side-panel.js,
+  // and it CANNOT be deferred: openSidePanel() counts as user-initiated only inside the
+  // synchronous turn of the click, and a dynamic import() at the call site is itself an
+  // await — Firefox's sidebarAction.open() rejects after one. That constraint is the module's
+  // own documented reason for being statically imported by every caller, so paying it here is
+  // the design working, not a regression. (Its header still says "~2 KB"; it is 8 KB of
+  // mostly comments now.) Same deliberate headroom rule: 1216/1216 would fail on the next
+  // sentence written in this file.
+  'settings.js': 1220,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was

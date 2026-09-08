@@ -7,6 +7,9 @@
 import { getSettings, saveSettings, uid, importAllData, resetSkillsToDefaults } from './js/store.js';
 import { readZipEntry } from './js/zip.js';
 import { hasDebugger } from './js/browser-api.js';
+// STATIC, and it has to be: openSidePanel() only counts as user-initiated inside the
+// synchronous turn of the click, and a dynamic import() at the call site is itself an await.
+import { openSidePanel } from './js/side-panel.js';
 // Small, pure and dependency-free — the seed list is needed synchronously when the panel
 // renders, and deferring one frozen array would cost a frame to save nothing.
 import { DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './js/events/sources.js';
@@ -6423,6 +6426,19 @@ function applyFreeSlot(node, item, kind) {
 // Wiring + helpers
 // --------------------------------------------------------------------------
 function wire() {
+  // BACK TO THE PANEL, from anywhere in Settings.
+  //
+  // openSidePanel() must be STARTED inside the synchronous turn of the click — Firefox's
+  // gesture check is satisfied by nothing else, which is also why side-panel.js is imported
+  // statically at the top of this file rather than here. It is ~2 KB and this page is not
+  // on a first-paint budget.
+  $('btn-open-panel').onclick = () => {
+    const opening = openSidePanel();
+    // A settings TAB is not the panel's window on every engine, and on mobile there is no
+    // panel at all (the seam opens the page as a tab instead). Either way the user pressed a
+    // button and is owed an answer.
+    opening.catch(() => toast('Open ChatPanel from the toolbar icon', 4000));
+  };
   $('add-endpoint').onclick = addEndpoint;
   $('add-agent').onclick = addBridgeAgent;
   $('local-recheck').onclick = () => renderLocalRuntime({ recheck: true });

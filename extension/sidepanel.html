@@ -63,6 +63,13 @@
           <span id="history-page-status"></span>
           <button id="history-page-next" class="pager-btn" type="button" aria-label="Next history page" data-icon="chevron-right"></button>
         </div>
+        <!-- Settings lives here TOO, not instead: the top bar's gear is the first thing to
+             fall off the right edge when the panel is docked narrow, and a docked panel is
+             the normal case. This entry is always reachable, at a width nothing competes
+             for. -->
+        <button id="history-settings" class="drawer-link" type="button">
+          <span class="ico-slot" data-icon="settings"></span> Settings
+        </button>
         <button id="history-clear" class="text-btn danger">Clear all history</button>
       </div>
     </aside>

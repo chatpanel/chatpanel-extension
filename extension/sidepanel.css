@@ -96,7 +96,17 @@ body.rail-collapsed { --rail-w: 0px; }
   padding: 8px 10px; border-bottom: 1px solid var(--border);
   background: var(--bg-elev); flex: 0 0 auto;
 }
-.topbar-spacer { flex: 1; }
+/* WHO GIVES WAY WHEN THE PANEL IS NARROW.
+   Nothing here declared a shrink order, so the flex default (everything shrinks, in source
+   order, until it can't) pushed the LAST items off the right edge — and the last item is
+   the settings gear. A docked panel is often ~320px, so it simply was not there.
+   The right-hand controls are fixed and the identity chips give way instead: an agent name
+   ellipsised to "Claude C…" still tells you which agent, while a gear that is gone tells
+   you nothing. Settings is in the drawer as well, for the width where even this runs out. */
+.topbar > #btn-settings, .topbar > #btn-upgrade, .topbar > #btn-new,
+.topbar > #btn-history, .topbar > #btn-notes { flex: 0 0 auto; }
+.topbar > .agent-select, .topbar > .agent-model, .topbar > .agent-routed { min-width: 0; flex-shrink: 1; }
+.topbar-spacer { flex: 1 1 auto; min-width: 0; }
 .icon-btn, .tool-btn {
   background: transparent; border: none; color: var(--text);
   font-size: 17px; cursor: pointer; padding: 6px 8px; border-radius: 8px;
@@ -235,6 +245,17 @@ body.rail-collapsed { --rail-w: 0px; }
 .pager-btn:disabled { opacity: 0.45; cursor: default; }
 .text-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 13px; padding: 6px; }
 .text-btn.danger { color: var(--danger); }
+/* A destination, not an action — reads as a row you go through rather than a button that
+   does something to your data, which is what sits under it. */
+.drawer-link {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: 1px solid var(--border); border-radius: 9px;
+  color: var(--text); cursor: pointer; font: inherit; font-size: 13px; padding: 8px 10px;
+}
+.drawer-link:hover { background: var(--bg-soft); border-color: var(--accent); }
+.drawer-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.drawer-link .ico-slot { display: inline-flex; }
+.drawer-link svg { width: 15px; height: 15px; }
 
 /* Messages */
 .messages { flex: 1; overflow-y: auto; padding: 14px 12px; display: flex; flex-direction: column; gap: 12px; }

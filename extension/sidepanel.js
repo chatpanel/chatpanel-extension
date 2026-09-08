@@ -9276,7 +9276,13 @@ function wireEvents() {
   $('btn-stop').onclick = stopStream;
   $('btn-new').onclick = () => startConversation();
   $('btn-copy-chat').onclick = () => copyChatAsMarkdown();
-  $('btn-settings').onclick = () => chrome.runtime.openOptionsPage();
+  // TWO WAYS IN, deliberately. The top bar's gear is the first control to fall off the
+  // right edge when the panel is docked narrow — the agent name, the model chip and "New
+  // chat" all take their width first — and a narrow docked panel is the ordinary case, not
+  // an edge one. So Settings is also a row in the drawer, where nothing competes for space.
+  const openSettings = () => chrome.runtime.openOptionsPage();
+  $('btn-settings').onclick = openSettings;
+  $('history-settings').onclick = openSettings;
   // The plan chip: Free → open the site pricing page (carrying this install's id)
   // and poll so Pro auto-activates on return; Pro/Team → open the Account tab to
   // manage the subscription.

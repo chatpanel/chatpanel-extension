@@ -11,7 +11,16 @@
     <div class="wrap">
       <header class="hdr">
         <h1><img src="assets/icon48.png" class="brand-ico" alt="" /> ChatPanel Settings</h1>
-        <div id="plan-badge" class="plan-badge">Free</div>
+        <!-- Settings opens in a TAB, which puts the panel out of sight and offers no way
+             back to it: the toolbar icon is the only route, and on a first run nobody has
+             pinned it yet. One button, on every tab of this page, since the header is
+             shared. -->
+        <div class="hdr-actions">
+          <button id="btn-open-panel" class="open-panel-btn" type="button" title="Open the ChatPanel side panel">
+            <span class="ico-slot" data-icon="chat"></span> Open ChatPanel
+          </button>
+          <div id="plan-badge" class="plan-badge">Free</div>
+        </div>
       </header>
 
       <div class="shell">
