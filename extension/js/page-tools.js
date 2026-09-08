@@ -322,7 +322,17 @@ export const PAGE_TOOL_SPECS = [
       + 'loading a homepage and typing into it. The user\'s current tab is left alone, and the page '
       + 'tools keep pointing at it, so this does not let you read or act on what you opened — say '
       + 'what you opened and stop there unless asked to drive it (that is `navigate`). '
-      + 'http and https only. The user approves every call and sees the exact URL.',
+      // "OPEN CHROME AND SEARCH FOR X" — asked twice in one session, and the answer was
+      // improvised both times. You act inside the browser; naming the browser, or an app, is
+      // how people say "go there", not a request to start a program. A model left to work that
+      // out for itself sometimes works it out as a refusal.
+      + 'You act INSIDE the browser and cannot launch, focus or close an application, so '
+      + '"open Chrome and search for X" means opening the search for X in a tab — just do that. '
+      // Was "The user approves every call and sees the exact URL", which stopped being true when
+      // a destination the user NAMED OUT LOUD stopped raising a dialog. A tool description that
+      // promises a prompt the user will not see makes a model announce one that never comes.
+      + 'http and https only. The user sees the exact URL and approves it, unless they named '
+      + 'that destination out loud — a spoken command is its own approval.',
     parameters: {
       type: 'object',
       properties: {
