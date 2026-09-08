@@ -260,8 +260,16 @@ console.log('addressed vs mentioned: ok');
   for (const h of hits) {
     assert.ok(h.command.length < 200, `a command is a sentence or two, not a paragraph: ${h.command.length} chars`);
   }
-  // A wake word used as a NOUN mid-sentence ("search for chat panel") is not an address.
-  assert.ok(hits.some((h) => !h.addressed || !h.command), 'the mention must not become a command');
+  // A wake word used as a NOUN mid-sentence ("search for chat panel") is not an address — and
+  // is no longer returned at all. It used to come back as an unaddressed entry, which was not
+  // harmless: the entry BOUNDED the previous command, so "go to google.com and then search for
+  // chat panel" was cut to "…and then search for" and the object of the search was lost.
+  assert.equal(hits.length, 4, `one entry per real address, got ${hits.length}`);
+  assert.ok(hits.every((h) => h.addressed), 'every entry is an address, not a mention');
+  assert.ok(
+    hits.some((h) => /search for chat panel$/.test(h.command)),
+    'and the command keeps the name it was asked to search for',
+  );
 
   // A domain is not a sentence boundary — "Go to google.com and search" is one command.
   assert.ok(

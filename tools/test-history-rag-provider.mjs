@@ -272,7 +272,28 @@ assert.match(relatedText, /Related local history for: chat:c1/);
 assert.match(relatedText, /\[chat:c3\] Gemini follow-up/);
 assert.doesNotMatch(relatedText, /Same agent unrelated/);
 
-const missing = await proProvider.execute('history_get_source', { sourceId: 'meeting:missing' });
-assert.match(missing, /not found/i);
+// A MISS MUST BE RECOVERABLE, because the alternative is the user reading about it.
+//
+// "Source X was not found or is not accessible." is a dead end: nothing in it says where a
+// real id comes from, so a model that had built one from the shape in the tool description
+// either invented another or explained the failure in the chat — which is how an odd line
+// about a source id turned up in the middle of taking notes.
+{
+  const missing = await proProvider.execute('history_get_source', { sourceId: 'meeting:missing' });
+  assert.match(missing, /No source with id "meeting:missing"/);
+  assert.match(missing, /history_search/, 'the recovery is named');
+  assert.match(missing, /Do not tell the user/, 'and it is not the user’s problem to read about');
+
+  // The same id through history_related used to come back as a perfectly ordinary empty
+  // result — "No related local history sources were found" — so an invented id read as "this
+  // user has no related history", which is a wrong answer rather than a failed call.
+  const relatedMissing = await proProvider.execute('history_related', { sourceId: 'meeting:missing' });
+  assert.match(relatedMissing, /No source with id "meeting:missing"/);
+  assert.doesNotMatch(relatedMissing, /No related local history sources were found/);
+
+  // And the description must stop reading as a recipe for building one.
+  const spec = proProvider.specs.find((s) => s.name === 'history_get_source');
+  assert.match(spec.parameters.properties.sourceId.description, /Do not construct one/);
+}
 
 console.log('history rag provider tests passed');

@@ -231,24 +231,39 @@ export async function dispatchVoiceCommands(commands, { engine, actions, onOutco
 export function createVoiceDrain({
   engine, actions, gate, isFresh = () => true, remember = () => {}, onOutcome = () => {},
   isLive = () => true, seen = null,
+  // INJECTED, like loop.js and the parser itself. This function decides whether a request is
+  // old enough to act on, and a decision made against a clock nobody can move is a decision no
+  // test can reach — which is how the bug below (a whole delivery path that only worked in
+  // silence) lived here untested. The panel passes nothing and gets the wall clock.
+  now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout,
 }) {
   let timer = null;
-  return async function drain(meetingId) {
-    const now = Date.now();
-    const ready = gate.due(now);
+  /**
+   * @param already commands the SCAN already took out of the gate. `commandsFromSegments`
+   *        drains when it is given one — `gate.offer(found, now).due(now)` — so anything that
+   *        came due at the instant a caption arrived is in the scan's return value and is NOT
+   *        in the gate any more. Dropping that return value lost those commands outright: a
+   *        request only survived if the speaker then went QUIET long enough for the timer
+   *        below to be the thing that drained it. Talk straight through, as anyone
+   *        demonstrating the feature does, and the delta that made it due also ate it.
+   *        That is "it worked, and then nothing worked for a bit".
+   */
+  return async function drain(meetingId, already = []) {
+    const at = now();
+    const ready = [...already, ...gate.due(at)];
     if (ready.length) {
       const fresh = [];
-      for (const c of ready) if (await isFresh(c, now)) fresh.push(c);
+      for (const c of ready) if (await isFresh(c, at)) fresh.push(c);
       if (fresh.length) {
-        await remember(fresh, now);
+        await remember(fresh, at);
         await dispatchVoiceCommands(fresh, { engine, actions, seen, onOutcome });
       }
     }
-    if (timer) { clearTimeout(timer); timer = null; }
+    if (timer) { clearTimer(timer); timer = null; }
     // Measured AFTER the dispatch above, which may have taken a while.
-    const wait = gate.nextDueIn(Date.now());
+    const wait = gate.nextDueIn(now());
     if (wait === null) return;
-    timer = setTimeout(() => {
+    timer = setTimer(() => {
       timer = null;
       if (isLive(meetingId)) drain(meetingId).catch(() => { /* automation is a passenger */ });
     }, Math.max(200, wait + 100));

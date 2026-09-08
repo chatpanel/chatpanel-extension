@@ -241,13 +241,35 @@ export function findWakeCommands(text, wake = compileWake(), { maxSentences = MA
   const tokens = tokenize(raw);
   if (!tokens.length) return [];
   const hits = wakeHits(raw, tokens, wake);
-  return hits.map((hit, idx) => {
-    // Bounded by the NEXT address, then by sentence count. A second wake word is the end of
-    // the first command however the sentences fall.
-    const stop = idx + 1 < hits.length ? hits[idx + 1].start : raw.length;
+  const out = [];
+  // How far the last command emitted reaches. A wake phrase the speaker used as a WORD, inside
+  // a command already running, is part of that command and not a second one.
+  let covered = 0;
+  for (let idx = 0; idx < hits.length; idx++) {
+    const hit = hits[idx];
+    // THE PRODUCT'S OWN NAME IS A WORD PEOPLE SAY.
+    //
+    // "Okay chat panel, take the notes of whatever we spoke so far in chat panel notes" holds
+    // the wake phrase twice: once as an address, once as the name of where to put them. The
+    // second was treated as a fresh address, which did two things and both were wrong — it cut
+    // the command down to "…so far", losing where they wanted the notes, and it emitted
+    // "notes. So that is good." as a command of its own, which noteIntent matched. One spoken
+    // request became two notes and a truncated one.
+    //
+    // A mention that is not an address and falls inside the command already being carried is
+    // skipped. A mention that stands on its own still gets through — the intent match is the
+    // safety net for an address this heuristic misjudged, and dropping those outright would
+    // trade a stray action for a lost one.
+    if (!hit.addressed && hit.start < covered) continue;
+    // Bounded by the next ADDRESS, then by sentence count. Deliberately the next address and
+    // not the next mention: a second wake word is the end of the first command only when the
+    // speaker was turning to us again, and the sentence they are still saying is not that.
+    let stop = raw.length;
+    for (let j = idx + 1; j < hits.length; j++) if (hits[j].addressed) { stop = hits[j].start; break; }
     const span = raw.slice(hit.end, stop);
     const command = trimTrailingLeadIn(stripLeadIn(firstSentences(span, maxSentences)).trim());
-    return {
+    covered = Math.max(covered, hit.end + span.indexOf(command) + command.length);
+    out.push({
       command,
       wake: hit.phrase,
       heard: raw.slice(hit.start, hit.end),
@@ -256,8 +278,9 @@ export function findWakeCommands(text, wake = compileWake(), { maxSentences = MA
       // What was said after the command's own sentences, up to the next address. Not part of
       // the command — kept so a caller refining with a model has the surrounding words.
       rest: raw.slice(hit.end + span.indexOf(command) + command.length, stop).trim(),
-    };
-  });
+    });
+  }
+  return out;
 }
 
 /**

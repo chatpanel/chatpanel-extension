@@ -478,11 +478,16 @@ const HISTORY_SEARCH_SPEC = {
 
 const HISTORY_GET_SOURCE_SPEC = {
   name: 'history_get_source',
-  description: 'Fetch a larger excerpt of a single local history source returned by history_search.',
+  description: 'Fetch a larger excerpt of a single local history source returned by history_search. '
+    + 'Requires an id that history_search actually returned — ids cannot be guessed.',
   parameters: {
     type: 'object',
     properties: {
-      sourceId: { type: 'string', description: 'Source id such as chat:<id> or meeting:<id>.' },
+      // "such as chat:<id>" READ AS A RECIPE. It described the shape of an id, so a model that
+      // had not searched built one that matched the shape and asked for it — and got a
+      // not-found back, which it then narrated at the user as an error. The id is a value to
+      // COPY, not a pattern to fill in.
+      sourceId: { type: 'string', description: 'The exact id from a history_search result (e.g. chat:abc123). Do not construct one.' },
       maxChars: { type: 'integer', minimum: 1000, maximum: 100000, description: 'Maximum characters returned.' },
     },
     required: ['sourceId'],
@@ -495,7 +500,7 @@ const HISTORY_RELATED_SPEC = {
   parameters: {
     type: 'object',
     properties: {
-      sourceId: { type: 'string', description: 'Source id such as chat:<id> or meeting:<id>.' },
+      sourceId: { type: 'string', description: 'The exact id from a history_search result (e.g. meeting:abc123). Do not construct one.' },
       scope: { type: 'string', enum: ['all', 'chats', 'meetings'], description: 'Limit related search to chats, meetings, or both.' },
       limit: { type: 'integer', minimum: 1, maximum: 30, description: 'Maximum related sources returned.' },
     },
@@ -752,7 +757,18 @@ function historySystem(includeMeetings, explicit = false, hasLive = false) {
 }
 
 function formatSourceResponse(source) {
-  if (!source?.found) return `Source ${source?.sourceId || ''} was not found or is not accessible.`;
+  // A DEAD END IS A THING THE USER ENDS UP READING.
+  //
+  // "Source X was not found or is not accessible." tells a model nothing it can act on, so it
+  // either invents another id or gives up and explains the failure in the chat — which is how
+  // a tool-level miss became an odd line about a source id in the middle of taking notes. Say
+  // what went wrong AND what to do instead; the recovery is one call away.
+  if (!source?.found) {
+    return `No source with id "${source?.sourceId || ''}". Ids are not guessable — they come back `
+      + 'from history_search. Run history_search for what you are looking for and use an id '
+      + 'exactly as it appears in those results. Do not tell the user about this error; search '
+      + 'and continue.';
+  }
   const lines = [
     `Source: ${source.title}`,
     `ID: ${source.sourceId}`,
@@ -848,6 +864,10 @@ export function historyToolProvider({
         const sourceId = String(input?.sourceId || '').trim();
         if (!sourceId) return 'history_related requires sourceId.';
         const sources = await loadSources({ includeChats: true, includeMeetings: canReadMeetings });
+        // An id that does not exist produced "No related local history sources were found" —
+        // a legitimate-looking empty answer, indistinguishable from a real one, so a model that
+        // had invented the id concluded the user simply had no related history. Say which it is.
+        if (!sources.some((s) => s.id === sourceId)) return formatSourceResponse({ sourceId, found: false });
         const related = relatedHistorySources(sources, sourceId, {
           includeMeetings: canReadMeetings,
           scope: input?.scope || 'all',

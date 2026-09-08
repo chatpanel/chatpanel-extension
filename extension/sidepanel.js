@@ -4794,8 +4794,13 @@ async function voiceRuntime() {
         // whole utterance — preamble, request and thinking-aloud — so the monitor watched a
         // paragraph and answered accordingly. See refineSpokenCommand.
         const { request } = vc.refineSpokenCommand(cmd.args.prompt);
-        await addMonitor({ kind: 'qa', prompt: request || cmd.args.prompt });
-        return { message: `Watching: ${request || cmd.args.prompt}` };
+        const prompt = request || cmd.args.prompt;
+        // THE ANSWER IS ASKED FOR, not assumed. This used to toast "Watching: …" whatever came
+        // back — over the top of the refusal addMonitor had just shown — so a monitor that was
+        // never created was reported as created, with the explanation already scrolled away.
+        const r = await addMonitor({ kind: 'qa', prompt, announce: false });
+        if (!r?.ok) throw new Error(r?.message || 'Live monitors aren’t available right now');
+        return { message: `Watching: ${prompt}` };
       });
       // Timers and reminders became possible the moment jobs got somewhere durable to live:
       // both are `notify` actions, so the service worker finishes them with the panel shut.
@@ -4955,7 +4960,10 @@ async function runSpokenRequest(refined) {
   }
 
   if (refined.kind === 'monitor') {
-    await addMonitor({ kind: 'qa', prompt: refined.request, title: refined.name });
+    // Same rule as the bound intent above: report what addMonitor actually did, never what it
+    // was asked to do. A refused monitor that says "Watching:" is worse than a plain failure.
+    const r = await addMonitor({ kind: 'qa', prompt: refined.request, title: refined.name, announce: false });
+    if (!r?.ok) throw new Error(r?.message || 'Live monitors aren’t available right now');
     return { message: `Watching: ${refined.name}` };
   }
 
@@ -5079,10 +5087,16 @@ async function onMeetingDelta(meetingId, segments) {
   if (voice && voice.enabled === false) return;
   try {
     const { vc, gate, drain } = await voiceRuntime();
-    // The scan OFFERS what it finds to the gate; usually nothing has settled, because the
-    // sentence is still being said. The drain acts, and comes back when the captions stop.
-    vc.scanDelta({ segments, voice, meetingId, sinceTs, now: Date.now(), gate });
-    await drain(meetingId);
+    // The scan OFFERS what it finds to the gate — and TAKES OUT anything that came due in the
+    // same breath, because a gated `commandsFromSegments` ends in `.due(now)`. That return
+    // value used to be discarded, so a command that settled exactly as the next caption landed
+    // was gone: out of the gate, never dispatched, and with nothing left waiting there was no
+    // timer to come back for it either. It survived only if the speaker fell silent, which is
+    // the one thing nobody does while demonstrating a feature.
+    const ready = vc.scanDelta({ segments, voice, meetingId, sinceTs, now: Date.now(), gate });
+    // The drain acts on those AND on anything the gate still holds, then comes back when the
+    // captions stop.
+    await drain(meetingId, ready);
   } catch { /* a spoken command that fails must never disturb the meeting */ }
 }
 
@@ -5463,18 +5477,36 @@ function applyMonitorEdit(id, { prompt, everyMin, paused }) {
   if (!m.paused) runMonitor(m, { force: true }); // question changed → resubmit even if the transcript hasn't grown
 }
 
-async function addMonitor({ kind, prompt = '', skillId = '', title = '', icon = '' }) {
+/**
+ * Start a live monitor — and SAY WHETHER IT STARTED.
+ *
+ * Every refusal below used to `return` bare, which reads as success to an `await`. The spoken
+ * path took it that way and toasted "Watching: …" over the refusal that had just explained
+ * itself, so the user got a confirmation, no card, and no reason: "the live monitor, though it
+ * didn't work." A caller cannot report an outcome it was never given, so the outcome is now
+ * returned — `{ ok: true, monitor }`, or `{ ok: false, reason, message }` — and the toast
+ * stays here, where the reason is known.
+ */
+async function addMonitor({ kind, prompt = '', skillId = '', title = '', icon = '', announce = true }) {
+  // `announce: false` for a caller that reports the outcome itself — a spoken command already
+  // ends in a toast, and two toasts saying the same thing is one of them scrolling the other
+  // away, which is how the reason got lost in the first place.
+  const no = (reason, message) => {
+    if (message && announce) toast(message, 4000);
+    return { ok: false, reason, message: message || '' };
+  };
   const conv = state.conv;
-  if (!conv) return;
-  if (!state.liveMeeting) { toast('No live meeting — start or attach one first'); return; }
-  if (!can(state.license, 'liveMeetings')) { upsell('liveMeetings'); return; }
+  // Silent: the panel is interactive before the first conversation exists, so this is a race,
+  // not a refusal to explain.
+  if (!conv) return no('no-conversation', '');
+  if (!state.liveMeeting) return no('no-meeting', 'No live meeting — start or attach one first');
+  if (!can(state.license, 'liveMeetings')) { upsell('liveMeetings'); return no('not-entitled', ''); }
   // Accepting a monitor that will never run is the worst of both: the user watches a
   // question they believe is being watched. Refuse, and name the switch.
   if (!(await analyzerEnabled('meeting:monitors'))) {
-    toast('Live monitors are switched off in Settings → Plugins.', 4000);
-    return;
+    return no('analyzer-off', 'Live monitors are switched off in Settings → Plugins.');
   }
-  if (kind === 'qa' && !prompt) { toast('Type a question to monitor'); return; }
+  if (kind === 'qa' && !prompt) return no('no-prompt', 'Type a question to monitor');
   conv.monitors = conv.monitors || [];
   const now = Date.now();
   const m = { id: `mon_${uid()}`, kind, prompt, skillId, title, icon, answer: '', ts: now, createdAt: now, pending: true, minimized: false, paused: false, everyMin: 0, meetingId: state.liveMeeting.id };
@@ -5484,6 +5516,7 @@ async function addMonitor({ kind, prompt = '', skillId = '', title = '', icon = 
   persistMonitor(m);
   runMonitor(m);
   scheduleLiveNotes({ force: true, delayMs: 1500 });
+  return { ok: true, monitor: m };
 }
 
 // Mirror one monitor into the durable, meeting-scoped store (drops the transient

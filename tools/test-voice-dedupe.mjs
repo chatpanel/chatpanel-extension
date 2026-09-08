@@ -43,9 +43,15 @@ assert.doesNotMatch(src, /vcGistOpening/, 'and the copy of it is gone, not merel
   assert.notEqual(revised('How is the weather in Seattle?'), revised('What did we decide about pricing?'));
 }
 
-// The guard is actually applied before dispatch, not merely defined.
-assert.match(voice, /if \(await isFresh\(c, now\)\) fresh\.push\(c\)/, 'filtered before dispatch');
-assert.match(voice, /await remember\(fresh, now\);\n\s*await dispatchVoiceCommands/, 'recorded BEFORE dispatch, so a slow action cannot double-fire');
+// The guard is actually applied before dispatch, not merely defined. `at` rather than `now`
+// because the drain's clock is injected now — a decision about whether something is old enough
+// to act on, made against a clock no test can move, is a decision no test can reach.
+assert.match(voice, /if \(await isFresh\(c, at\)\) fresh\.push\(c\)/, 'filtered before dispatch');
+assert.match(voice, /await remember\(fresh, at\);\n\s*await dispatchVoiceCommands/, 'recorded BEFORE dispatch, so a slow action cannot double-fire');
+// …and it must see BOTH routes. The scan drains the gate itself, so commands that came due as
+// a caption landed arrive as `already` and would otherwise skip the freshness check entirely.
+assert.match(voice, /const ready = \[\.\.\.already, \.\.\.gate\.due\(at\)\]/,
+  'what the scan took and what the gate still holds are one list, filtered once');
 
 // SETTLED. The identity guards above cannot relate "set a timer for." to the timer the same
 // breath is about to become — different words, different intent, different key — so the
@@ -53,9 +59,12 @@ assert.match(voice, /await remember\(fresh, now\);\n\s*await dispatchVoiceComman
 // what makes one utterance one action, and something must come back to it: once the speaker
 // stops, the captions stop, and nothing else would ever drain it.
 assert.match(panel, /gate = vc\.createUtteranceGate\(\)/, 'the panel keeps one gate for the meeting');
-assert.match(panel, /vc\.scanDelta\(\{[^}]*gate \}\)/, 'and every scan is offered to it');
-assert.match(voice, /const ready = gate\.due\(now\)/, 'only settled commands are acted on');
-assert.match(voice, /gate\.nextDueIn\(Date\.now\(\)\)/, 'and the next one is scheduled for');
+assert.match(panel, /const ready = vc\.scanDelta\(\{[^}]*gate \}\)/, 'and every scan is offered to it');
+// …and WHAT THE SCAN GIVES BACK is handed on. A gated scan ends in `.due(now)`, so it removes
+// anything that settled in the same breath; discarding its return value dropped those commands
+// on the floor, and left nothing waiting for the timer below to come back for.
+assert.match(panel, /await drain\(meetingId, ready\)/, 'what the scan took out must still be delivered');
+assert.match(voice, /gate\.nextDueIn\(now\(\)\)/, 'and the next one is scheduled for');
 assert.match(voice, /if \(isLive\(meetingId\)\) drain\(meetingId\)/, 'a drain that lands after the meeting moved on does nothing');
 assert.match(panel, /isLive: \(meetingId\) => state\.liveMeeting\?\.id === meetingId/, 'and the panel is what knows that');
 
