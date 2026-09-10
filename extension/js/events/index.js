@@ -46,6 +46,19 @@ export { parseFlowchart, layoutFlowchart, renderFlowchartSvg } from './flowchart
 export { validateView, validateViewInvocation, viewResult } from './view.js';
 export { validateWidget, validateWidgetMessage, effectiveGrants, widgetIcon, WIDGET_SURFACES } from './widget.js';
 export { fuseRRF, planQueries, multiSearch } from './rrf.js';
+
+// The compounding layer — subjects a brief can accumulate about, and the deterministic
+// half of the maintenance pass (W0's read-only survey is `surveyCorpus`).
+export {
+  SUBJECT_KINDS, DEFAULT_THRESHOLD, MAX_SUBJECTS, MAX_SUBJECT_CHARS,
+  normalizeSubject, subjectKey, subjectTokens, isSubjectCandidate,
+  aliasMap, resolveSubjects, earnsBrief, rankSubjects,
+} from './entity.js';
+export {
+  normalizeRecord, normalizeRecords, wikilinksIn, wantedPages, orphanRecords,
+  duplicateTitles, vocabularyDrift, mentionsFrom, spanningQuestions,
+  surveyCorpus, thresholdSweep, formatSurvey, NEAR_TITLE_DISTANCE, SPAN_MIN_TERMS,
+} from './curate.js';
 export {
   PDF_MAX_CHARS, linesFromItems, orderLines, paragraphsFromLines,
   pageTextFromItems, looksScanned, buildPdfDocument,
