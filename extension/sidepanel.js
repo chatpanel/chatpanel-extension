@@ -6406,7 +6406,20 @@ async function runPiiPreview() {
       const alias = escapeAttr(s.token);
       if (alias) html = html.split(alias).join(`<mark>${alias}</mark>`);
     }
-    panel.innerHTML = `<span class="rp-head">🛡 What the model receives</span>${html}`;
+    // SAY WHEN NAMES ARE NOT COVERED. Deterministic mode catches emails, phones and card
+    // numbers by pattern and cannot catch a person's name — that needs the detector, which
+    // only runs in `model` mode. A preview headed "what the model receives" that shows a
+    // name back unredacted, with the shield lit, reads as "this is fine"; the shield is on,
+    // so the user has no reason to doubt it. The one thing this panel must never do is
+    // imply more coverage than there is.
+    const mode = state.settings?.ui?.piiRedaction?.mode || 'off';
+    const note = mode === 'model'
+      ? ''
+      : '<span class="rp-note">Patterns only — emails, phone and card numbers. '
+        + '<button type="button" class="rp-upgrade">Turn on name detection</button> to catch names, orgs and places.</span>';
+    panel.innerHTML = `<span class="rp-head">🛡 What the model receives</span>${html}${note}`;
+    const up = panel.querySelector('.rp-upgrade');
+    if (up) up.onclick = () => setPiiMode('model');
     panel.classList.remove('hidden');
   } catch { /* best-effort — never block typing on a preview */ }
 }
