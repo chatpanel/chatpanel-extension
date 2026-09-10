@@ -197,7 +197,7 @@ export function resolveSubjects(mentions = [], { merges = null, self = '' } = {}
       s.mentions += 1;
       if (m.recordId) s.records.add(m.recordId);
       // The SURFACE FORM a person is displayed under is the stripped one. The canonical was
-      // already right — "Sam Okonkwo [OCI - SCE]" resolved to person:sam okonkwo — but the
+      // already right — "Sam Okonkwo [ACME - Platform]" resolved to person:sam okonkwo — but the
       // raw string was recorded as the display form, so a subject seen only that way got a
       // page titled with the directory's decoration. A qualifier is not part of a name.
       const display = String(kind === 'person' ? stripQualifiers(raw) : raw).normalize('NFKC').trim();
