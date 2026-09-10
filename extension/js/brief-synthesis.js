@@ -15,7 +15,7 @@
 // `converge`, and nothing on either side of this file changes.
 
 import { getBrief, putProposal, getBriefSettings } from './store-briefs.js';
-import { getTarget, resolveTarget } from './store.js';
+import { getTarget, resolveTarget, getIndex } from './store.js';
 import { createFallbackChain } from './model-fallback.js';
 import { SYNTHESIS_SCHEMA, synthesisPrompt, claimsFromSynthesis, MAX_EXCERPTS } from './events/synthesis.js';
 import { propose } from './events/promotion.js';
@@ -42,7 +42,7 @@ const chain = createFallbackChain({ key: targetKey });
  * This ladder is also the pool a swarm (W7) draws drafters from: same list, N appointments,
  * converge() deciding what to propose.
  */
-export function synthesisCandidates(settings = {}) {
+export function synthesisCandidates(settings = {}, { recentAgentId = '' } = {}) {
   const out = [];
   const seen = new Set();
   const add = (t) => {
@@ -53,7 +53,14 @@ export function synthesisCandidates(settings = {}) {
     seen.add(key);
     out.push(t);
   };
-  add(resolveTarget(getTarget(settings, settings?.activeAgentId), settings)); // the user's choice, first
+  // WHAT THE PANEL SHOWS, not what the setting says. The panel resolves
+  // `conv.agentId || settings.activeAgentId`: picking Codex in its header sets the agent PER
+  // CONVERSATION, and `activeAgentId` can keep pointing at an older choice — a local endpoint
+  // that is no longer running, in the case that produced ERR_CONNECTION_REFUSED twice. This
+  // page has no conversation, so the most recent one's agent is the honest reading of "the
+  // agent the user is using", and it leads.
+  if (recentAgentId) add(resolveTarget(getTarget(settings, recentAgentId), settings));
+  add(resolveTarget(getTarget(settings, settings?.activeAgentId), settings));
   for (const ep of settings?.endpoints || []) add(resolveTarget(ep, settings));
   return out;
 }
@@ -78,7 +85,8 @@ function describeTarget(t) {
 export async function synthesiseBrief(briefId, { settings, records, onPartial = null, signal } = {}) {
   const brief = await getBrief(briefId);
   if (!brief) throw new Error('that brief is gone — rebuild first');
-  const candidates = synthesisCandidates(settings);
+  const recentAgentId = await mostRecentAgentId();
+  const candidates = synthesisCandidates(settings, { recentAgentId });
   if (!candidates.length) throw new Error('no model is configured — add an endpoint or pick an agent in the side panel first');
 
   // The records BEHIND this brief, newest first, capped. The cap is the design's I-K4 in
@@ -128,5 +136,14 @@ export async function synthesiseBrief(briefId, { settings, records, onPartial = 
 /** Is synthesis available at all — a model selected and briefs switched on. */
 export async function canSynthesise(settings) {
   const s = await getBriefSettings();
-  return !!(s.enabled && synthesisCandidates(settings).length);
+  return !!(s.enabled && synthesisCandidates(settings, { recentAgentId: await mostRecentAgentId() }).length);
+}
+
+/** The agent of the newest conversation — what the side panel would show if opened now. */
+async function mostRecentAgentId() {
+  try {
+    const index = await getIndex();
+    const newest = [...(index || [])].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+    return newest?.agentId || '';
+  } catch { return ''; }
 }

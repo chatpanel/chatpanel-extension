@@ -383,7 +383,9 @@ console.log('briefs surface guards passed');
   // leads it whatever its kind, because a synthesis answers with the model the user picked.
   assert.match(synth, /runStructured\(\{ candidates, chain,/, 'synthesis rides the candidate ladder + fallback chain, not one target');
   const ladder = synth.slice(synth.indexOf('export function synthesisCandidates('), synth.indexOf('function describeTarget('));
-  assert.ok(ladder.indexOf('settings?.activeAgentId') < ladder.indexOf('settings?.endpoints'), 'the active agent is tried first');
+  assert.ok(ladder.indexOf('recentAgentId') < ladder.indexOf('settings?.activeAgentId'), 'the newest conversation\'s agent — what the panel SHOWS — leads');
+  assert.ok(ladder.indexOf('settings?.activeAgentId') < ladder.indexOf('settings?.endpoints'), 'then the setting, then the endpoints');
+  assert.match(synth, /async function mostRecentAgentId/, 'read from the conversation index, because the setting lags a per-conversation pick');
   // `kind !== 'bridge' && !t.model` is the no-model guard, not a demotion; the demotion
   // suggestions.js applies is `active.kind === 'bridge'` pushed to the end — must be absent.
   assert.ok(!/active\.kind === 'bridge'/.test(ladder), 'and is not demoted for being a bridge CLI — Codex is a valid choice');
