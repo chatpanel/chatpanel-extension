@@ -455,6 +455,46 @@ async function renderGraph() {
  */
 const YIELD = () => new Promise((r) => setTimeout(r, 0));
 
+const maintGroup = (title, why, body) =>
+  `<div class="maint-group"><h3>${title}</h3><p>${why}</p>${body}</div>`;
+
+/**
+ * The merge-suggestion section, as a function of its data — so paging can redraw it from
+ * the cache instead of re-reading the corpus, and so the counter is a real count.
+ */
+function mergeSectionHtml(suggestions) {
+  const shown = suggestions.slice(0, _shownMerges);
+  const remaining = suggestions.length - shown.length;
+  const body = suggestions.length
+    ? `<div class="mergelist">${shown.map((m, i) =>
+      `<div class="mergerow" data-merge="${i}">`
+      + `<span class="bkind ${m.kind}">${KIND_LABEL[m.kind] || m.kind}</span>`
+      + `<span class="mergenames"><b>${escapeHtml(m.dropName)}</b> is <b>${escapeHtml(m.keepName)}</b></span>`
+      + `<span class="mergewhy">${MERGE_WHY[m.reason] || m.reason}</span>`
+      + `<button class="btn" data-yes="${i}" type="button">Same</button>`
+      + `<button class="btn ghost" data-no="${i}" type="button">Different</button>`
+      + `</div>`).join('')}</div>`
+      + (remaining > 0
+        // The label carries the progress, not just the page size: "Show 8 more of 40"
+        // read the same on every click, and nobody could tell it was working.
+        ? `<div class="mergepager">Showing ${shown.length} of ${suggestions.length}`
+          + ` · <button class="btn ghost" id="b-more-merges" type="button">Show ${Math.min(MERGE_PAGE, remaining)} more</button></div>`
+        : (suggestions.length > MERGE_PAGE ? `<div class="mergepager">All ${suggestions.length} shown</div>` : ''))
+    : '<div class="maint-ok">Nothing looks like a duplicate identity.</div>';
+  return maintGroup('Possibly the same subject',
+    'The alias rule folds what it can prove. These are the pairs it refuses to decide alone, because deciding wrongly merges two people permanently. Your answer is stored and re-applied on every rebuild.',
+    body);
+}
+
+function mergedNamesHtml(merges) {
+  return maintGroup('Names you have merged',
+    'Corrections you made. They are an input to every rebuild, never an edit to one — which is why they survive.',
+    Object.keys(merges).length
+      ? `<div class="maint-list">${Object.entries(merges).map(([from, into]) =>
+        `<button class="topic-chip" data-unmerge="${escapeHtml(from)}" title="Undo this merge">${escapeHtml(from)} → ${escapeHtml(into)} \u2715</button>`).join('')}</div>`
+      : '<div class="maint-ok">None yet.</div>');
+}
+
 async function renderMaint({ force = false } = {}) {
   const host = $('b-dash-maint');
   const token = ++_maintSeq;
@@ -471,8 +511,7 @@ async function renderMaint({ force = false } = {}) {
 
   host.innerHTML = '<div class="dash-empty">Reading your records…</div>';
 
-  const group = (title, why, body) =>
-    `<div class="maint-group"><h3>${title}</h3><p>${why}</p>${body}</div>`;
+  const group = maintGroup;
   const chips = (items) => (items.length
     ? `<div class="maint-list">${items.map((t) => `<span class="topic-chip">${escapeHtml(t)}</span>`).join('')}</div>`
     : '<div class="maint-ok">Nothing to do here.</div>');
@@ -497,28 +536,8 @@ async function renderMaint({ force = false } = {}) {
 
     const suggestions = await suggestBriefMerges(records, { memories });
     const merges = await getBriefMerges();
-    if (!await add(group('Possibly the same subject',
-      'The alias rule folds what it can prove. These are the pairs it refuses to decide alone, because deciding wrongly merges two people permanently. Your answer is stored and re-applied on every rebuild.',
-      suggestions.length
-        ? `<div class="mergelist">${suggestions.slice(0, _shownMerges).map((m, i) =>
-          `<div class="mergerow" data-merge="${i}">`
-          + `<span class="bkind ${m.kind}">${KIND_LABEL[m.kind] || m.kind}</span>`
-          + `<span class="mergenames"><b>${escapeHtml(m.dropName)}</b> is <b>${escapeHtml(m.keepName)}</b></span>`
-          + `<span class="mergewhy">${MERGE_WHY[m.reason] || m.reason}</span>`
-          + `<button class="btn" data-yes="${i}" type="button">Same</button>`
-          + `<button class="btn ghost" data-no="${i}" type="button">Different</button>`
-          + `</div>`).join('')}</div>`
-          + (suggestions.length > _shownMerges
-            ? `<button class="btn ghost" id="b-more-merges" type="button">Show ${Math.min(MERGE_PAGE, suggestions.length - _shownMerges)} more of ${suggestions.length}</button>`
-            : '')
-        : '<div class="maint-ok">Nothing looks like a duplicate identity.</div>'))) return;
-
-    if (!await add(group('Names you have merged',
-      'Corrections you made. They are an input to every rebuild, never an edit to one — which is why they survive.',
-      Object.keys(merges).length
-        ? `<div class="maint-list">${Object.entries(merges).map(([from, into]) =>
-          `<button class="topic-chip" data-unmerge="${escapeHtml(from)}" title="Undo this merge">${escapeHtml(from)} → ${escapeHtml(into)} \u2715</button>`).join('')}</div>`
-        : '<div class="maint-ok">None yet.</div>'))) return;
+    if (!await add(mergeSectionHtml(suggestions))) return;
+    if (!await add(mergedNamesHtml(merges))) return;
 
     const redaction = curate.redactionCost(records);
     if (!await add(group('Redacted mentions',
@@ -559,7 +578,7 @@ async function renderMaint({ force = false } = {}) {
       'Tags and topics that normalize close but were typed differently, so they file apart.',
       chips(drift.map((g) => g.terms.map((t) => `${t.term}(${t.count})`).join(' | ')))))) return;
 
-    _maintCache = { at: Date.now(), version, sections: [...sections], suggestions };
+    _maintCache = { at: Date.now(), version, sections: [...sections], suggestions, merges };
     wireMaintActions(host, suggestions);
     hydrate(host);
   } catch (e) {
@@ -586,10 +605,18 @@ function wireMaintActions(host, suggestions) {
   if (more) {
     more.onclick = () => {
       _shownMerges += MERGE_PAGE;
-      // Re-render from the CACHE — paging is a view change, not a reason to read the corpus
-      // again, which is the mistake that made this tab feel broken in the first place.
-      _maintCache = null;
-      renderMaint({ force: true });
+      // Paging is a view change, not a reason to read the corpus again. The first version
+      // said exactly that in a comment and then nulled the cache and forced a recompute on
+      // the next line — every "show more" re-decrypted the corpus, and because the ranker
+      // returned the same capped list, the label never moved either.
+      if (_maintCache) {
+        _maintCache.sections[0] = mergeSectionHtml(_maintCache.suggestions);
+        host.innerHTML = _maintCache.sections.join('');
+        wireMaintActions(host, _maintCache.suggestions);
+        hydrate(host);
+      } else {
+        renderMaint({ force: true });
+      }
     };
   }
   for (const b of host.querySelectorAll('[data-yes]')) {

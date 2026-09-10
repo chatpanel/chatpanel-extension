@@ -78,7 +78,10 @@ export async function suggestBriefMerges(records = [], { memories = [] } = {}) {
     self: settings.selfName || selfNameFrom(memories),
   });
   const done = new Set(Object.keys(merges).map((k) => k.toLowerCase()));
-  return suggestMerges(subjects).filter((m) => !done.has(m.dropName.toLowerCase()));
+  // A real total, not the ranker's default cap. The UI pages through these and says
+  // "showing N of M" — with the default limit of 40, M was always 40, which is a number
+  // that looks like a count and is not one.
+  return suggestMerges(subjects, { limit: 500 }).filter((m) => !done.has(m.dropName.toLowerCase()));
 }
 
 /**

@@ -269,6 +269,22 @@ console.log('briefs identity tests passed');
   assert.match(wire, /renderMaint\(\{ force: true \}\)/,
     'answering a suggestion changes the input, so THAT must recompute rather than serve the cache');
 
+  // Paging is a view change. The first version said so in a comment and then nulled the cache
+  // and forced a recompute on the next line — every "show more" re-decrypted the corpus.
+  const pager = wire.slice(wire.indexOf("querySelector('#b-more-merges')"), wire.indexOf('[data-yes]'));
+  assert.ok(!/_maintCache = null/.test(pager), '"show more" must not drop the cache');
+  assert.match(pager, /_maintCache\.sections\[0\] = mergeSectionHtml\(_maintCache\.suggestions\)/,
+    '"show more" must redraw the merge section from cached suggestions');
+
+  // …and the label must carry progress. "Show 8 more of 40" read the same on every click.
+  const section = page.slice(page.indexOf('function mergeSectionHtml('), page.indexOf('function mergedNamesHtml('));
+  assert.match(section, /Showing \$\{shown\.length\} of \$\{suggestions\.length\}/, 'the pager must say how many are shown of how many');
+
+  // …and "how many" must be a real count, not the ranker's default cap of 40.
+  const buildSrc = read('extension/js/briefs-build.js');
+  assert.match(buildSrc, /suggestMerges\(subjects, \{ limit: \d{3,} \}\)/,
+    'the maintenance surface must ask for a real total, or "of N" is always the default cap');
+
   const rebuild = page.slice(page.indexOf('async function rebuild('), page.indexOf('async function explainEmpty('));
   assert.match(rebuild, /_maintCache = null/, 'a rebuild moves the corpus; the report is no longer a description of it');
 }

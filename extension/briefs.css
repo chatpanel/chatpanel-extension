@@ -95,3 +95,5 @@
 .mergerow .btn { padding: 4px 10px; font-size: 12px; }
 .prefinput { width: 190px; padding: 6px 9px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--field); color: var(--text); font: inherit; font-size: 12.5px; }
 .prefinput:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
+.mergepager { margin-top: 9px; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px; }
+.mergepager .btn { padding: 3px 9px; font-size: 12px; }
