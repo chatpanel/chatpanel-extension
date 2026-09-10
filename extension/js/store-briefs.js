@@ -29,7 +29,7 @@ import { briefToText, briefTerms, briefLinks } from './events/knowledge.js';
 // needs one constant, where entity.js carries alias resolution and merge suggestion too.
 import { DEFAULT_THRESHOLD } from './events/subject-name.js';
 
-const K_INDEX = 'chatpanel:briefIndex';
+export const K_INDEX = 'chatpanel:briefIndex';
 const K_SETTINGS = 'chatpanel:briefSettings';
 export const briefKey = (id) => `chatpanel:brief:${id}`;
 
@@ -175,7 +175,7 @@ export async function getBrief(id) {
 }
 
 /** The index row — everything a list, the graph and ⌘K need without a body decrypt. */
-function indexEntry(brief) {
+export function indexEntry(brief) {
   return {
     id: brief.id,
     key: brief.key,

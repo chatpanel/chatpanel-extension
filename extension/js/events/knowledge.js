@@ -128,18 +128,27 @@ const isoDay = (ms) => (ms ? new Date(ms).toISOString().slice(0, 10) : '');
  * (design §7.6 — no second retrieval stack), so it has to render to text like one.
  */
 export function briefToText(brief) {
-  if (!brief) return '';
+  if (!brief?.subject?.name) return '';
+  // Every collection is read DEFENSIVELY. This used to assume the shape its own deriver
+  // produces, which was true while the only caller was that deriver — and stopped being true
+  // the moment briefs started arriving from a backup file, where a field can be absent
+  // because it was written by an older build. A missing `records` threw and took the whole
+  // restore's brief section with it.
   const L = [`BRIEF: ${brief.subject.name}`];
-  if (brief.subject.aliases?.length) L.push(`Also known as: ${brief.subject.aliases.join(', ')}`);
-  L.push(`Kind: ${brief.kind}`);
+  const aliases = brief.subject.aliases;
+  if (Array.isArray(aliases) && aliases.length) L.push(`Also known as: ${aliases.join(', ')}`);
+  L.push(`Kind: ${brief.kind || 'topic'}`);
   L.push('');
-  for (const c of brief.claims) {
+  for (const c of brief.claims || []) {
+    if (!c?.text) continue;
     L.push(`- ${c.supersededBy ? '[superseded] ' : ''}${c.text}`);
-    if (c.refs.length) L.push(`  (${c.refs.map((r) => `${r.kind}:${r.id}`).join(', ')})`);
+    const refs = Array.isArray(c.refs) ? c.refs : [];
+    if (refs.length) L.push(`  (${refs.map((r) => `${r.kind}:${r.id}`).join(', ')})`);
   }
-  if (brief.records.length) {
+  const records = Array.isArray(brief.records) ? brief.records : [];
+  if (records.length) {
     L.push('', 'RECORDS:');
-    for (const r of brief.records.slice(-40).reverse()) L.push(`- ${r.type}: ${r.title || 'untitled'}`);
+    for (const r of records.slice(-40).reverse()) L.push(`- ${r.type}: ${r.title || 'untitled'}`);
   }
   return L.join('\n').slice(0, MAX_BRIEF_CHARS);
 }

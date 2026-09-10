@@ -140,7 +140,16 @@ const BUDGET = {
   // had not changed. A fingerprint of the index makes the repeat runs free.
   // 1260 → 1265 for parseBriefText in events/knowledge.js — the inverse of briefToText, so a
   // brief that crossed the warm store as text comes back to an agent as claims and refs.
-  'settings.js': 1265,
+  // 1265 → 1266 for two changes in the vendored shared package, both on modules this page
+  // already loads: describeSchedule in events/schedule.js (a schedule read back as a
+  // sentence, so every client stops writing its own and disagreeing about weekdaysOnly),
+  // and briefToText in events/knowledge.js reading its collections defensively now that
+  // briefs arrive from backup files written by older builds. Vendoring copies whole files,
+  // so a function this page does not call yet still lands here.
+  // The BACKUP half of the knowledge layer is deliberately NOT in this number: putting
+  // exportBriefs/importBriefs in store-briefs.js cost 4.8 KB, which is what sent this over
+  // and is why they live in js/store-briefs-backup.js behind backup-payload.js instead.
+  'settings.js': 1266,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was
@@ -167,7 +176,14 @@ const BUDGET = {
   // proposal, but writeBriefs — which the worker's graph reaches through the store — is where
   // an accepted synthesis is re-applied on every rebuild, so promoted class-C claims survive
   // I-K2. That re-apply is the whole reason reviewing is not pointless.
-  'background.js': 566,
+  // 566 → 572 for the knowledge layer's backup half (js/store-briefs-backup.js, v9). This
+  // one CANNOT be deferred: exportAllData runs here on the auto-backup alarm, where
+  // `await import()` throws, which is why backup-payload.js is a static gather in the first
+  // place. So the worker pays for it, and the pages that never write a backup do not — see
+  // the settings.js note. What it buys is briefs surviving a restore at all: the format
+  // carried none before, so the knowledge layer had no backup, and a second client that
+  // READS briefs without deriving them could only ever show the gateway's flattened copy.
+  'background.js': 572,
 };
 
 function staticGraph(entry) {

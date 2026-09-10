@@ -120,6 +120,51 @@ export function nextFireAt(schedule, from) {
   }
 }
 
+/** Sunday-first, matching `Date#getDay()` and the `weekday` field. */
+export const WEEKDAY_NAMES = Object.freeze([
+  'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
+]);
+
+const hhmm = (s) => `${String(s?.hour ?? 0).padStart(2, '0')}:${String(s?.minute ?? 0).padStart(2, '0')}`;
+
+/**
+ * A schedule as a sentence: "every weekday at 08:00", not `{kind:'daily',hour:8,...}`.
+ *
+ * It lives beside the model rather than in a client because a schedule the user cannot read
+ * back is a schedule they cannot trust, and every client has to solve that. The desktop and
+ * the extension had already written this twice, and the copies disagreed: one rendered
+ * `weekdaysOnly` and the other silently dropped it, so a job that skipped weekends still
+ * read as "every day".
+ *
+ * Returns '' for a schedule it cannot describe rather than inventing one — an unreadable
+ * label is better than a confident wrong one.
+ */
+export function describeSchedule(s) {
+  if (!s || typeof s !== 'object') return '';
+  switch (s.kind) {
+    case 'once': {
+      if (!(s.at > 0)) return '';
+      return `once, at ${new Date(s.at).toLocaleString()}`;
+    }
+    case 'interval': {
+      const ms = Number(s.everyMs) || 0;
+      if (ms < 60_000) return '';
+      const mins = Math.round(ms / 60_000);
+      if (mins % 1440 === 0) { const d = mins / 1440; return `every ${d === 1 ? 'day' : `${d} days`}`; }
+      if (mins % 60 === 0) { const h = mins / 60; return `every ${h === 1 ? 'hour' : `${h} hours`}`; }
+      return `every ${mins} minutes`;
+    }
+    case 'daily':
+      return s.weekdaysOnly ? `every weekday at ${hhmm(s)}` : `every day at ${hhmm(s)}`;
+    case 'weekly': {
+      const name = WEEKDAY_NAMES[s.weekday];
+      return name ? `every ${name} at ${hhmm(s)}` : '';
+    }
+    default:
+      return '';
+  }
+}
+
 /** Every firing in (from, to], oldest first. Capped: a long sleep is not a queue of work. */
 export function occurrencesBetween(schedule, from, to, max = MAX_CATCH_UP) {
   const out = [];

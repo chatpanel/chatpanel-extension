@@ -1065,14 +1065,19 @@ export async function exportAllData(extras) {
   const memories = await extras.exportMemories();
   const settings = await getSettings();
   const oauthTokens = await extras.exportOAuthTokens(); // endpoint sign-ins (v4) — see SECURITY note above
-  const [widgets, jobs, vault] = await Promise.all([
+  const [widgets, jobs, vault, briefs] = await Promise.all([
     extras.exportWidgets().catch(() => null),
     extras.exportJobs().catch(() => null),
     extras.exportVault().catch(() => null),
+    // v9 — the knowledge layer. Derived, so a rebuild can recreate the briefs; the accepted
+    // proposals and subject merges travelling with them cannot be recreated, and a second
+    // client (the desktop) READS this layer without deriving it, so without them here its
+    // knowledge view can only ever show the gateway's flattened copy.
+    extras.exportBriefs?.().catch(() => null) ?? null,
   ]);
   return {
     type: BACKUP_TYPE,
-    version: 8,
+    version: 9,
     exportedAt: Date.now(),
     count: conv.count,
     conversations: conv.conversations,
@@ -1088,6 +1093,8 @@ export async function exportAllData(extras) {
     widgets,
     jobs,
     vault,
+    briefsCount: (briefs?.briefs || []).length,
+    briefs,
   };
 }
 
@@ -1131,7 +1138,12 @@ export async function importAllData(data, {
   if (data.widgets) widgets = await extras.importWidgets(data.widgets, { mode }).catch(() => 0);
   if (includeSettings && data.jobs) jobs = await extras.importJobs(data.jobs, { mode }).catch(() => 0);
   if (includeOAuthTokens && data.vault) vault = await extras.importVault(data.vault, { mode }).catch(() => false);
-  return { conversations, meetings, notes, memories, settings, widgets, jobs, vault };
+  // v9+. Knowledge restores with the main data, not behind the settings flag: the accepted
+  // proposals and subject merges inside it are the user's judgements about their own corpus,
+  // not this machine's configuration. Older backups have no `briefs` key and skip it.
+  let briefs = 0;
+  if (data.briefs) briefs = await extras.importBriefs?.(data.briefs, { mode }).catch(() => 0) ?? 0;
+  return { conversations, meetings, notes, memories, settings, widgets, jobs, vault, briefs };
 }
 
 // The single length a chat title may be. Auto-titling from a first message already used it;

@@ -34,6 +34,9 @@ import { exportMeetings, importMeetings } from './store-meetings.js';
 import { exportNotes, importNotes } from './store-notes.js';
 import { exportNotesConfig, importNotesConfig } from './notes-config.js';
 import { exportOAuthTokens, importOAuthTokens } from './oauth.js';
+// v9 — the knowledge layer. The briefs are derivable, but the proposals the user accepted
+// and the subjects they merged are judgements a rebuild cannot invent.
+import { exportBriefs, importBriefs } from './store-briefs-backup.js';
 
 /** Everything store.js needs to round-trip the late-arriving stores. */
 export const backupExtras = Object.freeze({
@@ -45,4 +48,5 @@ export const backupExtras = Object.freeze({
   exportNotes, importNotes,
   exportNotesConfig, importNotesConfig,
   exportOAuthTokens, importOAuthTokens,
+  exportBriefs, importBriefs,
 });

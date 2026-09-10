@@ -205,3 +205,21 @@ export {
   THEMES, LIGHT, DARK, PALETTES, SHAPE, TOKEN_NAMES, TOKEN_ROLES,
   paletteFor, cssVarName, toCssVars, themeStylesheet, resolveTheme,
 } from './theme.js';
+
+// Plans, gates and the signed entitlement — one definition, every client. The public
+// verification key lives here so a rotation reaches all of them, instead of being a
+// hand-edit in each (which is what CLAUDE.md currently has to warn about).
+export {
+  PLANS, API_BASE, ENDPOINTS, ENTITLEMENT_PUBLIC_JWK, UPGRADE_URL,
+  FEATURE_TIER, PRO_FEATURES, TEAM_FEATURES, FREE_LIMITS,
+  RECHECK_INTERVAL_MS, EntitlementError,
+  checkoutUrl, planOf, planLabel, isPro, isTeam, can, tierFor, withinFreeLimit,
+  verifyEntitlement, licenseFromPayload, needsRecheck,
+} from './entitlement.js';
+
+// One markdown renderer for every client — escaped first, link policy injected.
+export { renderMarkdown, defaultLinkPolicy } from './markdown-render.js';
+
+// A meeting read back out of the flat text the warm store holds — the same grammar the
+// extension writes and MCP reads, so every client shows one transcript, not three.
+export { parseMeetingText, speakerStats, densityRibbon } from './meeting-text.js';
