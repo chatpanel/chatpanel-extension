@@ -20,7 +20,7 @@ import {
 // the wrong trade — but never from store-briefs.js, which the service worker reaches.
 import { rebuildBriefs, briefDrift } from './js/briefs-build.js';
 import { openSidePanel } from './js/side-panel.js';
-import { icon, hydrate } from './js/icons.js';
+import { hydrate } from './js/icons.js';
 
 const $ = (id) => document.getElementById(id);
 
