@@ -734,7 +734,10 @@ html.surface-tab .topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
 /* What the preview does NOT cover. Deterministic mode cannot catch a name, and a preview
    that shows one back with the shield lit reads as "this is fine". */
 .redact-preview .rp-note { display: block; margin-top: 5px; font-size: 11px; color: var(--text-dim); opacity: .85; }
+.redact-preview .rp-settings,
 .redact-preview .rp-upgrade { background: none; border: 0; padding: 0; font: inherit; font-size: 11px; color: var(--accent); cursor: pointer; text-decoration: underline; }
+/* A detector that is not answering must LOOK different from one that found nothing. */
+.redact-preview .rp-warn { color: var(--warn, #d97706); opacity: 1; }
 .redact-preview mark { background: var(--accent-soft, rgba(91,91,240,.15)); color: var(--accent); border-radius: 4px; padding: 0 3px; font-weight: 600; }
 /* Mic: while dictating, turn red and pulse so it's clearly "listening". */
 .composer-tools .tool-btn.mic-btn.recording,

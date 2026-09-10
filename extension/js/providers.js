@@ -1190,11 +1190,15 @@ export async function runDetectorTest(settings, sample) {
 // (emails, phones, cards, keys, IPs) PLUS the user dictionary — so the Test button
 // shows exactly what the model would see, not just the detector's raw output. (A
 // spaCy NER won't emit EMAIL/PHONE, but those are still redacted here.)
-export async function previewRedaction(settings, sample) {
+export async function previewRedaction(settings, sample, { detect = true } = {}) {
   const base = (settings && settings.ui && settings.ui.piiRedaction) || {};
   const text = String(sample || '');
   const tier = base.mode === 'model' ? 'full' : 'basic';
-  const detector = base.mode === 'model' ? await runDetectorTest(settings, text) : []; // strict — surfaces errors
+  // `detect: false` skips the detector and returns the deterministic layer alone. The
+  // composer's live preview draws that FIRST — it is synchronous and instant — and then
+  // redraws when the detector lands, so a typist sees the emails and card numbers go behind
+  // placeholders immediately instead of watching an empty panel until the model answers.
+  const detector = detect && base.mode === 'model' ? await runDetectorTest(settings, text) : []; // strict — surfaces errors
   const vault = createVault();
   const redacted = redactText(text, vault, { tier, entities: detector, dictionary: base.dictionary || [] });
   // Report the WHOLE pipeline: reversible redactions (value → [[TOKEN]]) AND

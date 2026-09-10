@@ -6390,38 +6390,110 @@ function schedulePiiPreview() {
   _piiPreviewTimer = setTimeout(runPiiPreview, 600); // debounce keystrokes (model detection can be a real call)
 }
 
+/**
+ * Draw the preview in TWO passes, and never leave the panel silent.
+ *
+ * It used to await the detector before drawing anything, so on the model tier the panel sat
+ * empty for the whole round-trip — and if that call threw, the `catch` below swallowed it
+ * and the panel simply never appeared. A preview that shows nothing while you type reads as
+ * broken, and one that shows nothing because it FAILED is worse: the shield is still lit.
+ *
+ * So: the deterministic layer is drawn immediately (it is synchronous — emails, phones,
+ * cards, the dictionary), and the detector's richer result replaces it when it lands. A
+ * detector that fails says so in the panel rather than leaving the last frame standing.
+ */
 async function runPiiPreview() {
   const panel = $('redact-preview');
   if (!panel || !piiPreviewEnabled()) return;
   const draft = $('input').value;
   if (!draft.trim()) { panel.classList.add('hidden'); return; }
   const seq = ++_piiPreviewSeq;
+  const mode = state.settings?.ui?.piiRedaction?.mode || 'off';
+
+  let mod;
   try {
-    const { previewRedaction } = await import('./js/providers.js');
-    const { redacted, spans } = await previewRedaction(state.settings, draft);
-    if (seq !== _piiPreviewSeq || !piiPreviewEnabled()) return; // stale keystrokes raced us
-    let html = escapeAttr(redacted).replace(/\[\[[A-Z][A-Z0-9_]*_\d+\]\]/g, (m) => `<mark>${m}</mark>`);
-    // Pseudonyms aren't tokenized — highlight the alias text itself.
-    for (const s of spans.filter((x) => x.kind === 'alias')) {
-      const alias = escapeAttr(s.token);
-      if (alias) html = html.split(alias).join(`<mark>${alias}</mark>`);
-    }
-    // SAY WHEN NAMES ARE NOT COVERED. Deterministic mode catches emails, phones and card
-    // numbers by pattern and cannot catch a person's name — that needs the detector, which
-    // only runs in `model` mode. A preview headed "what the model receives" that shows a
-    // name back unredacted, with the shield lit, reads as "this is fine"; the shield is on,
-    // so the user has no reason to doubt it. The one thing this panel must never do is
-    // imply more coverage than there is.
-    const mode = state.settings?.ui?.piiRedaction?.mode || 'off';
-    const note = mode === 'model'
-      ? ''
-      : '<span class="rp-note">Patterns only — emails, phone and card numbers. '
-        + '<button type="button" class="rp-upgrade">Turn on name detection</button> to catch names, orgs and places.</span>';
-    panel.innerHTML = `<span class="rp-head">🛡 What the model receives</span>${html}${note}`;
-    const up = panel.querySelector('.rp-upgrade');
-    if (up) up.onclick = () => setPiiMode('model');
+    mod = await import('./js/providers.js');
+  } catch {
+    return; // the module itself is unreachable; there is nothing useful to say
+  }
+
+  // Pass 1 — instant, no network.
+  try {
+    const fast = await mod.previewRedaction(state.settings, draft, { detect: false });
+    if (seq !== _piiPreviewSeq || !piiPreviewEnabled()) return;
+    paintPiiPreview(panel, fast, mode, mode === 'model' ? 'pending' : 'patterns');
+  } catch { /* even the deterministic pass failed — pass 2 will report it */ }
+
+  if (mode !== 'model') return;
+
+  // A detector that is not CONFIGURED returns an empty list rather than an error, even in
+  // strict mode — `detectEntities` bails on a missing backend/url before it tries anything.
+  // So "model detection is on" and "model detection can run" are different facts, and the
+  // panel has to check the second one itself. Without this, the commonest broken state — the
+  // tier switched on, no detector behind it — renders as a clean, confident preview.
+  const det = state.settings?.ui?.piiRedaction?.detection || {};
+  const configured = det.backend === 'agent'
+    ? !!det.targetId
+    : !!det.backend && det.backend !== 'off' && !!det.url;
+  if (!configured) {
+    paintPiiPreview(panel, null, mode, 'nodetector');
+    return;
+  }
+
+  // Pass 2 — the detector. Only this one can find a name.
+  try {
+    const full = await mod.previewRedaction(state.settings, draft);
+    if (seq !== _piiPreviewSeq || !piiPreviewEnabled()) return;
+    paintPiiPreview(panel, full, mode, 'ok');
+  } catch (err) {
+    if (seq !== _piiPreviewSeq || !piiPreviewEnabled()) return;
+    paintPiiPreview(panel, null, mode, 'failed', err);
+  }
+}
+
+/**
+ * One painter for all four states, so the panel can never show a redaction it did not
+ * actually compute — the failure mode that makes a privacy indicator worse than none.
+ */
+function paintPiiPreview(panel, result, mode, status, err) {
+  if (status === 'nodetector') {
+    panel.innerHTML = '<span class="rp-head">🛡 What the model receives</span>'
+      + '<span class="rp-note rp-warn">Name detection is on but no detector is set up, so names, '
+      + 'orgs and places are NOT being redacted. Patterns still apply. '
+      + '<button type="button" class="rp-settings">Set up the detector</button></span>';
+    const go = panel.querySelector('.rp-settings');
+    if (go) go.onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#privacy') });
     panel.classList.remove('hidden');
-  } catch { /* best-effort — never block typing on a preview */ }
+    return;
+  }
+  if (status === 'failed') {
+    panel.innerHTML = '<span class="rp-head">🛡 What the model receives</span>'
+      + `<span class="rp-note rp-warn">Name detection is not answering${err?.message ? ` — ${escapeAttr(err.message)}` : ''}. `
+      + 'Patterns still apply; names, orgs and places are NOT being redacted.</span>';
+    panel.classList.remove('hidden');
+    return;
+  }
+  const { redacted, spans } = result;
+  let html = escapeAttr(redacted).replace(/\[\[[A-Z][A-Z0-9_]*_\d+\]\]/g, (m) => `<mark>${m}</mark>`);
+  // Pseudonyms aren't tokenized — highlight the alias text itself.
+  for (const s of spans.filter((x) => x.kind === 'alias')) {
+    const alias = escapeAttr(s.token);
+    if (alias) html = html.split(alias).join(`<mark>${alias}</mark>`);
+  }
+  // SAY WHEN NAMES ARE NOT COVERED. Deterministic mode catches emails, phones and card
+  // numbers by pattern and cannot catch a person's name — that needs the detector. A
+  // preview headed "what the model receives" that shows a name back unredacted, with the
+  // shield lit, reads as "this is fine", and the user has no reason to doubt it.
+  const note = status === 'patterns'
+    ? '<span class="rp-note">Patterns only — emails, phone and card numbers. '
+      + '<button type="button" class="rp-upgrade">Turn on name detection</button> to catch names, orgs and places.</span>'
+    : status === 'pending'
+      ? '<span class="rp-note">Checking for names…</span>'
+      : '';
+  panel.innerHTML = `<span class="rp-head">🛡 What the model receives</span>${html}${note}`;
+  const up = panel.querySelector('.rp-upgrade');
+  if (up) up.onclick = () => setPiiMode('model');
+  panel.classList.remove('hidden');
 }
 
 async function togglePiiPreview() {

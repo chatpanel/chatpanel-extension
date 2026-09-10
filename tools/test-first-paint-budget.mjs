@@ -76,7 +76,11 @@ const BUDGET = {
   // composer handoff. The remaining ~8 KB of headroom is unrelated in-flight growth in
   // js/confirm-modal.js — RE-TIGHTEN THIS to ~824 when that work lands and can carry its own
   // budget decision, or the ratchet stops turning.
-  'sidepanel.js': 832,
+  // 832 → 836 for the redaction preview's four states. It is ~2 KB of branches and copy in a
+  // panel that had one state and a bare `catch {}`, and every KB of it is a case where the
+  // shield was lit and nothing was being redacted — a silent privacy indicator is worth more
+  // than the bytes.
+  'sidepanel.js': 836,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one
