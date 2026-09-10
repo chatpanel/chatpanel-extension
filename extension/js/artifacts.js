@@ -171,96 +171,20 @@ function mountPreview(host, html, onFail, box) {
   return () => window.removeEventListener('message', onMsg);
 }
 
+// A ```mermaid block becomes a diagram card. The mounting lives in js/diagram-artifact.js —
+// Notes shows the same card in its reading view and inside the live editor, and three copies
+// of one renderer is how the three drift apart. Imported here only when a diagram is present,
+// so an HTML-only reply never loads it.
+async function mountDiagrams(root) {
+  const { mountDiagrams: mount } = await import('./diagram-artifact.js');
+  await mount(root); // no-ops (and never loads the renderer) when the reply has no diagram
+}
+
 /**
  * Upgrade every `.md-artifact-html` inside `root` into a Preview | Code | Open card.
  * Idempotent (a re-render marks nodes done), and never throws — a failure leaves the code
  * block exactly as it was.
  */
-// Render a ```mermaid block as a diagram. The renderer is pure text → SVG (shared package),
-// and the result is shown through an <img src="data:image/svg+xml,…"> — restricted mode, so
-// no scripts and no external fetches, exactly like a ```svg block. Diagram types the renderer
-// does not cover return null, and the code block simply stays.
-async function mountDiagrams(root) {
-  const nodes = root.querySelectorAll('.md-artifact-mermaid:not([data-artifact-ready])');
-  if (!nodes.length) return;
-  let renderFlowchartSvg;
-  try { ({ renderFlowchartSvg } = await import('./events/flowchart.js')); } catch { return; }
-  for (const node of nodes) {
-    try {
-      node.setAttribute('data-artifact-ready', '1');
-      const source = sourceOf(node);
-      const svg = renderFlowchartSvg(source);
-      if (!svg) continue; // not a flowchart — leave the source visible
-
-      const bar = el('div', 'artifact-bar');
-      const btnDiagram = el('button', 'artifact-btn is-on', 'Diagram');
-      const btnCode = el('button', 'artifact-btn', 'Code');
-      const btnOut = el('button', 'artifact-btn artifact-zoom', '−');
-      const btnFit = el('button', 'artifact-btn artifact-zoom', 'Fit');
-      const btnIn = el('button', 'artifact-btn artifact-zoom', '+');
-      const btnCopy = el('button', 'artifact-btn', 'Copy');
-      const btnOpen = el('button', 'artifact-btn artifact-open', 'Open ↗');
-      for (const b of [btnDiagram, btnCode, btnOut, btnFit, btnIn, btnCopy, btnOpen]) b.type = 'button';
-      const zoomLabel = el('span', 'artifact-status', 'Fit');
-      bar.append(btnDiagram, btnCode, btnOut, btnFit, btnIn, zoomLabel, btnCopy, btnOpen);
-
-      const figure = el('div', 'artifact-diagram');
-      const img = document.createElement('img');
-      img.alt = 'diagram';
-      img.src = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
-      figure.appendChild(img);
-
-      // Zoom: a big chart is unreadable squeezed to panel width, so "Fit" is the default and
-      // +/− step the true pixel size while the figure scrolls. The SVG carries its intrinsic
-      // size, which is what the steps are relative to.
-      const baseW = Number((svg.match(/width="(\d+)"/) || [])[1]) || 800;
-      let zoom = 0; // 0 = fit-to-width
-      const applyZoom = () => {
-        if (!zoom) { img.style.width = '100%'; img.style.maxWidth = '100%'; zoomLabel.textContent = 'Fit'; }
-        else { img.style.width = `${Math.round(baseW * zoom)}px`; img.style.maxWidth = 'none'; zoomLabel.textContent = `${Math.round(zoom * 100)}%`; }
-      };
-      const step = (dir) => {
-        // Stepping from Fit starts at 100%, which is what a reader expects the first + to do.
-        zoom = zoom ? Math.min(4, Math.max(0.25, zoom + dir * 0.25)) : (dir > 0 ? 1.25 : 0.75);
-        applyZoom();
-      };
-
-      const src = node.querySelector('.artifact-src');
-      node.insertBefore(bar, node.firstChild);
-      node.appendChild(figure);
-
-      const show = (diagram) => {
-        btnDiagram.classList.toggle('is-on', diagram);
-        btnCode.classList.toggle('is-on', !diagram);
-        figure.style.display = diagram ? 'block' : 'none';
-        if (src) src.style.display = diagram ? 'none' : 'block';
-        for (const b of [btnOut, btnFit, btnIn]) b.style.display = diagram ? '' : 'none';
-        zoomLabel.style.display = diagram ? '' : 'none';
-      };
-      btnDiagram.addEventListener('click', () => show(true));
-      btnCode.addEventListener('click', () => show(false));
-      btnIn.addEventListener('click', () => step(1));
-      btnOut.addEventListener('click', () => step(-1));
-      btnFit.addEventListener('click', () => { zoom = 0; applyZoom(); });
-      btnCopy.addEventListener('click', () => {
-        navigator.clipboard.writeText(source).then(() => {
-          btnCopy.textContent = 'Copied';
-          setTimeout(() => { btnCopy.textContent = 'Copy'; }, 1200);
-        }).catch(() => {});
-      });
-      // Open the diagram full-size in a tab: a blob: SVG opens as an image document, so the
-      // browser's own zoom/pan applies and it prints/saves cleanly. No scripts involved.
-      btnOpen.addEventListener('click', () => {
-        const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
-        try { window.open(url, '_blank', 'noopener,noreferrer'); } catch { /* popup blocked */ }
-        setTimeout(() => URL.revokeObjectURL(url), 60_000);
-      });
-      applyZoom();
-      show(true); // the picture is the point — show it first
-    } catch { /* leave the code block untouched */ }
-  }
-}
-
 export function mountArtifacts(root) {
   if (!root || !root.querySelectorAll) return;
   mountDiagrams(root).catch(() => { /* the source stays visible */ });

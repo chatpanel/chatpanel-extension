@@ -13,6 +13,10 @@
     <meta name="theme-color" content="#16181d" media="(prefers-color-scheme: dark)" />
     <title>ChatPanel</title>
     <link rel="stylesheet" href="icons.css" />
+    <!-- Artifact card chrome, shared with Notes (which does not load sidepanel.css). It
+         comes FIRST: sidepanel.css overrides some of these (.artifact-run over .artifact-btn),
+         and a base stylesheet loaded last would win instead. -->
+    <link rel="stylesheet" href="artifacts.css" />
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>

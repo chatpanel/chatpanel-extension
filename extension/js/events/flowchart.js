@@ -14,9 +14,9 @@
 // treats first-paint weight as a release gate — and for a renderer we want to unit-test.
 //
 // So this is a focused renderer for the shape models actually emit: `flowchart TB/LR` with
-// labelled nodes, edges and classDef styling. It is PURE (string in, string out), so it is
-// testable without a browser and runs identically in the extension, a desktop app or a
-// mobile client — which is why it lives in the shared package rather than in one client.
+// labelled nodes, edges, subgraphs and classDef styling. It is PURE (string in, string out),
+// so it is testable without a browser and runs identically in the extension, a desktop app or
+// a mobile client — which is why it lives in the shared package rather than in one client.
 //
 // SAFETY: the output is only ever shown through an <img src="data:image/svg+xml,…">, which
 // loads SVG in restricted mode (no scripts, no external fetches). Every piece of model text
@@ -24,12 +24,23 @@
 //
 // Anything it can't parse returns null, and the caller keeps showing the code block.
 
-const NODE_SHAPES = {
-  '[': ']',   // rect
-  '(': ')',   // rounded
-  '{': '}',   // diamond → drawn as a rounded rect with a tint; shape fidelity is not the point
-  '>': ']',   // asymmetric
-};
+// Node shapes, LONGEST OPENER FIRST — `[(` has to be tried before `[`, or a database node
+// keeps its own bracket in the label and renders as `"etcd…")`. The value is the closer and
+// the shape name; shape drives the corner radius, not a different silhouette (a hexagon that
+// is really a rounded rect still reads correctly; a label with a stray `)` does not).
+const NODE_SHAPES = [
+  ['[[', ']]', 'rect'],     // subroutine
+  ['[(', ')]', 'round'],    // database / cylinder
+  ['((', '))', 'pill'],     // circle
+  ['([', '])', 'pill'],     // stadium
+  ['{{', '}}', 'rect'],     // hexagon
+  ['[/', '/]', 'rect'],     // parallelogram
+  ['[\\', '\\]', 'rect'],
+  ['[', ']', 'rect'],
+  ['(', ')', 'round'],
+  ['{', '}', 'rect'],       // diamond → a rounded rect with a tint; shape fidelity isn't the point
+  ['>', ']', 'rect'],       // asymmetric
+];
 
 const DEFAULT_PALETTE = {
   fill: '#f8fafc', stroke: '#cbd5e1', color: '#1e293b',
@@ -48,22 +59,57 @@ function esc(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// Split a label into display lines: explicit <br/> first, then greedy wrap on words.
-function wrapLabel(raw, maxChars = 22) {
+// Labels carry inline HTML — models write `Name<br/><i>what it does</i>` constantly, and a
+// renderer that only knows <br/> prints the tags themselves, which a reader reads as a bug.
+// A whole line wrapped in one emphasis tag becomes a styled line; a formatting tag anywhere
+// else is dropped, because half-styled runs would need per-run text layout for very little.
+//
+// ONLY the formatting tags below are dropped. Anything else a label contains is left exactly
+// as the model wrote it and escaped at render time, so `<script>` still shows up as the text
+// `<script>` rather than quietly vanishing — a renderer that eats unknown markup hides content
+// as readily as it hides an attack.
+const FORMAT_TAGS = /<\/?(?:i|em|b|strong|u|code|span|small|sup|sub)\s*\/?>/gi;
+const EMPH = [
+  [/^<(i|em)>([\s\S]*)<\/\1>$/i, 'italic'],
+  [/^<(b|strong)>([\s\S]*)<\/\1>$/i, 'bold'],
+];
+function styleOfPart(raw) {
+  let text = String(raw || '').trim();
+  let italic = false;
+  let bold = false;
+  // Peel repeatedly so `<b><i>x</i></b>` picks up both.
+  for (let n = 0; n < 3; n++) {
+    let hit = false;
+    for (const [re, kind] of EMPH) {
+      const m = re.exec(text);
+      if (!m) continue;
+      text = m[2].trim();
+      if (kind === 'italic') italic = true; else bold = true;
+      hit = true;
+    }
+    if (!hit) break;
+  }
+  return { text: text.replace(FORMAT_TAGS, ' ').trim(), italic, bold };
+}
+
+// Split a label into display lines: explicit <br/> first, then greedy wrap on words. Each line
+// carries its own emphasis so the renderer can set font-style/weight per <text> element.
+export function wrapLabel(raw, maxChars = 22) {
   const parts = String(raw || '').split(/<br\s*\/?>/i);
   const lines = [];
   for (const part of parts) {
-    const words = part.trim().split(/\s+/).filter(Boolean);
+    const { text, italic, bold } = styleOfPart(part);
+    const words = text.split(/\s+/).filter(Boolean);
     if (!words.length) continue;
     let line = '';
     for (const w of words) {
       if (!line) line = w;
       else if ((line + ' ' + w).length <= maxChars) line += ' ' + w;
-      else { lines.push(line); line = w; }
+      else { lines.push({ text: line, italic, bold }); line = w; }
     }
-    if (line) lines.push(line);
+    if (line) lines.push({ text: line, italic, bold });
   }
-  return lines.length ? lines : [''];
+  return lines.length ? lines : [{ text: '', italic: false, bold: false }];
 }
 
 // Strip mermaid's quoting around a label.
@@ -73,14 +119,24 @@ function cleanLabel(s) {
   return t.trim();
 }
 
-// Split one line into node tokens + the edge labels between them, honouring brackets and
-// quotes so an arrow inside a label can't be read as a connector. Returns null when the line
-// holds no top-level edge operator. Handles chains: A --> B -->|yes| C.
-const EDGE_OPS = ['-.->', '==>', '===>', '-->', '--->', '---', '-.-'];
+// ONE connector, matched at the current scan position:
+//   an optional opening head `<`, a run of -/=/. , an optional mid-label (`A -- yes --> B`),
+//   and an optional closing head `>` / `o` / `x`.
+// The head characters are excluded from the body and from the mid-label, so `-->` can never be
+// read as a body and `A --> B` can never swallow `B` as a label.
+const CONNECTOR = /^(<?)([-=.]{2,})(?:[ \t]*([^-=<>|\n]{1,80}?)[ \t]*([-=.]{2,}))?([>ox]?)/;
+
+/**
+ * Split one line into node tokens + the edge labels between them, honouring brackets and
+ * quotes so an arrow inside a label can't be read as a connector. Returns null when the line
+ * holds no top-level edge operator. Handles chains (`A --> B -->|yes| C`), bidirectional
+ * links (`A <--> B`) and mid-line labels (`A -- yes --> B`).
+ */
 export function splitEdgeChain(line) {
   const s = String(line || '');
   const parts = [];
   const labels = [];
+  const bidir = [];
   let buf = '';
   let depth = 0;
   let quote = '';
@@ -90,16 +146,17 @@ export function splitEdgeChain(line) {
     if (ch === '"' || ch === "'") { quote = ch; buf += ch; continue; }
     if (ch === '[' || ch === '(' || ch === '{') { depth++; buf += ch; continue; }
     if (ch === ']' || ch === ')' || ch === '}') { depth = Math.max(0, depth - 1); buf += ch; continue; }
-    if (depth === 0 && (ch === '-' || ch === '=')) {
-      const op = EDGE_OPS.find((o) => s.startsWith(o, i));
-      if (op) {
-        i += op.length - 1;
-        // An optional |label| directly after the arrow.
-        let label = '';
+    if (depth === 0 && (ch === '-' || ch === '=' || ch === '<')) {
+      const m = CONNECTOR.exec(s.slice(i));
+      // A `<` only opens a connector when a real arrow body follows it.
+      if (m && (ch !== '<' || m[1])) {
+        i += m[0].length - 1;
+        let label = (m[3] || '').trim();
+        // An explicit |label| directly after the arrow wins over a mid-line one.
         const rest = s.slice(i + 1);
         const lm = rest.match(/^\s*\|([^|]*)\|/);
         if (lm) { label = lm[1]; i += lm[0].length; }
-        parts.push(buf); labels.push(label); buf = '';
+        parts.push(buf); labels.push(label); bidir.push(m[1] === '<'); buf = '';
         continue;
       }
     }
@@ -107,11 +164,11 @@ export function splitEdgeChain(line) {
   }
   parts.push(buf);
   if (parts.length < 2) return null;
-  return { parts: parts.map((p) => p.trim().replace(/;$/, '')).filter(Boolean), labels };
+  return { parts: parts.map((p) => p.trim().replace(/;$/, '')).filter(Boolean), labels, bidir };
 }
 
 /**
- * Parse a mermaid flowchart into { dir, nodes: Map, edges: [] , classes }.
+ * Parse a mermaid flowchart into { dir, nodes, edges, classDefs, nodeClass, groups }.
  * Returns null when the text isn't a flowchart we handle.
  */
 export function parseFlowchart(text) {
@@ -120,38 +177,78 @@ export function parseFlowchart(text) {
   if (!header) return null;
   const dir = header[1].toUpperCase();
 
-  const nodes = new Map(); // id -> { id, label }
-  const edges = [];        // { from, to, label }
+  const nodes = new Map(); // id -> { id, label, shape }
+  const edges = [];        // { from, to, label, both }
   const classDefs = new Map();
   const nodeClass = new Map();
+  const groups = [];       // [{ id, title, members: [] }] — subgraphs, in source order
+  const stack = [];        // open subgraphs; the innermost one owns a node
+  const memberOf = new Map();
 
-  const ensure = (id, label) => {
+  const claim = (id) => {
+    const g = stack[stack.length - 1];
+    if (!g || memberOf.has(id)) return;
+    memberOf.set(id, g);
+    g.members.push(id);
+  };
+  const ensure = (id, label, shape) => {
     const key = String(id).trim();
     if (!key) return null;
-    if (!nodes.has(key)) nodes.set(key, { id: key, label: label != null ? label : key });
-    else if (label != null) nodes.get(key).label = label;
+    if (!nodes.has(key)) nodes.set(key, { id: key, label: label != null ? label : key, shape: shape || 'rect' });
+    else {
+      const n = nodes.get(key);
+      if (label != null) n.label = label;
+      if (shape) n.shape = shape;
+    }
+    claim(key);
     return nodes.get(key);
   };
 
-  // `ID["label"]` / `ID(label)` / `ID{label}` → id + label, else a bare id.
+  // `ID["label"]` / `ID(label)` / `ID[("label")]` / `ID{label}` → id + label + shape, else a
+  // bare id. The label runs to the LAST closer, so brackets inside a label survive.
   function readNodeToken(token) {
     const t = token.trim();
     if (!t) return null;
     const m = t.match(/^([A-Za-z0-9_.-]+)\s*([[({>])([\s\S]*)$/);
     if (!m) return ensure(t.replace(/^[[(]|[\])]$/g, ''), null);
-    const [, id, open, rest] = m;
-    const close = NODE_SHAPES[open] || ']';
-    // Take everything up to the LAST closing bracket, so labels may contain brackets.
-    const end = rest.lastIndexOf(close);
-    const label = end >= 0 ? rest.slice(0, end) : rest;
-    return ensure(id, cleanLabel(label.replace(/^[([{>]+/, '')));
+    const id = m[1];
+    const after = t.slice(id.length).trim();
+    for (const [open, close, shape] of NODE_SHAPES) {
+      if (!after.startsWith(open)) continue;
+      const rest = after.slice(open.length);
+      const end = rest.lastIndexOf(close);
+      return ensure(id, cleanLabel(end >= 0 ? rest.slice(0, end) : rest), shape);
+    }
+    return ensure(id, null);
   }
 
-  for (let raw of src.split('\n')) {
+  for (const raw of src.split('\n')) {
     const line = raw.trim();
     if (!line || /^%%/.test(line)) continue;                 // comment
     if (/^(?:flowchart|graph)\b/i.test(line)) continue;      // header
-    if (/^(?:subgraph|end)\b/i.test(line)) continue;         // subgraphs: flattened, not drawn
+    if (/^direction\b/i.test(line)) continue;                // per-subgraph direction: not modelled
+
+    // subgraph CP["Control Plane"] / subgraph CP [Control Plane] / subgraph Control Plane
+    const sg = line.match(/^subgraph\b\s*(.*)$/i);
+    if (sg) {
+      const rest = sg[1].trim();
+      const withLabel = rest.match(/^([A-Za-z0-9_.-]+)\s*([[("])([\s\S]*)$/);
+      let id = rest || `sub${groups.length + 1}`;
+      let title = rest;
+      if (withLabel) {
+        id = withLabel[1];
+        const open = withLabel[2];
+        const close = open === '[' ? ']' : open === '(' ? ')' : '"';
+        const body = withLabel[3];
+        const end = body.lastIndexOf(close);
+        title = cleanLabel(end >= 0 ? body.slice(0, end) : body);
+      }
+      const g = { id, title: cleanLabel(title), members: [] };
+      groups.push(g);
+      stack.push(g);
+      continue;
+    }
+    if (/^end\b/i.test(line)) { stack.pop(); continue; }
 
     // classDef name fill:#fff,color:#000,stroke:#ccc
     const cd = line.match(/^classDef\s+([A-Za-z0-9_-]+)\s+(.+?);?$/i);
@@ -180,35 +277,46 @@ export function parseFlowchart(text) {
       let prev = readNodeToken(seg.parts[0]);
       for (let k = 1; k < seg.parts.length; k++) {
         const next = readNodeToken(seg.parts[k]);
-        if (prev && next) edges.push({ from: prev.id, to: next.id, label: cleanLabel(seg.labels[k - 1] || '') });
+        if (prev && next) {
+          edges.push({
+            from: prev.id, to: next.id,
+            label: cleanLabel(seg.labels[k - 1] || ''),
+            both: !!seg.bidir[k - 1],
+          });
+        }
         prev = next;
       }
       continue;
     }
-    // A standalone node definition.
+    // A standalone node definition, or a bare id inside a subgraph — which is how mermaid
+    // says "this existing node belongs to this group".
     if (/^[A-Za-z0-9_.-]+\s*[[({>]/.test(line)) { readNodeToken(line); continue; }
+    if (stack.length && /^[A-Za-z0-9_.-]+;?$/.test(line)) { ensure(line.replace(/;$/, ''), null); continue; }
   }
 
   if (!nodes.size) return null;
-  return { dir, nodes, edges, classDefs, nodeClass };
+  return { dir, nodes, edges, classDefs, nodeClass, groups: groups.filter((g) => g.members.length) };
 }
 
-// Longest-path ranking: a node sits one level below its deepest parent. Cycles are broken by
-// the visited guard, so a malformed graph still lays out instead of hanging.
-function rankNodes(nodes, edges) {
+// Longest-path ranking over a SUBSET of the graph: a node sits one level below its deepest
+// parent. Cycles are broken by the visited guard, so a malformed graph still lays out instead
+// of hanging. Taking ids rather than the whole node map is what lets one subgraph be laid out
+// on its own, by the same code that lays out the chart as a whole.
+function rankNodes(ids, edges) {
+  const set = new Set(ids);
   const parents = new Map();
   const children = new Map();
-  for (const id of nodes.keys()) { parents.set(id, []); children.set(id, []); }
+  for (const id of set) { parents.set(id, []); children.set(id, []); }
   for (const e of edges) {
-    if (!nodes.has(e.from) || !nodes.has(e.to)) continue;
+    if (!set.has(e.from) || !set.has(e.to)) continue;
     parents.get(e.to).push(e.from);
     children.get(e.from).push(e.to);
   }
   const rank = new Map();
-  const roots = [...nodes.keys()].filter((id) => parents.get(id).length === 0);
-  const queue = roots.length ? [...roots] : [nodes.keys().next().value];
+  const roots = [...set].filter((id) => parents.get(id).length === 0);
+  const queue = roots.length ? [...roots] : [set.values().next().value];
   for (const r of queue) rank.set(r, 0);
-  let guard = nodes.size * 4;
+  let guard = set.size * 4;
   while (queue.length && guard-- > 0) {
     const id = queue.shift();
     const r = rank.get(id) || 0;
@@ -217,7 +325,7 @@ function rankNodes(nodes, edges) {
       if ((rank.get(c) ?? -1) < want) { rank.set(c, want); queue.push(c); }
     }
   }
-  for (const id of nodes.keys()) if (!rank.has(id)) rank.set(id, 0);
+  for (const id of set) if (!rank.has(id)) rank.set(id, 0);
   return { rank, parents, children };
 }
 
@@ -225,20 +333,25 @@ const CHAR_W = 7.1;   // ~13px system-ui average advance; good enough for box si
 const LINE_H = 18;
 const PAD_X = 14;
 const PAD_Y = 12;
+const GROUP_PAD = 16;     // breathing room between a subgraph's frame and its nodes
+const GROUP_TITLE_H = 28; // the band the subgraph's own name sits in
 
 function measure(labelLines) {
-  const w = Math.max(...labelLines.map((l) => l.length)) * CHAR_W + PAD_X * 2;
+  const w = Math.max(...labelLines.map((l) => l.text.length * (l.bold ? 1.07 : 1))) * CHAR_W + PAD_X * 2;
   const h = labelLines.length * LINE_H + PAD_Y * 2;
   return { w: Math.max(72, Math.round(w)), h: Math.round(h) };
 }
 
-/** Lay the graph out on a grid: rank → row (TB) or column (LR). Pure geometry. */
-export function layoutFlowchart(graph, { dir = graph.dir, gapMain = 56, gapCross = 22 } = {}) {
-  const { nodes, edges } = graph;
-  const { rank, parents, children } = rankNodes(nodes, edges);
-
+/**
+ * Place a set of ids on a grid: rank → row (TB) or column (LR). PURE geometry over sizes, so
+ * it serves both levels of a clustered chart — the nodes inside one subgraph, and the
+ * subgraphs themselves as blocks.
+ */
+function placeGrid(ids, edges, sizeOf, { horizontal, gapMain = 56, gapCross = 22 } = {}) {
+  const { rank, parents } = rankNodes(ids, edges);
   const byRank = new Map();
-  for (const [id, r] of rank) {
+  for (const id of ids) {
+    const r = rank.get(id) || 0;
     if (!byRank.has(r)) byRank.set(r, []);
     byRank.get(r).push(id);
   }
@@ -247,32 +360,24 @@ export function layoutFlowchart(graph, { dir = graph.dir, gapMain = 56, gapCross
   const order = new Map();
   const ranks = [...byRank.keys()].sort((a, b) => a - b);
   for (const r of ranks) {
-    const ids = byRank.get(r);
-    if (r === ranks[0]) { ids.forEach((id, i) => order.set(id, i)); continue; }
-    ids.sort((a, b) => {
+    const list = byRank.get(r);
+    if (r === ranks[0]) { list.forEach((id, i) => order.set(id, i)); continue; }
+    list.sort((a, b) => {
       const pa = parents.get(a).map((p) => order.get(p) ?? 0);
       const pb = parents.get(b).map((p) => order.get(p) ?? 0);
       const ma = pa.length ? pa.reduce((x, y) => x + y, 0) / pa.length : 0;
       const mb = pb.length ? pb.reduce((x, y) => x + y, 0) / pb.length : 0;
       return ma - mb;
     });
-    ids.forEach((id, i) => order.set(id, i));
-  }
-
-  const horizontal = dir === 'LR' || dir === 'RL';
-  const box = new Map();
-  for (const [id, n] of nodes) {
-    const lines = wrapLabel(n.label);
-    const { w, h } = measure(lines);
-    box.set(id, { id, lines, w, h, rank: rank.get(id) || 0 });
+    list.forEach((id, i) => order.set(id, i));
   }
 
   // Cross-axis extent of each rank, then centre every rank in the widest one.
   const rankExtent = new Map();
   for (const r of ranks) {
-    const ids = byRank.get(r);
-    const total = ids.reduce((sum, id) => sum + (horizontal ? box.get(id).h : box.get(id).w), 0)
-      + gapCross * Math.max(0, ids.length - 1);
+    const list = byRank.get(r);
+    const total = list.reduce((sum, id) => sum + (horizontal ? sizeOf(id).h : sizeOf(id).w), 0)
+      + gapCross * Math.max(0, list.length - 1);
     rankExtent.set(r, total);
   }
   const maxExtent = Math.max(...rankExtent.values(), 1);
@@ -282,24 +387,139 @@ export function layoutFlowchart(graph, { dir = graph.dir, gapMain = 56, gapCross
   let main = 0;
   for (const r of ranks) {
     mainOffset.set(r, main);
-    const size = Math.max(...byRank.get(r).map((id) => (horizontal ? box.get(id).w : box.get(id).h)));
+    const size = Math.max(...byRank.get(r).map((id) => (horizontal ? sizeOf(id).w : sizeOf(id).h)));
     main += size + gapMain;
   }
   const mainTotal = Math.max(0, main - gapMain);
 
+  const pos = new Map();
   for (const r of ranks) {
-    const ids = byRank.get(r);
     let cross = (maxExtent - rankExtent.get(r)) / 2;
-    for (const id of ids) {
-      const b = box.get(id);
-      if (horizontal) { b.x = mainOffset.get(r); b.y = cross; cross += b.h + gapCross; }
-      else { b.x = cross; b.y = mainOffset.get(r); cross += b.w + gapCross; }
+    for (const id of byRank.get(r)) {
+      const s = sizeOf(id);
+      if (horizontal) { pos.set(id, { x: mainOffset.get(r), y: cross }); cross += s.h + gapCross; }
+      else { pos.set(id, { x: cross, y: mainOffset.get(r) }); cross += s.w + gapCross; }
+    }
+  }
+  return {
+    pos,
+    rank,
+    width: horizontal ? mainTotal : maxExtent,
+    height: horizontal ? maxExtent : mainTotal,
+  };
+}
+
+function boxesFor(graph, ids) {
+  const boxes = new Map();
+  for (const id of ids) {
+    const n = graph.nodes.get(id);
+    const lines = wrapLabel(n.label);
+    const { w, h } = measure(lines);
+    boxes.set(id, { id, lines, w, h, shape: n.shape || 'rect', rank: 0 });
+  }
+  return boxes;
+}
+
+/** One grid, no clusters: rank → row (TB) or column (LR). Pure geometry. */
+function layoutFlat(graph, { dir = graph.dir, gapMain = 56, gapCross = 22 } = {}) {
+  const horizontal = dir === 'LR' || dir === 'RL';
+  const ids = [...graph.nodes.keys()];
+  const boxes = boxesFor(graph, ids);
+  const placed = placeGrid(ids, graph.edges, (id) => boxes.get(id), { horizontal, gapMain, gapCross });
+  for (const [id, b] of boxes) {
+    const p = placed.pos.get(id);
+    b.x = p.x; b.y = p.y; b.rank = placed.rank.get(id) || 0;
+  }
+  return {
+    boxes, edges: graph.edges, dir, horizontal, clusters: [],
+    width: placed.width, height: placed.height,
+  };
+}
+
+/**
+ * Lay a chart out CLUSTER-FIRST: every subgraph is laid out on its own, then placed as a
+ * single block in the chart around it.
+ *
+ * Flattening subgraphs (what this used to do) does not just lose the frame, it loses the
+ * meaning. A "control plane / worker node" diagram flattened is nine boxes whose grouping was
+ * the entire point — and a member with no edges of its own, like a kube-proxy, drifts up to
+ * rank 0 among strangers. Two levels of the SAME grid fix both: members only rank against
+ * each other, so a group holds together, and groups rank against each other by the edges that
+ * cross between them. A chart with no subgraphs never reaches this function.
+ */
+function layoutClustered(graph, { dir = graph.dir, gapMain = 56, gapCross = 22 } = {}) {
+  const horizontal = dir === 'LR' || dir === 'RL';
+  const boxes = boxesFor(graph, [...graph.nodes.keys()]);
+
+  // Every node belongs to exactly one cluster: its subgraph, or a cluster of its own.
+  const clusterOf = new Map();
+  const clusters = new Map();
+  graph.groups.forEach((g, i) => {
+    const key = `g${i}`;
+    clusters.set(key, { key, title: g.title || g.id, group: true, ids: [] });
+    for (const m of g.members) if (graph.nodes.has(m) && !clusterOf.has(m)) clusterOf.set(m, key);
+  });
+  for (const id of graph.nodes.keys()) {
+    const key = clusterOf.get(id) || `n:${id}`;
+    if (!clusters.has(key)) clusters.set(key, { key, title: '', group: false, ids: [] });
+    clusterOf.set(id, key);
+    clusters.get(key).ids.push(id);
+  }
+
+  // Inner layout, one cluster at a time, using only the edges that stay inside it.
+  for (const c of clusters.values()) {
+    const inner = placeGrid(c.ids, graph.edges, (id) => boxes.get(id), { horizontal, gapMain, gapCross });
+    c.inner = inner;
+    c.padL = c.group ? GROUP_PAD : 0;
+    c.padT = c.group ? GROUP_TITLE_H : 0;
+    c.w = inner.width + c.padL * 2;
+    c.h = inner.height + c.padT + (c.group ? GROUP_PAD : 0);
+  }
+
+  // Cluster-level edges: one per crossing PAIR, so the ranking sees structure, not volume.
+  const seen = new Set();
+  const clusterEdges = [];
+  for (const e of graph.edges) {
+    const a = clusterOf.get(e.from);
+    const b = clusterOf.get(e.to);
+    if (!a || !b || a === b) continue;
+    const key = `${a} ${b}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    clusterEdges.push({ from: a, to: b });
+  }
+
+  const keys = [...clusters.keys()];
+  const outer = placeGrid(keys, clusterEdges, (k) => clusters.get(k), {
+    horizontal, gapMain: gapMain + 14, gapCross: gapCross + 16,
+  });
+  for (const k of keys) {
+    const c = clusters.get(k);
+    const p = outer.pos.get(k);
+    c.x = p.x; c.y = p.y;
+    const clusterRank = outer.rank.get(k) || 0;
+    for (const id of c.ids) {
+      const b = boxes.get(id);
+      const ip = c.inner.pos.get(id);
+      b.x = c.x + c.padL + ip.x;
+      b.y = c.y + c.padT + ip.y;
+      b.rank = clusterRank + (c.inner.rank.get(id) || 0);
     }
   }
 
-  const width = horizontal ? mainTotal : maxExtent;
-  const height = horizontal ? maxExtent : mainTotal;
-  return { boxes: box, edges, dir, width, height, horizontal, children };
+  return {
+    boxes, edges: graph.edges, dir, horizontal,
+    clusters: [...clusters.values()].filter((c) => c.group),
+    width: outer.width, height: outer.height,
+  };
+}
+
+/**
+ * Lay a parsed chart out. A chart with subgraphs is laid out cluster-first; one without takes
+ * the single grid, byte for byte as before. Callers never choose — the chart does.
+ */
+export function layoutFlowchart(graph, opts = {}) {
+  return graph.groups?.length ? layoutClustered(graph, opts) : layoutFlat(graph, opts);
 }
 
 function styleFor(id, graph, rankIdx) {
@@ -316,6 +536,12 @@ function styleFor(id, graph, rankIdx) {
   return RANK_TINTS[Math.min(rankIdx, RANK_TINTS.length - 1)];
 }
 
+function radiusFor(b) {
+  if (b.shape === 'pill') return Math.round(Math.min(b.h, b.w) / 2);
+  if (b.shape === 'round') return 16;
+  return 9;
+}
+
 /**
  * Mermaid flowchart text → a complete SVG document string, or null if it isn't a flowchart
  * this renderer handles (the caller then keeps the code block).
@@ -323,7 +549,8 @@ function styleFor(id, graph, rankIdx) {
 export function renderFlowchartSvg(text, { padding = 18, maxWidth = 1400, autoFlip = true } = {}) {
   const graph = parseFlowchart(text);
   if (!graph) return null;
-  let L = layoutFlowchart(graph);
+  const lay = (opts) => layoutFlowchart(graph, opts);
+  let L = lay({});
   if (!L.boxes.size) return null;
 
   // A broad tree laid out top-down (one root, six categories, ~28 leaves) becomes a 3000px
@@ -333,8 +560,8 @@ export function renderFlowchartSvg(text, { padding = 18, maxWidth = 1400, autoFl
   // the Code view always shows what the model actually wrote.
   if (autoFlip) {
     const aspect = L.width / Math.max(1, L.height);
-    if (aspect > 2.2 && !L.horizontal) L = layoutFlowchart(graph, { dir: 'LR' });
-    else if (aspect < 0.25 && L.horizontal) L = layoutFlowchart(graph, { dir: 'TB' });
+    if (aspect > 2.2 && !L.horizontal) L = lay({ dir: 'LR' });
+    else if (aspect < 0.25 && L.horizontal) L = lay({ dir: 'TB' });
   }
 
   const W = Math.min(maxWidth, Math.ceil(L.width + padding * 2));
@@ -351,24 +578,49 @@ export function renderFlowchartSvg(text, { padding = 18, maxWidth = 1400, autoFl
 
   const px = (v) => Math.round(v * 10) / 10;
 
-  // Edges first, so boxes paint over the joins.
+  // Subgraph frames first — they sit UNDER everything, as the surface a group is drawn on.
+  for (const c of L.clusters) {
+    out.push(
+      `<rect x="${px(c.x + padding)}" y="${px(c.y + padding)}" width="${px(c.w)}" height="${px(c.h)}" rx="14" `
+      + `fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="5 4"/>`,
+    );
+    if (c.title) {
+      out.push(
+        `<text x="${px(c.x + padding + 14)}" y="${px(c.y + padding + 19)}" font-size="12" font-weight="700" `
+        + `fill="#475569">${esc(c.title.slice(0, 48))}</text>`,
+      );
+    }
+  }
+
+  // Edges next, so boxes paint over the joins.
   for (const e of L.edges) {
     const a = L.boxes.get(e.from);
     const b = L.boxes.get(e.to);
     if (!a || !b) continue;
     let x1, y1, x2, y2, d;
     if (L.horizontal) {
-      x1 = a.x + a.w + padding; y1 = a.y + a.h / 2 + padding;
-      x2 = b.x + padding;       y2 = b.y + b.h / 2 + padding;
+      // Leave from whichever face actually points at the target: with subgraphs an edge can
+      // run backwards, and a curve out of the wrong face reads as a different connection.
+      const back = b.x + b.w < a.x;
+      x1 = back ? a.x + padding : a.x + a.w + padding;
+      y1 = a.y + a.h / 2 + padding;
+      x2 = back ? b.x + b.w + padding : b.x + padding;
+      y2 = b.y + b.h / 2 + padding;
       const mx = (x1 + x2) / 2;
       d = `M${px(x1)},${px(y1)} C${px(mx)},${px(y1)} ${px(mx)},${px(y2)} ${px(x2)},${px(y2)}`;
     } else {
-      x1 = a.x + a.w / 2 + padding; y1 = a.y + a.h + padding;
-      x2 = b.x + b.w / 2 + padding; y2 = b.y + padding;
+      const back = b.y + b.h < a.y;
+      x1 = a.x + a.w / 2 + padding;
+      y1 = back ? a.y + padding : a.y + a.h + padding;
+      x2 = b.x + b.w / 2 + padding;
+      y2 = back ? b.y + b.h + padding : b.y + padding;
       const my = (y1 + y2) / 2;
       d = `M${px(x1)},${px(y1)} C${px(x1)},${px(my)} ${px(x2)},${px(my)} ${px(x2)},${px(y2)}`;
     }
-    out.push(`<path d="${d}" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a)"/>`);
+    // A bidirectional link (`A <--> B`) gets a head at BOTH ends — the marker is declared
+    // orient="auto-start-reverse", so the same one points the right way at the start.
+    const startHead = e.both ? ' marker-start="url(#a)"' : '';
+    out.push(`<path d="${d}" fill="none" stroke="#94a3b8" stroke-width="1.5"${startHead} marker-end="url(#a)"/>`);
     if (e.label) {
       const lx = (x1 + x2) / 2;
       const ly = (y1 + y2) / 2;
@@ -382,14 +634,15 @@ export function renderFlowchartSvg(text, { padding = 18, maxWidth = 1400, autoFl
   for (const [id, b] of L.boxes) {
     const s = styleFor(id, graph, b.rank);
     out.push(
-      `<rect x="${px(b.x + padding)}" y="${px(b.y + padding)}" width="${px(b.w)}" height="${px(b.h)}" rx="9" `
+      `<rect x="${px(b.x + padding)}" y="${px(b.y + padding)}" width="${px(b.w)}" height="${px(b.h)}" rx="${radiusFor(b)}" `
       + `fill="${esc(s.fill)}" stroke="${esc(s.stroke)}" stroke-width="1.5"/>`,
     );
     const startY = b.y + padding + PAD_Y + LINE_H - 5;
     b.lines.forEach((line, i) => {
+      const style = (line.italic ? ' font-style="italic"' : '') + (line.bold ? ' font-weight="700"' : '');
       out.push(
         `<text x="${px(b.x + b.w / 2 + padding)}" y="${px(startY + i * LINE_H)}" font-size="13" `
-        + `fill="${esc(s.color)}" text-anchor="middle">${esc(line)}</text>`,
+        + `fill="${esc(s.color)}" text-anchor="middle"${style}>${esc(line.text)}</text>`,
       );
     });
   }

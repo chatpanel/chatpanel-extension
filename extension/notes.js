@@ -633,7 +633,17 @@ function setAlign(a) {
 }
 function updatePreview() {
   const md = $('n-body').value;
-  $('n-preview').innerHTML = renderMarkdown(md);
+  const view = $('n-preview');
+  view.innerHTML = renderMarkdown(md);
+  // A ```mermaid fence is only a PLACEHOLDER after renderMarkdown — the picture is drawn by
+  // js/diagram-artifact.js, which the reading view never called, so a note's flowchart read as
+  // source here exactly as it did in Live mode. Imported (and the renderer with it) only when
+  // this note has one, so Notes' first paint is untouched.
+  if (view.querySelector('.md-artifact-mermaid:not([data-artifact-ready])')) {
+    import('./js/diagram-artifact.js')
+      .then(({ mountDiagrams }) => mountDiagrams(view))
+      .catch(() => { /* the code block stays visible */ });
+  }
   mirrorToCm(md); // when Live mode is active, keep the CM6 surface in sync with the model
 }
 

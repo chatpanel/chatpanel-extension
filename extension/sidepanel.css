@@ -998,24 +998,12 @@ html.surface-tab .topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
   max-width: 100%; height: auto; border-radius: 10px; display: block; margin: 8px 0;
   border: 1px solid var(--line, #e4e7ec); background: #fff;
 }
-.md-artifact { margin: 10px 0; }
 .md-artifact-svg img { padding: 8px; }
+/* The artifact CARD chrome (bar, buttons, diagram figure) lives in artifacts.css — Notes
+   renders the same cards and does not load this file. Linked from sidepanel.html. */
 
 /* Interactive artifacts — Preview | Code | Open, with the sandboxed frame. */
 .md-artifact-html { border: 1px solid var(--line, #e4e7ec); border-radius: 10px; overflow: hidden; margin: 10px 0; }
-/* The bar carries seven controls and the panel is ~350px wide, so it MUST wrap: without
-   flex-wrap the buttons shrank below their own text and every label broke into a
-   three-line stack ("Pre / vie / w"). */
-.artifact-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; background: var(--field, #f7f8fa); border-bottom: 1px solid var(--line, #e4e7ec); }
-.artifact-btn {
-  font: inherit; font-size: 11.5px; padding: 3px 9px; border-radius: 6px; cursor: pointer;
-  border: 1px solid var(--line, #e4e7ec); background: transparent; color: var(--muted, #646b76);
-  white-space: nowrap; flex: 0 0 auto;
-}
-.artifact-btn:hover { background: var(--card, #fff); color: var(--text, #181b20); }
-.artifact-btn.is-on { background: var(--accent-weak, rgba(91,91,240,.10)); color: var(--accent, #5b5bf0); border-color: var(--accent-line, rgba(91,91,240,.32)); font-weight: 600; }
-.artifact-open { margin-left: auto; }
-.artifact-status { font-size: 11px; color: var(--muted, #646b76); }
 .artifact-stage { display: none; background: #fff; }
 .artifact-frame { width: 100%; border: 0; display: block; }
 .md-artifact-html .artifact-src { margin: 0; border-radius: 0; }
@@ -1028,12 +1016,6 @@ html.surface-tab .topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
 }
 .artifact-editor:focus { outline: 2px solid var(--accent-line, rgba(91,91,240,.32)); outline-offset: -2px; }
 .artifact-run { color: var(--accent, #5b5bf0); border-color: var(--accent-line, rgba(91,91,240,.32)); font-weight: 600; }
-.artifact-btn:disabled { opacity: .45; cursor: default; }
-.artifact-btn:disabled:hover { background: transparent; color: var(--muted, #646b76); }
-.artifact-diagram { padding: 10px; background: #fff; overflow-x: auto; }
-.artifact-diagram img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
-.md-artifact-mermaid { border: 1px solid var(--line, #e4e7ec); border-radius: 10px; overflow: hidden; margin: 10px 0; }
-.md-artifact-mermaid .artifact-src { margin: 0; border-radius: 0; display: none; }
 
 /* Syntax highlighting tokens — tuned for both themes via the shared palette. */
 .tok-com { color: #6b7280; font-style: italic; }
@@ -1055,8 +1037,6 @@ html.surface-tab .topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
   .tok-tag { color: #f9a8d4; }
   .tok-atr { color: #fde047; }
 }
-.artifact-zoom { min-width: 30px; font-variant-numeric: tabular-nums; }
-.artifact-diagram { max-height: 70vh; overflow: auto; }
 
 /* Live redaction inspector — the before → after pairs for the open conversation. Values are
    masked until revealed, so opening the menu on a shared screen exposes nothing. */

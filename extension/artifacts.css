@@ -1,0 +1,45 @@
+/* artifacts.css — the presentation of a rendered artifact CARD (diagram / interactive HTML).
+ *
+ * It lives in its own file rather than in sidepanel.css because the cards are no longer a
+ * chat-only thing: Notes renders the same ```mermaid block in its reading view AND inside
+ * the CodeMirror live editor, and notes.html does not load sidepanel.css. Two copies of
+ * these rules would drift, so there is one — linked statically by the panel (which always
+ * has bubbles that can carry one) and injected on demand by js/diagram-artifact.js on any
+ * other page, so a page that never shows a diagram never pays for the stylesheet.
+ *
+ * Both palettes are supported through fallbacks: the panel names its hairline --line, the
+ * dashboards name it --border. Neither page has to be changed to host a card.
+ */
+
+.md-artifact { margin: 10px 0; }
+
+.artifact-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px;
+  background: var(--field, #f7f8fa);
+  border-bottom: 1px solid var(--line, var(--border, #e4e7ec));
+}
+.artifact-btn {
+  font: inherit; font-size: 11.5px; padding: 3px 9px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line, var(--border, #e4e7ec)); background: transparent;
+  color: var(--muted, #646b76); white-space: nowrap; flex: 0 0 auto;
+}
+.artifact-btn:hover { background: var(--card, #fff); color: var(--text, #181b20); }
+.artifact-btn.is-on {
+  background: var(--accent-weak, rgba(91, 91, 240, .10)); color: var(--accent, #5b5bf0);
+  border-color: var(--accent-line, var(--accent-weak, rgba(91, 91, 240, .32))); font-weight: 600;
+}
+.artifact-btn:disabled { opacity: .45; cursor: default; }
+.artifact-btn:disabled:hover { background: transparent; color: var(--muted, #646b76); }
+.artifact-open { margin-left: auto; }
+.artifact-status { font-size: 11px; color: var(--muted, #646b76); }
+.artifact-zoom { min-width: 30px; font-variant-numeric: tabular-nums; }
+
+/* The diagram itself. White ground on purpose in both themes — the SVG carries a light
+   palette of its own, and a dark box behind light nodes reads as a mistake. */
+.md-artifact-mermaid {
+  border: 1px solid var(--line, var(--border, #e4e7ec)); border-radius: 10px;
+  overflow: hidden; margin: 10px 0; background: var(--card, #fff);
+}
+.md-artifact-mermaid .artifact-src { margin: 0; border-radius: 0; display: none; }
+.artifact-diagram { padding: 10px; background: #fff; overflow: auto; max-height: 70vh; }
+.artifact-diagram img { display: block; max-width: 100%; height: auto; margin: 0 auto; }

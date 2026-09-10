@@ -78,6 +78,29 @@ class CheckboxWidget extends WidgetType {
   }
 }
 
+// A ```mermaid fence is markdown like any other, but renderMarkdown only emits a PLACEHOLDER
+// for it — the picture is drawn by js/diagram-artifact.js, which the panel called and Live mode
+// did not, so a flowchart in a note stayed a wall of source. The module is `await import()`ed
+// the first time a note actually contains a diagram (and it pulls the renderer in only then),
+// so a note without one loads neither.
+//
+// Mounting is attempted SYNCHRONOUSLY once that module is warm: the widget is rebuilt whenever
+// the cursor moves and re-created when the block scrolls back into view, and awaiting on each
+// of those would flash the source before the picture. The async path is only the first diagram.
+let diagramMod = null;
+function mountDiagram(view, wrap) {
+  if (!wrap.querySelector('.md-artifact-mermaid')) return;
+  // Re-derived at click time via posAtDOM, like every other position in here, so it survives
+  // the edits and remaps that happen while the card is on screen.
+  const onEdit = () => { view.dispatch({ selection: { anchor: view.posAtDOM(wrap) } }); view.focus(); };
+  if (diagramMod?.mountDiagramsSync(wrap, { onEdit })) return;
+  import('./diagram-artifact.js').then(async (mod) => {
+    diagramMod = mod;
+    await mod.mountDiagrams(wrap, { onEdit });
+    view.requestMeasure(); // the block just became a picture — its height is not the source's
+  }).catch(() => { /* the code block stays, which is the fail-safe */ });
+}
+
 // A whole block (GFM table, fenced code) rendered off-cursor via the SAME read-mode
 // renderMarkdown, so Live and Read match exactly — a table becomes a real grid, a ```code
 // fence becomes a styled <pre> with its fences hidden (was shown raw). Clicking drops the
@@ -91,11 +114,15 @@ class RenderedBlockWidget extends WidgetType {
     wrap.className = this.cls;
     wrap.innerHTML = renderMarkdown(this.md);
     wrap.addEventListener('mousedown', (e) => {
-      if (e.target.closest('a, input')) return; // let links / task checkboxes work
+      // Let links / task checkboxes work — and leave the diagram card alone entirely: its bar
+      // is buttons, and its figure scrolls, so placing the caret there would destroy the widget
+      // mid-click. The card carries its own Edit button for the way back to the source.
+      if (e.target.closest('a, input, .md-artifact-mermaid')) return;
       e.preventDefault();
       view.dispatch({ selection: { anchor: view.posAtDOM(wrap) } });
       view.focus();
     });
+    mountDiagram(view, wrap);
     return wrap;
   }
   ignoreEvent() { return true; } // our mousedown handles the caret; keep CM from double-acting
