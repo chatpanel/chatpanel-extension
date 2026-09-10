@@ -31,23 +31,27 @@
 // future mobile client must agree on what "the same subject" is, and three implementations
 // would mean three answers — the argument tags.js already makes for tags.
 
-/** What a subject can be. `title` is a record title someone linked to with [[…]]. */
-export const SUBJECT_KINDS = Object.freeze(['person', 'topic', 'tag', 'title']);
+import { editDistance } from './distance.js';
+// The placeholder recognizer lives on its own (see that file for why). Re-exported so every
+// existing caller of entity.js is unchanged.
+import { isRedactionToken } from './redaction-tokens.js';
 
-/**
- * A subject earns a brief with EVIDENCE, not on first sight (I-K4).
- *
- * PROVISIONAL. These numbers are the W0 measurement's whole point: `surveyCorpus()` reports
- * how many subjects clear them so they can be set from a real corpus instead of taste. Do
- * not treat them as decided until that report has been run.
- */
-export const DEFAULT_THRESHOLD = Object.freeze({ records: 3, mentions: 5 });
+export { REDACTION_TOKEN_TYPES, isRedactionToken } from './redaction-tokens.js';
 
-/** Ceiling on the set of briefs, for the same reason memory.js caps memories. Provisional. */
-export const MAX_SUBJECTS = 500;
+// Naming and sizing a subject live next door, so a caller that needs only those does not
+// drag alias resolution and a Levenshtein along. Re-exported: no caller of entity.js changes.
+import {
+  DEFAULT_THRESHOLD, MAX_SUBJECTS, MAX_SUBJECT_CHARS, SELF_LABELS,
+  isSelfLabel, normalizeSubject, stripQualifiers,
+} from './subject-name.js';
+import { SUBJECT_KINDS } from './subject-kinds.js';
 
-/** Longest name we will treat as a subject — past this it is a sentence, not a subject. */
-export const MAX_SUBJECT_CHARS = 60;
+export { SUBJECT_KINDS } from './subject-kinds.js';
+export {
+  DEFAULT_THRESHOLD, MAX_SUBJECTS, MAX_SUBJECT_CHARS, SELF_LABELS, isSelfLabel,
+  normalizeSubject, stripQualifiers, subjectKey, subjectTokens,
+} from './subject-name.js';
+
 
 // Words that are never a subject on their own. A one-token candidate has to survive this
 // list before it can become a page, because "notes", "meeting" and "update" appear in every
@@ -61,36 +65,6 @@ const STOP_SUBJECTS = new Set([
 ]);
 
 /**
- * Fold a name to its canonical form: lowercase, Unicode-aware, separators collapsed.
- *
- * Spaces survive as spaces (unlike normalizeTag, which folds them to '-') because a person's
- * name is read back to the user and "alex rivera" has to be recognisable as one.
- */
-export function normalizeSubject(name) {
-  const raw = String(name ?? '').normalize('NFKC').trim().replace(/^[#@]+/, '');
-  if (!raw) return '';
-  return raw
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .trim()
-    .slice(0, MAX_SUBJECT_CHARS)
-    .trim();
-}
-
-/** `person:alex rivera` — the identity a brief is filed under. '' when nothing survives. */
-export function subjectKey(kind, name) {
-  const norm = normalizeSubject(name);
-  if (!norm || !SUBJECT_KINDS.includes(kind)) return '';
-  return `${kind}:${norm}`;
-}
-
-/** Tokens of a canonical name. */
-export function subjectTokens(name) {
-  const norm = normalizeSubject(name);
-  return norm ? norm.split(' ').filter(Boolean) : [];
-}
-
-/**
  * Is this string worth considering as a subject at all?
  *
  * Rejects blanks, over-long phrases, pure numbers and the stop list above. A multi-token
@@ -101,6 +75,13 @@ export function isSubjectCandidate(name, { kind = 'topic' } = {}) {
   // Length is judged BEFORE folding: normalizeSubject truncates at MAX_SUBJECT_CHARS, so a
   // check on its output can never fire and a whole sentence would slip through as a subject.
   if (String(name ?? '').trim().length > MAX_SUBJECT_CHARS) return false;
+  // Checked on the RAW value, before folding: normalizeSubject lowercases, and the pattern
+  // is upper-case by construction.
+  if (isRedactionToken(name)) return false;
+  // "You" is a pronoun, not a person. Without a `self` name to fold it into (resolveSubjects
+  // takes one), it must not become a subject of its own — every meeting has a "You" and they
+  // are not all the same participant.
+  if (kind === 'person' && isSelfLabel(name)) return false;
   const norm = normalizeSubject(name);
   if (!norm || norm.length < 2) return false;
   const tokens = norm.split(' ').filter(Boolean);
@@ -155,12 +136,39 @@ export function aliasMap(names) {
  * Aliases are resolved per KIND: two topics can share a word without being the same topic,
  * and the person rule above must not leak into tags.
  */
-export function resolveSubjects(mentions = []) {
+export function resolveSubjects(mentions = [], { merges = null, self = '' } = {}) {
+  // The user's own name, however they told us. Everything the platforms call "you" folds
+  // into it — and with no name supplied, nothing does.
+  const selfName = String(self ?? '').trim();
+  const selfCanonical = normalizeSubject(selfName);
+  // User-authored merges: `alias canonical form -> the canonical form it belongs to`. These
+  // are an INPUT to derivation, never an edit to its output, which is what keeps I-K2 true —
+  // a rebuild that dropped the user's corrections would teach them not to make any.
+  const merged = new Map();
+  for (const [from, to] of merges instanceof Map ? merges : Object.entries(merges || {})) {
+    const a = normalizeSubject(from); const b = normalizeSubject(to);
+    if (a && b && a !== b) merged.set(a, b);
+  }
+  // One hop only. A chain (a→b, b→c) is resolved here rather than at read time, and a cycle
+  // simply stops, because a merge loop must not hang a rebuild.
+  const resolveMerge = (key) => {
+    let cur = key;
+    for (let i = 0; i < 8 && merged.has(cur); i += 1) {
+      const next = merged.get(cur);
+      if (next === cur) break;
+      cur = next;
+    }
+    return cur;
+  };
+
   const byKind = new Map();
   for (const m of mentions) {
     const kind = m?.kind;
     if (!SUBJECT_KINDS.includes(kind)) continue;
-    if (!isSubjectCandidate(m.name, { kind })) continue;
+    // A self-label survives candidacy ONLY when there is a name to fold it into. Otherwise
+    // it is a pronoun, and every meeting's "You" would pile into one fictional participant.
+    const isSelf = kind === 'person' && !!selfCanonical && isSelfLabel(m.name);
+    if (!isSelf && !isSubjectCandidate(m.name, { kind })) continue;
     if (!byKind.has(kind)) byKind.set(kind, []);
     byKind.get(kind).push(m);
   }
@@ -169,10 +177,17 @@ export function resolveSubjects(mentions = []) {
   for (const [kind, list] of byKind) {
     // Only PERSON names carry the short-form rule. A topic named "design" is not the
     // "design review" topic, and folding them would silently merge two pages.
-    const aliases = kind === 'person' ? aliasMap(list.map((m) => m.name)) : new Map();
+    const aliases = kind === 'person'
+      ? aliasMap(list.map((m) => stripQualifiers(m.name)).filter((n) => !isSelfLabel(n)))
+      : new Map();
     for (const m of list) {
-      const norm = normalizeSubject(m.name);
-      const canonical = aliases.get(norm) || norm;
+      const raw = String(m.name ?? '').trim();
+      // For a PERSON, the qualifier is decoration and the platform's "You" is the user.
+      // Both are resolved before the alias rule, so "Alex Rivera (ACME)" and "You" reach the
+      // same identity that a bare "Alex" does.
+      let norm = normalizeSubject(kind === 'person' ? stripQualifiers(raw) : raw);
+      if (kind === 'person' && selfCanonical && SELF_LABELS.includes(norm)) norm = selfCanonical;
+      const canonical = resolveMerge(aliases.get(norm) || norm);
       const key = `${kind}:${canonical}`;
       let s = subjects.get(key);
       if (!s) {
@@ -227,4 +242,97 @@ export function rankSubjects(subjects, { threshold = DEFAULT_THRESHOLD, limit = 
     .map((s) => ({ ...s, recordCount: s.records instanceof Set ? s.records.size : (s.records?.length || 0) }))
     .sort((a, b) => b.recordCount - a.recordCount || b.mentions - a.mentions || a.key.localeCompare(b.key))
     .slice(0, Math.max(0, limit));
+}
+
+/**
+ * PROPOSE merges; never apply them.
+ *
+ * The alias rule folds what it can prove. Everything it cannot is left visible — "A. Rivera"
+ * beside "Alex Rivera", an initialism beside a full name, a second spelling of a project —
+ * and a user staring at two pages for one person has no way to say so. This is that way: a
+ * deterministic, model-free list of pairs worth asking about, ranked by how likely they are.
+ *
+ * PROPOSING is the whole design. The pairs below are exactly the ones the alias rule refuses
+ * to decide on its own, because deciding wrongly merges two people permanently and silently.
+ * A human answers in one click, the answer is stored as a merge rule, and every later rebuild
+ * applies it — so the correction survives I-K2 rather than being erased by the next pass.
+ *
+ * Three signals, strongest first:
+ *   • initials — "A. Rivera" against "Alex Rivera"
+ *   • containment — one name's tokens are a subset of the other's
+ *   • near-spelling — one edit apart, or a transposition, which catches the common typos
+ *
+ * A shared SURNAME is deliberately not a signal: two people with one last name are usually
+ * two people, and proposing every such pair would bury the real suggestions.
+ */
+export function suggestMerges(subjects, { limit = 40, distance = 1 } = {}) {
+  const list = [...(subjects instanceof Map ? subjects.values() : subjects || [])]
+    .filter((s) => s && s.canonical);
+  const out = [];
+  for (let i = 0; i < list.length; i += 1) {
+    for (let j = i + 1; j < list.length; j += 1) {
+      const a = list[i]; const b = list[j];
+      if (a.kind !== b.kind) continue; // a person and a topic are never the same subject
+      const reason = mergeReason(a.canonical, b.canonical, a.kind, distance);
+      if (!reason) continue;
+      // The better-evidenced side is proposed as the survivor: it has more records behind it
+      // and is more likely the name the user actually thinks in.
+      const [keep, drop] = countOf(a) >= countOf(b) ? [a, b] : [b, a];
+      out.push({ kind: a.kind, keep: keep.key, keepName: keep.name, drop: drop.key, dropName: drop.name, reason });
+    }
+  }
+  const rank = { initials: 0, containment: 1, spelling: 2 };
+  return out
+    .sort((x, y) => (rank[x.reason] - rank[y.reason]) || x.keepName.localeCompare(y.keepName))
+    .slice(0, Math.max(0, limit));
+}
+
+function countOf(s) {
+  return s.records instanceof Set ? s.records.size : (s.records?.length || 0);
+}
+
+const sortedChars = (s) => [...s.replace(/ /g, '')].sort().join('');
+// "q3 planning" and "q4 planning" are one edit apart and are not the same subject; nor are
+// "phase 2" and "phase 3", or "atlas sync 1" and "atlas sync 2". If masking the digits makes
+// two names identical, the difference IS the digits, and that is a SERIES. duplicateTitles
+// makes the same argument for trailing numbers; this is the in-word case.
+const digitSeries = (a, b) => a !== b && a.replace(/\d/g, '#') === b.replace(/\d/g, '#');
+
+function mergeReason(a, b, kind, distance) {
+  if (a === b) return null;
+  const ta = a.split(' ').filter(Boolean);
+  const tb = b.split(' ').filter(Boolean);
+
+  // "a. rivera" / "ar" against "alex rivera" — same last token, first token abbreviates.
+  const last = ta[ta.length - 1] === tb[tb.length - 1];
+  if (last && ta.length > 1 && tb.length > 1) {
+    const [fa, fb] = [ta[0], tb[0]];
+    if (fa !== fb && (fa.startsWith(fb) || fb.startsWith(fa))) return 'initials';
+  }
+  if (ta.length === 1 && tb.length === 1 && ta[0] !== tb[0]) {
+    const [short, long] = ta[0].length <= tb[0].length ? [ta[0], tb[0]] : [tb[0], ta[0]];
+    if (short.length >= 2 && long.startsWith(short)) return 'initials';
+  }
+
+  // One name's tokens are all present in the other's.
+  const setA = new Set(ta); const setB = new Set(tb);
+  const [small, big] = setA.size <= setB.size ? [setA, setB] : [setB, setA];
+  if (small.size && [...small].every((t) => big.has(t)) && small.size !== big.size) return 'containment';
+
+  if (digitSeries(a, b)) return null;
+
+  // Too short for an edit to mean anything — see duplicateTitles for the same guard.
+  if (Math.min(a.length, b.length) > distance * 3) {
+    if (editDistance(a, b, distance) <= distance) return 'spelling';
+    // A transposition costs TWO edits in Levenshtein, and "atals" for "atlas" is the single
+    // commonest typo there is. Admitted only when the two are anagrams, so widening the
+    // budget cannot also admit "q3 planning" against "q4 planning".
+    if (editDistance(a, b, 2) <= 2 && sortedChars(a) === sortedChars(b)) return 'spelling';
+  }
+
+  // A SHARED SURNAME IS NOT A SIGNAL, and it was tempting. Two people with the same last
+  // name are usually two people — colleagues, relatives — so proposing every such pair on
+  // every rebuild would bury the three real suggestions under thirty. A list nobody reads
+  // is worse than no list, which is the same finding that keeps briefs bounded.
+  return null;
 }

@@ -69,7 +69,14 @@ const BUDGET = {
   // which is a bad way to learn about a budget. The engines themselves are still
   // pinned OFF this graph in OFF_LIMITS, so what grew is client plumbing, not the
   // deferral leaking.
-  'sidepanel.js': 820,
+  // 820 → 832. The derived layer put NOTHING on this graph — briefs reach a turn through
+  // retrieval, so the panel never imports them. What landed is ~3.7 KB: the NER label map in
+  // js/pii-detect.js (the ai4privacy vocabulary the active model actually speaks, without
+  // which person names went to the model in plaintext) and the Briefs button plus its
+  // composer handoff. The remaining ~8 KB of headroom is unrelated in-flight growth in
+  // js/confirm-modal.js — RE-TIGHTEN THIS to ~824 when that work lands and can carry its own
+  // budget decision, or the ratchet stops turning.
+  'sidepanel.js': 832,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one
@@ -122,13 +129,17 @@ const BUDGET = {
   // source, and that registration is the whole point: one register call puts briefs in ⌘K,
   // the graph, the context assembler and warm sync without editing any of those. The
   // DERIVATION half — 60 KB more — is in js/briefs-build.js and is on neither graph.
-  'settings.js': 1250,
+  'settings.js': 1255,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was
   // already guarded by the CM editor being mounted, and mounting it dynamically imports
   // notes-regions anyway.
-  'notes.js': 415,
+  // 415 → 418 for one predicate. store-notes.js now asks events/redaction-tokens.js whether
+  // a [[…]] is a PII placeholder, because [[PERSON_1]] was becoming a backlink and a graph
+  // node. That module exists at ~3 KB precisely so this page does not import entity.js
+  // (alias resolution + a Levenshtein) to answer a one-line question.
+  'notes.js': 418,
   // The worker is the one entry point that CANNOT defer anything: `import()` throws on
   // ServiceWorkerGlobalScope, so every module it may ever need is static. It therefore keeps
   // the backup stores the pages just shed — js/backup-payload.js imports them for it — and

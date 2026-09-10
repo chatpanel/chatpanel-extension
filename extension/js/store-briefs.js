@@ -25,7 +25,9 @@ import { encryptJSON, decryptJSON, isEncrypted } from './meeting-crypto.js';
 // worker never builds one, so derivation lives in js/briefs-build.js which only pages
 // import. tools/test-first-paint-budget.mjs is what keeps that from quietly reverting.
 import { briefToText, briefTerms } from './events/knowledge.js';
-import { DEFAULT_THRESHOLD } from './events/entity.js';
+// From subject-name.js, not entity.js: this module is on the service worker's graph and
+// needs one constant, where entity.js carries alias resolution and merge suggestion too.
+import { DEFAULT_THRESHOLD } from './events/subject-name.js';
 
 const K_INDEX = 'chatpanel:briefIndex';
 const K_SETTINGS = 'chatpanel:briefSettings';
@@ -42,6 +44,10 @@ export const DEFAULT_BRIEF_SETTINGS = Object.freeze({
   minRecords: DEFAULT_THRESHOLD.records,
   minMentions: DEFAULT_THRESHOLD.mentions,
   maxBriefs: 300,
+  // Who "You" is. Meeting platforms label the local participant that way, so without this
+  // the user is a stranger in their own corpus. Read from memory when they have told
+  // ChatPanel their name; asked for on the Briefs page otherwise. Never guessed.
+  selfName: '',
   shareWithAgents: true, // whether briefs warm-sync out to the gateway's MCP surface
   lastBuiltAt: 0,
 });
@@ -66,6 +72,44 @@ export async function saveBriefSettings(patch = {}) {
   const next = { ...(await getBriefSettings()), ...patch };
   await chrome.storage.local.set({ [K_SETTINGS]: await encryptJSON(next) });
   return next;
+}
+
+export const MERGES_KEY = 'chatpanel:briefMerges';
+
+/**
+ * The user's own identity corrections — `alias -> the name it belongs to`.
+ *
+ * Stored SEPARATELY from the briefs, and that separation is the point. A brief is a
+ * projection that `rebuildBriefs()` may throw away and re-derive (I-K2); a correction the
+ * user made is durable data. Keeping the merge here means the correction is an INPUT to the
+ * next pass rather than an edit to the last one's output — a rebuild that erased it would
+ * teach the user not to make another.
+ */
+export async function getBriefMerges() {
+  const stored = await readStoredJSON(MERGES_KEY);
+  return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+}
+
+/** Record "these two are the same". Returns the full map. */
+export async function mergeSubjects(fromName, intoName) {
+  const from = String(fromName || '').trim();
+  const into = String(intoName || '').trim();
+  if (!from || !into || from === into) return getBriefMerges();
+  const merges = await getBriefMerges();
+  merges[from] = into;
+  // Anything already pointing at the name being folded away follows it, so the map stays one
+  // hop deep and a later reader never has to walk a chain it did not expect.
+  for (const [k, v] of Object.entries(merges)) if (k !== from && v === from) merges[k] = into;
+  await chrome.storage.local.set({ [MERGES_KEY]: await encryptJSON(merges) });
+  return merges;
+}
+
+/** Undo one — a wrong merge must be as easy to take back as it was to make. */
+export async function unmergeSubject(fromName) {
+  const merges = await getBriefMerges();
+  delete merges[String(fromName || '').trim()];
+  await chrome.storage.local.set({ [MERGES_KEY]: await encryptJSON(merges) });
+  return merges;
 }
 
 /**

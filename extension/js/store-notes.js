@@ -19,6 +19,10 @@ import { usageCount, bumpUsage } from './usage-counters.js';
 // the notes editor, which is where it used to happen) is what makes "#Design Review"
 // typed on a note and `tag:design-review` typed on the meetings page the same tag.
 import { normalizeTags } from './events/tags.js';
+// One definition of "is this a redaction placeholder", shared with the derived layer.
+// From its own module, not events/entity.js — that one carries entity resolution and a
+// Levenshtein, and this page would pay 25 KB of first paint for a one-line question.
+import { isRedactionToken } from './events/redaction-tokens.js';
 
 // Same id shape as store.js's uid(), inlined so the notes page never pulls in the
 // whole store.js module graph (oauth, zip, meetings…) on load — that was the bulk of
@@ -39,13 +43,19 @@ function snippetOf(body) {
 
 // The [[Title]] links a note contains — kept in the index so backlinks compute
 // without decrypting every body.
+//
+// EXCEPT the redaction placeholders, which share the syntax exactly. @chatpanel/pii writes
+// [[PERSON_1]], so a note holding redacted text was carrying phantom backlinks to pages
+// nobody wrote, and putting them in the graph. Recognised by TYPE rather than by shape, so a
+// real [[Q3_2026]] link still resolves — see events/entity.js for why that distinction
+// matters.
 function extractLinks(body) {
   const out = [];
   const re = /\[\[([^[\]\n]+)\]\]/g;
   let m;
   while ((m = re.exec(String(body || '')))) {
     const t = m[1].trim();
-    if (t && !out.includes(t)) out.push(t);
+    if (t && !isRedactionToken(t) && !out.includes(t)) out.push(t);
   }
   return out;
 }

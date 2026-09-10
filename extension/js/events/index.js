@@ -53,6 +53,8 @@ export {
   SUBJECT_KINDS, DEFAULT_THRESHOLD, MAX_SUBJECTS, MAX_SUBJECT_CHARS,
   normalizeSubject, subjectKey, subjectTokens, isSubjectCandidate,
   aliasMap, resolveSubjects, earnsBrief, rankSubjects,
+  REDACTION_TOKEN_TYPES, isRedactionToken, SELF_LABELS, isSelfLabel, stripQualifiers,
+  suggestMerges,
 } from './entity.js';
 export {
   BRIEF_STATES, CLAIM_KINDS, MAX_CLAIMS, MAX_CLAIM_REFS, MAX_BRIEF_RECORDS, MAX_BRIEF_CHARS,
@@ -60,7 +62,8 @@ export {
 } from './knowledge.js';
 export { deriveBrief, deriveBriefs, driftedRefs } from './knowledge-derive.js';
 export {
-  normalizeRecord, normalizeRecords, wikilinksIn, wantedPages, orphanRecords,
+  normalizeRecord, normalizeRecords, wikilinksIn, redactedTokensIn, redactionCost,
+  wantedPages, orphanRecords,
   duplicateTitles, vocabularyDrift, mentionsFrom, spanningQuestions,
   surveyCorpus, thresholdSweep, formatSurvey, NEAR_TITLE_DISTANCE, SPAN_MIN_TERMS,
 } from './curate.js';

@@ -32,9 +32,10 @@ import { normalizeTag } from './tags.js';
 // distance.js for why it is not imported from voice-intents.js, which is where it grew up.
 import { editDistance } from './distance.js';
 import {
-  DEFAULT_THRESHOLD, MAX_SUBJECTS, isSubjectCandidate, normalizeSubject,
-  rankSubjects, resolveSubjects,
+  DEFAULT_THRESHOLD, MAX_SUBJECTS, isSelfLabel, isSubjectCandidate,
+  normalizeSubject, rankSubjects, resolveSubjects,
 } from './entity.js';
+import { isRedactionToken } from './redaction-tokens.js';
 
 /** Wikilink syntax, matching store-notes.js `extractLinks` exactly — one grammar, not two. */
 const WIKILINK_RE = /\[\[([^[\]\n]+)\]\]/g;
@@ -72,7 +73,15 @@ export function normalizeRecords(records) {
   return (Array.isArray(records) ? records : []).map(normalizeRecord).filter(Boolean);
 }
 
-/** Every `[[target]]` in a string, de-duplicated, in first-seen order. */
+/**
+ * Every `[[target]]` in a string, de-duplicated, in first-seen order — MINUS the redaction
+ * placeholders, which share the syntax exactly.
+ *
+ * `@chatpanel/pii` writes `[[PERSON_1]]`, so a redacted transcript looks like a document
+ * full of links to pages nobody wrote. Counting those as wanted pages filed the people we
+ * deliberately did not learn about as things we know. Matched by TYPE, not by shape, so a
+ * real `[[Q3_2026]]` link still resolves.
+ */
 export function wikilinksIn(text) {
   const out = [];
   WIKILINK_RE.lastIndex = 0;
@@ -80,9 +89,49 @@ export function wikilinksIn(text) {
   while ((m = WIKILINK_RE.exec(String(text || '')))) {
     // `[[Title|alias]]` is Obsidian's display form — the LINK is the part before the pipe.
     const target = m[1].split('|')[0].trim();
-    if (target && !out.includes(target)) out.push(target);
+    if (!target || isRedactionToken(target)) continue;
+    if (!out.includes(target)) out.push(target);
   }
   return out;
+}
+
+/**
+ * The placeholders a text carries, by type — what redaction COST the graph.
+ *
+ * Reported rather than silently dropped, because the loss is real and the user is the only
+ * one who can decide about it. `PERSON_1` is a genuine, stable entity inside its own
+ * conversation; what makes it unusable as a subject is that the vault is scoped to that
+ * conversation and is never persisted, so Monday's `PERSON_1` and Friday's are different
+ * people and merging them would attribute one person's decisions to another.
+ *
+ * Seeing "412 redacted mentions across 38 records" is what tells someone their redaction
+ * level is costing them a connected graph — a trade only they can make.
+ */
+export function redactedTokensIn(text) {
+  const out = new Map();
+  WIKILINK_RE.lastIndex = 0;
+  let m;
+  while ((m = WIKILINK_RE.exec(String(text || '')))) {
+    const target = m[1].split('|')[0].trim();
+    if (!isRedactionToken(target)) continue;
+    const type = /^([A-Z][A-Z0-9]*)_/.exec(target.replace(/^\[{1,2}|\]{1,2}$/g, ''))?.[1] || 'OTHER';
+    out.set(type, (out.get(type) || 0) + 1);
+  }
+  return out;
+}
+
+/** Corpus-wide: how many placeholders, of which types, across how many records. */
+export function redactionCost(records = []) {
+  const byType = {};
+  let total = 0;
+  let recordsAffected = 0;
+  for (const r of normalizeRecords(records)) {
+    const found = redactedTokensIn(r.text);
+    if (!found.size) continue;
+    recordsAffected += 1;
+    for (const [type, n] of found) { byType[type] = (byType[type] || 0) + n; total += n; }
+  }
+  return { total, records: recordsAffected, byType };
 }
 
 /**
@@ -250,7 +299,11 @@ export function mentionsFrom(records = []) {
     for (const name of r.topics) out.push({ kind: 'topic', name, recordId: r.id });
     for (const name of wikilinksIn(r.text)) out.push({ kind: 'title', name, recordId: r.id });
   }
-  return out.filter((m) => isSubjectCandidate(m.name, { kind: m.kind }));
+  // A person's self-label ("You") survives candidacy HERE and is decided by
+  // `resolveSubjects`, which is the only layer that knows whether we have a name to fold it
+  // into. Filtering it out at this level threw the user out of their own corpus.
+  return out.filter((m) => isSubjectCandidate(m.name, { kind: m.kind })
+    || (m.kind === 'person' && isSelfLabel(m.name)));
 }
 
 /** Query terms, folded the way `sources-retrieval.js queryTerms` folds them. */
@@ -322,6 +375,7 @@ export function surveyCorpus(records = [], { questions = [], threshold = DEFAULT
   for (const s of qualifying) byKind[s.kind] = (byKind[s.kind] || 0) + 1;
   const wanted = wantedPages(recs);
   const orphans = orphanRecords(recs);
+  const redaction = redactionCost(recs);
 
   return {
     corpus: {
@@ -349,6 +403,7 @@ export function surveyCorpus(records = [], { questions = [], threshold = DEFAULT
       byType: orphans.reduce((acc, r) => ({ ...acc, [r.type]: (acc[r.type] || 0) + 1 }), {}),
       sample: orphans.slice(0, 10),
     },
+    redaction,
     duplicateTitles: duplicateTitles(recs),
     vocabularyDrift: vocabularyDrift(recs),
     questions: spanningQuestions(recs, questions),
@@ -409,6 +464,14 @@ export function formatSurvey(report, { sweep = null } = {}) {
   L.push('');
   L.push(`ORPHANS  (no link, no shared tag, no shared topic) — ${orphans.total} of ${corpus.records} (${pct(orphans.fraction)})`);
   L.push(`  by type: ${Object.entries(orphans.byType).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`);
+
+  L.push('');
+  L.push(`REDACTED MENTIONS  (placeholders that cannot become subjects) — ${report.redaction.total} across ${report.redaction.records} records`);
+  L.push(`  by type: ${Object.entries(report.redaction.byType).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`);
+  if (report.redaction.total) {
+    L.push('  → the vault is per-conversation and is not persisted, so one PERSON_1 is not another.');
+    L.push('    Lowering the redaction level is what buys these back as real subjects.');
+  }
 
   L.push('');
   L.push(`DUPLICATE / NEAR-DUPLICATE TITLES — ${dupes.length} groups`);

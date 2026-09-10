@@ -197,12 +197,16 @@ export function deriveBrief(subject, { records, byId, cooccurring = [], memories
  * rule loop.js and schedule.js follow.
  */
 export function deriveBriefs(records = [], {
-  memories = [], threshold = DEFAULT_THRESHOLD, limit = MAX_SUBJECTS, now = 0,
+  memories = [], merges = null, self = '', threshold = DEFAULT_THRESHOLD,
+  limit = MAX_SUBJECTS, now = 0,
 } = {}) {
   const recs = normalizeRecords(records);
   const byId = new Map(recs.map((r) => [r.id, r]));
   const mentions = mentionsFrom(recs);
-  const subjects = resolveSubjects(mentions);
+  // `merges` and `self` are corrections the USER made, and they are applied here — as inputs
+  // to the pass, never as edits to its output. That is what keeps I-K2 true: a rebuild
+  // re-applies them, where a rebuild that erased them would teach the user not to bother.
+  const subjects = resolveSubjects(mentions, { merges, self });
   const ranked = rankSubjects(subjects, { threshold, limit });
 
   // Which subjects share records with which — the `together` claim, computed once for the

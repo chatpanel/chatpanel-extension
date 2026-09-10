@@ -41,7 +41,10 @@
 // putting both halves in one module would have put 60 KB of derivation on its cold start
 // for code it never runs. The split is what keeps that honest rather than remembered.
 
-import { normalizeSubject } from './entity.js';
+// From subject-name.js, not entity.js: this module is on the MV3 service worker's graph and
+// needs exactly one string function, where entity.js also carries alias resolution and merge
+// suggestion. Same argument as the knowledge/knowledge-derive split, one level down.
+import { normalizeSubject } from './subject-name.js';
 
 /** draft → proposed → promoted → archived. `promotion.js` (W3) owns the transitions. */
 export const BRIEF_STATES = Object.freeze(['draft', 'proposed', 'promoted', 'archived']);

@@ -22,6 +22,46 @@ import { stripHidden, confusablesSkeleton } from './sanitize.js';
 
 const TOKEN_RE = /\[\[([A-Z][A-Z0-9]*)_(\d+)\]\]/g;
 
+/**
+ * THE TOKEN FORMAT, PUBLISHED — because `[[TYPE_n]]` collides with `[[wikilink]]`.
+ *
+ * The placeholder grammar was chosen to be visually obvious in a prompt, and it is
+ * character-for-character the wikilink syntax notes and briefs use. So `[[PERSON_1]]` in a
+ * stored message reads as a link to a page called "PERSON_1", and downstream that became a
+ * backlink, a graph node, and a subject with its own page. The name of a person we
+ * deliberately did not learn was being filed as a thing we know about.
+ *
+ * A placeholder is the ABSENCE of an identity. It must never become a link, a subject, a tag
+ * or a topic — and it must never be restored into anything derived and persisted, because
+ * that would put the PII back on disk in a second place.
+ *
+ * Exported rather than left private so consumers ASK instead of re-deriving the pattern:
+ * this package owns the format, and `CLAUDE.md` lists it as a wire contract that only
+ * changes additively.
+ */
+export const REDACTION_TOKEN_TYPES = Object.freeze([
+  'PERSON', 'ORG', 'LOCATION', 'ADDRESS', 'EMAIL', 'PHONE', 'ID', 'SSN', 'IBAN',
+  'CREDITCARD', 'CARD', 'POST', 'FAC', 'GROUP', 'NRP', 'ENTITY', 'KEY', 'SECRET',
+  'TERM', 'PII', 'OTHER',
+]);
+
+/**
+ * Is this bare string one of OUR placeholders?
+ *
+ * Matched against the known type vocabulary rather than the bare `[A-Z]+_\d+` shape, and
+ * that holds even inside brackets: `[[Q3_2026]]` and `[[PHASE_2]]` are links people
+ * genuinely write, so a shape test would trade one invisible bug for another. A custom
+ * dictionary type is the accepted gap — it is user-chosen, so a downstream consumer filing
+ * it is a name the user picked, not a stranger's identity.
+ *
+ * Bracket-tolerant: callers ask both before and after a wikilink parser has stripped them.
+ */
+export function isRedactionToken(value) {
+  const bare = String(value ?? '').trim().replace(/^\[{1,2}|\]{1,2}$/g, '');
+  const m = /^([A-Z][A-Z0-9]*)_\d+$/.exec(bare);
+  return !!m && REDACTION_TOKEN_TYPES.includes(m[1]);
+}
+
 // Bracket-TOLERANT match of the same token. Smaller models routinely drop or mangle
 // the [[ ]] when echoing a placeholder into tool-call JSON — e.g. they emit "ORG_1"
 // or "[ORG_1]" instead of "[[ORG_1]]" — which the strict TOKEN_RE misses, leaving

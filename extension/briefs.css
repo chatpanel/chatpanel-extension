@@ -83,3 +83,15 @@
 .prefnum b { font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .prefnum .btn { padding: 3px 9px; }
 .b-stale { border-color: var(--accent); }
+
+/* Merge suggestions — a question with a one-click answer. The reason is shown because a
+   suggestion whose reason is legible gets answered, and one that is not gets accepted
+   blindly, which is the failure that makes a merge worse than no merge. */
+.mergelist { display: flex; flex-direction: column; gap: 7px; }
+.mergerow { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--elev); }
+.mergenames { font-size: 13px; }
+.mergenames b { font-weight: 600; }
+.mergewhy { color: var(--faint); font-size: 11.5px; margin-left: auto; }
+.mergerow .btn { padding: 4px 10px; font-size: 12px; }
+.prefinput { width: 190px; padding: 6px 9px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--field); color: var(--text); font: inherit; font-size: 12.5px; }
+.prefinput:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }

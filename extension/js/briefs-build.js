@@ -8,7 +8,11 @@
 // pays for it, and the first-paint budget is what proves it rather than a comment.
 
 import { deriveBriefs, driftedRefs } from './events/knowledge-derive.js';
-import { getBriefIndex, getBrief, getBriefSettings, writeBriefs } from './store-briefs.js';
+import { resolveSubjects, suggestMerges } from './events/entity.js';
+import { mentionsFrom } from './events/curate.js';
+import {
+  getBriefIndex, getBrief, getBriefSettings, getBriefMerges, writeBriefs,
+} from './store-briefs.js';
 
 /**
  * Re-derive every brief from the corpus and replace what is stored.
@@ -26,6 +30,9 @@ export async function rebuildBriefs(records = [], { memories = [], now = Date.no
 
   const briefs = deriveBriefs(records, {
     memories,
+    // The user's corrections, re-applied on every pass rather than baked into the output.
+    merges: await getBriefMerges(),
+    self: settings.selfName || selfNameFrom(memories),
     threshold: { records: settings.minRecords, mentions: settings.minMentions },
     limit: settings.maxBriefs,
     now,
@@ -37,6 +44,41 @@ export async function rebuildBriefs(records = [], { memories = [], now = Date.no
     byKind: briefs.reduce((acc, b) => ({ ...acc, [b.kind]: (acc[b.kind] || 0) + 1 }), {}),
     now,
   };
+}
+
+/**
+ * Who "You" is, if the user has ever told ChatPanel their name.
+ *
+ * An `identity` memory is exactly that statement ("call me …"), already reviewed and already
+ * durable, so reading it here is reuse rather than a second place to store the same fact. A
+ * plain first-person sentence is not enough — this only picks up an explicit naming, because
+ * folding every meeting's "You" into the wrong person is worse than not folding it at all.
+ */
+export function selfNameFrom(memories = []) {
+  for (const m of memories) {
+    if (m?.kind !== 'identity' || !m.text) continue;
+    const hit = /\b(?:call me|my name is|i am|i'm|name:)\s+([\p{L}][\p{L}'’.-]*(?:\s+[\p{L}][\p{L}'’.-]*){0,3})/iu.exec(m.text);
+    if (hit) return hit[1].replace(/[.,;]$/, '').trim();
+  }
+  return '';
+}
+
+/**
+ * Merge candidates the user could confirm — the nudge, not the decision.
+ *
+ * Deterministic and model-free: pairs the alias rule refuses to decide on its own, because
+ * deciding wrongly merges two people permanently and silently. Already-merged names are
+ * filtered out, so a confirmed answer stops being asked.
+ */
+export async function suggestBriefMerges(records = [], { memories = [] } = {}) {
+  const settings = await getBriefSettings();
+  const merges = await getBriefMerges();
+  const subjects = resolveSubjects(mentionsFrom(records), {
+    merges,
+    self: settings.selfName || selfNameFrom(memories),
+  });
+  const done = new Set(Object.keys(merges).map((k) => k.toLowerCase()));
+  return suggestMerges(subjects).filter((m) => !done.has(m.dropName.toLowerCase()));
 }
 
 /**

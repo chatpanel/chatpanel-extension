@@ -14,11 +14,12 @@
 
 import {
   getBriefIndex, getBrief, getBriefSettings, saveBriefSettings, briefsAreStale,
+  getBriefMerges, mergeSubjects, unmergeSubject,
 } from './js/store-briefs.js';
 // The build pass is where derivation lives. Imported statically HERE — this page is the one
 // surface whose whole job is briefs, and a Rebuild button that first fetches 60 KB would be
 // the wrong trade — but never from store-briefs.js, which the service worker reaches.
-import { rebuildBriefs, briefDrift } from './js/briefs-build.js';
+import { rebuildBriefs, briefDrift, suggestBriefMerges, selfNameFrom } from './js/briefs-build.js';
 import { openSidePanel } from './js/side-panel.js';
 import { hydrate } from './js/icons.js';
 
@@ -32,6 +33,14 @@ let corpusCache = null; // loaded lazily; a rebuild and the drift check both wan
 let driftCache = null;
 
 const KIND_LABEL = { person: 'person', topic: 'topic', tag: 'tag', title: 'wanted' };
+
+// Why a pair was proposed, in the user's words. A suggestion whose reason is legible is one
+// they can answer in a second; an unexplained one gets ignored or, worse, accepted blindly.
+const MERGE_WHY = {
+  initials: 'same surname, shortened first name',
+  containment: 'one name contains the other',
+  spelling: 'one character apart — likely a typo',
+};
 
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -271,6 +280,8 @@ async function renderPrefs() {
   const host = $('b-prefs');
   if (!host) return;
   const s = await getBriefSettings();
+  const { memories } = corpusCache || { memories: [] };
+  const knownSelf = s.selfName || selfNameFrom(memories);
   const row = (title, why, control) =>
     `<div class="prefrow"><div><div class="prefrow-t">${title}</div><div class="prefrow-w">${why}</div></div>${control}</div>`;
   host.innerHTML =
@@ -283,6 +294,11 @@ async function renderPrefs() {
       `<span class="prefnum"><button class="btn ghost" data-th="-" type="button">−</button>`
       + `<b>${s.minRecords} records · ${s.minMentions} mentions</b>`
       + `<button class="btn ghost" data-th="+" type="button">+</button></span>`)
+    + row('Who is “You”',
+      knownSelf
+        ? `Meeting platforms label you “You”, so your own records would file you as a stranger. Using <b>${escapeHtml(knownSelf)}</b>${s.selfName ? '' : ' — from what you told ChatPanel to remember'}.`
+        : 'Zoom, Meet and Teams all label the local participant “You”, so you appear in your own corpus under a name that is not a name. Tell ChatPanel who that is and every “You” folds into your subject. Never guessed — an unnamed “You” is left out entirely.',
+      `<input id="b-pref-self" class="prefinput" type="text" placeholder="Your name" value="${escapeHtml(s.selfName)}" />`)
     + row('Share briefs with local agents',
       'Codex, Claude Code and OpenCode read them through the gateway on this machine. Records already sync; this is about your synthesised conclusions.',
       `<button id="b-pref-share" class="btn${s.shareWithAgents ? ' active' : ''}" type="button">${s.shareWithAgents ? 'Shared' : 'Private'}</button>`)
@@ -293,6 +309,18 @@ async function renderPrefs() {
     toast(next.enabled ? 'Briefs are on — rebuild to derive them.' : 'Briefs are off. Existing ones stay until you rebuild.');
     renderPrefs();
   };
+  const selfInput = $('b-pref-self');
+  if (selfInput) {
+    const commit = async () => {
+      const next = selfInput.value.trim();
+      if (next === s.selfName) return;
+      await saveBriefSettings({ selfName: next });
+      toast(next ? 'Rebuild to fold “You” into your subject.' : 'Rebuild to stop folding “You”.');
+      renderPrefs();
+    };
+    selfInput.onblur = commit;
+    selfInput.onkeydown = (e) => { if (e.key === 'Enter') selfInput.blur(); };
+  }
   $('b-pref-share').onclick = async () => {
     const next = await saveBriefSettings({ shareWithAgents: !s.shareWithAgents });
     toast(next.shareWithAgents
@@ -357,13 +385,17 @@ async function renderMaint() {
   host.innerHTML = '<div class="dash-empty">Checking your corpus…</div>';
   try {
     const { records } = await loadCorpus();
-    const { wantedPages, orphanRecords, duplicateTitles, vocabularyDrift } = await import('./js/events/curate.js');
+    const {
+      wantedPages, orphanRecords, duplicateTitles, vocabularyDrift, redactionCost,
+    } = await import('./js/events/curate.js');
     driftCache = await briefDrift(records);
 
+    const suggestions = await suggestBriefMerges(records, { memories: (await loadCorpus()).memories });
     const wanted = wantedPages(records).slice(0, 20);
     const orphans = orphanRecords(records);
     const dupes = duplicateTitles(records).slice(0, 12);
     const drift = vocabularyDrift(records).slice(0, 12);
+    const redaction = redactionCost(records);
     $('b-maint-count').textContent = driftCache.length ? `(${driftCache.length})` : '';
 
     const group = (title, why, body) => `<div class="maint-group"><h3>${title}</h3><p>${why}</p>${body}</div>`;
@@ -371,8 +403,34 @@ async function renderMaint() {
       ? `<div class="maint-list">${items.map((t) => `<span class="topic-chip">${escapeHtml(t)}</span>`).join('')}</div>`
       : '<div class="maint-ok">Nothing to do here.</div>');
 
+    const merges = await getBriefMerges();
     host.innerHTML =
-      group('Wanted pages',
+      group('Possibly the same subject',
+        'The alias rule folds what it can prove. These are the pairs it refuses to decide alone, because deciding wrongly merges two people permanently. Your answer is stored and re-applied on every rebuild.',
+        suggestions.length
+          ? `<div class="mergelist">${suggestions.slice(0, 20).map((m, i) =>
+            `<div class="mergerow" data-merge="${i}">`
+            + `<span class="bkind ${m.kind}">${KIND_LABEL[m.kind] || m.kind}</span>`
+            + `<span class="mergenames"><b>${escapeHtml(m.dropName)}</b> is <b>${escapeHtml(m.keepName)}</b></span>`
+            + `<span class="mergewhy">${MERGE_WHY[m.reason] || m.reason}</span>`
+            + `<button class="btn" data-yes="${i}" type="button">Same</button>`
+            + `<button class="btn ghost" data-no="${i}" type="button">Different</button>`
+            + `</div>`).join('')}</div>`
+          : '<div class="maint-ok">Nothing looks like a duplicate identity.</div>')
+      + group('Names you have merged',
+        'Corrections you made. They are an input to every rebuild, never an edit to one — which is why they survive.',
+        Object.keys(merges).length
+          ? `<div class="maint-list">${Object.entries(merges).map(([from, into]) =>
+            `<button class="topic-chip" data-unmerge="${escapeHtml(from)}" title="Undo this merge">${escapeHtml(from)} → ${escapeHtml(into)} ✕</button>`).join('')}</div>`
+          : '<div class="maint-ok">None yet.</div>')
+      + group('Redacted mentions',
+        'Placeholders like <code>PERSON_1</code> that privacy redaction left in your records. They cannot become subjects: the vault is per-conversation and is not kept, so one conversation\'s PERSON_1 is not another\'s. This is what redaction costs your graph.',
+        redaction.total
+          ? `<div class="maint-list">${Object.entries(redaction.byType).map(([t, n]) =>
+            `<span class="topic-chip">${escapeHtml(t)} <span class="chip-count">${n}</span></span>`).join('')}`
+            + `<span class="topic-chip">${redaction.records} records affected</span></div>`
+          : '<div class="maint-ok">None — nothing was redacted out of your own records.</div>')
+      + group('Wanted pages',
         'A <code>[[link]]</code> pointing at nothing. Somebody already decided the subject was worth naming — this is the corpus asking for a page.',
         chips(wanted.map((w) => `${w.target} · ${w.recordCount}`)))
       + group('Records connected to nothing',
@@ -391,6 +449,26 @@ async function renderMaint() {
       + group('One term, filed several ways',
         'Tags and topics that normalize close but were typed differently, so they file apart.',
         chips(drift.map((g) => g.terms.map((t) => `${t.term}(${t.count})`).join(' | '))));
+    for (const b of host.querySelectorAll('[data-yes]')) {
+      b.onclick = async () => {
+        const m = suggestions[Number(b.dataset.yes)];
+        await mergeSubjects(m.dropName, m.keepName);
+        toast(`“${m.dropName}” is “${m.keepName}”. Rebuild to apply it.`);
+        renderMaint();
+      };
+    }
+    for (const b of host.querySelectorAll('[data-no]')) {
+      // "Different" dismisses for this session only. A permanent no would need its own
+      // store, and a wrong permanent no is invisible forever — worse than being asked twice.
+      b.onclick = () => { b.closest('.mergerow').remove(); };
+    }
+    for (const b of host.querySelectorAll('[data-unmerge]')) {
+      b.onclick = async () => {
+        await unmergeSubject(b.dataset.unmerge);
+        toast('Merge undone. Rebuild to apply it.');
+        renderMaint();
+      };
+    }
     hydrate(host);
   } catch (e) {
     host.innerHTML = `<div class="dash-empty">Could not check the corpus: ${escapeHtml(e?.message || e)}</div>`;

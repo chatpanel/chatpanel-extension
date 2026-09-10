@@ -147,3 +147,77 @@ const pageSrc = read('extension/briefs.js');
 assert.match(pageSrc, /includeBriefs:\s*false/);
 
 console.log('briefs tests passed');
+
+// ── identity: one person, however the corpus spelled them ────────────────────
+// Fictional placeholders only — never a real person's name, in code or in a fixture.
+{
+  const NOW2 = Date.UTC(2026, 8, 10);
+  const varied = Array.from({ length: 6 }, (_, i) => ({
+    id: `meeting:v${i}`,
+    type: 'meeting',
+    title: `Sync ${i}`,
+    date: NOW2 - i * day,
+    text: 'atlas migration status',
+    meta: {
+      // The same human, as four different clients wrote them, plus the platform's label
+      // for whoever is holding the microphone.
+      people: [['Jordan Blake', 'Jordan Blake (ACME)', 'Jordan Blake - Host', 'You', 'Jordan', 'J. Blake'][i]],
+      terms: ['migration'],
+    },
+  }));
+
+  await store.saveBriefSettings({ selfName: 'Jordan Blake' });
+  await build.rebuildBriefs(varied, { now: NOW2 });
+  const people = (await store.getBriefIndex()).filter((e) => e.kind === 'person');
+  assert.equal(people.length, 1, `six spellings of one person should be one subject, got ${JSON.stringify(people.map((p) => p.name))}`);
+  assert.equal(people[0].name, 'Jordan Blake');
+  assert.equal(people[0].stats.records, 5, 'the qualifiers, the bare first name and "You" all fold in');
+
+  // "J. Blake" is the one the alias rule refuses to decide, so it is PROPOSED.
+  const suggested = await build.suggestBriefMerges(varied);
+  const pair = suggested.find((m) => m.dropName === 'J. Blake');
+  assert.ok(pair, `expected an initials suggestion, got ${JSON.stringify(suggested)}`);
+  assert.equal(pair.keepName, 'Jordan Blake');
+
+  // Answering it is stored, and applied by the NEXT rebuild rather than edited into the last.
+  await store.mergeSubjects(pair.dropName, pair.keepName);
+  assert.deepEqual(await store.getBriefMerges(), { 'J. Blake': 'Jordan Blake' });
+  await build.rebuildBriefs(varied, { now: NOW2 });
+  const after = (await store.getBriefIndex()).filter((e) => e.kind === 'person');
+  assert.equal(after.length, 1);
+  assert.equal(after[0].stats.records, 6, 'the merged spelling now counts toward the subject');
+
+  // A confirmed pair stops being asked about.
+  assert.ok(!(await build.suggestBriefMerges(varied)).some((m) => m.dropName === 'J. Blake'));
+
+  // And it is as easy to take back as it was to make.
+  await store.unmergeSubject('J. Blake');
+  assert.deepEqual(await store.getBriefMerges(), {});
+
+  // With no self name, "You" is a pronoun and stays out — every meeting has one.
+  await store.saveBriefSettings({ selfName: '' });
+  await build.rebuildBriefs(varied, { now: NOW2 });
+  assert.ok(!(await store.getBriefIndex()).some((e) => /^you$/i.test(e.name)), '"You" must never be a subject');
+
+  // …unless the user told ChatPanel their name, which is already a reviewed, durable fact.
+  assert.equal(build.selfNameFrom([{ kind: 'identity', text: 'Call me Jordan Blake.' }]), 'Jordan Blake');
+  assert.equal(build.selfNameFrom([{ kind: 'fact', text: 'Call me Jordan Blake.' }]), '', 'only an identity memory names the user');
+  assert.equal(build.selfNameFrom([]), '');
+}
+
+// ── redaction placeholders never become subjects or links ────────────────────
+{
+  const redacted = Array.from({ length: 5 }, (_, i) => ({
+    id: `chat:r${i}`, type: 'chat', title: `Chat ${i}`, date: Date.UTC(2026, 8, 10),
+    text: '[[PERSON_1]] asked [[PERSON_2]] about [[LOCATION_1]] and [[Q3_2026]]',
+    meta: { terms: ['migration'] },
+  }));
+  await build.rebuildBriefs(redacted, { now: Date.UTC(2026, 8, 10) });
+  const idx = await store.getBriefIndex();
+  assert.ok(!idx.some((e) => /^(PERSON|LOCATION|ORG|EMAIL|PHONE)_\d+$/.test(e.name)),
+    `a placeholder became a subject: ${JSON.stringify(idx.map((e) => e.name))}`);
+  // A real link that merely looks token-shaped is still a wanted page.
+  assert.ok(idx.some((e) => e.name === 'Q3_2026'), 'matching by TYPE keeps [[Q3_2026]] a real link');
+}
+
+console.log('briefs identity tests passed');

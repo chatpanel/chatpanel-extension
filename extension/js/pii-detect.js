@@ -39,15 +39,57 @@ export function withTimeout(promise, ms, signal) {
   });
 }
 
-// Map common NER labels (spaCy, HF, Presidio) onto our placeholder types.
+// Map common NER labels onto our placeholder types.
+//
+// FOUR VOCABULARIES, not one, and an unmapped label is SILENTLY DROPPED — `keepEntity` sends
+// anything it does not recognise to the digit-count fallback, where a name has no digits and
+// fails. So a missing row here does not degrade redaction, it turns it off for that type,
+// with nothing on screen to say so.
+//
+// That is not hypothetical. The `multilang-pii-ner` model emits the ai4privacy vocabulary —
+// GIVENNAME, SURNAME, TELEPHONENUM, CITY — and none of those were mapped, so selecting it
+// (it is the default in some builds) meant person names sailed through to the model in
+// plaintext while the shield in the composer still read as on. The deterministic detectors
+// kept catching emails and card numbers, which is exactly what made it hard to notice.
+//
+//   • spaCy / OntoNotes      PER, ORG, GPE, LOC, NORP
+//   • HF bert-base-NER       PER, ORG, LOC, MISC
+//   • Presidio               PERSON, PHONE_NUMBER, EMAIL_ADDRESS, US_SSN…
+//   • ai4privacy / multilang GIVENNAME, SURNAME, STREET, ZIPCODE, TELEPHONENUM…
+//
+// When adding a model, run one sentence through it and map every label it returns. An
+// unrecognised label is a hole, and it is an invisible one.
 function normType(t) {
   const s = String(t || 'ENTITY').toUpperCase().replace(/[^A-Z0-9]/g, '') || 'ENTITY';
   const map = {
+    // People
     PER: 'PERSON', PERSON: 'PERSON', PERSONNAME: 'PERSON',
-    ORG: 'ORG', ORGANIZATION: 'ORG',
+    GIVENNAME: 'PERSON', FIRSTNAME: 'PERSON', MIDDLENAME: 'PERSON',
+    SURNAME: 'PERSON', LASTNAME: 'PERSON', FULLNAME: 'PERSON',
+    // Organisations
+    ORG: 'ORG', ORGANIZATION: 'ORG', COMPANYNAME: 'ORG', COMPANY: 'ORG',
+    // Places. An address PART is still an address — a building number and a postcode
+    // identify a household as surely as the street does.
     GPE: 'LOCATION', LOC: 'LOCATION', LOCATION: 'LOCATION',
-    NORP: 'GROUP', EMAIL: 'EMAIL', EMAILADDRESS: 'EMAIL',
-    PHONE: 'PHONE', PHONENUMBER: 'PHONE',
+    CITY: 'LOCATION', STATE: 'LOCATION', COUNTY: 'LOCATION', COUNTRY: 'LOCATION',
+    STREET: 'ADDRESS', BUILDINGNUM: 'ADDRESS', BUILDINGNUMBER: 'ADDRESS',
+    ZIPCODE: 'ADDRESS', POSTCODE: 'ADDRESS', SECADDRESS: 'ADDRESS', ADDRESS: 'ADDRESS',
+    NORP: 'GROUP',
+    // Contact
+    EMAIL: 'EMAIL', EMAILADDRESS: 'EMAIL',
+    PHONE: 'PHONE', PHONENUMBER: 'PHONE', TELEPHONENUM: 'PHONE', PHONEIMEI: 'ID',
+    // Numbers that identify a person. These are ALWAYS redacted (see ALWAYS_KEEP), which is
+    // the point of naming them rather than leaving them to the digit-count fallback.
+    SOCIALNUM: 'SSN', USSSN: 'SSN', SSN: 'SSN',
+    CREDITCARDNUMBER: 'CREDITCARD', CREDITCARD: 'CREDITCARD',
+    IBAN: 'IBAN', IBANCODE: 'IBAN',
+    ACCOUNTNUM: 'ID', ACCOUNTNUMBER: 'ID', TAXNUM: 'ID', IDCARDNUM: 'ID',
+    DRIVERLICENSENUM: 'ID', PASSPORTNUM: 'ID', VEHICLEVRM: 'ID',
+    // A date of birth identifies; a plain date does not, and small models tag "today".
+    DATEOFBIRTH: 'ID', DOB: 'ID',
+    // Handles and secrets
+    USERNAME: 'ID', USERID: 'ID', IP: 'ID', IPADDRESS: 'ID', MAC: 'ID',
+    PASSWORD: 'SECRET', APIKEY: 'SECRET', SECRET: 'SECRET',
   };
   return map[s] || s;
 }
@@ -57,7 +99,9 @@ function normType(t) {
 // questions still work if "location" is turned off, etc. Numeric/temporal labels
 // (DATE, CARDINAL, ORDINAL…) are noisy — small NER models tag "today" / "4" — so
 // they only count when the value is a long digit run (phone/account/ID).
-const ALWAYS_KEEP = new Set(['EMAIL', 'PHONE', 'SSN', 'CREDITCARD', 'IBAN', 'ID']);
+// SECRET joined these: a password or a key must never reach a model, and leaving it to the
+// per-category toggles would let "turn off numbers" switch it off.
+const ALWAYS_KEEP = new Set(['EMAIL', 'PHONE', 'SSN', 'CREDITCARD', 'IBAN', 'ID', 'SECRET']);
 const LOCATION_TYPES = new Set(['LOCATION', 'FAC', 'ADDRESS', 'GROUP', 'NRP']);
 
 function keepEntity(value, type, types) {
