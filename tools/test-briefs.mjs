@@ -221,3 +221,35 @@ console.log('briefs tests passed');
 }
 
 console.log('briefs identity tests passed');
+
+// ── the two views that froze the page ────────────────────────────────────────
+// A dashboard that hangs the tab is worse than one that shows less, so both of these are
+// structural assertions: the graph must cap before drawing, and the maintenance report must
+// yield between passes rather than computing the whole thing in one synchronous stretch.
+{
+  const page = read('extension/briefs.js');
+
+  const graph = page.slice(page.indexOf('async function renderGraph()'), page.indexOf('async function renderMaint()'));
+  assert.match(graph, /GRAPH_NODE_CAP/, 'the subject graph must cap its nodes');
+  assert.ok(graph.indexOf('slice(0, GRAPH_NODE_CAP)') < graph.indexOf('drawGraph('),
+    'the cap has to be applied BEFORE drawing — a force sim over a few hundred clustered nodes hangs the tab');
+  assert.match(graph, /GRAPH_LINKS_PER_NODE/, 'and cap edges per node; a dense mesh is both slow and unreadable');
+  assert.match(graph, /more are in the list on the left/, 'and say what it is not showing');
+
+  const maint = page.slice(page.indexOf('async function renderMaint()'), page.indexOf('function wireMaintActions('));
+  assert.match(maint, /await YIELD\(\)/, 'the maintenance passes must yield to the event loop');
+  assert.match(maint, /_maintSeq/, 'and stop when the user switches away, rather than racing');
+  assert.ok((maint.match(/await add\(group\(/g) || []).length >= 6,
+    'each pass should paint its own section, so the first answer arrives before the last is computed');
+}
+
+// The shared renderer must defend itself: a caller that forgets to cap should get a
+// truncated picture, never a hung tab. The Briefs graph shipped without a cap and froze.
+{
+  const gv = read('extension/js/graph-view.js');
+  assert.match(gv, /export const MAX_GRAPH_NODES/, 'drawGraph needs its own ceiling');
+  const draw = gv.slice(gv.indexOf('export function drawGraph('), gv.indexOf('export function drawGraph(') + 2500);
+  assert.match(draw, /nodes\.length > MAX_GRAPH_NODES/, 'and must apply it at the top of drawGraph');
+}
+
+console.log('briefs surface guards passed');

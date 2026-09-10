@@ -30,6 +30,7 @@ let current = null;    // the open brief, decrypted on demand
 let kindFilter = '';
 let dashTab = 'stats';
 let corpusCache = null; // loaded lazily; a rebuild and the drift check both want it
+let _maintSeq = 0;      // a tab switch mid-report must stop the passes, not race them
 let driftCache = null;
 
 const KIND_LABEL = { person: 'person', topic: 'topic', tag: 'tag', title: 'wanted' };
@@ -350,27 +351,70 @@ async function renderPrefs() {
  * mentions its subject — so this is the one graph in the product where the nodes are the
  * things you think in rather than the documents you happened to produce.
  */
+/**
+ * The subject graph — the one view where the nodes are the things you think in rather than
+ * the documents you happened to produce.
+ *
+ * IT IS CAPPED, and the cap is not cosmetic. A force simulation pushes every node away from
+ * its neighbours each frame; `graph-view.js` uses a spatial grid so that is not naively
+ * quadratic, but the grid only helps when nodes are SPREAD, and a few hundred densely
+ * connected subjects all start in one clump — so every node is "nearby" every other and the
+ * grid degenerates to N² per frame, at 60 frames a second. With a full corpus that is not a
+ * slow graph, it is an unresponsive page.
+ *
+ * So the same rule omni-search.js already applies: the graph shows the best-evidenced
+ * subjects and the LIST carries the long tail. A graph of three hundred nodes was not
+ * readable anyway — the screenshot that prompted this was a hairball with every label
+ * overlapping.
+ */
+const GRAPH_NODE_CAP = 80;   // matches omni-search.js — readable, and comfortably fast
+const GRAPH_LINKS_PER_NODE = 4; // the strongest neighbours; a dense mesh reads as noise
+
 async function renderGraph() {
   const host = $('b-dash-graph');
   if (!index.length) { host.innerHTML = '<div class="dash-empty">No briefs yet.</div>'; return; }
+  host.innerHTML = '<div class="dash-empty">Laying out the graph…</div>';
   try {
     const { drawGraph } = await import('./js/graph-view.js');
-    const byName = new Map(index.map((e) => [e.name.toLowerCase(), e]));
-    const nodes = index.map((e) => ({ id: e.id, label: e.name, type: e.kind === 'person' ? 'person' : 'topic' }));
+
+    // Best-evidenced first: if the graph can only show some subjects, they should be the
+    // ones with the most behind them.
+    const shown = [...index]
+      .sort((a, b) => (b.stats?.records || 0) - (a.stats?.records || 0) || a.name.localeCompare(b.name))
+      .slice(0, GRAPH_NODE_CAP);
+    const byName = new Map(shown.map((e) => [e.name.toLowerCase(), e]));
+    const nodes = shown.map((e) => ({ id: e.id, label: e.name, type: e.kind === 'person' ? 'person' : 'topic' }));
+
     const links = [];
     const seen = new Set();
-    for (const e of index) {
+    for (const e of shown) {
+      let added = 0;
       for (const term of e.terms || []) {
+        if (added >= GRAPH_LINKS_PER_NODE) break;
         const other = byName.get(String(term).toLowerCase());
         if (!other || other.id === e.id) continue;
         const key = [e.id, other.id].sort().join('|');
         if (seen.has(key)) continue;
         seen.add(key);
         links.push({ s: e.id, t: other.id });
+        added += 1;
       }
     }
+
+    host.innerHTML = '';
     drawGraph(host, nodes, links, (n) => openBrief(n.id), (n) => openBrief(n.id));
-  } catch { host.innerHTML = '<div class="dash-empty">Graph unavailable.</div>'; }
+
+    const hidden = index.length - shown.length;
+    if (hidden > 0) {
+      const note = document.createElement('div');
+      note.className = 'dash-empty';
+      note.style.paddingTop = '10px';
+      note.textContent = `Showing the ${shown.length} best-evidenced subjects. ${hidden} more are in the list on the left.`;
+      host.appendChild(note);
+    }
+  } catch (e) {
+    host.innerHTML = `<div class="dash-empty">Graph unavailable: ${escapeHtml(e?.message || e)}</div>`;
+  }
 }
 
 /**
@@ -380,98 +424,138 @@ async function renderGraph() {
  * mostly the same things at a cost, and the model half of the curator (W3/W4) only ever
  * looks at what this flagged.
  */
+/**
+ * Maintenance — the W0 survey, made continuous.
+ *
+ * Every pass is deterministic and free, which is the point: a model would "notice" mostly
+ * the same things at a cost, and the model half of the curator (W3/W4) only ever looks at
+ * what this flagged.
+ *
+ * IT RENDERS PROGRESSIVELY, one group at a time, yielding to the event loop between them.
+ * Loading the corpus decrypts every record and the passes then walk it several times; doing
+ * all of that in one synchronous stretch is how this tab froze the page. Yielding does not
+ * make it faster — it keeps the page alive and shows each answer as it is found.
+ */
+const YIELD = () => new Promise((r) => setTimeout(r, 0));
+
 async function renderMaint() {
   const host = $('b-dash-maint');
-  host.innerHTML = '<div class="dash-empty">Checking your corpus…</div>';
+  const token = ++_maintSeq;
+  host.innerHTML = '<div class="dash-empty">Reading your records…</div>';
+
+  const group = (title, why, body) =>
+    `<div class="maint-group"><h3>${title}</h3><p>${why}</p>${body}</div>`;
+  const chips = (items) => (items.length
+    ? `<div class="maint-list">${items.map((t) => `<span class="topic-chip">${escapeHtml(t)}</span>`).join('')}</div>`
+    : '<div class="maint-ok">Nothing to do here.</div>');
+
+  // Each pass appends its own section, so the first answer is on screen long before the last
+  // is computed — and a slow pass never hides the ones that already finished.
+  const sections = [];
+  const add = async (html) => {
+    if (token !== _maintSeq) return false; // the user switched tabs; stop working
+    sections.push(html);
+    host.innerHTML = sections.join('');
+    await YIELD();
+    return token === _maintSeq;
+  };
+
   try {
-    const { records } = await loadCorpus();
-    const {
-      wantedPages, orphanRecords, duplicateTitles, vocabularyDrift, redactionCost,
-    } = await import('./js/events/curate.js');
-    driftCache = await briefDrift(records);
+    const { records, memories } = await loadCorpus();
+    if (token !== _maintSeq) return;
+    await YIELD();
 
-    const suggestions = await suggestBriefMerges(records, { memories: (await loadCorpus()).memories });
-    const wanted = wantedPages(records).slice(0, 20);
-    const orphans = orphanRecords(records);
-    const dupes = duplicateTitles(records).slice(0, 12);
-    const drift = vocabularyDrift(records).slice(0, 12);
-    const redaction = redactionCost(records);
-    $('b-maint-count').textContent = driftCache.length ? `(${driftCache.length})` : '';
+    const curate = await import('./js/events/curate.js');
 
-    const group = (title, why, body) => `<div class="maint-group"><h3>${title}</h3><p>${why}</p>${body}</div>`;
-    const chips = (items) => (items.length
-      ? `<div class="maint-list">${items.map((t) => `<span class="topic-chip">${escapeHtml(t)}</span>`).join('')}</div>`
-      : '<div class="maint-ok">Nothing to do here.</div>');
-
+    const suggestions = await suggestBriefMerges(records, { memories });
     const merges = await getBriefMerges();
-    host.innerHTML =
-      group('Possibly the same subject',
-        'The alias rule folds what it can prove. These are the pairs it refuses to decide alone, because deciding wrongly merges two people permanently. Your answer is stored and re-applied on every rebuild.',
-        suggestions.length
-          ? `<div class="mergelist">${suggestions.slice(0, 20).map((m, i) =>
-            `<div class="mergerow" data-merge="${i}">`
-            + `<span class="bkind ${m.kind}">${KIND_LABEL[m.kind] || m.kind}</span>`
-            + `<span class="mergenames"><b>${escapeHtml(m.dropName)}</b> is <b>${escapeHtml(m.keepName)}</b></span>`
-            + `<span class="mergewhy">${MERGE_WHY[m.reason] || m.reason}</span>`
-            + `<button class="btn" data-yes="${i}" type="button">Same</button>`
-            + `<button class="btn ghost" data-no="${i}" type="button">Different</button>`
-            + `</div>`).join('')}</div>`
-          : '<div class="maint-ok">Nothing looks like a duplicate identity.</div>')
-      + group('Names you have merged',
-        'Corrections you made. They are an input to every rebuild, never an edit to one — which is why they survive.',
-        Object.keys(merges).length
-          ? `<div class="maint-list">${Object.entries(merges).map(([from, into]) =>
-            `<button class="topic-chip" data-unmerge="${escapeHtml(from)}" title="Undo this merge">${escapeHtml(from)} → ${escapeHtml(into)} ✕</button>`).join('')}</div>`
-          : '<div class="maint-ok">None yet.</div>')
-      + group('Redacted mentions',
-        'Placeholders like <code>PERSON_1</code> that privacy redaction left in your records. They cannot become subjects: the vault is per-conversation and is not kept, so one conversation\'s PERSON_1 is not another\'s. This is what redaction costs your graph.',
-        redaction.total
-          ? `<div class="maint-list">${Object.entries(redaction.byType).map(([t, n]) =>
-            `<span class="topic-chip">${escapeHtml(t)} <span class="chip-count">${n}</span></span>`).join('')}`
-            + `<span class="topic-chip">${redaction.records} records affected</span></div>`
-          : '<div class="maint-ok">None — nothing was redacted out of your own records.</div>')
-      + group('Wanted pages',
-        'A <code>[[link]]</code> pointing at nothing. Somebody already decided the subject was worth naming — this is the corpus asking for a page.',
-        chips(wanted.map((w) => `${w.target} · ${w.recordCount}`)))
-      + group('Records connected to nothing',
-        'No link, no shared tag, no shared topic. Only full-text search can reach these.',
-        `<div class="maint-list">${orphans.length
-          ? `<span class="topic-chip">${orphans.length} of ${records.length} records</span>`
-          : '<span class="maint-ok">Everything is connected.</span>'}</div>`)
-      + group('Claims citing a record that changed',
-        'The record a claim points at has been edited or deleted since the claim was derived. Rebuilding re-derives against what is there now.',
-        driftCache.length
-          ? `<div class="maint-list">${driftCache.slice(0, 20).map((d) => `<span class="topic-chip">${escapeHtml(d.name)} · ${d.drifted.length}</span>`).join('')}</div>`
-          : '<div class="maint-ok">Every citation still resolves.</div>')
-      + group('The same thing, titled twice',
-        'Exact and near-duplicate titles. Reported, never merged — “Q3 Planning” and “Q4 Planning” are one character apart and are not the same meeting.',
-        chips(dupes.map((g) => g.titles.join('  |  '))))
-      + group('One term, filed several ways',
-        'Tags and topics that normalize close but were typed differently, so they file apart.',
-        chips(drift.map((g) => g.terms.map((t) => `${t.term}(${t.count})`).join(' | '))));
-    for (const b of host.querySelectorAll('[data-yes]')) {
-      b.onclick = async () => {
-        const m = suggestions[Number(b.dataset.yes)];
-        await mergeSubjects(m.dropName, m.keepName);
-        toast(`“${m.dropName}” is “${m.keepName}”. Rebuild to apply it.`);
-        renderMaint();
-      };
-    }
-    for (const b of host.querySelectorAll('[data-no]')) {
-      // "Different" dismisses for this session only. A permanent no would need its own
-      // store, and a wrong permanent no is invisible forever — worse than being asked twice.
-      b.onclick = () => { b.closest('.mergerow').remove(); };
-    }
-    for (const b of host.querySelectorAll('[data-unmerge]')) {
-      b.onclick = async () => {
-        await unmergeSubject(b.dataset.unmerge);
-        toast('Merge undone. Rebuild to apply it.');
-        renderMaint();
-      };
-    }
+    if (!await add(group('Possibly the same subject',
+      'The alias rule folds what it can prove. These are the pairs it refuses to decide alone, because deciding wrongly merges two people permanently. Your answer is stored and re-applied on every rebuild.',
+      suggestions.length
+        ? `<div class="mergelist">${suggestions.slice(0, 20).map((m, i) =>
+          `<div class="mergerow" data-merge="${i}">`
+          + `<span class="bkind ${m.kind}">${KIND_LABEL[m.kind] || m.kind}</span>`
+          + `<span class="mergenames"><b>${escapeHtml(m.dropName)}</b> is <b>${escapeHtml(m.keepName)}</b></span>`
+          + `<span class="mergewhy">${MERGE_WHY[m.reason] || m.reason}</span>`
+          + `<button class="btn" data-yes="${i}" type="button">Same</button>`
+          + `<button class="btn ghost" data-no="${i}" type="button">Different</button>`
+          + `</div>`).join('')}</div>`
+        : '<div class="maint-ok">Nothing looks like a duplicate identity.</div>'))) return;
+
+    if (!await add(group('Names you have merged',
+      'Corrections you made. They are an input to every rebuild, never an edit to one — which is why they survive.',
+      Object.keys(merges).length
+        ? `<div class="maint-list">${Object.entries(merges).map(([from, into]) =>
+          `<button class="topic-chip" data-unmerge="${escapeHtml(from)}" title="Undo this merge">${escapeHtml(from)} → ${escapeHtml(into)} \u2715</button>`).join('')}</div>`
+        : '<div class="maint-ok">None yet.</div>'))) return;
+
+    const redaction = curate.redactionCost(records);
+    if (!await add(group('Redacted mentions',
+      'Placeholders like <code>PERSON_1</code> that privacy redaction left in your records. They cannot become subjects: the vault is per-conversation and is not kept, so one conversation\'s PERSON_1 is not another\'s. This is what redaction costs your graph.',
+      redaction.total
+        ? `<div class="maint-list">${Object.entries(redaction.byType).map(([t, n]) =>
+          `<span class="topic-chip">${escapeHtml(t)} <span class="chip-count">${n}</span></span>`).join('')}`
+          + `<span class="topic-chip">${redaction.records} records affected</span></div>`
+        : '<div class="maint-ok">None — nothing was redacted out of your own records.</div>'))) return;
+
+    const wanted = curate.wantedPages(records).slice(0, 20);
+    if (!await add(group('Wanted pages',
+      'A <code>[[link]]</code> pointing at nothing. Somebody already decided the subject was worth naming — this is the corpus asking for a page.',
+      chips(wanted.map((w) => `${w.target} \u00b7 ${w.recordCount}`))))) return;
+
+    const orphans = curate.orphanRecords(records);
+    if (!await add(group('Records connected to nothing',
+      'No link, no shared tag, no shared topic. Only full-text search can reach these.',
+      `<div class="maint-list">${orphans.length
+        ? `<span class="topic-chip">${orphans.length} of ${records.length} records</span>`
+        : '<span class="maint-ok">Everything is connected.</span>'}</div>`))) return;
+
+    driftCache = await briefDrift(records);
+    $('b-maint-count').textContent = driftCache.length ? `(${driftCache.length})` : '';
+    if (!await add(group('Claims citing a record that changed',
+      'The record a claim points at has been edited or deleted since the claim was derived. Rebuilding re-derives against what is there now.',
+      driftCache.length
+        ? `<div class="maint-list">${driftCache.slice(0, 20).map((d) => `<span class="topic-chip">${escapeHtml(d.name)} \u00b7 ${d.drifted.length}</span>`).join('')}</div>`
+        : '<div class="maint-ok">Every citation still resolves.</div>'))) return;
+
+    const dupes = curate.duplicateTitles(records).slice(0, 12);
+    if (!await add(group('The same thing, titled twice',
+      'Exact and near-duplicate titles. Reported, never merged \u2014 \u201cQ3 Planning\u201d and \u201cQ4 Planning\u201d are one character apart and are not the same meeting.',
+      chips(dupes.map((g) => g.titles.join('  |  ')))))) return;
+
+    const drift = curate.vocabularyDrift(records).slice(0, 12);
+    if (!await add(group('One term, filed several ways',
+      'Tags and topics that normalize close but were typed differently, so they file apart.',
+      chips(drift.map((g) => g.terms.map((t) => `${t.term}(${t.count})`).join(' | ')))))) return;
+
+    wireMaintActions(host, suggestions);
     hydrate(host);
   } catch (e) {
+    if (token !== _maintSeq) return;
     host.innerHTML = `<div class="dash-empty">Could not check the corpus: ${escapeHtml(e?.message || e)}</div>`;
+  }
+}
+
+function wireMaintActions(host, suggestions) {
+  for (const b of host.querySelectorAll('[data-yes]')) {
+    b.onclick = async () => {
+      const m = suggestions[Number(b.dataset.yes)];
+      await mergeSubjects(m.dropName, m.keepName);
+      toast(`\u201c${m.dropName}\u201d is \u201c${m.keepName}\u201d. Rebuild to apply it.`);
+      renderMaint();
+    };
+  }
+  for (const b of host.querySelectorAll('[data-no]')) {
+    // "Different" dismisses for this session only. A permanent no would need its own store,
+    // and a wrong permanent no is invisible forever — worse than being asked twice.
+    b.onclick = () => { b.closest('.mergerow').remove(); };
+  }
+  for (const b of host.querySelectorAll('[data-unmerge]')) {
+    b.onclick = async () => {
+      await unmergeSubject(b.dataset.unmerge);
+      toast('Merge undone. Rebuild to apply it.');
+      renderMaint();
+    };
   }
 }
 

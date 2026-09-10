@@ -43,6 +43,59 @@ const WIKILINK_RE = /\[\[([^[\]\n]+)\]\]/g;
 /** Below this, two normalized titles are "the same title typed twice". */
 export const NEAR_TITLE_DISTANCE = 2;
 
+/**
+ * A ceiling on pairwise work, and the reason it exists.
+ *
+ * The near-duplicate passes below used to compare EVERY pair, which is the exact N×N scan
+ * the design says not to build — and it behaved like one: 1s at 2,000 records, 10s at 6,000,
+ * 40s at 12,000, on the UI thread, which is an unresponsive tab rather than a slow report.
+ *
+ * The fix is BLOCKING, the standard record-linkage answer: two strings within `distance`
+ * edits almost always still agree on their first or last few characters, so only strings
+ * sharing one of those keys are ever compared. That turns the pass near-linear while keeping
+ * the findings that matter. The budget is the backstop for the pathological case — ten
+ * thousand titles that all start the same way — so a weird corpus costs a truncated report
+ * rather than a hung page.
+ */
+export const MAX_PAIR_COMPARISONS = 200_000;
+
+// Two keys per string: what it starts with and what it ends with. An edit near the front
+// still matches on the tail, and vice versa — one pass over each bucket catches both.
+const BLOCK_KEY_CHARS = 4;
+function blockKeys(norm) {
+  const head = norm.slice(0, BLOCK_KEY_CHARS);
+  const tail = norm.slice(-BLOCK_KEY_CHARS);
+  return head === tail ? [`p:${head}`] : [`p:${head}`, `s:${tail}`];
+}
+
+/**
+ * Candidate pairs worth comparing, from a list of normalized strings — never all of them.
+ * Yields `[a, b]` with each unordered pair at most once, within the comparison budget.
+ */
+function* blockedPairs(norms, { budget = MAX_PAIR_COMPARISONS } = {}) {
+  const blocks = new Map();
+  for (const n of norms) {
+    for (const key of blockKeys(n)) {
+      if (!blocks.has(key)) blocks.set(key, []);
+      blocks.get(key).push(n);
+    }
+  }
+  let spent = 0;
+  const seen = new Set();
+  for (const bucket of blocks.values()) {
+    for (let i = 0; i < bucket.length; i += 1) {
+      for (let j = i + 1; j < bucket.length; j += 1) {
+        if (spent >= budget) return;
+        const key = bucket[i] < bucket[j] ? `${bucket[i]}\u0000${bucket[j]}` : `${bucket[j]}\u0000${bucket[i]}`;
+        if (seen.has(key)) continue; // a pair sharing BOTH keys lands in two buckets
+        seen.add(key);
+        spent += 1;
+        yield [bucket[i], bucket[j]];
+      }
+    }
+  }
+}
+
 /** How much term overlap counts as a record answering a question, in `spanningQuestions`. */
 export const SPAN_MIN_TERMS = 2;
 
@@ -220,23 +273,36 @@ export function duplicateTitles(records = [], { distance = NEAR_TITLE_DISTANCE }
     if (!groups.has(norm)) groups.set(norm, []);
     groups.get(norm).push(r);
   }
-  const out = [];
   const norms = [...groups.keys()].sort();
+
+  // Near-misses first, over BLOCKED candidate pairs rather than every pair — see
+  // MAX_PAIR_COMPARISONS for what that replaced.
+  const nearOf = new Map();
+  for (const [a, b] of blockedPairs(norms)) {
+    // A title short enough that `distance` edits rewrite most of it is not a near-miss.
+    if (Math.min(a.length, b.length) <= distance * 2) continue;
+    if (sameSeries(a, b)) continue;
+    if (editDistance(a, b, distance) > distance) continue;
+    if (!nearOf.has(a)) nearOf.set(a, []);
+    if (!nearOf.has(b)) nearOf.set(b, []);
+    nearOf.get(a).push(b);
+    nearOf.get(b).push(a);
+  }
+
+  const out = [];
   const merged = new Set();
-  for (let i = 0; i < norms.length; i += 1) {
-    if (merged.has(norms[i])) continue;
-    const cluster = [norms[i]];
-    for (let j = i + 1; j < norms.length; j += 1) {
-      if (merged.has(norms[j])) continue;
-      // A title short enough that `distance` edits rewrite most of it is not a near-miss.
-      if (Math.min(norms[i].length, norms[j].length) <= distance * 2) continue;
-      if (sameSeries(norms[i], norms[j])) continue;
-      if (editDistance(norms[i], norms[j], distance) <= distance) { cluster.push(norms[j]); merged.add(norms[j]); }
+  for (const norm of norms) {
+    if (merged.has(norm)) continue;
+    const cluster = [norm];
+    for (const other of nearOf.get(norm) || []) {
+      if (merged.has(other) || other === norm) continue;
+      cluster.push(other);
+      merged.add(other);
     }
     const items = cluster.flatMap((n) => groups.get(n));
     if (items.length > 1) {
       out.push({
-        norm: norms[i],
+        norm,
         titles: [...new Set(items.map((r) => r.title))],
         ids: items.map((r) => r.id),
       });
@@ -265,21 +331,28 @@ export function vocabularyDrift(records = [], { distance = 1 } = {}) {
     }
   }
   const terms = [...freq.keys()].sort();
+  const bare = (t) => t.replace(/-/g, '');
+
+  // Same blocking as duplicateTitles. A vocabulary is smaller than a corpus, so this has not
+  // bitten yet — but it is the identical shape, and the identical shape is what bites.
+  const nearOf = new Map();
+  for (const [a, b] of blockedPairs(terms)) {
+    if (Math.min(a.length, b.length) <= 3) continue;
+    if (bare(a) !== bare(b) && editDistance(a, b, distance) > distance) continue;
+    if (!nearOf.has(a)) nearOf.set(a, []);
+    if (!nearOf.has(b)) nearOf.set(b, []);
+    nearOf.get(a).push(b);
+    nearOf.get(b).push(a);
+  }
+
   const out = [];
   const taken = new Set();
-  for (let i = 0; i < terms.length; i += 1) {
-    if (taken.has(terms[i])) continue;
-    const near = [];
-    for (let j = i + 1; j < terms.length; j += 1) {
-      if (taken.has(terms[j])) continue;
-      if (Math.min(terms[i].length, terms[j].length) <= 3) continue;
-      const bare = (s) => s.replace(/-/g, '');
-      if (bare(terms[i]) === bare(terms[j]) || editDistance(terms[i], terms[j], distance) <= distance) {
-        near.push(terms[j]); taken.add(terms[j]);
-      }
-    }
+  for (const term of terms) {
+    if (taken.has(term)) continue;
+    const near = (nearOf.get(term) || []).filter((t) => !taken.has(t) && t !== term);
+    for (const t of near) taken.add(t);
     if (near.length) {
-      out.push({ terms: [terms[i], ...near].map((t) => ({ term: t, count: freq.get(t) || 0 })) });
+      out.push({ terms: [term, ...near].map((t) => ({ term: t, count: freq.get(t) || 0 })) });
     }
   }
   return out.sort((a, b) => b.terms.length - a.terms.length);

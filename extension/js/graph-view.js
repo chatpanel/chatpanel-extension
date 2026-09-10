@@ -172,9 +172,41 @@ function labelPriority(node, adj) {
   return score;
 }
 
+/**
+ * A HARD CEILING, because a caller that forgets one can hang the whole page.
+ *
+ * The force pass pushes every node off its neighbours each frame. The spatial grid below
+ * keeps that near-linear only while nodes are SPREAD; a few hundred densely connected nodes
+ * all seeded into one clump make every node "nearby" every other, the grid degenerates to
+ * N² per frame at 60fps, and the tab stops responding. Callers are supposed to cap — omni
+ * does, at 80 — and the Briefs subject graph shipped without one and froze on a real corpus.
+ *
+ * So the cap lives HERE as well. Callers should still trim to something readable (a
+ * hairball is not a graph), but forgetting must cost a truncated picture, never a hung tab.
+ */
+export const MAX_GRAPH_NODES = 140;
+
 export function drawGraph(host, nodes, links, onNode, onNodeOpen) {
   if (!host) return;
   if (host._stop) host._stop(); // tear down a previous sim on re-render
+  if (Array.isArray(nodes) && nodes.length > MAX_GRAPH_NODES) {
+    // Keep the best-connected ones — degree is the only ranking available here, and a node
+    // with no edges contributes nothing to a relationship picture.
+    const degree = new Map(nodes.map((n) => [n.id, 0]));
+    for (const l of links || []) {
+      degree.set(l.s, (degree.get(l.s) || 0) + 1);
+      degree.set(l.t, (degree.get(l.t) || 0) + 1);
+    }
+    const keep = new Set([...nodes]
+      .sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0))
+      .slice(0, MAX_GRAPH_NODES)
+      .map((n) => n.id));
+    // A focused node is why the caller drew the graph — never trim it away.
+    for (const n of nodes) if (n.focus) keep.add(n.id);
+    console.warn(`[chatpanel] graph capped at ${MAX_GRAPH_NODES} of ${nodes.length} nodes — the caller should trim first`);
+    nodes = nodes.filter((n) => keep.has(n.id));
+    links = (links || []).filter((l) => keep.has(l.s) && keep.has(l.t));
+  }
 
   // Tap routing: single tap → onNode (drill/focus); double tap → onNodeOpen (open).
   // With no onNodeOpen, fire the single tap immediately so legacy callers are unchanged.
