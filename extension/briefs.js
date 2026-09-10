@@ -1,0 +1,530 @@
+// The Briefs dashboard — the derived layer's own surface.
+//
+// A brief is only ever an aggregate, so unlike Notes/Chats/Meetings there is no useful
+// "one brief happened yesterday" list: the DASHBOARD is the default view and a single
+// subject is the drill-down. That inverts the other three pages on purpose.
+//
+// FAST LOAD, the same way the notes list does it: everything on screen before a subject is
+// opened comes from the brief INDEX (one decrypt) — name, kind, aliases, counts, terms. A
+// brief body, with its claims and citations, is decrypted only when you open it.
+//
+// Derivation is NOT here. `@chatpanel/events/knowledge.js` owns what a brief is, because a
+// mobile client and the gateway have to derive the same briefs from the same records; this
+// file loads the corpus, hands it over, and renders the result.
+
+import {
+  getBriefIndex, getBrief, getBriefSettings, saveBriefSettings, briefsAreStale,
+} from './js/store-briefs.js';
+// The build pass is where derivation lives. Imported statically HERE — this page is the one
+// surface whose whole job is briefs, and a Rebuild button that first fetches 60 KB would be
+// the wrong trade — but never from store-briefs.js, which the service worker reaches.
+import { rebuildBriefs, briefDrift } from './js/briefs-build.js';
+import { openSidePanel } from './js/side-panel.js';
+import { icon, hydrate } from './js/icons.js';
+
+const $ = (id) => document.getElementById(id);
+
+let index = [];        // index rows — no bodies
+let current = null;    // the open brief, decrypted on demand
+let kindFilter = '';
+let dashTab = 'stats';
+let corpusCache = null; // loaded lazily; a rebuild and the drift check both want it
+let driftCache = null;
+
+const KIND_LABEL = { person: 'person', topic: 'topic', tag: 'tag', title: 'wanted' };
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+let toastTimer = null;
+function toast(msg) {
+  const el = $('b-toast');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add('hidden'), 2600);
+}
+
+function relDay(ms) {
+  if (!ms) return '';
+  const d = Math.round((Date.now() - ms) / 86400000);
+  if (d <= 0) return 'today';
+  if (d === 1) return 'yesterday';
+  if (d < 30) return `${d}d ago`;
+  if (d < 365) return `${Math.round(d / 30)}mo ago`;
+  return `${Math.round(d / 365)}y ago`;
+}
+
+// ── the corpus, loaded once per page ─────────────────────────────────────────
+// history-rag drags in the whole source layer, so it is dynamic-imported at the call site
+// rather than statically: opening this page to READ briefs must not pay for the machinery
+// that BUILDS them.
+async function loadCorpus() {
+  if (corpusCache) return corpusCache;
+  const [{ loadHistorySources }, { getMemories }] = await Promise.all([
+    import('./js/history-rag.js'),
+    import('./js/store-memory.js'),
+  ]);
+  const records = await loadHistorySources({
+    includeChats: true, includeMeetings: true, includeNotes: true,
+    // Briefs are derived FROM records, so deriving them from briefs would be a feedback
+    // loop: last run's synthesis would become this run's evidence and the citations would
+    // stop leading anywhere real.
+    includeBriefs: false,
+  });
+  corpusCache = { records, memories: await getMemories().catch(() => []) };
+  return corpusCache;
+}
+
+// ── the subject list ─────────────────────────────────────────────────────────
+function filtered() {
+  const q = ($('b-search').value || '').trim().toLowerCase();
+  let rows = index;
+  if (kindFilter) rows = rows.filter((e) => e.kind === kindFilter);
+  if (!q) return rows;
+  // `person:alex` narrows by kind and text in one token, matching how tag: works elsewhere.
+  const scoped = /^(person|topic|tag|title|wanted)\s*:\s*(.*)$/.exec(q);
+  const kind = scoped ? (scoped[1] === 'wanted' ? 'title' : scoped[1]) : '';
+  const text = scoped ? scoped[2].trim() : q;
+  return rows.filter((e) => (!kind || e.kind === kind)
+    && (!text || [e.name, ...(e.aliases || []), ...(e.terms || [])].some((t) => String(t).toLowerCase().includes(text))));
+}
+
+function renderList() {
+  const host = $('b-items');
+  const rows = filtered();
+  $('b-count').textContent = index.length ? `(${index.length})` : '';
+  if (!rows.length) {
+    host.innerHTML = `<div class="dash-empty">${index.length ? 'No subject matches that.' : 'No briefs yet.'}</div>`;
+    return;
+  }
+  // Evidence is scaled against the best-evidenced subject, so the bar reads as "how much
+  // is behind this compared with what I actually have" rather than against an absolute
+  // nobody can calibrate.
+  const top = Math.max(...rows.map((e) => e.stats?.records || 0), 1);
+  host.innerHTML = '';
+  for (const e of rows) {
+    const el = document.createElement('div');
+    el.className = `brow${current?.id === e.id ? ' on' : ''}`;
+    el.innerHTML =
+      `<div class="brow-head">`
+      + `<span class="brow-name">${escapeHtml(e.name)}</span>`
+      + `<span class="bkind ${e.kind}">${KIND_LABEL[e.kind] || e.kind}</span>`
+      + (e.aliases?.length ? `<span class="baka">aka ${escapeHtml(e.aliases.join(', '))}</span>` : '')
+      + `</div>`
+      + `<div class="bbar"><i style="width:${Math.max(6, Math.round(((e.stats?.records || 0) / top) * 100))}%"></i></div>`
+      + `<div class="brow-meta">${e.stats?.records || 0} record${e.stats?.records === 1 ? '' : 's'} · ${e.claims} claim${e.claims === 1 ? '' : 's'}${e.stats?.last ? ` · ${relDay(e.stats.last)}` : ''}</div>`;
+    el.onclick = () => openBrief(e.id);
+    host.appendChild(el);
+  }
+}
+
+// ── one brief ────────────────────────────────────────────────────────────────
+function citeChip(ref, drifted) {
+  const isMem = ref.kind === 'memory';
+  const cls = `cite${isMem ? ' mem' : ''}${drifted.has(`${ref.kind}:${ref.id}`) ? ' drift' : ''}`;
+  const label = isMem ? 'you said' : `${ref.kind}:${String(ref.id).slice(0, 10)}`;
+  return `<button class="${cls}" type="button" data-kind="${escapeHtml(ref.kind)}" data-id="${escapeHtml(ref.id)}">${escapeHtml(label)}</button>`;
+}
+
+async function openBrief(id) {
+  const brief = await getBrief(id);
+  if (!brief) { toast('That brief is gone — rebuild to re-derive it.'); return; }
+  current = brief;
+  location.hash = encodeURIComponent(id);
+  $('b-dash').classList.add('hidden');
+  $('b-blank').classList.add('hidden');
+  const view = $('b-view');
+  view.classList.remove('hidden');
+
+  // Drift is looked up from the cached report rather than recomputed: it is a whole-corpus
+  // question and answering it per click would decrypt everything on every open.
+  const drifted = new Set(
+    (driftCache?.find((d) => d.id === id)?.drifted || []).map((d) => `${d.ref.kind}:${d.ref.id}`),
+  );
+
+  const s = brief.stats || {};
+  view.innerHTML =
+    `<div class="bhead">`
+    + `<h2>${escapeHtml(brief.subject.name)}</h2>`
+    + `<span class="bkind ${brief.kind}">${KIND_LABEL[brief.kind] || brief.kind}</span>`
+    + (brief.subject.aliases?.length ? `<span class="baka">aka ${escapeHtml(brief.subject.aliases.join(', '))}</span>` : '')
+    + `<span class="bhead-meta">${s.records || 0} records · ${s.mentions || 0} mentions · built ${relDay(brief.updatedAt)}</span>`
+    + `</div>`
+    + `<p class="muted" style="margin:0 0 6px;font-size:12.5px">`
+    + `Derived from your own records — every claim links to the one it came from. `
+    + `<button id="b-ask" class="cite" type="button">Ask ChatPanel about this</button></p>`
+    + `<div class="bsec-head">What the records say</div>`
+    + brief.claims.map((c) =>
+      `<div class="claim claim-${c.kind}">`
+      + `<div><div class="claim-kind">${c.kind === 'stated' ? 'You told ChatPanel' : escapeHtml(c.kind)}</div>`
+      + `<div class="claim-txt">${escapeHtml(c.text)}</div></div>`
+      + `<div class="cites">${c.refs.map((r) => citeChip(r, drifted)).join('')}</div>`
+      + `</div>`).join('')
+    + (brief.records.length
+      ? `<div class="bsec-head">Records behind it (${brief.records.length})</div>`
+        + [...brief.records].reverse().slice(0, 40).map((r) =>
+          `<div class="related-card" data-open="${escapeHtml(r.id)}">`
+          + `<div class="related-card-title">${escapeHtml(r.title || 'Untitled')}</div>`
+          + `<div class="related-card-meta">${escapeHtml(r.type)}${r.date ? ` · ${new Date(r.date).toLocaleDateString()}` : ''}</div>`
+          + `</div>`).join('')
+      : '');
+
+  for (const el of view.querySelectorAll('.cite[data-id]')) {
+    el.onclick = () => openRecord(`${el.dataset.kind}:${el.dataset.id}`);
+  }
+  for (const el of view.querySelectorAll('[data-open]')) el.onclick = () => openRecord(el.dataset.open);
+  const ask = $('b-ask');
+  if (ask) ask.onclick = () => askPanel(brief);
+  hydrate(view);
+  renderList();
+}
+
+/** A citation is only useful if it opens the thing it cites. */
+function openRecord(id) {
+  const [kind, ...rest] = String(id).split(':');
+  const rec = rest.join(':');
+  if (kind === 'memory') { toast('That came from something you told ChatPanel — see Settings → Memory.'); return; }
+  const page = kind === 'meeting' ? 'meetings.html' : kind === 'note' ? 'notes.html' : 'history.html';
+  location.assign(chrome.runtime.getURL(`${page}#${encodeURIComponent(rec)}`));
+}
+
+/**
+ * The brief is a starting point, not an endpoint. Opening the panel with the subject
+ * pre-filled is the shortest path from "what do I know" to "and now do something with it",
+ * and it goes through the normal retrieval path — the brief competes for rank like any
+ * other source rather than being force-fed into the prompt (decision K2).
+ */
+async function askPanel(brief) {
+  const prompt = `What do we know about ${brief.subject.name}?`;
+  // Open WITHIN the click gesture, before any await — Firefox's sidebarAction.open()
+  // rejects after one, which is why side-panel.js is statically imported here.
+  const opening = openSidePanel().catch(() => { /* may already be open */ });
+  try {
+    // Fresh-open path: the panel's init() reads this once and clears it.
+    await chrome.storage.local.set({ 'chatpanel:composerSeed': prompt });
+    await opening;
+    // Already-open path: nudge the live panel, the same pair history.js uses.
+    chrome.runtime.sendMessage({ type: 'context-seed', prompt }).catch(() => {});
+    toast('Asking in the side panel…');
+  } catch { toast('Could not open the side panel.'); }
+}
+
+// ── the dashboard ────────────────────────────────────────────────────────────
+function showDash() {
+  current = null;
+  if (location.hash) history.replaceState(null, '', location.pathname);
+  $('b-view').classList.add('hidden');
+  $('b-blank').classList.toggle('hidden', index.length > 0);
+  $('b-dash').classList.toggle('hidden', index.length === 0);
+  renderList();
+  if (index.length) renderDash();
+}
+
+function renderStats() {
+  const host = $('b-dash-stats');
+  const byKind = {};
+  let claims = 0; let records = 0; let stated = 0;
+  for (const e of index) {
+    byKind[e.kind] = (byKind[e.kind] || 0) + 1;
+    claims += e.claims || 0;
+    records += e.stats?.records || 0;
+    if (e.stats?.wanted) stated += 1;
+  }
+  const card = (n, l) => `<div class="metric"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  host.innerHTML =
+    `<div class="metrics">`
+    + card(index.length, 'Briefs')
+    + card(claims, 'Claims')
+    + card(byKind.person || 0, 'People')
+    + card(byKind.topic || 0, 'Topics')
+    + card(byKind.title || 0, 'Wanted pages')
+    + card(driftCache ? driftCache.length : '—', 'Drifted')
+    + `</div>`
+    + `<div class="bsec-head">Best evidenced</div><div id="b-top"></div>`
+    + `<div class="bsec-head">How these are built</div><div id="b-prefs"></div>`;
+
+  const top = $('b-top');
+  for (const e of [...index].sort((a, b) => (b.stats?.records || 0) - (a.stats?.records || 0)).slice(0, 12)) {
+    const el = document.createElement('div');
+    el.className = 'related-card';
+    el.innerHTML =
+      `<div class="related-card-title">${escapeHtml(e.name)} <span class="bkind ${e.kind}">${KIND_LABEL[e.kind] || e.kind}</span></div>`
+      + `<div class="related-card-meta">${e.stats?.records || 0} records · ${e.claims} claims</div>`;
+    el.onclick = () => openBrief(e.id);
+    top.appendChild(el);
+  }
+  renderPrefs();
+  hydrate(host);
+}
+
+/**
+ * The controls live HERE rather than in Settings.
+ *
+ * Not to avoid a settings tab: a threshold is only meaningful next to the list it produced.
+ * "3 records and 5 mentions" means nothing on a settings page and means something obvious
+ * two inches under "34 briefs, and these are the best evidenced". Raising it and watching
+ * the list shrink is the calibration, and it cannot happen on another screen.
+ */
+async function renderPrefs() {
+  const host = $('b-prefs');
+  if (!host) return;
+  const s = await getBriefSettings();
+  const row = (title, why, control) =>
+    `<div class="prefrow"><div><div class="prefrow-t">${title}</div><div class="prefrow-w">${why}</div></div>${control}</div>`;
+  host.innerHTML =
+    `<div class="maint-group">`
+    + row('Build briefs from my records',
+      'Runs entirely on your device. No model, no network — every claim is a restatement of something a record already says.',
+      `<button id="b-pref-on" class="btn${s.enabled ? ' active' : ''}" type="button">${s.enabled ? 'On' : 'Off'}</button>`)
+    + row('A subject earns a page at',
+      `${index.length} of your subjects clear this today. Raise it if the list is noisy; lower it if a subject you think about is missing.`,
+      `<span class="prefnum"><button class="btn ghost" data-th="-" type="button">−</button>`
+      + `<b>${s.minRecords} records · ${s.minMentions} mentions</b>`
+      + `<button class="btn ghost" data-th="+" type="button">+</button></span>`)
+    + row('Share briefs with local agents',
+      'Codex, Claude Code and OpenCode read them through the gateway on this machine. Records already sync; this is about your synthesised conclusions.',
+      `<button id="b-pref-share" class="btn${s.shareWithAgents ? ' active' : ''}" type="button">${s.shareWithAgents ? 'Shared' : 'Private'}</button>`)
+    + `</div>`;
+
+  $('b-pref-on').onclick = async () => {
+    const next = await saveBriefSettings({ enabled: !s.enabled });
+    toast(next.enabled ? 'Briefs are on — rebuild to derive them.' : 'Briefs are off. Existing ones stay until you rebuild.');
+    renderPrefs();
+  };
+  $('b-pref-share').onclick = async () => {
+    const next = await saveBriefSettings({ shareWithAgents: !s.shareWithAgents });
+    toast(next.shareWithAgents
+      ? 'Local agents can read your briefs.'
+      : 'Local agents will stop seeing briefs after the next sync.');
+    renderPrefs();
+  };
+  for (const b of host.querySelectorAll('[data-th]')) {
+    b.onclick = async () => {
+      // Records and mentions move together: a threshold where they diverge invites the
+      // combination nobody meant (1 record, 40 mentions is one chatty document, not a
+      // subject), and the sweep in tools/knowledge-survey.mjs moves them in step too.
+      const step = b.dataset.th === '+' ? 1 : -1;
+      await saveBriefSettings({
+        minRecords: Math.max(2, Math.min(12, s.minRecords + step)),
+        minMentions: Math.max(2, Math.min(30, s.minMentions + step * 2)),
+      });
+      renderPrefs();
+      toast('Rebuild to apply the new threshold.');
+    };
+  }
+  hydrate(host);
+}
+
+/**
+ * The subject graph. A brief is a HUB by construction — it sits on every record that
+ * mentions its subject — so this is the one graph in the product where the nodes are the
+ * things you think in rather than the documents you happened to produce.
+ */
+async function renderGraph() {
+  const host = $('b-dash-graph');
+  if (!index.length) { host.innerHTML = '<div class="dash-empty">No briefs yet.</div>'; return; }
+  try {
+    const { drawGraph } = await import('./js/graph-view.js');
+    const byName = new Map(index.map((e) => [e.name.toLowerCase(), e]));
+    const nodes = index.map((e) => ({ id: e.id, label: e.name, type: e.kind === 'person' ? 'person' : 'topic' }));
+    const links = [];
+    const seen = new Set();
+    for (const e of index) {
+      for (const term of e.terms || []) {
+        const other = byName.get(String(term).toLowerCase());
+        if (!other || other.id === e.id) continue;
+        const key = [e.id, other.id].sort().join('|');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        links.push({ s: e.id, t: other.id });
+      }
+    }
+    drawGraph(host, nodes, links, (n) => openBrief(n.id), (n) => openBrief(n.id));
+  } catch { host.innerHTML = '<div class="dash-empty">Graph unavailable.</div>'; }
+}
+
+/**
+ * Maintenance — the W0 survey, made continuous.
+ *
+ * Every pass here is deterministic and free, which is the point: a model would "notice"
+ * mostly the same things at a cost, and the model half of the curator (W3/W4) only ever
+ * looks at what this flagged.
+ */
+async function renderMaint() {
+  const host = $('b-dash-maint');
+  host.innerHTML = '<div class="dash-empty">Checking your corpus…</div>';
+  try {
+    const { records } = await loadCorpus();
+    const { wantedPages, orphanRecords, duplicateTitles, vocabularyDrift } = await import('./js/events/curate.js');
+    driftCache = await briefDrift(records);
+
+    const wanted = wantedPages(records).slice(0, 20);
+    const orphans = orphanRecords(records);
+    const dupes = duplicateTitles(records).slice(0, 12);
+    const drift = vocabularyDrift(records).slice(0, 12);
+    $('b-maint-count').textContent = driftCache.length ? `(${driftCache.length})` : '';
+
+    const group = (title, why, body) => `<div class="maint-group"><h3>${title}</h3><p>${why}</p>${body}</div>`;
+    const chips = (items) => (items.length
+      ? `<div class="maint-list">${items.map((t) => `<span class="topic-chip">${escapeHtml(t)}</span>`).join('')}</div>`
+      : '<div class="maint-ok">Nothing to do here.</div>');
+
+    host.innerHTML =
+      group('Wanted pages',
+        'A <code>[[link]]</code> pointing at nothing. Somebody already decided the subject was worth naming — this is the corpus asking for a page.',
+        chips(wanted.map((w) => `${w.target} · ${w.recordCount}`)))
+      + group('Records connected to nothing',
+        'No link, no shared tag, no shared topic. Only full-text search can reach these.',
+        `<div class="maint-list">${orphans.length
+          ? `<span class="topic-chip">${orphans.length} of ${records.length} records</span>`
+          : '<span class="maint-ok">Everything is connected.</span>'}</div>`)
+      + group('Claims citing a record that changed',
+        'The record a claim points at has been edited or deleted since the claim was derived. Rebuilding re-derives against what is there now.',
+        driftCache.length
+          ? `<div class="maint-list">${driftCache.slice(0, 20).map((d) => `<span class="topic-chip">${escapeHtml(d.name)} · ${d.drifted.length}</span>`).join('')}</div>`
+          : '<div class="maint-ok">Every citation still resolves.</div>')
+      + group('The same thing, titled twice',
+        'Exact and near-duplicate titles. Reported, never merged — “Q3 Planning” and “Q4 Planning” are one character apart and are not the same meeting.',
+        chips(dupes.map((g) => g.titles.join('  |  '))))
+      + group('One term, filed several ways',
+        'Tags and topics that normalize close but were typed differently, so they file apart.',
+        chips(drift.map((g) => g.terms.map((t) => `${t.term}(${t.count})`).join(' | '))));
+    hydrate(host);
+  } catch (e) {
+    host.innerHTML = `<div class="dash-empty">Could not check the corpus: ${escapeHtml(e?.message || e)}</div>`;
+  }
+}
+
+function renderDash() {
+  $('b-dash-stats').classList.toggle('hidden', dashTab !== 'stats');
+  $('b-dash-graph').classList.toggle('hidden', dashTab !== 'graph');
+  $('b-dash-maint').classList.toggle('hidden', dashTab !== 'maint');
+  if (dashTab === 'stats') renderStats();
+  else if (dashTab === 'graph') renderGraph();
+  else renderMaint();
+}
+
+// ── rebuild ──────────────────────────────────────────────────────────────────
+/**
+ * I-K2 made a button: throw every brief away and re-derive from the records.
+ *
+ * Safe by construction — a brief is a projection, so this is a cache clear rather than
+ * data loss, and that is exactly why the derived layer is allowed to be wrong. Nothing
+ * else in ChatPanel gets a button like this.
+ */
+async function rebuild(btn) {
+  const label = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = 'Building…'; }
+  try {
+    const { records, memories } = await loadCorpus();
+    const report = await rebuildBriefs(records, { memories });
+    if (!report.ok) { toast(report.reason === 'disabled' ? 'Briefs are switched off in settings.' : 'Nothing to build.'); return; }
+    index = await getBriefIndex();
+    driftCache = null;
+    toast(index.length
+      ? `${index.length} brief${index.length === 1 ? '' : 's'} from ${records.length} records.`
+      : 'No subject has enough evidence for a page yet — keep chatting and meeting.');
+    $('b-rebuild').classList.remove('active');
+    await explainEmpty();
+    showDash();
+  } catch (e) {
+    toast(`Could not build: ${e?.message || e}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; hydrate(btn.parentElement); }
+  }
+}
+
+/** The empty state should say WHY it is empty, which is a different sentence each time. */
+async function explainEmpty() {
+  const settings = await getBriefSettings();
+  const el = $('b-blank-why');
+  if (!settings.enabled) { el.textContent = 'Briefs are switched off in ChatPanel settings.'; return; }
+  el.textContent = settings.lastBuiltAt
+    ? `Last built ${relDay(settings.lastBuiltAt)} — no subject reached ${settings.minRecords} records and ${settings.minMentions} mentions yet.`
+    : 'Nothing is built yet. This runs entirely on your device and calls no model.';
+}
+
+// ── boot ─────────────────────────────────────────────────────────────────────
+async function init() {
+  hydrate(document);
+  index = await getBriefIndex();
+
+  $('b-search').oninput = renderList;
+  for (const b of document.querySelectorAll('#b-kinds button')) {
+    b.onclick = () => {
+      for (const o of document.querySelectorAll('#b-kinds button')) o.classList.toggle('active', o === b);
+      kindFilter = b.dataset.kind;
+      renderList();
+    };
+  }
+  for (const b of document.querySelectorAll('#b-dash .dash-tabs button')) {
+    b.onclick = () => {
+      for (const o of document.querySelectorAll('#b-dash .dash-tabs button')) o.classList.toggle('active', o === b);
+      dashTab = b.dataset.dash;
+      renderDash();
+    };
+  }
+  $('b-rebuild').onclick = () => rebuild($('b-rebuild'));
+  $('b-build').onclick = () => rebuild($('b-build'));
+  $('b-open-panel').onclick = () => openSidePanel();
+  $('b-settings').onclick = () => chrome.runtime.openOptionsPage();
+  $('omni-open').onclick = () => openOmni($('b-search').value || '');
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openOmni($('b-search').value || ''); }
+    if (e.key === 'Escape' && current) showDash();
+  });
+  window.addEventListener('hashchange', () => {
+    const id = decodeURIComponent(location.hash.slice(1));
+    if (id) openBrief(id); else showDash();
+  });
+
+  await explainEmpty();
+  const id = decodeURIComponent(location.hash.slice(1));
+  if (id && index.some((e) => e.id === id)) await openBrief(id);
+  else showDash();
+
+  // FIRST VISIT builds automatically. Time-to-first-value is a stated requirement, and an
+  // empty page with a button is a worse answer than a built one — this costs no model call
+  // and no network, so there is nothing to ask permission for.
+  const settings = await getBriefSettings();
+  if (settings.enabled && !index.length && !settings.lastBuiltAt) { await rebuild($('b-build')); return; }
+
+  // After that, staleness is REPORTED rather than acted on. Deriving decrypts the whole
+  // corpus, and doing that on every page open — for someone who came to read one brief —
+  // would be the panel's old "attach the whole page to say hi" mistake in another costume.
+  if (settings.enabled && index.length && await briefsAreStale()) markStale();
+}
+
+function markStale() {
+  const btn = $('b-rebuild');
+  btn.classList.add('active');
+  btn.title = 'Your records changed since these were built — rebuild to re-derive them';
+  const dash = $('b-dash-stats');
+  if (dash && !dash.querySelector('.b-stale')) {
+    const note = document.createElement('div');
+    note.className = 'maint-group b-stale';
+    note.innerHTML = '<h3>New records since these were built</h3>'
+      + '<p>Briefs are derived, so they do not update themselves. Rebuilding re-derives every one from your records — safe, because a brief is a projection and never the original.</p>';
+    const go = document.createElement('button');
+    go.className = 'btn primary';
+    go.textContent = 'Rebuild now';
+    go.onclick = () => rebuild(go);
+    note.appendChild(go);
+    dash.prepend(note);
+  }
+}
+
+function openOmni(query = '') {
+  import('./js/omni-search.js').then((m) => m.openOmni({
+    query,
+    currentType: 'brief',
+    onOpen: (r) => {
+      if (r.type === 'brief') { openBrief(r.sourceId); return; }
+      location.assign(r.url);
+    },
+  })).catch(() => { /* module load failed — no-op */ });
+}
+
+init().catch((e) => console.error('[chatpanel] briefs init failed', e));

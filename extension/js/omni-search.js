@@ -24,6 +24,9 @@ import { parseTagQuery, matchesTagFilter } from './events/tags.js';
 import { icon } from './icons.js';
 
 const TYPE_META = {
+  // Briefs sort FIRST because a brief is the compaction: when one wins the ranking it
+  // answers with what six records say, and reading it saves opening the six.
+  brief: { label: 'Briefs', icon: 'brain', order: -1 },
   note: { label: 'Notes', icon: 'notes', order: 0 },
   chat: { label: 'Chats', icon: 'chat', order: 1 },
   meeting: { label: 'Meetings', icon: 'meetings', order: 2 },
@@ -76,7 +79,7 @@ let sel = -1;
 let seq = 0;             // query sequence — drop stale async results
 let debounceTimer = null;
 let onOpen = (r) => { try { location.assign(r.url); } catch { /* ok */ } };
-let currentType = null;  // 'note' | 'chat' | 'meeting' — the host page (for the "open here" hint)
+let currentType = null;  // 'brief' | 'note' | 'chat' | 'meeting' — the host page (for the "open here" hint)
 
 // ---- corpus ----------------------------------------------------------------
 async function ensureCorpus() {

@@ -289,6 +289,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (Object.keys(changes).some((k) => /^chatpanel:(conv|chat|meeting|note|memory)/i.test(k))) {
     chrome.alarms.create(WARM_SYNC_ALARM, { delayInMinutes: 0.5 });
+    // Briefs are DERIVED, so a corpus write makes them stale. The worker only raises the
+    // flag; it never rebuilds. Deriving decrypts the whole corpus and runs whole-corpus
+    // passes — page work by the same argument js/jobs.js makes for anything heavy, and a
+    // worker that can be killed mid-pass would leave a half-written set behind.
+    chrome.storage.local.set({ 'chatpanel:briefsStale': true }).catch(() => {});
   }
 });
 

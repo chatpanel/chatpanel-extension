@@ -1,0 +1,149 @@
+// The derived layer, as the extension actually wires it: storage, the build pass, the
+// source registration, and the two rules that keep it cheap.
+
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+const read = (p) => readFileSync(fileURLToPath(new URL(`../${p}`, import.meta.url)), 'utf8');
+
+// ── an in-memory chrome.storage, and no encryption key so records round-trip plainly ──
+const mem = new Map();
+globalThis.chrome = {
+  runtime: { getURL: (p) => `chrome-extension://briefs/${p}`, id: 'briefs-test' },
+  storage: {
+    onChanged: { addListener() {} },
+    local: {
+      async get(keys) {
+        if (keys == null) return Object.fromEntries(mem);
+        const list = Array.isArray(keys) ? keys : [keys];
+        const out = {};
+        for (const k of list) if (mem.has(k)) out[k] = mem.get(k);
+        return out;
+      },
+      async set(obj) { for (const [k, v] of Object.entries(obj)) mem.set(k, v); },
+      async remove(keys) { for (const k of (Array.isArray(keys) ? keys : [keys])) mem.delete(k); },
+    },
+    session: { async get() { return {}; }, async set() {}, async remove() {} },
+  },
+};
+
+const store = await import('../extension/js/store-briefs.js');
+const build = await import('../extension/js/briefs-build.js');
+const { briefSource } = await import('../extension/js/brief-source.js');
+
+const NOW = Date.UTC(2026, 8, 9);
+const day = 86_400_000;
+
+const records = [
+  ...Array.from({ length: 6 }, (_, i) => ({
+    id: `meeting:m${i}`, type: 'meeting', title: `Atlas review ${i}`, date: NOW - (10 - i) * day,
+    text: 'we need [[Atlas Charter]] before the migration',
+    meta: { people: i % 2 ? ['Alex Rivera'] : ['Alex'], tags: ['atlas'], terms: ['migration'] },
+  })),
+  ...Array.from({ length: 4 }, (_, i) => ({
+    id: `chat:c${i}`, type: 'chat', title: `Chat ${i}`, date: NOW - i * 3600_000,
+    text: 'atlas migration questions', meta: { tags: ['atlas'], terms: ['migration'] },
+  })),
+];
+const memories = [
+  { id: 'mem1', kind: 'fact', text: 'Alex Rivera owns the Atlas rollback plan.', updatedAt: NOW },
+  { id: 'mem2', kind: 'identity', text: 'Alex Rivera is left-handed.', updatedAt: NOW },
+];
+
+// ── build ────────────────────────────────────────────────────────────────────
+const report = await build.rebuildBriefs(records, { memories, now: NOW });
+assert.ok(report.ok, 'the first build should succeed');
+assert.ok(report.briefs >= 3, `expected several briefs, got ${report.briefs}`);
+
+const index = await store.getBriefIndex();
+assert.equal(index.length, report.briefs);
+// The index carries everything a list, ⌘K and the graph need — no body decrypt.
+for (const e of index) {
+  assert.ok(e.name && e.kind && e.id, 'index rows must be renderable on their own');
+  assert.equal(typeof e.claims, 'number');
+  assert.ok(Array.isArray(e.terms));
+}
+// Sorted by evidence, so the list opens on what is best known.
+assert.deepEqual([...index].map((e) => e.stats.records), [...index].map((e) => e.stats.records).sort((a, b) => b - a));
+
+const person = index.find((e) => e.kind === 'person');
+assert.equal(person.name, 'Alex Rivera');
+assert.ok(person.aliases.includes('alex'), 'the bare speaker label should have folded in');
+
+const brief = await store.getBrief(person.id);
+assert.ok(brief, 'a body should be stored for every index row');
+const stated = brief.claims.filter((c) => c.kind === 'stated');
+assert.equal(stated.length, 1, 'the non-ambient memory should be a claim; the identity one should not');
+assert.equal(stated[0].refs[0].kind, 'memory');
+
+// ── I-K2: rebuilding is a cache clear, and a shrinking corpus leaves nothing behind ──
+const before = await store.getBriefIndex();
+// Only the chats: no speakers and no [[links]], so the person and wanted-page subjects
+// stop being earned and their bodies must go with them.
+const smaller = records.filter((r) => r.type === 'chat');
+const second = await build.rebuildBriefs(smaller, { memories, now: NOW + 1000 });
+assert.ok(second.removed > 0, 'briefs the smaller corpus no longer earns should be dropped');
+const after = await store.getBriefIndex();
+assert.ok(after.length < before.length);
+for (const gone of before.filter((e) => !after.some((a) => a.id === e.id))) {
+  assert.equal(await store.getBrief(gone.id), null, `${gone.id} body was orphaned rather than removed`);
+}
+
+// Rebuilding from the FULL corpus restores exactly what was there — that is the invariant.
+const third = await build.rebuildBriefs(records, { memories, now: NOW });
+assert.equal(third.briefs, report.briefs);
+assert.deepEqual((await store.getBriefIndex()).map((e) => e.id).sort(), before.map((e) => e.id).sort());
+
+// ── drift ────────────────────────────────────────────────────────────────────
+assert.deepEqual(await build.briefDrift(records), [], 'a fresh build should cite nothing stale');
+const edited = records.map((r) => (r.id === 'meeting:m5' ? { ...r, text: 'rewritten entirely' } : r));
+const drift = await build.briefDrift(edited);
+assert.ok(drift.length, 'an edited record should surface as drift, not be silently re-read');
+
+// ── the source contract ──────────────────────────────────────────────────────
+const src = briefSource(person, brief);
+assert.equal(src.type, 'brief');
+assert.equal(src.id, person.id, 'a brief is addressable by the id agents already get from search');
+assert.equal(src.title, 'Alex Rivera', 'the subject IS the title — the graph and ⌘K show titles');
+assert.match(src.text, /^BRIEF: Alex Rivera/);
+assert.match(src.url, /briefs\.html#/);
+assert.ok(src.meta.terms.length, 'terms are what make a brief a hub in the graph rather than a leaf');
+assert.equal(briefSource(null, null), null);
+
+// ── staleness ────────────────────────────────────────────────────────────────
+await chrome.storage.local.set({ [store.STALE_KEY]: true });
+assert.equal(await store.briefsAreStale(), true);
+await build.rebuildBriefs(records, { memories, now: NOW });
+assert.equal(await store.briefsAreStale(), false, 'a rebuild clears the stale flag');
+
+// ── switched off means nothing is derived ────────────────────────────────────
+await store.saveBriefSettings({ enabled: false });
+const off = await build.rebuildBriefs(records, { memories, now: NOW });
+assert.equal(off.ok, false);
+assert.equal(off.reason, 'disabled');
+await store.saveBriefSettings({ enabled: true });
+
+// ── the two structural rules, asserted on the source rather than remembered ──
+const storeSrc = read('extension/js/store-briefs.js');
+// Match an IMPORT of it, not the comment that explains why there isn't one.
+assert.ok(!/^\s*import[^\n]*knowledge-derive\.js/m.test(storeSrc),
+  'store-briefs.js is on the service worker graph; derivation must stay in briefs-build.js');
+const ragSrc = read('extension/js/history-rag.js');
+// Line-anchored, so the prose explaining the ordering is not mistaken for the calls.
+const callAt = (re) => ragSrc.search(re);
+assert.ok(callAt(/^registerBriefSource\(\);/m) > 0, 'history-rag must register the brief source');
+assert.ok(callAt(/^registerBriefSource\(\);/m) < callAt(/^declarePlugins\(/m),
+  'briefs must register before the plugin manifest is declared, or the user cannot switch them off');
+
+// Warm sync must ask before forwarding briefs to local agents.
+const warmSrc = read('extension/js/warm-sync.js');
+assert.match(warmSrc, /includeBriefs/);
+assert.match(warmSrc, /shareWithAgents/);
+
+// The brief loader must never read briefs — last run's synthesis becoming this run's
+// evidence would make the citations lead nowhere real.
+const pageSrc = read('extension/briefs.js');
+assert.match(pageSrc, /includeBriefs:\s*false/);
+
+console.log('briefs tests passed');

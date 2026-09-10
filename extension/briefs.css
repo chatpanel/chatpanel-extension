@@ -1,0 +1,85 @@
+/* Briefs — the derived layer's own surface. Everything structural comes from
+   meetings.css (the shared dashboard shell); this file is only the pieces a brief has
+   and no other record does: a subject kind, an evidence bar, a claim with citations. */
+
+/* The empty state and the toast live in notes.css and meetings.css respectively, and this
+   page loads meetings.css — so the two rules it is missing are restated here rather than
+   pulling in a third stylesheet for four selectors. */
+.blank { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); padding: 24px; }
+.blank.hidden { display: none; }
+.blank-mark { opacity: .35; margin-bottom: 8px; }
+.blank-mark svg { width: 40px; height: 40px; }
+.blank h2 { color: var(--text); font-size: 20px; letter-spacing: -.02em; margin: 4px 0 6px; }
+.blank p { max-width: 460px; margin: 0 0 14px; line-height: 1.6; }
+.blank p.muted { color: var(--faint); font-size: 12.5px; }
+.toast.hidden { display: none; }
+
+/* A subject's KIND is the first thing to read — a person page and a wanted page are
+   different objects, and colour says so faster than a word. */
+.bkind {
+  font-size: 10px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase;
+  border-radius: 5px; padding: 2px 6px; white-space: nowrap;
+}
+.bkind.person { color: #7c4dff; background: rgba(124, 77, 255, .13); }
+.bkind.topic  { color: #0b84ff; background: rgba(11, 132, 255, .13); }
+.bkind.tag    { color: #17a673; background: rgba(23, 166, 115, .14); }
+.bkind.title  { color: #b7791f; background: rgba(183, 121, 31, .15); }
+
+/* Evidence, not completeness. A thin page must LOOK thin — the alternative is a page
+   that reads as authoritative because it is rendered the same as a well-evidenced one. */
+.bbar { height: 5px; border-radius: 3px; background: var(--field); overflow: hidden; margin-top: 8px; }
+.bbar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), #7c4dff); }
+
+.brow { border: 1px solid var(--border); background: var(--card); border-radius: 11px; padding: 11px 13px; margin-bottom: 9px; cursor: pointer; }
+.brow:hover { border-color: var(--accent); background: var(--field); }
+.brow.on { border-color: var(--accent); }
+.brow-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.brow-name { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brow-meta { color: var(--muted); font-size: 11.5px; margin-top: 4px; }
+.baka { color: var(--faint); font-size: 11.5px; }
+
+.bhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.bhead h2 { margin: 0; font-size: 21px; letter-spacing: -.01em; }
+.bhead-meta { color: var(--muted); font-size: 12.5px; margin-left: auto; }
+
+/* A claim is a sentence plus its provenance, and they are laid out as one unit because
+   I-K1 makes them one thing: a claim with no citation is a bug, not a weak claim. */
+.claim { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: start; padding: 11px 0; border-top: 1px solid var(--border); }
+.claim:first-child { border-top: 0; }
+.claim-txt { font-size: 13.8px; line-height: 1.55; }
+.claim-kind { color: var(--faint); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; }
+.claim-stated .claim-txt { font-weight: 550; }
+.cites { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; max-width: 320px; }
+.cite {
+  font-size: 10.5px; color: var(--accent); background: rgba(11, 132, 255, .10);
+  border: 1px solid rgba(11, 132, 255, .28); border-radius: 5px; padding: 1px 6px;
+  white-space: nowrap; cursor: pointer; font: inherit; font-size: 10.5px;
+}
+.cite:hover { background: rgba(11, 132, 255, .2); }
+.cite.mem { color: #17a673; background: rgba(23, 166, 115, .10); border-color: rgba(23, 166, 115, .3); cursor: default; }
+.cite.drift { color: #b7791f; background: rgba(183, 121, 31, .12); border-color: rgba(183, 121, 31, .35); }
+
+.bsec-head { color: var(--faint); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin: 24px 0 10px; }
+
+.maint-group { border: 1px solid var(--border); border-radius: 11px; padding: 12px 14px; margin-bottom: 10px; background: var(--card); }
+.maint-group h3 { margin: 0 0 3px; font-size: 13.5px; }
+.maint-group p { margin: 0 0 9px; color: var(--muted); font-size: 12.5px; }
+.maint-list { display: flex; flex-wrap: wrap; gap: 7px; }
+.maint-ok { color: #17a673; font-size: 12.5px; }
+
+@media (max-width: 720px) {
+  .claim { grid-template-columns: 1fr; }
+  .cites { justify-content: flex-start; max-width: none; }
+}
+
+/* The build controls, on the Overview tab rather than in Settings — a threshold means
+   nothing except next to the list it produced. */
+.prefrow { display: flex; align-items: center; gap: 14px; padding: 11px 0; border-top: 1px solid var(--border); }
+.prefrow:first-child { border-top: 0; }
+.prefrow > div:first-child { flex: 1; min-width: 0; }
+.prefrow-t { font-size: 13.5px; font-weight: 600; }
+.prefrow-w { color: var(--muted); font-size: 12.3px; margin-top: 2px; line-height: 1.5; }
+.prefnum { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.prefnum b { font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.prefnum .btn { padding: 3px 9px; }
+.b-stale { border-color: var(--accent); }

@@ -116,7 +116,13 @@ const BUDGET = {
   // the design working, not a regression. (Its header still says "~2 KB"; it is 8 KB of
   // mostly comments now.) Same deliberate headroom rule: 1216/1216 would fail on the next
   // sentence written in this file.
-  'settings.js': 1220,
+  // 1220 → 1250 for the derived layer. Measured share: 29.7 KB — js/brief-source.js,
+  // js/store-briefs.js and the events model (entity.js + knowledge.js). Settings reaches it
+  // the same way background.js does, through history-rag registering briefs as the fourth
+  // source, and that registration is the whole point: one register call puts briefs in ⌘K,
+  // the graph, the context assembler and warm sync without editing any of those. The
+  // DERIVATION half — 60 KB more — is in js/briefs-build.js and is on neither graph.
+  'settings.js': 1250,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was
@@ -127,7 +133,15 @@ const BUDGET = {
   // ServiceWorkerGlobalScope, so every module it may ever need is static. It therefore keeps
   // the backup stores the pages just shed — js/backup-payload.js imports them for it — and
   // this ceiling sits deliberately close to today's cost.
-  'background.js': 525,
+  // 525 → 560 for the derived layer, same 29.7 KB as settings above and for the same
+  // reason. The worker earns it: a brief written while no window is open still has to reach
+  // the gateway, or a CLI agent asking `search_history` gets a corpus with its synthesis
+  // missing. What the worker does NOT get is derivation — deriving decrypts the whole
+  // corpus and runs whole-corpus passes, so it lives in js/briefs-build.js, which only
+  // pages import. That split is worth 90 KB: importing editDistance from voice-intents.js
+  // (79 KB, plus structured.js at 41 KB) for forty lines of arithmetic was the first draft,
+  // and events/distance.js exists because of it.
+  'background.js': 560,
 };
 
 function staticGraph(entry) {

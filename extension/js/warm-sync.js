@@ -12,6 +12,11 @@ import { isLoopbackHost } from './net.js';
 // off every first-paint graph, so there is nothing to keep it off. `store` stays injectable
 // for the tests.
 import * as memoryStore from './store-memory.js';
+import { getBriefSettings } from './store-briefs.js';
+
+async function briefsShared() {
+  try { return (await getBriefSettings()).shareWithAgents !== false; } catch { return false; }
+}
 
 // Decrypted history may ONLY be POSTed to a loopback gateway. This is the hard
 // privacy boundary of warm sync: the corpus is plaintext in flight, so a
@@ -85,7 +90,13 @@ export async function syncHistoryToGateway(gatewayUrl, {
   if (!isLoopbackGateway(gatewayUrl)) return { ok: false, skipped: true, error: 'gateway url is not loopback — refusing to send history off-box' };
   syncing = true;
   try {
-    const sources = await loadSources({ includeChats: true, includeMeetings: true, includeNotes: true });
+    // Briefs are the user's synthesised conclusions about people and projects, so sharing
+    // them with every CLI agent on the machine is a decision, not a default that rides in on
+    // a source registration. The switch lives with the briefs (Briefs → Overview) because
+    // that is where someone is when they think about it. Off means they simply are not
+    // loaded, so nothing here has to know what a brief is.
+    const includeBriefs = await briefsShared();
+    const sources = await loadSources({ includeChats: true, includeMeetings: true, includeNotes: true, includeBriefs });
     const all = sources
       .filter((s) => s && s.id && s.text)
       .map((s) => ({ id: s.id, text: s.text, title: s.title || '', type: s.type || '', date: s.date || 0 }));

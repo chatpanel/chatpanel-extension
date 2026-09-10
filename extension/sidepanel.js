@@ -1316,6 +1316,15 @@ async function init() {
       await chrome.storage.local.remove('chatpanel:openConversationId');
       await openConversation(cid);
     }
+    // Handoff from the Briefs page "Ask ChatPanel about this" button. The brief itself is
+    // NOT attached — briefs reach a turn through retrieval like any other source, so if
+    // one is the best answer to the question it wins the ranking on its own merits.
+    const cs = await chrome.storage.local.get('chatpanel:composerSeed');
+    const seedText = cs['chatpanel:composerSeed'];
+    if (seedText) {
+      await chrome.storage.local.remove('chatpanel:composerSeed');
+      applySeed({ prompt: String(seedText) });
+    }
     // Handoff from the Notes page "Ask about this note" button.
     const an = await chrome.storage.local.get('chatpanel:attachNoteId');
     const anid = an['chatpanel:attachNoteId'];
@@ -8765,6 +8774,11 @@ function applySeed(seed) {
     renderContextBar();
   } else if (seed.url) {
     input.value = `Tell me about ${seed.url}`;
+  } else if (seed.prompt) {
+    // A question handed over from a dashboard (Briefs' "Ask ChatPanel about this"). It is
+    // PUT IN THE COMPOSER, never sent: the user asked to bring the subject over, not to
+    // spend a turn, and they may want to edit it first.
+    input.value = seed.prompt;
   }
   autoGrow();
   input.focus();

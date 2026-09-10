@@ -19,6 +19,10 @@ import { rankHistorySources } from './search-engine.js';
 import { declarePlugins, pluginManifest } from './plugins.js';
 import { searchGateway, fuseHistoryResults, capHotSources } from './warm-query.js';
 import { registerSource, loadFromSources, listSources } from './source-registry.js';
+// Static for the same reason the three above are: warm sync runs history-rag in the service
+// worker, where import() throws, and a silently-skipped brief source there would sync a
+// corpus missing its derived layer.
+import { registerBriefSource } from './brief-source.js';
 
 // Cap the browser-side (HOT) index to the most-recent N sources when warm search is
 // on — warm holds the tail. Coarse memory bound (count, not bytes); only bites for
@@ -75,7 +79,10 @@ function limitText(text, cap = 6000) {
 }
 
 function localDashboardUrl(type, id) {
-  const page = type === 'meeting' ? 'meetings.html' : type === 'note' ? 'notes.html' : 'history.html';
+  const page = type === 'meeting' ? 'meetings.html'
+    : type === 'note' ? 'notes.html'
+      : type === 'brief' ? 'briefs.html'
+        : 'history.html';
   const path = `${page}#${encodeURIComponent(id || '')}`;
   try {
     if (globalThis.chrome?.runtime?.getURL) return chrome.runtime.getURL(path);
@@ -246,7 +253,7 @@ export function noteSource(entry, rec) {
 // is dropped and the memory is freed. That keeps searches fast without ChatPanel
 // sitting on a large heap between queries.
 const SRC_CACHE_TTL_MS = 60_000;
-const _srcCache = { chats: null, meetings: null, notes: null, at: 0, timer: null };
+const _srcCache = { chats: null, meetings: null, notes: null, brief: null, at: 0, timer: null };
 let _srcCacheWired = false;
 let _srcCacheable = false;
 // Monotonic corpus version — bumped whenever chats/meetings change. The search worker
@@ -258,6 +265,7 @@ function releaseSrcCache() {
   _srcCache.chats = null;
   _srcCache.meetings = null;
   _srcCache.notes = null;
+  _srcCache.brief = null;
   _srcCache.at = 0;
   if (_srcCache.timer) { clearTimeout(_srcCache.timer); _srcCache.timer = null; }
 }
@@ -274,6 +282,8 @@ function wireSourceCache() {
         if (/^chatpanel:(conv|chat)/i.test(key)) { _srcCache.chats = null; changed = true; }
         if (/^chatpanel:meeting/i.test(key)) { _srcCache.meetings = null; changed = true; }
         if (/^chatpanel:note/i.test(key)) { _srcCache.notes = null; changed = true; }
+        // A rebuild rewrites the whole set, so any brief key invalidates the cached list.
+        if (/^chatpanel:brief/i.test(key)) { _srcCache.brief = null; changed = true; }
       }
       if (changed) _srcVersion += 1;
     });
@@ -348,6 +358,10 @@ async function loadNoteSources() {
 registerSource({ kind: 'chat', label: 'Chats', reads: ['chats'], load: loadChatSources, builtIn: true, enabledByDefault: true });
 registerSource({ kind: 'meeting', label: 'Meetings', reads: ['meetings'], load: loadMeetingSources, builtIn: true, enabledByDefault: false });
 registerSource({ kind: 'note', label: 'Notes', reads: ['notes'], load: loadNoteSources, builtIn: true, enabledByDefault: true });
+// The fourth, and the first that is DERIVED rather than captured. It registers here, before
+// declarePlugins() reads the registry, so it appears on the Plugins page with the other
+// three — a source the user cannot see is a source they cannot switch off.
+registerBriefSource();
 
 // Declared so the Plugins page lists them beside everything else. The id is namespaced
 // because `note` as a bare id would collide with any future plugin of that name, and a
@@ -359,7 +373,7 @@ declarePlugins(listSources().map((sc) => ({
   description: `Search your ${sc.label.toLowerCase()} when answering.`,
 }))).catch(() => {});
 
-export async function loadHistorySources({ includeChats = true, includeMeetings = false, includeNotes = true, include } = {}) {
+export async function loadHistorySources({ includeChats = true, includeMeetings = false, includeNotes = true, includeBriefs = true, include } = {}) {
   const cacheable = wireSourceCache();
   // Drop a stale burst before reusing, so an idle cache can't serve old data.
   if (cacheable && _srcCache.at && Date.now() - _srcCache.at > SRC_CACHE_TTL_MS) releaseSrcCache();
@@ -374,7 +388,7 @@ export async function loadHistorySources({ includeChats = true, includeMeetings 
     admit = (src) => manifest.isEnabled(`source:${src.kind}`);
   } catch { /* manifest unavailable — every source stays available, which is the safe default */ }
   const sources = await loadFromSources(
-    { includeChats, includeMeetings, includeNotes, include },
+    { includeChats, includeMeetings, includeNotes, includeBriefs, include },
     { cache: cacheable ? _srcCache : null, admit },
   );
   if (cacheable) touchSrcCacheTTL();

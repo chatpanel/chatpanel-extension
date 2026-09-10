@@ -17,7 +17,10 @@
 // version of the note, because that would make replay quietly wrong instead of loudly
 // incomplete.
 
-export const REF_KINDS = Object.freeze(['note', 'meeting', 'chat', 'page', 'result', 'blob']);
+// `memory` and `brief` joined when the derived layer landed: a brief's claim cites the
+// record it came from, and a claim the USER stated cites the memory they stated it in.
+// Additive — no existing ref changes meaning.
+export const REF_KINDS = Object.freeze(['note', 'meeting', 'chat', 'page', 'result', 'blob', 'memory', 'brief']);
 
 export const RESOLUTION = Object.freeze({
   EXACT: 'exact',                              // blob present, hash matches

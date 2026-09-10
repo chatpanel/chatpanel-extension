@@ -27,10 +27,10 @@
 // the same answer in all three.
 
 import { normalizeTag } from './tags.js';
-// The bounded Levenshtein the wake-word matcher already needed. Reused rather than
-// re-written: two implementations of "how far apart are these strings" become two answers
-// to "is this the same title", and the repo's standing rule is reuse-or-improve.
-import { editDistance } from './voice-intents.js';
+// The bounded Levenshtein, from the module that holds only it. Two implementations of "how
+// far apart are these strings" become two answers to "is this the same title" — but see
+// distance.js for why it is not imported from voice-intents.js, which is where it grew up.
+import { editDistance } from './distance.js';
 import {
   DEFAULT_THRESHOLD, MAX_SUBJECTS, isSubjectCandidate, normalizeSubject,
   rankSubjects, resolveSubjects,
@@ -65,8 +65,11 @@ export function normalizeRecord(rec) {
   };
 }
 
-export function normalizeRecords(records = []) {
-  return records.map(normalizeRecord).filter(Boolean);
+export function normalizeRecords(records) {
+  // Tolerates null as well as an omitted argument: a caller reading a corpus that has not
+  // loaded yet passes null, and a survey that throws there reads as a broken tool rather
+  // than as an empty corpus.
+  return (Array.isArray(records) ? records : []).map(normalizeRecord).filter(Boolean);
 }
 
 /** Every `[[target]]` in a string, de-duplicated, in first-seen order. */

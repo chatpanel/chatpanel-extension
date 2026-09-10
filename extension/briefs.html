@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ChatPanel — Briefs</title>
+    <link rel="icon" href="assets/icon128.png" />
+    <link rel="stylesheet" href="icons.css" />
+    <link rel="stylesheet" href="meetings.css" />
+    <link rel="stylesheet" href="briefs.css" />
+  </head>
+  <body>
+    <header class="hdr">
+      <nav class="topnav" aria-label="Workspace">
+        <a href="notes.html" class="topnav-item" data-icon="notes">Notes</a>
+        <a href="history.html" class="topnav-item" data-icon="menu">Chats</a>
+        <a href="meetings.html" class="topnav-item" data-icon="meetings">Meetings</a>
+        <a href="briefs.html" class="topnav-item active" data-icon="brain">Briefs <span id="b-count" class="count"></span></a>
+      </nav>
+      <div class="hdr-actions">
+        <button id="omni-open" class="omni-trigger" type="button" title="Search notes, chats &amp; meetings (⌘K)"><span data-icon="search"></span><span class="omni-trigger-label">Search everything</span><kbd>⌘K</kbd></button>
+        <button id="b-rebuild" class="btn" type="button" data-icon="refresh" title="Re-derive every brief from your records">Rebuild</button>
+        <button id="b-open-panel" class="btn" type="button" title="Open the ChatPanel side panel" data-icon="chat">Open ChatPanel</button>
+        <button id="b-settings" class="btn ghost" type="button" data-icon="settings">ChatPanel settings</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="mlist">
+        <input id="b-search" class="search" type="search" placeholder="Filter subjects — or person:, topic:" />
+        <div class="seg" id="b-kinds" role="tablist" aria-label="Subject kind">
+          <button data-kind="" class="active" type="button">All</button>
+          <button data-kind="person" type="button" title="People who appear across your records">People</button>
+          <button data-kind="topic" type="button" title="Subjects extracted from your records">Topics</button>
+          <button data-kind="title" type="button" title="[[links]] with no record behind them">Wanted</button>
+        </div>
+        <div id="b-items"></div>
+      </aside>
+
+      <main class="detail">
+        <!-- Corpus dashboard — the default view. Subjects is the ranked list of what
+             earned a page; Graph maps how subjects connect; Maintenance is the
+             deterministic health report (wanted pages, orphans, drifted refs). The
+             Proposed queue lands here as a fourth tab when synthesis ships (W3). -->
+        <div id="b-dash" class="dash">
+          <div class="dash-tabs seg" role="tablist" aria-label="Dashboard view">
+            <button data-dash="stats" class="active" type="button" role="tab" data-icon="chart">Overview</button>
+            <button data-dash="graph" type="button" role="tab" data-icon="graph">Subject graph</button>
+            <button data-dash="maint" type="button" role="tab" data-icon="wrench">Maintenance <span id="b-maint-count" class="count"></span></button>
+          </div>
+          <div class="dash-body">
+            <div id="b-dash-stats" class="dash-pane" role="tabpanel"></div>
+            <div id="b-dash-graph" class="dash-pane graph-host big hidden" role="tabpanel"></div>
+            <div id="b-dash-maint" class="dash-pane hidden" role="tabpanel"></div>
+          </div>
+        </div>
+
+        <!-- Empty state — also the first-run explanation of what a brief IS. -->
+        <div id="b-blank" class="blank hidden">
+          <div class="blank-mark" data-icon="brain"></div>
+          <h2>What you know, kept current</h2>
+          <p>A brief gathers everything your chats, meetings and notes say about one subject — a person, a project, a topic — with every claim linked back to the record it came from. They are built on your device, from records you already have.</p>
+          <p id="b-blank-why" class="muted"></p>
+          <button id="b-build" class="btn primary">Build my briefs</button>
+        </div>
+
+        <!-- One brief -->
+        <div id="b-view" class="hidden"></div>
+      </main>
+    </div>
+
+    <div id="b-toast" class="toast hidden"></div>
+    <script type="module" src="briefs.js"></script>
+  </body>
+</html>

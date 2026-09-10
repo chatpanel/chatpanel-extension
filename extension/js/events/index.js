@@ -55,6 +55,11 @@ export {
   aliasMap, resolveSubjects, earnsBrief, rankSubjects,
 } from './entity.js';
 export {
+  BRIEF_STATES, CLAIM_KINDS, MAX_CLAIMS, MAX_CLAIM_REFS, MAX_BRIEF_RECORDS, MAX_BRIEF_CHARS,
+  contentHash, briefId, briefToText, briefTerms, checkKnowledgeInvariants,
+} from './knowledge.js';
+export { deriveBrief, deriveBriefs, driftedRefs } from './knowledge-derive.js';
+export {
   normalizeRecord, normalizeRecords, wikilinksIn, wantedPages, orphanRecords,
   duplicateTitles, vocabularyDrift, mentionsFrom, spanningQuestions,
   surveyCorpus, thresholdSweep, formatSurvey, NEAR_TITLE_DISTANCE, SPAN_MIN_TERMS,
