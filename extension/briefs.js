@@ -43,6 +43,10 @@ let _maintSeq = 0;      // a tab switch mid-report must stop the passes, not rac
  */
 const MAINT_TTL_MS = 5 * 60_000;
 let _maintCache = null; // { at, version, sections, suggestions }
+
+// How many merge suggestions to show before "show more". A wall of them is not more useful
+// than a handful — each one is a decision, and nobody makes forty in a row.
+const MERGE_PAGE = 8;
 let _shownMerges = MERGE_PAGE;
 let driftCache = null;
 
@@ -50,10 +54,6 @@ const KIND_LABEL = { person: 'person', topic: 'topic', tag: 'tag', title: 'wante
 
 // Why a pair was proposed, in the user's words. A suggestion whose reason is legible is one
 // they can answer in a second; an unexplained one gets ignored or, worse, accepted blindly.
-// How many suggestions to show before "show more". A wall of them is not more useful than a
-// handful — the answer to each is a decision, and nobody makes forty in a row.
-const MERGE_PAGE = 8;
-
 const MERGE_WHY = {
   initials: 'same surname, shortened first name',
   containment: 'one name contains the other',

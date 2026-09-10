@@ -133,7 +133,11 @@ const BUDGET = {
   // source, and that registration is the whole point: one register call puts briefs in ⌘K,
   // the graph, the context assembler and warm sync without editing any of those. The
   // DERIVATION half — 60 KB more — is in js/briefs-build.js and is on neither graph.
-  'settings.js': 1255,
+  // 1255 → 1260 for the brief-source memo. Warm sync runs in the service worker ~30s after
+  // ANY corpus write, and during a live meeting captions write constantly — loading briefs
+  // the obvious way decrypted every brief BODY on each of those runs to send records that
+  // had not changed. A fingerprint of the index makes the repeat runs free.
+  'settings.js': 1260,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was

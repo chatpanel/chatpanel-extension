@@ -56,9 +56,37 @@ export function briefUrl(id) {
   return path;
 }
 
+/**
+ * Memoised on the index's fingerprint, and that is not an optimisation — it is the
+ * difference between a warm sync costing nothing and costing three hundred decrypts.
+ *
+ * Warm sync runs in the service worker roughly 30s after ANY corpus write, and during a
+ * live meeting captions write constantly. Loading briefs the obvious way decrypted every
+ * brief BODY on every one of those runs, to send records that had not changed — the source
+ * cache in history-rag does not help, because the worker is a fresh context each time.
+ *
+ * Briefs only change when a rebuild runs, which is explicit and rare, so a fingerprint of
+ * the index (how many, and the newest write) is a sound key: anything that alters a brief
+ * goes through writeBriefs and moves it.
+ */
+let _cache = null; // { key, sources }
+
+function indexFingerprint(index) {
+  let newest = 0;
+  for (const e of index) newest = Math.max(newest, e.updatedAt || 0);
+  return `${index.length}:${newest}`;
+}
+
+/** Test-only, and for a caller that knows the store changed under it. */
+export function invalidateBriefSources() { _cache = null; }
+
 async function loadBriefSources() {
+  const index = await getBriefIndex();
+  const key = indexFingerprint(index);
+  if (_cache && _cache.key === key) return _cache.sources;
+
   const out = [];
-  for (const entry of await getBriefIndex()) {
+  for (const entry of index) {
     try {
       const brief = await getBrief(entry.id);
       const source = briefSource(entry, brief);
@@ -67,6 +95,7 @@ async function loadBriefSources() {
       console.warn('[chatpanel] brief source load failed for', entry?.id, e);
     }
   }
+  _cache = { key, sources: out };
   return out;
 }
 
