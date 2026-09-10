@@ -394,4 +394,17 @@ console.log('briefs surface guards passed');
   assert.match(html, /data-dash="proposed"/, 'the Proposed queue is a tab');
 }
 
+// ── backlinks + supersession reach the surface ───────────────────────────────
+{
+  const page = read('extension/briefs.js');
+  assert.match(page, /accept\(brief, p, \{ now: Date\.now\(\), subjects: index \}\)/,
+    'accept must be handed the index, or no claim ever links to another brief');
+  assert.match(page, /if \(kind === 'brief'\) \{ openBrief\(id\); return; \}/, 'a brief ref opens the brief in place');
+  assert.match(page, /Mentioned in \(/, 'backlinks are rendered from the index');
+  assert.match(page, /superseded/, 'a superseded claim is rendered as history');
+  assert.match(page, /strong: true/, 'accepted links are graph edges, not just co-occurrence');
+  const storeSrc = read('extension/js/store-briefs.js');
+  assert.match(storeSrc, /links: briefLinks\(brief\)/, 'the index row carries the edges, so backlinks cost one decrypt');
+}
+
 console.log('briefs synthesis gate tests passed');

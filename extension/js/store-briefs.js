@@ -24,7 +24,7 @@ import { encryptJSON, decryptJSON, isEncrypted } from './meeting-crypto.js';
 // worker's graph (warm sync reads stored briefs and sends them to the gateway), and the
 // worker never builds one, so derivation lives in js/briefs-build.js which only pages
 // import. tools/test-first-paint-budget.mjs is what keeps that from quietly reverting.
-import { briefToText, briefTerms } from './events/knowledge.js';
+import { briefToText, briefTerms, briefLinks } from './events/knowledge.js';
 // From subject-name.js, not entity.js: this module is on the service worker's graph and
 // needs one constant, where entity.js carries alias resolution and merge suggestion too.
 import { DEFAULT_THRESHOLD } from './events/subject-name.js';
@@ -186,6 +186,9 @@ function indexEntry(brief) {
     cls: brief.cls,
     claims: brief.claims.length,
     terms: briefTerms(brief),
+    // The other briefs this one's accepted claims link to. In the index so "Mentioned in"
+    // and the graph's real edges render from one decrypt.
+    links: briefLinks(brief),
     stats: brief.stats,
     updatedAt: brief.updatedAt,
   };

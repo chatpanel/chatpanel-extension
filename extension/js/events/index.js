@@ -58,14 +58,14 @@ export {
 } from './entity.js';
 export {
   BRIEF_STATES, CLAIM_KINDS, MAX_CLAIMS, MAX_CLAIM_REFS, MAX_BRIEF_RECORDS, MAX_BRIEF_CHARS,
-  contentHash, briefId, briefToText, briefTerms, checkKnowledgeInvariants, parseBriefText,
+  contentHash, briefId, briefToText, briefTerms, briefLinks, checkKnowledgeInvariants, parseBriefText,
 } from './knowledge.js';
 export { deriveBrief, deriveBriefs, driftedRefs } from './knowledge-derive.js';
 export {
   SYNTHESIS_SCHEMA, synthesisPrompt, claimsFromSynthesis,
   MAX_SYNTHESIS_CLAIMS, MAX_EXCERPTS, MAX_EXCERPT_CHARS,
 } from './synthesis.js';
-export { PROPOSAL_STATES, propose, accept, reject, diffProposal, converge } from './promotion.js';
+export { PROPOSAL_STATES, SUPERSEDE_OVERLAP, propose, accept, reject, diffProposal, converge, linkClaims } from './promotion.js';
 export {
   normalizeRecord, normalizeRecords, wikilinksIn, redactedTokensIn, redactionCost,
   wantedPages, orphanRecords,

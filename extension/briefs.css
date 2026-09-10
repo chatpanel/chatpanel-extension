@@ -112,3 +112,9 @@
 .diff-del { color: #d64545; text-decoration: line-through; opacity: .75; font-size: 13px; }
 .diff-add { color: #17a673; font-size: 13.8px; line-height: 1.55; }
 .btns { display: flex; gap: 7px; margin-top: 10px; flex-wrap: wrap; }
+
+/* Backlinks and history. A link chip opens another brief; a superseded claim reads as the
+   past, not as a contradiction. */
+.cite.link { color: #7c4dff; background: rgba(124, 77, 255, .10); border-color: rgba(124, 77, 255, .3); }
+.claim.superseded .claim-txt { text-decoration: line-through; opacity: .55; }
+.claim.superseded .claim-kind { color: #b7791f; }

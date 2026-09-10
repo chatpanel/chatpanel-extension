@@ -151,8 +151,11 @@ function renderList() {
 // ── one brief ────────────────────────────────────────────────────────────────
 function citeChip(ref, drifted) {
   const isMem = ref.kind === 'memory';
-  const cls = `cite${isMem ? ' mem' : ''}${drifted.has(`${ref.kind}:${ref.id}`) ? ' drift' : ''}`;
-  const label = isMem ? 'you said' : `${ref.kind}:${String(ref.id).slice(0, 10)}`;
+  const isBrief = ref.kind === 'brief';
+  const cls = `cite${isMem ? ' mem' : ''}${isBrief ? ' link' : ''}${drifted.has(`${ref.kind}:${ref.id}`) ? ' drift' : ''}`;
+  const label = isMem ? 'you said'
+    : isBrief ? `↗ ${index.find((e) => e.id === ref.id)?.name || 'brief'}`
+      : `${ref.kind}:${String(ref.id).slice(0, 10)}`;
   return `<button class="${cls}" type="button" data-kind="${escapeHtml(ref.kind)}" data-id="${escapeHtml(ref.id)}">${escapeHtml(label)}</button>`;
 }
 
@@ -189,11 +192,18 @@ async function openBrief(id) {
     + (brief.summary ? `<div class="bsummary">${escapeHtml(brief.summary)}</div>` : '')
     + `<div class="bsec-head">What the records say</div>`
     + brief.claims.map((c) =>
-      `<div class="claim claim-${c.kind}">`
-      + `<div><div class="claim-kind">${c.kind === 'stated' ? 'You told ChatPanel' : c.cls === 'C' ? 'Synthesised · you accepted' : escapeHtml(c.kind)}</div>`
+      `<div class="claim claim-${c.kind}${c.supersededBy ? ' superseded' : ''}">`
+      + `<div><div class="claim-kind">${c.supersededBy ? `superseded ${c.supersededAt ? new Date(c.supersededAt).toLocaleDateString() : ''}` : c.kind === 'stated' ? 'You told ChatPanel' : c.cls === 'C' ? 'Synthesised · you accepted' : escapeHtml(c.kind)}</div>`
       + `<div class="claim-txt">${escapeHtml(c.text)}</div></div>`
       + `<div class="cites">${c.refs.map((r) => citeChip(r, drifted)).join('')}</div>`
       + `</div>`).join('')
+    + (() => {
+      const inbound = index.filter((e) => (e.links || []).includes(brief.id) && e.id !== brief.id);
+      return inbound.length
+        ? `<div class="bsec-head">Mentioned in (${inbound.length})</div>`
+          + inbound.map((e) => `<div class="related-card" data-brief="${escapeHtml(e.id)}"><div class="related-card-title">${escapeHtml(e.name)} <span class="bkind ${e.kind}">${KIND_LABEL[e.kind] || e.kind}</span></div><div class="related-card-meta">an accepted claim on that page names this one</div></div>`).join('')
+        : '';
+    })()
     + (brief.records.length
       ? `<div class="bsec-head">Records behind it (${brief.records.length})</div>`
         + [...brief.records].reverse().slice(0, 40).map((r) =>
@@ -207,6 +217,7 @@ async function openBrief(id) {
     el.onclick = () => openRecord(`${el.dataset.kind}:${el.dataset.id}`);
   }
   for (const el of view.querySelectorAll('[data-open]')) el.onclick = () => openRecord(el.dataset.open);
+  for (const el of view.querySelectorAll('[data-brief]')) el.onclick = () => openBrief(el.dataset.brief);
   const ask = $('b-ask');
   if (ask) ask.onclick = () => askPanel(brief);
   const same = $('b-sameas');
@@ -260,6 +271,7 @@ function openSameAs(brief) {
 function openRecord(id) {
   const [kind, ...rest] = String(id).split(':');
   const rec = rest.join(':');
+  if (kind === 'brief') { openBrief(id); return; } // a backlink: stay on this page
   if (kind === 'memory') { toast('That came from something you told ChatPanel — see Settings → Memory.'); return; }
   const page = kind === 'meeting' ? 'meetings.html' : kind === 'note' ? 'notes.html' : 'history.html';
   location.assign(chrome.runtime.getURL(`${page}#${encodeURIComponent(rec)}`));
@@ -452,6 +464,18 @@ async function renderGraph() {
 
     const links = [];
     const seen = new Set();
+    const shownIds = new Set(shown.map((e) => e.id));
+    // Edges an accepted claim actually asserts come first — they are what the page says,
+    // not what happens to co-occur — and they do not count against the per-node cap.
+    for (const e of shown) {
+      for (const to of e.links || []) {
+        if (!shownIds.has(to)) continue;
+        const key = [e.id, to].sort().join('|');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        links.push({ s: e.id, t: to, strong: true });
+      }
+    }
     for (const e of shown) {
       let added = 0;
       for (const term of e.terms || []) {
@@ -569,7 +593,8 @@ async function renderProposed() {
     card.querySelector('[data-accept]').onclick = async () => {
       if (!brief) { toast('That brief no longer exists — rebuild, then synthesise again.'); return; }
       const { accept } = await import('./js/events/promotion.js');
-      const { brief: next, proposal } = accept(brief, p, { now: Date.now() });
+      // `subjects` is the index, so accepted claims link to every other brief they name.
+      const { brief: next, proposal } = accept(brief, p, { now: Date.now(), subjects: index });
       await putProposal(proposal);
       // The projection is rewritten with the promoted claims NOW, and writeBriefs re-applies
       // the accepted proposal on every later rebuild, so this survives I-K2.

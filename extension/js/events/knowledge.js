@@ -134,7 +134,7 @@ export function briefToText(brief) {
   L.push(`Kind: ${brief.kind}`);
   L.push('');
   for (const c of brief.claims) {
-    L.push(`- ${c.text}`);
+    L.push(`- ${c.supersededBy ? '[superseded] ' : ''}${c.text}`);
     if (c.refs.length) L.push(`  (${c.refs.map((r) => `${r.kind}:${r.id}`).join(', ')})`);
   }
   if (brief.records.length) {
@@ -188,6 +188,13 @@ export function parseBriefText(text) {
     }
   }
   return out;
+}
+
+/** The other briefs this brief's accepted claims link to — the backlink graph's edges. */
+export function briefLinks(brief) {
+  const out = new Set();
+  for (const c of brief?.claims || []) for (const r of c.refs || []) if (r.kind === 'brief' && r.id) out.add(r.id);
+  return [...out];
 }
 
 /** Terms the graph and the search index rank a brief by — its subject and its neighbours. */

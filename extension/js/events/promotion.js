@@ -26,7 +26,48 @@
 // ⇒ it may be auto-proposed; disagreement ⇒ the human queue. The reviewer is a different
 // appointment from the drafters or convergence measures nothing.
 
+import { contentHash } from './knowledge.js';
+import { normalizeSubject } from './subject-name.js';
+
 export const PROPOSAL_STATES = Object.freeze(['proposed', 'accepted', 'rejected']);
+
+/** A new claim replaces an old one when this much of its vocabulary overlaps. */
+export const SUPERSEDE_OVERLAP = 0.5;
+
+/**
+ * BACKLINKS — the deterministic post-pass that turns cited prose into a linked wiki.
+ *
+ * A synthesised claim cites RECORDS, never another brief, so an accepted "Jordan Blake owns
+ * the Atlas rollback plan" told a reader nothing about where Jordan's page was. This finds
+ * every other subject named in a claim's text — whole-word, by canonical name or alias — and
+ * adds a `brief:` ref beside the record refs. No model: the names are known and the text is
+ * in front of us, which is exactly the kind of work the design says must stay class R.
+ *
+ * `subjects` is the brief index: `[{ id, name, aliases?, kind? }]`. The claim's own brief is
+ * never linked to itself. Refs already present are kept and not duplicated.
+ */
+export function linkClaims(claims = [], subjects = [], { selfId = '' } = {}) {
+  const targets = [];
+  for (const s of subjects) {
+    if (!s?.id || s.id === selfId) continue;
+    const names = [s.name, ...(s.aliases || [])].map(normalizeSubject).filter((n) => n && n.length >= 3);
+    if (names.length) targets.push({ id: s.id, names });
+  }
+  if (!targets.length) return claims;
+  return claims.map((c) => {
+    const hay = ` ${normalizeSubject(c.text)} `;
+    const have = new Set((c.refs || []).map((r) => `${r.kind}:${r.id}`));
+    const added = [];
+    for (const t of targets) {
+      if (have.has(`brief:${t.id}`)) continue;
+      if (t.names.some((n) => hay.includes(` ${n} `))) {
+        added.push({ kind: 'brief', id: t.id, hash: contentHash(t.id) });
+        have.add(`brief:${t.id}`);
+      }
+    }
+    return added.length ? { ...c, refs: [...(c.refs || []), ...added] } : c;
+  });
+}
 
 /** A pending synthesis for one brief. Never carries `promoted`. */
 export function propose({ briefId, claims = [], summary = '', by = 'model', now = 0, newId = null } = {}) {
@@ -48,17 +89,34 @@ export function propose({ briefId, claims = [], summary = '', by = 'model', now 
  * Accept: the proposal's claims join the brief as promoted class-C claims. The ONLY path.
  * Returns a new brief and the settled proposal; mutates neither input.
  */
-export function accept(brief, proposal, { now = 0 } = {}) {
+export function accept(brief, proposal, { now = 0, subjects = [] } = {}) {
   if (!brief || !proposal || proposal.briefId !== brief.id) throw new TypeError('accept: proposal does not belong to this brief');
   if (proposal.state !== 'proposed') throw new TypeError(`accept: proposal is ${proposal.state}`);
-  const promoted = proposal.claims.map((c) => ({ ...c, state: 'promoted', lastConfirmed: now }));
+  let promoted = proposal.claims.map((c) => ({ ...c, state: 'promoted', lastConfirmed: now }));
+  // Backlinks, at the moment of acceptance — the one point where the claim is final and the
+  // set of other pages is known.
+  promoted = linkClaims(promoted, subjects, { selfId: brief.id });
+
+  // SUPERSESSION. "Cutover is planned for Q3" and "Cutover moved to Q4" must not sit on one
+  // page as two contradicting lines. The old claim is not deleted — that would lose "when did
+  // this change" — it is marked superseded by the new one, and keeps its refs, so the brief
+  // reads as a history rather than an argument with itself. The rule is the same overlap
+  // diffProposal shows the reviewer, so what they accepted is what happens.
+  const diff = diffProposal(brief, proposal);
+  const superseded = new Map(); // old text -> new claim id
+  diff.forEach((d, i) => { if (d.replaces && promoted[i]) superseded.set(d.replaces, promoted[i].id); });
+  const kept = brief.claims.map((c) => (superseded.has(c.text) && !c.supersededBy
+    ? { ...c, supersededBy: superseded.get(c.text), supersededAt: now }
+    : c));
+  promoted = promoted.map((c, i) => (diff[i]?.replaces ? { ...c, supersedes: brief.claims.find((o) => o.text === diff[i].replaces)?.id || null } : c));
+
   const next = {
     ...brief,
-    claims: [...brief.claims, ...promoted],
+    claims: [...kept, ...promoted],
     summary: proposal.summary || brief.summary || '',
     updatedAt: now,
   };
-  return { brief: next, proposal: { ...proposal, state: 'accepted', settledAt: now } };
+  return { brief: next, proposal: { ...proposal, state: 'accepted', settledAt: now, claims: promoted } };
 }
 
 export function reject(proposal, { now = 0, why = '' } = {}) {
@@ -84,7 +142,7 @@ export function diffProposal(brief, proposal) {
       const score = mine.size ? hit / mine.size : 0;
       if (score > bestScore) { bestScore = score; best = e; }
     }
-    return { claim: c, replaces: bestScore >= 0.5 ? best : null, overlap: bestScore };
+    return { claim: c, replaces: bestScore >= SUPERSEDE_OVERLAP ? best : null, overlap: bestScore };
   });
 }
 
