@@ -5,9 +5,17 @@
 // perfectly and cannot answer, and routing to it because its config still looks good is the
 // error a user experiences as "it keeps picking the broken one".
 //
-// Deliberately in memory. These are observations about right now, and a failure remembered
+// Deliberately NOT on disk. These are observations about right now, and a failure remembered
 // across a browser restart would keep a model sidelined long after the quota reset or the
 // outage ended — sidelining a working model is a worse error than trying a broken one once.
+//
+// But shared across PAGES within the session, and that took a bug to learn. This lived in
+// plain module memory, which is per page context: the side panel learned that a local model
+// was refusing connections, and briefs.html — a separate page, a separate module instance —
+// started every synthesis believing it was fine, dialled it, got ERR_CONNECTION_REFUSED, and
+// only then fell over. Auto consults healthOf() at route time, so the router was doing its
+// job; it was being asked by a page that knew nothing. `chrome.storage.session` is exactly
+// the scope the paragraph above asks for — survives a page switch, dies with the browser.
 
 const health = new Map();   // id -> { until, reason, failures }
 
@@ -23,6 +31,43 @@ const health = new Map();   // id -> { until, reason, failures }
 // that one bad endpoint condemns a working model.
 const byModel = new Map();  // normalised model name -> { providers:Set, until, reason }
 const MODEL_STANDDOWN_MS = 30 * 60_000;
+
+// ── session-scoped mirror ─────────────────────────────────────────────────────
+const SESSION_KEY = 'chatpanel:modelHealth';
+const sessionArea = () => globalThis.chrome?.storage?.session || null;
+
+function snapshot() {
+  return {
+    health: [...health].map(([id, h]) => [id, h]),
+    byModel: [...byModel].map(([k, m]) => [k, { providers: [...m.providers], until: m.until, reason: m.reason }]),
+  };
+}
+function persist() {
+  const area = sessionArea();
+  if (!area) return;
+  try { area.set({ [SESSION_KEY]: snapshot() }).catch?.(() => {}); } catch { /* best effort */ }
+}
+/** Load what the rest of this browser session has already learned. Idempotent; cheap. */
+export async function hydrateHealth() {
+  const area = sessionArea();
+  if (!area) return false;
+  try {
+    const got = await area.get(SESSION_KEY);
+    const snap = got?.[SESSION_KEY];
+    if (!snap) return false;
+    const now = Date.now();
+    for (const [id, h] of snap.health || []) if (h?.until > now && !health.has(id)) health.set(id, h);
+    for (const [k, m] of snap.byModel || []) {
+      if (!m || byModel.has(k)) continue;
+      byModel.set(k, { providers: new Set(m.providers || []), until: m.until || 0, reason: m.reason || null });
+    }
+    return true;
+  } catch { return false; }
+}
+// Hydrate on import so the first route on a fresh page already knows. Callers that need the
+// guarantee before their first decision can await hydrateHealth() themselves.
+const _hydrated = hydrateHealth();
+export const healthReady = () => _hydrated;
 const normModelName = (m) => String(m || '').toLowerCase().replace(/^[^/]+\//, '').replace(/[:@].*$/, '').replace(/[^a-z0-9.]+/g, '');
 
 /** How long to stand a model down, by what went wrong. */
@@ -43,6 +88,11 @@ const COOLDOWN_MS = {
   // A request this provider would not take. Another may; this one probably still will not,
   // but it is worth re-checking well before an auth problem.
   request: 10 * 60_000,
+  // Nobody is listening. A local model that is not running, a hostname that does not
+  // resolve, a server that refuses the connection. It is not coming back on a 30-second
+  // timer — someone has to start the thing — and re-dialling it every turn was the exact
+  // failure a user watched as ERR_CONNECTION_REFUSED, twice, on two different pages.
+  unreachable: 5 * 60_000,
   // Anything else — treat as transient and barely stand it down at all.
   unknown: 30_000,
 };
@@ -76,6 +126,12 @@ export function classifyFailure(err) {
     // the user fixes the setting, and every other model can still answer.
     || /invalid model selection|not recognized as a (known|custom) model|unsupported model/i.test(text)) return 'gone';
   if (status >= 500 || /overloaded|unavailable|timeout|ECONNRESET/i.test(text)) return 'server';
+  // NOBODY IS LISTENING. A browser fetch to a dead endpoint throws TypeError: Failed to fetch
+  // (Safari: "Load failed"); Node says ECONNREFUSED. None of these carry a status, so they
+  // fell through to 'unknown' — thirty seconds, and still "available" — and Auto picked the
+  // same dead local model again on the next turn, and on every other page that had not seen
+  // it fail. This is a provider that is DOWN, and it is treated like one.
+  if (/failed to fetch|load failed|networkerror|network error|connection refused|ECONNREFUSED|ERR_CONNECTION|ENOTFOUND|EHOSTUNREACH|ECONNABORTED/i.test(text)) return 'unreachable';
   // A BROKEN CONNECTION IS THIS PROVIDER'S, NOT THE REQUEST'S.
   //
   // These were all read as "our fault, every model would refuse it identically" and returned
@@ -133,12 +189,13 @@ export function markUnhealthy(id, err, modelName = '') {
   const ceiling = Math.max(base, 60 * 60_000);
   const until = Date.now() + Math.min(base * failures, ceiling);
   health.set(id, { until, reason, failures });
+  persist();
   return { reason, until };
 }
 
 /** A model answered, so whatever was wrong is over. */
 export function markHealthy(id) {
-  if (id) health.delete(id);
+  if (id) { health.delete(id); persist(); }
 }
 
 /** `{ available, rateLimited, reason }` for the router. Unknown models are healthy. */
@@ -166,7 +223,7 @@ export function healthOf(id, modelName = '') {
     // credentials expired stayed "available", so the router kept choosing it and the same
     // stale token failed the same way every turn. Standing it down is what makes the failover
     // stick rather than bounce.
-    available: !['quota', 'server', 'gone', 'auth', 'request'].includes(h.reason),
+    available: !['quota', 'server', 'gone', 'auth', 'request', 'unreachable'].includes(h.reason),
     rateLimited: h.reason === 'rate',
     reason: h.reason,
     until: h.until,
@@ -183,4 +240,4 @@ export function unhealthyModels() {
 }
 
 /** Test-only: forget everything. */
-export function resetHealth() { health.clear(); byModel.clear(); }
+export function resetHealth() { health.clear(); byModel.clear(); persist(); }

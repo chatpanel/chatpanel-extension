@@ -164,3 +164,44 @@ export {
   titleFromParticipants, titleFromDate, deriveMeetingTitle, shouldAutoTitle, isBetterTitleSource,
   meetingTitlePrompt, parseTitleResponse,
 } from './titles.js';
+
+// The library — one record model (chat / note / meeting / brief) for every client, so
+// "what is the title of this meeting" has one answer rather than one per codebase.
+export {
+  RECORD_KINDS, MAX_TITLE_LEN, LibraryError,
+  parseRecordId, makeRecordId, isRecordId,
+  normalizeStoredRecord, isValidStoredRecord, toSearchRecord, searchTextFor, toIndexEntry,
+  deriveTitle, snippetOf, wordCount,
+} from './library.js';
+
+// Two-way sync, as a pure plan over two index lists. Shared because the tie-break must not
+// depend on which client is asking, or two clients flap forever.
+export {
+  CLOCK_TOLERANCE_MS, SyncError,
+  stampOf, decide, planSync, isSettled, forkConflict, advanceBases,
+} from './sync-plan.js';
+
+// The encrypted backup wire format — the corpus's only lossless channel between clients.
+export {
+  ENCRYPTED_TYPE, COMPRESSIONS, BackupError,
+  // Aliased: `vault.js` also exports KDF_ITERATIONS, and the two are genuinely different
+  // numbers (the vault derives at 310k, a backup at 250k). Shadowing one with the other
+  // would silently re-key every backup this package writes.
+  KDF_ITERATIONS as BACKUP_KDF_ITERATIONS,
+  encryptBackup, decryptBackup, isEncryptedBackup,
+  identityCodec, streamCodec, nodeCodec, bestCodec,
+  // `toB64`/`fromB64` are deliberately NOT re-exported: `vault.js` already owns those names
+  // here. They remain on the module for callers that import the file directly.
+} from './backup-envelope.js';
+
+// The command bar's grammar, so muscle memory transfers between surfaces.
+export {
+  OMNI_MODES, OMNI_GRAMMAR,
+  parseOmni, extractFilters, resolveSince, wantsModel, isActionable,
+} from './omni.js';
+
+// The palette as data, for clients that cannot import a stylesheet.
+export {
+  THEMES, LIGHT, DARK, PALETTES, SHAPE, TOKEN_NAMES, TOKEN_ROLES,
+  paletteFor, cssVarName, toCssVars, themeStylesheet, resolveTheme,
+} from './theme.js';

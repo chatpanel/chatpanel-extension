@@ -2147,6 +2147,9 @@ async function pickRoutedAgent(agent, settings, tools, turn, messages, sources =
       // was handed — see requirementsFor.
       background,
     };
+    // A fresh page (briefs, notes, meetings) must know what the panel already learned before
+    // its FIRST pick, or Auto dials the model the session already saw refuse a connection.
+    await (await import('./model-health.js')).healthReady();
     const routed = await router.routeForTurn(settings, (t) => store?.resolveTarget?.(t, settings), need);
     if (!routed?.target) {
       // Auto with nothing routable is a dead end the caller cannot recover from, unlike a

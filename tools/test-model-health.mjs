@@ -173,3 +173,61 @@ console.log('✓ model health: behaviour beats configuration, and a model failin
 }
 
 console.log('✓ model health: a broken connection fails over and stands the provider down');
+
+// ── a refused connection is a provider that is DOWN ──────────────────────────
+// "Failed to fetch" has no status, so it fell to 'unknown': thirty seconds, and still
+// available. Auto re-picked the dead local model after half a minute, every time.
+{
+  const { classifyFailure, markUnhealthy, healthOf, resetHealth } = await import('../extension/js/model-health.js');
+  resetHealth();
+  assert.equal(classifyFailure(new TypeError('Failed to fetch')), 'unreachable');
+  assert.equal(classifyFailure(new Error('connect ECONNREFUSED 127.0.0.1:8080')), 'unreachable');
+  assert.equal(classifyFailure(new Error('net::ERR_CONNECTION_REFUSED')), 'unreachable');
+  assert.equal(classifyFailure(new TypeError('Load failed')), 'unreachable', 'Safari\'s spelling');
+  markUnhealthy('dead-local', new TypeError('Failed to fetch'));
+  const h = healthOf('dead-local');
+  assert.equal(h.available, false, 'a model nobody is listening on is NOT available');
+  assert.ok(h.until - Date.now() > 60_000, 'and stays down for minutes, not seconds — it needs a human to start it');
+  resetHealth();
+}
+
+// ── shared across pages within the session ───────────────────────────────────
+// This lived in per-page module memory. The side panel learned a local model was refusing
+// connections; briefs.html — a separate page, a separate module instance — started every
+// synthesis believing it was fine, dialled it, and only then fell over. Auto consults health
+// at route time, so the router was fine; it was being asked by a page that knew nothing.
+{
+  const store = new Map();
+  globalThis.chrome = globalThis.chrome || {};
+  globalThis.chrome.storage = globalThis.chrome.storage || {};
+  globalThis.chrome.storage.session = {
+    async get(k) { return store.has(k) ? { [k]: store.get(k) } : {}; },
+    async set(o) { for (const [k, v] of Object.entries(o)) store.set(k, v); },
+  };
+  // "Page A" marks a model unhealthy…
+  const a = await import('../extension/js/model-health.js?ctx=a');
+  a.resetHealth();
+  // The shape a browser actually throws for a dead endpoint — no status, no code, just this.
+  a.markUnhealthy('ep-local-8080', new TypeError('Failed to fetch'), 'local-llm');
+  assert.equal(a.healthOf('ep-local-8080').available, false, 'page A knows');
+  assert.ok(store.get('chatpanel:modelHealth')?.health?.length, 'and wrote it to session storage');
+
+  // …and "page B", a fresh module instance, knows it too after hydrating.
+  const b = await import('../extension/js/model-health.js?ctx=b');
+  await b.healthReady();
+  assert.equal(b.healthOf('ep-local-8080').available, false,
+    'a fresh page must inherit what the session already learned — otherwise Auto re-dials the dead model on every dashboard');
+
+  // Recovery propagates the same way, so a model that came back is not sidelined elsewhere.
+  a.markHealthy('ep-local-8080');
+  const c = await import('../extension/js/model-health.js?ctx=c');
+  await c.healthReady();
+  assert.equal(c.healthOf('ep-local-8080').available, true);
+
+  // No session area (an old runtime, a test): degrades to per-page memory, never throws.
+  delete globalThis.chrome.storage.session;
+  const d = await import('../extension/js/model-health.js?ctx=d');
+  assert.equal(await d.hydrateHealth(), false);
+  d.markUnhealthy('x', new Error('boom'));
+  console.log('model-health: session-shared ok');
+}
