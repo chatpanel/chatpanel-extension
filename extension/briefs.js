@@ -181,7 +181,9 @@ async function openBrief(id) {
     + `</div>`
     + `<p class="muted" style="margin:0 0 6px;font-size:12.5px">`
     + `Derived from your own records — every claim links to the one it came from. `
-    + `<button id="b-ask" class="cite" type="button">Ask ChatPanel about this</button></p>`
+    + `<button id="b-ask" class="cite" type="button">Ask ChatPanel about this</button> `
+    + `<button id="b-sameas" class="cite" type="button" title="Fold this subject into another one">Same as…</button>`
+    + `<span id="b-sameas-box" class="sameas hidden"></span></p>`
     + `<div class="bsec-head">What the records say</div>`
     + brief.claims.map((c) =>
       `<div class="claim claim-${c.kind}">`
@@ -204,8 +206,49 @@ async function openBrief(id) {
   for (const el of view.querySelectorAll('[data-open]')) el.onclick = () => openRecord(el.dataset.open);
   const ask = $('b-ask');
   if (ask) ask.onclick = () => askPanel(brief);
+  const same = $('b-sameas');
+  if (same) same.onclick = () => openSameAs(brief);
   hydrate(view);
   renderList();
+}
+
+/**
+ * "Same as…" — the merge control ON the brief, where the duplicate is in front of you.
+ *
+ * The Maintenance tab proposes merges it can justify; this is for the ones it cannot see
+ * (a nickname, a different transliteration) and for the moment you are already looking at
+ * the wrong page. Same rule as every other merge: stored as an INPUT to derivation, so a
+ * rebuild re-applies it, and the better-evidenced side is offered first because it is the
+ * name the user thinks in. Only subjects of the same kind are offered — a person is never
+ * "the same as" a topic.
+ */
+function openSameAs(brief) {
+  const box = $('b-sameas-box');
+  if (!box) return;
+  if (!box.classList.contains('hidden')) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  const candidates = index
+    .filter((e) => e.kind === brief.kind && e.id !== brief.id)
+    .sort((a, b) => (b.stats?.records || 0) - (a.stats?.records || 0));
+  box.innerHTML = '<input class="prefinput sameas-input" type="text" placeholder="Type the name this really is…" list="b-sameas-list" />'
+    + `<datalist id="b-sameas-list">${candidates.slice(0, 200).map((e) => `<option value="${escapeHtml(e.name)}"></option>`).join('')}</datalist>`
+    + '<button class="btn" id="b-sameas-go" type="button">Merge</button>';
+  box.classList.remove('hidden');
+  const input = box.querySelector('input');
+  input.focus();
+  const go = async () => {
+    const into = input.value.trim();
+    if (!into || into.toLowerCase() === brief.subject.name.toLowerCase()) return;
+    await mergeSubjects(brief.subject.name, into);
+    _maintCache = null; // the report's "possibly the same" list just changed
+    toast(`“${brief.subject.name}” is “${into}”. Rebuilding…`);
+    box.classList.add('hidden');
+    await rebuild($('b-rebuild'));
+    // Land on the survivor — the page you were on no longer exists.
+    const target = (await getBriefIndex()).find((e) => e.name.toLowerCase() === into.toLowerCase());
+    if (target) openBrief(target.id);
+  };
+  $('b-sameas-go').onclick = go;
+  input.onkeydown = (e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape') { box.classList.add('hidden'); } };
 }
 
 /** A citation is only useful if it opens the thing it cites. */

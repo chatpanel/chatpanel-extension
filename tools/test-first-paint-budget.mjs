@@ -141,7 +141,9 @@ const BUDGET = {
   // ANY corpus write, and during a live meeting captions write constantly — loading briefs
   // the obvious way decrypted every brief BODY on each of those runs to send records that
   // had not changed. A fingerprint of the index makes the repeat runs free.
-  'settings.js': 1260,
+  // 1260 → 1265 for parseBriefText in events/knowledge.js — the inverse of briefToText, so a
+  // brief that crossed the warm store as text comes back to an agent as claims and refs.
+  'settings.js': 1265,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was

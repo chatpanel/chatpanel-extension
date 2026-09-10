@@ -289,4 +289,14 @@ console.log('briefs identity tests passed');
   assert.match(rebuild, /_maintCache = null/, 'a rebuild moves the corpus; the report is no longer a description of it');
 }
 
+// The merge control on the brief itself — not only in Maintenance.
+{
+  const page = read('extension/briefs.js');
+  const sameAs = page.slice(page.indexOf('function openSameAs('), page.indexOf('/** A citation is only useful'));
+  assert.match(sameAs, /e\.kind === brief\.kind/, 'only subjects of the same kind may be offered — a person is never a topic');
+  assert.match(sameAs, /mergeSubjects\(brief\.subject\.name, into\)/, 'a merge is stored as an INPUT to derivation');
+  assert.match(sameAs, /await rebuild\(/, 'and applied by rebuilding, never by editing the projection');
+  assert.match(sameAs, /_maintCache = null/, 'a new merge invalidates the maintenance report');
+}
+
 console.log('briefs surface guards passed');

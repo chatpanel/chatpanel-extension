@@ -144,6 +144,52 @@ export function briefToText(brief) {
   return L.join('\n').slice(0, MAX_BRIEF_CHARS);
 }
 
+/**
+ * The inverse of `briefToText` — a brief's claims and refs read back out of the text form.
+ *
+ * Exists because the warm store holds RECORDS: `{ id, title, type, date, text }`, nothing
+ * else. Briefs cross to the gateway as that shape, so an agent asking `get_brief` over MCP
+ * can only be handed structure if the text form is stable enough to parse. It is: this
+ * module writes both ends, and the claim line (`- text`) followed by its refs
+ * (`  (kind:id, kind:id)`) is a grammar, not a rendering. Round-trips in the tests.
+ *
+ * Returns `null` for text that is not a brief, so a caller can tell "not a brief" from
+ * "a brief with no claims".
+ */
+export function parseBriefText(text) {
+  const lines = String(text ?? '').split('\n');
+  if (!/^BRIEF: /.test(lines[0] || '')) return null;
+  const out = { name: lines[0].slice('BRIEF: '.length).trim(), aliases: [], kind: '', claims: [], records: [] };
+  let section = 'head';
+  for (let i = 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (section === 'head') {
+      if (line.startsWith('Also known as: ')) out.aliases = line.slice(15).split(',').map((a) => a.trim()).filter(Boolean);
+      else if (line.startsWith('Kind: ')) out.kind = line.slice(6).trim();
+      else if (line === '') section = 'claims';
+      continue;
+    }
+    if (line === 'RECORDS:') { section = 'records'; continue; }
+    if (section === 'claims' && line.startsWith('- ')) {
+      const claim = { text: line.slice(2), refs: [] };
+      const next = lines[i + 1] || '';
+      const m = /^  \((.*)\)$/.exec(next);
+      if (m) {
+        claim.refs = m[1].split(', ').map((r) => {
+          const idx = r.indexOf(':');
+          return idx > 0 ? { kind: r.slice(0, idx), id: r.slice(idx + 1) } : null;
+        }).filter(Boolean);
+        i += 1;
+      }
+      out.claims.push(claim);
+    } else if (section === 'records' && line.startsWith('- ')) {
+      const idx = line.indexOf(': ');
+      out.records.push(idx > 0 ? { type: line.slice(2, idx), title: line.slice(idx + 2) } : { type: '', title: line.slice(2) });
+    }
+  }
+  return out;
+}
+
 /** Terms the graph and the search index rank a brief by — its subject and its neighbours. */
 export function briefTerms(brief) {
   if (!brief) return [];

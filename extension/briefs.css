@@ -97,3 +97,8 @@
 .prefinput:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
 .mergepager { margin-top: 9px; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px; }
 .mergepager .btn { padding: 3px 9px; font-size: 12px; }
+
+/* "Same as…" — the merge control on the brief itself. */
+.sameas { display: inline-flex; gap: 6px; align-items: center; margin-left: 6px; }
+.sameas.hidden { display: none; }
+.sameas .btn { padding: 4px 10px; font-size: 12px; }
