@@ -47,3 +47,86 @@ export function editDistance(a, b, max = Infinity) {
   }
   return prev[b.length];
 }
+
+/**
+ * A ceiling on pairwise work, and the reason it exists.
+ *
+ * Comparing every pair is the N×N scan the knowledge design forbids, and it behaves exactly
+ * as that rule predicts. Two passes learned it the hard way: near-duplicate titles ran 40s
+ * over 12,000 records, and merge suggestions did not finish 12,000 SUBJECTS in two minutes.
+ * Both on the UI thread, which is an unresponsive tab rather than a slow report.
+ */
+export const MAX_PAIR_COMPARISONS = 200_000;
+
+const BLOCK_KEY_CHARS = 4;
+// Every block gets at least this many comparisons before the budget can starve it.
+const MIN_BLOCK_BUDGET = 2_000;
+
+/**
+ * The keys a string is filed under for candidate generation.
+ *
+ * Three, and each earns its place: two strings within a couple of edits still agree on their
+ * first few characters unless the typo is at the front — in which case they agree on their
+ * last few — and two forms of one person's name ("alex rivera", "a rivera") agree on the
+ * LAST TOKEN even when neither end matches. Drop the third and abbreviated first names stop
+ * being found at all.
+ */
+export function blockKeys(norm) {
+  const s = String(norm || '');
+  if (!s) return [];
+  const keys = new Set([`p:${s.slice(0, BLOCK_KEY_CHARS)}`, `s:${s.slice(-BLOCK_KEY_CHARS)}`]);
+  const last = s.split(' ').filter(Boolean).pop();
+  if (last && last.length >= 2) keys.add(`t:${last}`);
+  return [...keys];
+}
+
+/**
+ * BLOCKING — the standard record-linkage answer to "which pairs are worth comparing".
+ *
+ * Files every string under `blockKeys` and yields only pairs that share one, so the work is
+ * proportional to the corpus rather than to its square. Each unordered pair is yielded at
+ * most once even when two strings share several keys.
+ *
+ * `budget` is the backstop for the pathological case — ten thousand titles that all start the
+ * same way land in one block, and a block is compared pairwise. A weird corpus then costs a
+ * truncated report instead of a hung page.
+ */
+export function* blockedPairs(values, { budget = MAX_PAIR_COMPARISONS } = {}) {
+  const blocks = new Map();
+  for (const v of values) {
+    for (const key of blockKeys(v)) {
+      if (!blocks.has(key)) blocks.set(key, []);
+      blocks.get(key).push(v);
+    }
+  }
+  let spent = 0;
+  const seen = new Set();
+  // SMALLEST BLOCKS FIRST, and a per-block share of the budget. Both are about RECALL, not
+  // speed, and the first version got this wrong: nine thousand subjects all beginning
+  // "Unrelated Person" land in one bucket under the prefix key, and that single
+  // non-discriminating block spent the entire budget before the buckets holding the real
+  // findings were ever reached — so a big corpus returned five hundred suggestions and not
+  // one of the ones that mattered.
+  //
+  // A small block is a discriminating one: "rivera" as a last token says far more than
+  // "unre" as a prefix. Working through them in size order means the specific evidence is
+  // spent first and the vague evidence gets whatever is left.
+  const buckets = [...blocks.values()].filter((b) => b.length > 1).sort((a, b) => a.length - b.length);
+  for (const bucket of buckets) {
+    if (spent >= budget) return;
+    // No single block may consume the whole budget, however it is ordered.
+    const blockBudget = Math.min(budget - spent, Math.max(MIN_BLOCK_BUDGET, Math.floor(budget / 8)));
+    let blockSpent = 0;
+    for (let i = 0; i < bucket.length && blockSpent < blockBudget; i += 1) {
+      for (let j = i + 1; j < bucket.length && blockSpent < blockBudget; j += 1) {
+        const a = bucket[i]; const b = bucket[j];
+        const key = a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        blockSpent += 1;
+        spent += 1;
+        yield [a, b];
+      }
+    }
+  }
+}

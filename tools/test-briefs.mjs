@@ -236,7 +236,7 @@ console.log('briefs identity tests passed');
   assert.match(graph, /GRAPH_LINKS_PER_NODE/, 'and cap edges per node; a dense mesh is both slow and unreadable');
   assert.match(graph, /more are in the list on the left/, 'and say what it is not showing');
 
-  const maint = page.slice(page.indexOf('async function renderMaint()'), page.indexOf('function wireMaintActions('));
+  const maint = page.slice(page.indexOf('async function renderMaint('), page.indexOf('function wireMaintActions('));
   assert.match(maint, /await YIELD\(\)/, 'the maintenance passes must yield to the event loop');
   assert.match(maint, /_maintSeq/, 'and stop when the user switches away, rather than racing');
   assert.ok((maint.match(/await add\(group\(/g) || []).length >= 6,
@@ -250,6 +250,27 @@ console.log('briefs identity tests passed');
   assert.match(gv, /export const MAX_GRAPH_NODES/, 'drawGraph needs its own ceiling');
   const draw = gv.slice(gv.indexOf('export function drawGraph('), gv.indexOf('export function drawGraph(') + 2500);
   assert.match(draw, /nodes\.length > MAX_GRAPH_NODES/, 'and must apply it at the top of drawGraph');
+}
+
+// Recomputing the whole report every time the tab is re-entered made it feel broken: you
+// left, came back, and waited again for an answer that had not changed.
+{
+  const page = read('extension/briefs.js');
+  const maint = page.slice(page.indexOf('async function renderMaint('), page.indexOf('async function corpusVersion('));
+  assert.match(maint, /_maintCache/, 'the maintenance report must be cached');
+  assert.match(maint, /MAINT_TTL_MS/, 'with a TTL, so a corpus that changed underneath is not served forever');
+  assert.match(maint, /_maintCache\.version === version/, 'and keyed on a corpus version, so a rebuild invalidates it honestly');
+  assert.ok(maint.indexOf('_maintCache && _maintCache.version') < maint.indexOf('loadCorpus()'),
+    'the cache has to be checked BEFORE the corpus is read, or it saves nothing');
+
+  assert.match(page, /MERGE_PAGE/, 'suggestions must paginate — nobody answers forty merge questions in a row');
+  assert.match(page, /b-more-merges/, 'and there must be a way to see the rest');
+  const wire = page.slice(page.indexOf('function wireMaintActions('));
+  assert.match(wire, /renderMaint\(\{ force: true \}\)/,
+    'answering a suggestion changes the input, so THAT must recompute rather than serve the cache');
+
+  const rebuild = page.slice(page.indexOf('async function rebuild('), page.indexOf('async function explainEmpty('));
+  assert.match(rebuild, /_maintCache = null/, 'a rebuild moves the corpus; the report is no longer a description of it');
 }
 
 console.log('briefs surface guards passed');

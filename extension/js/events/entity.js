@@ -31,7 +31,7 @@
 // future mobile client must agree on what "the same subject" is, and three implementations
 // would mean three answers — the argument tags.js already makes for tags.
 
-import { editDistance } from './distance.js';
+import { blockedPairs, editDistance } from './distance.js';
 // The placeholder recognizer lives on its own (see that file for why). Re-exported so every
 // existing caller of entity.js is unchanged.
 import { isRedactionToken } from './redaction-tokens.js';
@@ -268,19 +268,39 @@ export function rankSubjects(subjects, { threshold = DEFAULT_THRESHOLD, limit = 
 export function suggestMerges(subjects, { limit = 40, distance = 1 } = {}) {
   const list = [...(subjects instanceof Map ? subjects.values() : subjects || [])]
     .filter((s) => s && s.canonical);
+
+  // BLOCKED, not pairwise. Comparing every pair did not finish 12,000 subjects in two
+  // minutes — 6.8s at 2,000, 32s at 6,000, 141s at 12,000 — and a corpus with a few thousand
+  // distinct people, topics and tags reaches that easily. This pass runs on the UI thread,
+  // so that is a hung page, not a slow one.
+  //
+  // All three signals need either a shared end or a shared last token, which is precisely
+  // what `blockKeys` files on, so the findings survive the change: an abbreviated first name
+  // shares the surname, a contained name shares a prefix, a typo shares whichever end it is
+  // not in.
+  const byCanonical = new Map();
+  for (const s of list) {
+    if (!byCanonical.has(s.canonical)) byCanonical.set(s.canonical, []);
+    byCanonical.get(s.canonical).push(s);
+  }
+
   const out = [];
-  for (let i = 0; i < list.length; i += 1) {
-    for (let j = i + 1; j < list.length; j += 1) {
-      const a = list[i]; const b = list[j];
-      if (a.kind !== b.kind) continue; // a person and a topic are never the same subject
-      const reason = mergeReason(a.canonical, b.canonical, a.kind, distance);
-      if (!reason) continue;
-      // The better-evidenced side is proposed as the survivor: it has more records behind it
-      // and is more likely the name the user actually thinks in.
-      const [keep, drop] = countOf(a) >= countOf(b) ? [a, b] : [b, a];
-      out.push({ kind: a.kind, keep: keep.key, keepName: keep.name, drop: drop.key, dropName: drop.name, reason });
+  for (const [ca, cb] of blockedPairs([...byCanonical.keys()])) {
+    // One reason per canonical PAIR, computed before the (rare) fan-out over subjects that
+    // share a canonical form across kinds.
+    for (const a of byCanonical.get(ca)) {
+      for (const b of byCanonical.get(cb)) {
+        if (a.kind !== b.kind) continue; // a person and a topic are never the same subject
+        const reason = mergeReason(a.canonical, b.canonical, a.kind, distance);
+        if (!reason) continue;
+        // The better-evidenced side is proposed as the survivor: it has more records behind
+        // it and is more likely the name the user actually thinks in.
+        const [keep, drop] = countOf(a) >= countOf(b) ? [a, b] : [b, a];
+        out.push({ kind: a.kind, keep: keep.key, keepName: keep.name, drop: drop.key, dropName: drop.name, reason });
+      }
     }
   }
+
   const rank = { initials: 0, containment: 1, spelling: 2 };
   return out
     .sort((x, y) => (rank[x.reason] - rank[y.reason]) || x.keepName.localeCompare(y.keepName))

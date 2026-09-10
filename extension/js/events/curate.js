@@ -30,7 +30,7 @@ import { normalizeTag } from './tags.js';
 // The bounded Levenshtein, from the module that holds only it. Two implementations of "how
 // far apart are these strings" become two answers to "is this the same title" — but see
 // distance.js for why it is not imported from voice-intents.js, which is where it grew up.
-import { editDistance } from './distance.js';
+import { blockedPairs, editDistance } from './distance.js';
 import {
   DEFAULT_THRESHOLD, MAX_SUBJECTS, isSelfLabel, isSubjectCandidate,
   normalizeSubject, rankSubjects, resolveSubjects,
@@ -42,59 +42,6 @@ const WIKILINK_RE = /\[\[([^[\]\n]+)\]\]/g;
 
 /** Below this, two normalized titles are "the same title typed twice". */
 export const NEAR_TITLE_DISTANCE = 2;
-
-/**
- * A ceiling on pairwise work, and the reason it exists.
- *
- * The near-duplicate passes below used to compare EVERY pair, which is the exact N×N scan
- * the design says not to build — and it behaved like one: 1s at 2,000 records, 10s at 6,000,
- * 40s at 12,000, on the UI thread, which is an unresponsive tab rather than a slow report.
- *
- * The fix is BLOCKING, the standard record-linkage answer: two strings within `distance`
- * edits almost always still agree on their first or last few characters, so only strings
- * sharing one of those keys are ever compared. That turns the pass near-linear while keeping
- * the findings that matter. The budget is the backstop for the pathological case — ten
- * thousand titles that all start the same way — so a weird corpus costs a truncated report
- * rather than a hung page.
- */
-export const MAX_PAIR_COMPARISONS = 200_000;
-
-// Two keys per string: what it starts with and what it ends with. An edit near the front
-// still matches on the tail, and vice versa — one pass over each bucket catches both.
-const BLOCK_KEY_CHARS = 4;
-function blockKeys(norm) {
-  const head = norm.slice(0, BLOCK_KEY_CHARS);
-  const tail = norm.slice(-BLOCK_KEY_CHARS);
-  return head === tail ? [`p:${head}`] : [`p:${head}`, `s:${tail}`];
-}
-
-/**
- * Candidate pairs worth comparing, from a list of normalized strings — never all of them.
- * Yields `[a, b]` with each unordered pair at most once, within the comparison budget.
- */
-function* blockedPairs(norms, { budget = MAX_PAIR_COMPARISONS } = {}) {
-  const blocks = new Map();
-  for (const n of norms) {
-    for (const key of blockKeys(n)) {
-      if (!blocks.has(key)) blocks.set(key, []);
-      blocks.get(key).push(n);
-    }
-  }
-  let spent = 0;
-  const seen = new Set();
-  for (const bucket of blocks.values()) {
-    for (let i = 0; i < bucket.length; i += 1) {
-      for (let j = i + 1; j < bucket.length; j += 1) {
-        if (spent >= budget) return;
-        const key = bucket[i] < bucket[j] ? `${bucket[i]}\u0000${bucket[j]}` : `${bucket[j]}\u0000${bucket[i]}`;
-        if (seen.has(key)) continue; // a pair sharing BOTH keys lands in two buckets
-        seen.add(key);
-        spent += 1;
-        yield [bucket[i], bucket[j]];
-      }
-    }
-  }
-}
 
 /** How much term overlap counts as a record answering a question, in `spanningQuestions`. */
 export const SPAN_MIN_TERMS = 2;

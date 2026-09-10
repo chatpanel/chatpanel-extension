@@ -31,12 +31,29 @@ let kindFilter = '';
 let dashTab = 'stats';
 let corpusCache = null; // loaded lazily; a rebuild and the drift check both want it
 let _maintSeq = 0;      // a tab switch mid-report must stop the passes, not race them
+
+/**
+ * The maintenance report, cached.
+ *
+ * Every pass reads the whole corpus, so recomputing on each tab switch made the tab feel
+ * broken — you left it, came back, and waited again for an answer that had not changed.
+ * Keyed by the corpus VERSION so a rebuild or a new record invalidates it honestly, with a
+ * TTL as the backstop for anything that changes without bumping that counter. Held in memory
+ * only: this is derived from a projection, so it is never worth persisting.
+ */
+const MAINT_TTL_MS = 5 * 60_000;
+let _maintCache = null; // { at, version, sections, suggestions }
+let _shownMerges = MERGE_PAGE;
 let driftCache = null;
 
 const KIND_LABEL = { person: 'person', topic: 'topic', tag: 'tag', title: 'wanted' };
 
 // Why a pair was proposed, in the user's words. A suggestion whose reason is legible is one
 // they can answer in a second; an unexplained one gets ignored or, worse, accepted blindly.
+// How many suggestions to show before "show more". A wall of them is not more useful than a
+// handful — the answer to each is a decision, and nobody makes forty in a row.
+const MERGE_PAGE = 8;
+
 const MERGE_WHY = {
   initials: 'same surname, shortened first name',
   containment: 'one name contains the other',
@@ -438,9 +455,20 @@ async function renderGraph() {
  */
 const YIELD = () => new Promise((r) => setTimeout(r, 0));
 
-async function renderMaint() {
+async function renderMaint({ force = false } = {}) {
   const host = $('b-dash-maint');
   const token = ++_maintSeq;
+
+  // Serve the cache first. Coming back to a tab should be instant; the report is a snapshot
+  // of a corpus that has not moved.
+  const version = await corpusVersion();
+  if (!force && _maintCache && _maintCache.version === version && Date.now() - _maintCache.at < MAINT_TTL_MS) {
+    host.innerHTML = _maintCache.sections.join('');
+    wireMaintActions(host, _maintCache.suggestions);
+    hydrate(host);
+    return;
+  }
+
   host.innerHTML = '<div class="dash-empty">Reading your records…</div>';
 
   const group = (title, why, body) =>
@@ -472,7 +500,7 @@ async function renderMaint() {
     if (!await add(group('Possibly the same subject',
       'The alias rule folds what it can prove. These are the pairs it refuses to decide alone, because deciding wrongly merges two people permanently. Your answer is stored and re-applied on every rebuild.',
       suggestions.length
-        ? `<div class="mergelist">${suggestions.slice(0, 20).map((m, i) =>
+        ? `<div class="mergelist">${suggestions.slice(0, _shownMerges).map((m, i) =>
           `<div class="mergerow" data-merge="${i}">`
           + `<span class="bkind ${m.kind}">${KIND_LABEL[m.kind] || m.kind}</span>`
           + `<span class="mergenames"><b>${escapeHtml(m.dropName)}</b> is <b>${escapeHtml(m.keepName)}</b></span>`
@@ -480,6 +508,9 @@ async function renderMaint() {
           + `<button class="btn" data-yes="${i}" type="button">Same</button>`
           + `<button class="btn ghost" data-no="${i}" type="button">Different</button>`
           + `</div>`).join('')}</div>`
+          + (suggestions.length > _shownMerges
+            ? `<button class="btn ghost" id="b-more-merges" type="button">Show ${Math.min(MERGE_PAGE, suggestions.length - _shownMerges)} more of ${suggestions.length}</button>`
+            : '')
         : '<div class="maint-ok">Nothing looks like a duplicate identity.</div>'))) return;
 
     if (!await add(group('Names you have merged',
@@ -528,6 +559,7 @@ async function renderMaint() {
       'Tags and topics that normalize close but were typed differently, so they file apart.',
       chips(drift.map((g) => g.terms.map((t) => `${t.term}(${t.count})`).join(' | ')))))) return;
 
+    _maintCache = { at: Date.now(), version, sections: [...sections], suggestions };
     wireMaintActions(host, suggestions);
     hydrate(host);
   } catch (e) {
@@ -536,13 +568,36 @@ async function renderMaint() {
   }
 }
 
+/**
+ * A cheap fingerprint of "has anything changed" — the stale flag plus the brief index's
+ * newest write. Cheap on purpose: answering it must not cost the decrypt the cache exists
+ * to avoid.
+ */
+async function corpusVersion() {
+  try {
+    const stale = await briefsAreStale();
+    const newest = index.reduce((m, e) => Math.max(m, e.updatedAt || 0), 0);
+    return `${index.length}:${newest}:${stale ? 1 : 0}`;
+  } catch { return String(index.length); }
+}
+
 function wireMaintActions(host, suggestions) {
+  const more = host.querySelector('#b-more-merges');
+  if (more) {
+    more.onclick = () => {
+      _shownMerges += MERGE_PAGE;
+      // Re-render from the CACHE — paging is a view change, not a reason to read the corpus
+      // again, which is the mistake that made this tab feel broken in the first place.
+      _maintCache = null;
+      renderMaint({ force: true });
+    };
+  }
   for (const b of host.querySelectorAll('[data-yes]')) {
     b.onclick = async () => {
       const m = suggestions[Number(b.dataset.yes)];
       await mergeSubjects(m.dropName, m.keepName);
       toast(`\u201c${m.dropName}\u201d is \u201c${m.keepName}\u201d. Rebuild to apply it.`);
-      renderMaint();
+      renderMaint({ force: true }); // the answer changed the input; recompute honestly
     };
   }
   for (const b of host.querySelectorAll('[data-no]')) {
@@ -554,7 +609,7 @@ function wireMaintActions(host, suggestions) {
     b.onclick = async () => {
       await unmergeSubject(b.dataset.unmerge);
       toast('Merge undone. Rebuild to apply it.');
-      renderMaint();
+      renderMaint({ force: true });
     };
   }
 }
@@ -585,6 +640,7 @@ async function rebuild(btn) {
     if (!report.ok) { toast(report.reason === 'disabled' ? 'Briefs are switched off in settings.' : 'Nothing to build.'); return; }
     index = await getBriefIndex();
     driftCache = null;
+    _maintCache = null; // the corpus moved; the report is no longer a description of it
     toast(index.length
       ? `${index.length} brief${index.length === 1 ? '' : 's'} from ${records.length} records.`
       : 'No subject has enough evidence for a page yet — keep chatting and meeting.');
