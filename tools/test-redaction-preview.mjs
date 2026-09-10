@@ -132,4 +132,43 @@ assert.match(body, /'nodetector'/,
   'the panel must detect "model tier on, no detector configured" itself — it is the commonest broken state');
 assert.match(painter, /no detector is set up/, 'and say so in words');
 
+// ── the reply itself must never carry a placeholder ─────────────────────────
+// Redaction is for the model's benefit. A [[PERSON_5]] on screen where a colleague's name
+// belongs is always a bug, and an invisible one — the turn that caused it is over by the
+// time anyone reads it. streamChat restores against the turn's vault, but not every path
+// HAS one: a local agent under "redact for remote only" runs with none, while tool results
+// reaching it can already carry placeholders minted elsewhere.
+{
+  const { createVault, redactText } = await import('../extension/js/pii-redact.js');
+  const { displayText } = await import('../extension/js/pii-pipeline.js');
+
+  const vault = createVault();
+  const red = redactText('Jordan Blake met Alex Rivera in Springfield', vault, {
+    entities: [
+      { value: 'Jordan Blake', type: 'PERSON' },
+      { value: 'Alex Rivera', type: 'PERSON' },
+      { value: 'Springfield', type: 'LOCATION' },
+    ],
+    tier: 'full',
+  });
+  assert.match(red, /\[\[PERSON_1\]\]/, 'the model should have seen placeholders');
+  assert.equal(displayText(red, vault), 'Jordan Blake met Alex Rivera in Springfield',
+    'and the reader must see the real names back');
+
+  // A token this vault never minted is REPORTED rather than silently dropped: the text is
+  // what the reader gets, and the warning is what says a path is still leaking.
+  assert.match(displayText('see [[PERSON_9]]', vault), /PERSON_9/);
+  assert.equal(displayText('plain text', null), 'plain text');
+  assert.equal(displayText('', vault), '');
+}
+
+// The render boundary must actually call it — this is the guarantee, and it is one line
+// away from being lost in a refactor.
+{
+  const panel = read('extension/sidepanel.js');
+  const renders = (panel.match(/renderMarkdown\(displayText\(/g) || []).length;
+  assert.ok(renders >= 2,
+    'every place a message body is rendered must scrub placeholders first — found ' + renders);
+}
+
 console.log('redaction preview tests passed');

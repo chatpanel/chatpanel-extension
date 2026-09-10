@@ -379,6 +379,37 @@ export function restoreWithAliases(text, vault) {
   return out;
 }
 
+/**
+ * THE LAST LINE BEFORE A HUMAN READS IT.
+ *
+ * `restoreText` undoes what a given vault minted. This asks the harder question a UI has to
+ * answer: is there ANY placeholder left in what I am about to show? A reply is redacted for
+ * the model's benefit, never the reader's — so a token reaching the screen is always a bug,
+ * and one that is invisible to the code that caused it, because by then the turn is over.
+ *
+ * It exists because a turn can mint tokens in one vault and be restored against another (or
+ * against none): a local agent under "redact for remote only" gets no vault at all, while
+ * tool results reaching it may already carry placeholders from somewhere else. Every one of
+ * those paths ends at the same render call, so the check belongs there.
+ *
+ * Returns `{ text, unresolved }` — restored where the vault knows the token, and the list of
+ * the ones it could not, so the caller can decide (mask, warn, log) rather than silently
+ * shipping `[[PERSON_5]]` to a person reading about their own colleagues.
+ */
+export function scrubPlaceholders(text, vault) {
+  const src = String(text ?? '');
+  if (!src) return { text: src, unresolved: [] };
+  const unresolved = [];
+  const out = src.replace(TOKEN_RE, (match) => {
+    const value = vault?.byToken?.get(match);
+    if (value != null) return value;
+    unresolved.push(match);
+    return match;
+  });
+  TOKEN_RE.lastIndex = 0;
+  return { text: out, unresolved };
+}
+
 // True if the text still contains any redaction placeholder (useful for streaming
 // restore — buffer a tail when a token may be split across chunks).
 export function hasToken(text) {

@@ -13,7 +13,7 @@
 // adds no latency. The phase-2 model-detection pass simply contributes more
 // entities into the same vault, so nothing here changes when it lands.
 
-import { createVault, redactText, restoreText, restoreWithAliases } from './pii-redact.js';
+import { createVault, redactText, restoreText, restoreWithAliases, scrubPlaceholders } from './pii-redact.js';
 import { sanitizeUnicode } from './sanitize.js';
 
 export function redactionEnabled(cfg) {
@@ -177,4 +177,27 @@ export function redactResult(result, ctx) {
     return { ...result, text: redactToolResult(result.text, ctx) };
   }
   return result;
+}
+
+/**
+ * The guarantee at the RENDER boundary: a person never reads a placeholder.
+ *
+ * Redaction exists for the model's benefit, so a `[[PERSON_5]]` reaching the screen is
+ * always a bug — and an invisible one, because the turn that caused it is over by the time
+ * anyone sees it. The paths that can produce it are real: a local agent under "redact for
+ * remote only" runs with NO vault, while tool results reaching it may already carry
+ * placeholders minted elsewhere, so there is nothing holding the mapping when the reply
+ * comes back.
+ *
+ * Every one of those paths ends at the same render call, which is why the check lives here
+ * rather than in each of them. Unresolved tokens are reported, never silently dropped: the
+ * text is what the reader gets, and `unresolved` is what tells us a path is still leaking.
+ */
+export function displayText(text, vault) {
+  const { text: out, unresolved } = scrubPlaceholders(text, vault);
+  if (unresolved.length) {
+    console.warn(`[chatpanel] ${unresolved.length} redaction placeholder(s) reached the UI unresolved:`,
+      [...new Set(unresolved)].join(', '));
+  }
+  return out;
 }

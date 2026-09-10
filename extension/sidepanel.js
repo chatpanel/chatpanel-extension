@@ -84,7 +84,7 @@ import { renderMarkdown } from './js/markdown.js';
 import { combineSystemPrompt, sourceCitationSystem } from './js/tool-hints.js';
 import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeAgentToAdopt, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
 import { createVault } from './js/pii-redact.js';
-import { setPiiEntitlement, redactOnce, restore as restorePii, redactionFromSettings } from './js/pii-pipeline.js';
+import { setPiiEntitlement, redactOnce, restore as restorePii, redactionFromSettings, displayText } from './js/pii-pipeline.js';
 import { checkForUpdate, isDismissed, dismiss } from './js/update.js';
 import { cachedWebgpuSupport, webgpuSupport } from './js/webgpu-support.js';
 import { TAB_SURFACE_QUERY } from './js/side-panel.js';
@@ -1845,7 +1845,12 @@ function renderMessage(m) {
     body.className = 'live-summary-b bubble';
     // "Waiting for the first summary…" is a promise. When the analyzer is switched off
     // nothing is coming, and saying otherwise is how a working switch looks broken.
-    if (m.content) body.innerHTML = renderMarkdown(m.content);
+    // LAST STOP BEFORE A HUMAN READS IT. streamChat restores against the turn's vault, but
+    // not every path has one — a local agent under "redact for remote only" runs with none,
+    // while tool results reaching it can already carry placeholders minted elsewhere. A
+    // reader seeing [[PERSON_5]] where a colleague's name belongs is the bug that produced
+    // this line; the guarantee has to hold at the boundary, not in each path.
+    if (m.content) body.innerHTML = renderMarkdown(displayText(m.content, piiVaultFor(state.conv?.id)));
     else {
       body.innerHTML = '<span class="muted">Waiting for the first summary…</span>';
       analyzerEnabled('meeting:summary').then((on) => {
@@ -2318,7 +2323,7 @@ function assistantBody(m) {
       m.thinking,
     )}</div></details>`;
   }
-  html += m.content ? renderMarkdown(m.content) : '';
+  html += m.content ? renderMarkdown(displayText(m.content, piiVaultFor(state.conv?.id))) : '';
   // Nothing streamed yet → show a live "what's happening" line (spinner + phase +
   // elapsed) instead of a lonely blinking cursor. The 1s activity timer keeps the
   // phase/seconds fresh (see updatePendingBubble), so a slow first token, a long

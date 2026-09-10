@@ -80,7 +80,11 @@ const BUDGET = {
   // panel that had one state and a bare `catch {}`, and every KB of it is a case where the
   // shield was lit and nothing was being redacted — a silent privacy indicator is worth more
   // than the bytes.
-  'sidepanel.js': 836,
+  // 836 → 840 for the render-boundary placeholder scrub. Redaction is for the model's
+  // benefit, so a [[PERSON_5]] reaching the screen is always a bug — and not every path has
+  // a vault to restore against (a local agent under "redact for remote only" has none),
+  // which is why the guarantee has to sit at the one call every path ends at.
+  'sidepanel.js': 840,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one
