@@ -27,7 +27,7 @@ const FILES = [
   'capability.js', 'invariants.js', 'store.js', 'registry.js', 'harness.js', 'queue.js',
   'reach.js',
   'kernel.js', 'loop.js', 'trajectory.js', 'citations.js', 'adapters.js', 'tool-groups.js', 'search-engines.js', 'manifest.js', 'mcp-errors.js', 'meeting-analyzers.js', 'rules.js', 'router.js', 'tool-need.js', 'route-graph.js', 'sources.js', 'sources-retrieval.js', 'text-search.js', 'markdown-authoring.js', 'media-transcript.js', 'pdf-layout.js', 'skill-vars.js', 'skill-manifest.js', 'skill-sources.js', 'skill-scan.js', 'structured.js', 'extraction.js',
-  'observability.js', 'flowchart.js', 'memory.js', 'voice-intents.js', 'entity.js', 'curate.js', 'knowledge.js', 'knowledge-derive.js', 'distance.js', 'redaction-tokens.js', 'subject-kinds.js', 'subject-name.js', 'schedule.js', 'vault.js', 'view.js', 'widget.js', 'tags.js', 'titles.js', 'weather.js',
+  'observability.js', 'flowchart.js', 'memory.js', 'voice-intents.js', 'entity.js', 'curate.js', 'knowledge.js', 'knowledge-derive.js', 'distance.js', 'redaction-tokens.js', 'subject-kinds.js', 'subject-name.js', 'synthesis.js', 'promotion.js', 'schedule.js', 'vault.js', 'view.js', 'widget.js', 'tags.js', 'titles.js', 'weather.js',
 ];
 
 function pkgDir() {

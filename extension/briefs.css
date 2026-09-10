@@ -102,3 +102,13 @@
 .sameas { display: inline-flex; gap: 6px; align-items: center; margin-left: 6px; }
 .sameas.hidden { display: none; }
 .sameas .btn { padding: 4px 10px; font-size: 12px; }
+
+/* Synthesis — the Proposed queue and what it produces. */
+.b-synth { color: #7c4dff; background: rgba(124, 77, 255, .10); border-color: rgba(124, 77, 255, .3); }
+.bsummary { font-size: 14px; line-height: 1.6; padding: 10px 12px; margin: 8px 0 4px; border-left: 3px solid #7c4dff; background: var(--elev); border-radius: 0 8px 8px 0; }
+.synth-live { margin: 8px 0; padding: 8px 12px; border: 1px dashed var(--border); border-radius: 9px; }
+.synth-line { font-size: 13px; padding: 2px 0; }
+.proposal { border: 1px solid var(--border); border-left: 3px solid #7c4dff; border-radius: 11px; padding: 12px 14px; margin-bottom: 12px; background: var(--card); }
+.diff-del { color: #d64545; text-decoration: line-through; opacity: .75; font-size: 13px; }
+.diff-add { color: #17a673; font-size: 13.8px; line-height: 1.55; }
+.btns { display: flex; gap: 7px; margin-top: 10px; flex-wrap: wrap; }

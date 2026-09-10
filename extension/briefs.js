@@ -14,8 +14,9 @@
 
 import {
   getBriefIndex, getBrief, getBriefSettings, saveBriefSettings, briefsAreStale,
-  getBriefMerges, mergeSubjects, unmergeSubject,
+  getBriefMerges, mergeSubjects, unmergeSubject, getProposals, putProposal, pendingProposals,
 } from './js/store-briefs.js';
+import { getSettings } from './js/store.js';
 // The build pass is where derivation lives. Imported statically HERE — this page is the one
 // surface whose whole job is briefs, and a Rebuild button that first fetches 60 KB would be
 // the wrong trade — but never from store-briefs.js, which the service worker reaches.
@@ -182,12 +183,14 @@ async function openBrief(id) {
     + `<p class="muted" style="margin:0 0 6px;font-size:12.5px">`
     + `Derived from your own records — every claim links to the one it came from. `
     + `<button id="b-ask" class="cite" type="button">Ask ChatPanel about this</button> `
-    + `<button id="b-sameas" class="cite" type="button" title="Fold this subject into another one">Same as…</button>`
+    + `<button id="b-sameas" class="cite" type="button" title="Fold this subject into another one">Same as…</button> `
+    + `<button id="b-synth" class="cite b-synth" type="button" title="Ask your model what these records establish — lands in Proposed, never directly in the brief">✦ Synthesise</button>`
     + `<span id="b-sameas-box" class="sameas hidden"></span></p>`
+    + (brief.summary ? `<div class="bsummary">${escapeHtml(brief.summary)}</div>` : '')
     + `<div class="bsec-head">What the records say</div>`
     + brief.claims.map((c) =>
       `<div class="claim claim-${c.kind}">`
-      + `<div><div class="claim-kind">${c.kind === 'stated' ? 'You told ChatPanel' : escapeHtml(c.kind)}</div>`
+      + `<div><div class="claim-kind">${c.kind === 'stated' ? 'You told ChatPanel' : c.cls === 'C' ? 'Synthesised · you accepted' : escapeHtml(c.kind)}</div>`
       + `<div class="claim-txt">${escapeHtml(c.text)}</div></div>`
       + `<div class="cites">${c.refs.map((r) => citeChip(r, drifted)).join('')}</div>`
       + `</div>`).join('')
@@ -208,6 +211,8 @@ async function openBrief(id) {
   if (ask) ask.onclick = () => askPanel(brief);
   const same = $('b-sameas');
   if (same) same.onclick = () => openSameAs(brief);
+  const synth = $('b-synth');
+  if (synth) synth.onclick = () => synthesise(brief, synth);
   hydrate(view);
   renderList();
 }
@@ -478,6 +483,119 @@ async function renderGraph() {
 }
 
 /**
+ * Synthesise: one model call, on the user's click, landing in the Proposed queue.
+ *
+ * Streams the claims as they arrive so the user watches the synthesis form. Never writes to
+ * the brief — accept() is the only path (I-K3), and it is a button on the Proposed tab.
+ */
+async function synthesise(brief, btn) {
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Thinking…';
+  const live = document.createElement('div');
+  live.className = 'synth-live';
+  btn.parentElement.after(live);
+  try {
+    const [{ synthesiseBrief }, settings, { records }] = await Promise.all([
+      import('./js/brief-synthesis.js'), getSettings(), loadCorpus(),
+    ]);
+    const out = await synthesiseBrief(brief.id, {
+      settings, records,
+      onPartial: (v) => {
+        const claims = v?.claims || [];
+        live.innerHTML = claims.length
+          ? `<div class="claim-kind">Forming…</div>${claims.map((c) => `<div class="synth-line">• ${escapeHtml(c.text || '')}</div>`).join('')}`
+          : '<div class="claim-kind">Reading the records…</div>';
+      },
+    });
+    live.remove();
+    if (!out || !out.proposal) {
+      const refused = out?.refused?.length || 0;
+      toast(refused
+        ? `The model proposed ${refused} claim${refused === 1 ? '' : 's'} it could not cite — refused. Nothing added.`
+        : 'The records establish nothing beyond what is already listed.');
+      return;
+    }
+    await updateProposedCount();
+    toast(`${out.proposal.claims.length} claim${out.proposal.claims.length === 1 ? '' : 's'} proposed${out.refused.length ? ` (${out.refused.length} refused for missing citations)` : ''} — review them under Proposed.`);
+  } catch (e) {
+    live.remove();
+    toast(`Could not synthesise: ${e?.message || e}`);
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
+}
+
+async function updateProposedCount() {
+  const n = (await pendingProposals()).length;
+  $('b-proposed-count').textContent = n ? `(${n})` : '';
+}
+
+/**
+ * The Proposed queue — the piece that makes the layer defensible rather than a liability.
+ * Each proposal shows a diff against what the brief says now, and accept/reject is one
+ * click, because a gate people avoid is a gate that gets switched off.
+ */
+async function renderProposed() {
+  const host = $('b-dash-proposed');
+  const pending = await pendingProposals();
+  await updateProposedCount();
+  if (!pending.length) {
+    host.innerHTML = '<div class="dash-empty">Nothing waiting. Open a brief and press <b>✦ Synthesise</b> to ask your model what its records establish — the answer lands here for you to accept or reject, never directly in the brief.</div>';
+    return;
+  }
+  const { diffProposal } = await import('./js/events/promotion.js');
+  host.innerHTML = '';
+  for (const p of pending) {
+    const brief = await getBrief(p.briefId);
+    const entry = index.find((e) => e.id === p.briefId);
+    const diff = brief ? diffProposal(brief, p) : p.claims.map((c) => ({ claim: c, replaces: null }));
+    const card = document.createElement('div');
+    card.className = 'proposal';
+    card.innerHTML =
+      `<div class="brief-head brow-head"><span class="brow-name">${escapeHtml(entry?.name || brief?.subject?.name || p.briefId)}</span>`
+      + `<span class="bkind ${entry?.kind || 'topic'}">${KIND_LABEL[entry?.kind] || ''}</span>`
+      + `<span class="brief-meta baka">proposed by ${escapeHtml(p.by)} · ${relDay(p.at)}${brief ? '' : ' · brief no longer exists'}</span></div>`
+      + (p.summary ? `<div class="bsummary">${escapeHtml(p.summary)}</div>` : '')
+      + diff.map((d) =>
+        `<div class="claim claim-synthesis">`
+        + `<div>${d.replaces ? `<div class="diff-del">− ${escapeHtml(d.replaces)}</div>` : ''}`
+        + `<div class="diff-add">+ ${escapeHtml(d.claim.text)}</div></div>`
+        + `<div class="cites">${(d.claim.refs || []).map((r) => `<button class="cite" type="button" data-kind="${escapeHtml(r.kind)}" data-id="${escapeHtml(r.id)}">${escapeHtml(r.kind)}:${escapeHtml(String(r.id).slice(0, 10))}</button>`).join('')}</div>`
+        + `</div>`).join('')
+      + `<div class="btns"><button class="btn primary" data-accept type="button">Accept</button>`
+      + `<button class="btn" data-reject type="button">Reject</button>`
+      + (brief ? `<button class="btn ghost" data-open type="button">Open brief</button>` : '') + `</div>`;
+    card.querySelector('[data-accept]').onclick = async () => {
+      if (!brief) { toast('That brief no longer exists — rebuild, then synthesise again.'); return; }
+      const { accept } = await import('./js/events/promotion.js');
+      const { brief: next, proposal } = accept(brief, p, { now: Date.now() });
+      await putProposal(proposal);
+      // The projection is rewritten with the promoted claims NOW, and writeBriefs re-applies
+      // the accepted proposal on every later rebuild, so this survives I-K2.
+      const { writeBriefs } = await import('./js/store-briefs.js');
+      const others = [];
+      for (const e of index) if (e.id !== next.id) { const b = await getBrief(e.id); if (b) others.push(b); }
+      await writeBriefs([...others, next]);
+      index = await getBriefIndex();
+      _maintCache = null;
+      toast(`Accepted — ${proposal.claims.length} claim${proposal.claims.length === 1 ? '' : 's'} now in the brief.`);
+      renderProposed();
+    };
+    card.querySelector('[data-reject]').onclick = async () => {
+      const { reject } = await import('./js/events/promotion.js');
+      await putProposal(reject(p, { now: Date.now() }));
+      toast('Rejected.');
+      renderProposed();
+    };
+    const open = card.querySelector('[data-open]');
+    if (open) open.onclick = () => openBrief(p.briefId);
+    for (const el of card.querySelectorAll('.cite[data-id]')) el.onclick = () => openRecord(`${el.dataset.kind}:${el.dataset.id}`);
+    host.appendChild(card);
+  }
+  hydrate(host);
+}
+
+/**
  * Maintenance — the W0 survey, made continuous.
  *
  * Every pass here is deterministic and free, which is the point: a model would "notice"
@@ -687,9 +805,11 @@ function wireMaintActions(host, suggestions) {
 function renderDash() {
   $('b-dash-stats').classList.toggle('hidden', dashTab !== 'stats');
   $('b-dash-graph').classList.toggle('hidden', dashTab !== 'graph');
+  $('b-dash-proposed').classList.toggle('hidden', dashTab !== 'proposed');
   $('b-dash-maint').classList.toggle('hidden', dashTab !== 'maint');
   if (dashTab === 'stats') renderStats();
   else if (dashTab === 'graph') renderGraph();
+  else if (dashTab === 'proposed') renderProposed();
   else renderMaint();
 }
 
@@ -769,6 +889,7 @@ async function init() {
   });
 
   await explainEmpty();
+  updateProposedCount().catch(() => {});
   const id = decodeURIComponent(location.hash.slice(1));
   if (id && index.some((e) => e.id === id)) await openBrief(id);
   else showDash();

@@ -166,7 +166,11 @@ const BUDGET = {
   // pages import. That split is worth 90 KB: importing editDistance from voice-intents.js
   // (79 KB, plus structured.js at 41 KB) for forty lines of arithmetic was the first draft,
   // and events/distance.js exists because of it.
-  'background.js': 560,
+  // 560 → 566 for the proposals store in js/store-briefs.js. The worker never accepts a
+  // proposal, but writeBriefs — which the worker's graph reaches through the store — is where
+  // an accepted synthesis is re-applied on every rebuild, so promoted class-C claims survive
+  // I-K2. That re-apply is the whole reason reviewing is not pointless.
+  'background.js': 566,
 };
 
 function staticGraph(entry) {

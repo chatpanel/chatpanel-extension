@@ -46,11 +46,13 @@
           <div class="dash-tabs seg" role="tablist" aria-label="Dashboard view">
             <button data-dash="stats" class="active" type="button" role="tab" data-icon="chart">Overview</button>
             <button data-dash="graph" type="button" role="tab" data-icon="graph">Subject graph</button>
+            <button data-dash="proposed" type="button" role="tab" data-icon="sparkles">Proposed <span id="b-proposed-count" class="count"></span></button>
             <button data-dash="maint" type="button" role="tab" data-icon="wrench">Maintenance <span id="b-maint-count" class="count"></span></button>
           </div>
           <div class="dash-body">
             <div id="b-dash-stats" class="dash-pane" role="tabpanel"></div>
             <div id="b-dash-graph" class="dash-pane graph-host big hidden" role="tabpanel"></div>
+            <div id="b-dash-proposed" class="dash-pane hidden" role="tabpanel"></div>
             <div id="b-dash-maint" class="dash-pane hidden" role="tabpanel"></div>
           </div>
         </div>

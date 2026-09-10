@@ -300,3 +300,86 @@ console.log('briefs identity tests passed');
 }
 
 console.log('briefs surface guards passed');
+
+// ── W3: synthesis behind the gate, and the gate surviving a rebuild ──────────
+// The wiki layer is only defensible if nothing self-promotes (I-K3) AND a rebuild cannot
+// erase what the user accepted (I-K2). Those pull in opposite directions — a projection is
+// thrown away; a decision is not — and the proposals store is where they meet.
+{
+  const { propose, accept, reject } = await import('../extension/js/events/promotion.js');
+  const { claimsFromSynthesis } = await import('../extension/js/events/synthesis.js');
+
+  const NOW3 = Date.UTC(2026, 8, 11);
+  const recs = Array.from({ length: 6 }, (_, i) => ({
+    id: `meeting:s${i}`, type: 'meeting', title: `Atlas sync ${i}`, date: NOW3 - i * day,
+    text: 'cutover discussion', meta: { people: ['Jordan Blake'], terms: ['atlas'] },
+  }));
+  await store.saveBriefSettings({ selfName: '' });
+  await build.rebuildBriefs(recs, { now: NOW3 });
+  const atlas = (await store.getBriefIndex()).find((e) => e.name === 'atlas');
+  assert.ok(atlas, 'the topic earned a page');
+  const before = await store.getBrief(atlas.id);
+  const rBefore = before.claims.length;
+
+  // A model's answer → class-C claims, born proposed. One cites a record it was not shown.
+  const { claims, refused } = claimsFromSynthesis({
+    claims: [
+      { text: 'Cutover moved from Q3 to Q4 after the load test.', refs: ['meeting:s0'] },
+      { text: 'Made up.', refs: ['meeting:nope'] },
+    ],
+    summary: 'Atlas is moving to Q4.',
+  }, { knownIds: new Set(recs.map((r) => r.id)), now: NOW3 });
+  assert.equal(claims.length, 1); assert.equal(refused.length, 1);
+  assert.equal(claims[0].state, 'proposed');
+
+  // It sits in the queue and the brief is untouched — nothing self-promotes.
+  const proposal = propose({ briefId: atlas.id, claims, summary: 'Atlas is moving to Q4.', by: 'test-model', now: NOW3 });
+  await store.putProposal(proposal);
+  assert.equal((await store.pendingProposals()).length, 1);
+  assert.equal((await store.getBrief(atlas.id)).claims.length, rBefore, 'proposing must not touch the brief');
+
+  // Accept is the ONLY path in, and it writes the promoted claim.
+  const { brief: next, proposal: settled } = accept(before, proposal, { now: NOW3 + 1 });
+  await store.putProposal(settled);
+  await store.writeBriefs([next], { now: NOW3 + 1 });
+  const after = await store.getBrief(atlas.id);
+  assert.equal(after.claims.length, rBefore + 1);
+  assert.equal(after.claims.at(-1).cls, 'C');
+  assert.equal(after.claims.at(-1).state, 'promoted');
+  assert.equal(after.summary, 'Atlas is moving to Q4.');
+  assert.equal((await store.pendingProposals()).length, 0, 'accepted leaves the queue');
+
+  // THE TEST THAT MATTERS: a full rebuild re-derives the brief from records — and the
+  // accepted synthesis is still there, because it is an input, not an edit.
+  await build.rebuildBriefs(recs, { now: NOW3 + 2 });
+  const rebuilt = await store.getBrief(atlas.id);
+  assert.ok(rebuilt.claims.some((c) => c.cls === 'C' && c.state === 'promoted' && /Q4/.test(c.text)),
+    'an accepted synthesis must survive a rebuild — otherwise reviewing was pointless');
+  assert.equal(rebuilt.summary, 'Atlas is moving to Q4.');
+  // …and exactly once, not once per rebuild.
+  await build.rebuildBriefs(recs, { now: NOW3 + 3 });
+  assert.equal((await store.getBrief(atlas.id)).claims.filter((c) => c.cls === 'C').length, 1, 'accepted claims must not duplicate across rebuilds');
+
+  // A rejected proposal is never re-applied.
+  const p2 = propose({ briefId: atlas.id, claims: claimsFromSynthesis({ claims: [{ text: 'Wrong.', refs: ['meeting:s1'] }] }, { knownIds: new Set(recs.map((r) => r.id)), now: NOW3 }).claims, now: NOW3 + 4 });
+  await store.putProposal(reject(p2, { now: NOW3 + 5, why: 'no' }));
+  await build.rebuildBriefs(recs, { now: NOW3 + 6 });
+  assert.ok(!(await store.getBrief(atlas.id)).claims.some((c) => c.text === 'Wrong.'));
+}
+
+// The surface: synthesis is a click, it is deferred, and it lands in the queue.
+{
+  const page = read('extension/briefs.js');
+  assert.match(page, /import\('\.\/js\/brief-synthesis\.js'\)/, 'synthesis is await import()ed at the click — it reaches events/structured.js');
+  assert.ok(!/^import .* from '\.\/js\/brief-synthesis\.js'/m.test(page), 'and never statically');
+  assert.match(page, /await import\('\.\/js\/events\/promotion\.js'\)/, 'accept/reject go through promotion.js — the only path to promoted');
+  const synth = read('extension/js/brief-synthesis.js');
+  assert.match(synth, /claimsFromSynthesis\(/, 'the model\'s answer is read through the schema parser, which refuses uncited claims');
+  assert.match(synth, /propose\(/, 'and lands as a proposal');
+  assert.ok(!/accept\(/.test(synth), 'the synthesis path must not be able to accept its own work');
+  assert.match(synth, /slice\(0, MAX_EXCERPTS\)/, 'the call is bounded — I-K4');
+  const html = read('extension/briefs.html');
+  assert.match(html, /data-dash="proposed"/, 'the Proposed queue is a tab');
+}
+
+console.log('briefs synthesis gate tests passed');

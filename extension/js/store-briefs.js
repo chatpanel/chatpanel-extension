@@ -39,6 +39,42 @@ export const briefKey = (id) => `chatpanel:brief:${id}`;
  * because the right number depends on how dense one person's corpus is, and there is no
  * single answer that suits both a first week and three years.
  */
+export const PROPOSALS_KEY = 'chatpanel:briefProposals';
+
+/**
+ * Synthesis proposals — the Proposed queue, and the record of what was accepted.
+ *
+ * Stored SEPARATELY from the briefs for the same reason merges are: a brief is a projection
+ * that rebuildBriefs() throws away (I-K2), and a decision the user made is not. A proposal
+ * survives the rebuild in the queue; an ACCEPTED one is re-applied to the re-derived brief on
+ * every rebuild, so promoted synthesis is an input to derivation rather than an edit that the
+ * next pass erases. That is what lets I-K2 and I-K3 both hold at once.
+ */
+export async function getProposals() {
+  const stored = await readStoredJSON(PROPOSALS_KEY);
+  return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+}
+
+export async function putProposal(proposal) {
+  if (!proposal?.id) throw new TypeError('putProposal: id required');
+  const all = await getProposals();
+  all[proposal.id] = proposal;
+  await chrome.storage.local.set({ [PROPOSALS_KEY]: await encryptJSON(all) });
+  return proposal;
+}
+
+/** Pending proposals, newest first — the queue. */
+export async function pendingProposals() {
+  return Object.values(await getProposals()).filter((p) => p.state === 'proposed').sort((a, b) => (b.at || 0) - (a.at || 0));
+}
+
+/** Accepted proposals for one brief, in acceptance order — what a rebuild re-applies. */
+export async function acceptedProposalsFor(briefId) {
+  return Object.values(await getProposals())
+    .filter((p) => p.state === 'accepted' && p.briefId === briefId)
+    .sort((a, b) => (a.settledAt || 0) - (b.settledAt || 0));
+}
+
 export const DEFAULT_BRIEF_SETTINGS = Object.freeze({
   enabled: true,
   minRecords: DEFAULT_THRESHOLD.records,
@@ -171,6 +207,25 @@ export async function loadBriefRecords() {
  * rebuild, kept here so every chrome.storage key this module owns is written in one file.
  */
 export async function writeBriefs(briefs, { now = Date.now() } = {}) {
+  // Re-apply what the user accepted. Derivation produced class-R claims from the records;
+  // the promoted class-C claims live in accepted proposals, and a rebuild that dropped them
+  // would teach the user that reviewing was pointless. Same idea as merges, one layer up.
+  const accepted = Object.values(await getProposals()).filter((p) => p.state === 'accepted');
+  if (accepted.length) {
+    const byBrief = new Map();
+    for (const p of accepted) { if (!byBrief.has(p.briefId)) byBrief.set(p.briefId, []); byBrief.get(p.briefId).push(p); }
+    briefs = briefs.map((b) => {
+      const mine = (byBrief.get(b.id) || []).sort((x, y) => (x.settledAt || 0) - (y.settledAt || 0));
+      if (!mine.length) return b;
+      // By claim id, so this is idempotent: a fresh rebuild carries no class-C claims and
+      // gets them once; a page-accept that already appended them gets nothing twice.
+      const have = new Set(b.claims.map((c) => c.id));
+      const promoted = mine.flatMap((p) => p.claims.filter((c) => !have.has(c.id)).map((c) => ({ ...c, state: 'promoted' })));
+      if (!promoted.length && !mine.some((p) => p.summary)) return b;
+      const summary = [...mine].reverse().find((p) => p.summary)?.summary || b.summary || '';
+      return { ...b, claims: [...b.claims, ...promoted], summary };
+    });
+  }
   const previous = await getBriefIndex();
   const keep = new Set(briefs.map((b) => b.id));
   // Drop the bodies of briefs the corpus no longer earns BEFORE writing the new ones, so a
