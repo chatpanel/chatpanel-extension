@@ -9545,6 +9545,11 @@ function wireEvents() {
   $('history-close').onclick = () => { historyView.renderToken += 1; $('history').classList.add('hidden'); };
   $('history-expand').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('history.html') });
   $('btn-notes').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('notes.html') });
+  // Briefs needs its own way in. It reaches a TURN through retrieval (decision K2 — briefs
+  // are a corpus, and ambient is what events/memory.js is for), which means the panel never
+  // shows one until a question happens to want it. Without a button, the whole derived layer
+  // is invisible from the surface people actually live in.
+  $('btn-briefs').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('briefs.html') });
   $('history-search').oninput = (e) => { historyView.page = 1; renderHistory(e.target.value); };
   $('history-modes').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-mode]');
