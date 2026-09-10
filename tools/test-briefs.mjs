@@ -378,6 +378,16 @@ console.log('briefs surface guards passed');
   assert.match(synth, /propose\(/, 'and lands as a proposal');
   assert.ok(!/accept\(/.test(synth), 'the synthesis path must not be able to accept its own work');
   assert.match(synth, /slice\(0, MAX_EXCERPTS\)/, 'the call is bounded — I-K4');
+  // One target was ERR_CONNECTION_REFUSED on a local model that was not running, for a
+  // feature with four other configured models. The ladder is the fix; the active agent
+  // leads it whatever its kind, because a synthesis answers with the model the user picked.
+  assert.match(synth, /runStructured\(\{ candidates, chain,/, 'synthesis rides the candidate ladder + fallback chain, not one target');
+  const ladder = synth.slice(synth.indexOf('export function synthesisCandidates('), synth.indexOf('function describeTarget('));
+  assert.ok(ladder.indexOf('settings?.activeAgentId') < ladder.indexOf('settings?.endpoints'), 'the active agent is tried first');
+  // `kind !== 'bridge' && !t.model` is the no-model guard, not a demotion; the demotion
+  // suggestions.js applies is `active.kind === 'bridge'` pushed to the end — must be absent.
+  assert.ok(!/active\.kind === 'bridge'/.test(ladder), 'and is not demoted for being a bridge CLI — Codex is a valid choice');
+  assert.match(synth, /tried: candidates\.map\(describeTarget\)/, 'a null answer names what was asked, so "nothing new" and "nobody answered" are both sayable');
   const html = read('extension/briefs.html');
   assert.match(html, /data-dash="proposed"/, 'the Proposed queue is a tab');
 }

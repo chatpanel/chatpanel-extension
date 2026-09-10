@@ -66,12 +66,12 @@ function escapeHtml(s) {
 }
 
 let toastTimer = null;
-function toast(msg) {
+function toast(msg, ms = 2600) {
   const el = $('b-toast');
   el.textContent = msg;
   el.classList.remove('hidden');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.add('hidden'), 2600);
+  toastTimer = setTimeout(() => el.classList.add('hidden'), ms);
 }
 
 function relDay(ms) {
@@ -510,9 +510,10 @@ async function synthesise(brief, btn) {
     live.remove();
     if (!out || !out.proposal) {
       const refused = out?.refused?.length || 0;
+      const tried = out?.tried?.length ? ` (asked ${out.tried[0]}${out.tried.length > 1 ? ` and ${out.tried.length - 1} fallback${out.tried.length > 2 ? 's' : ''}` : ''})` : '';
       toast(refused
         ? `The model proposed ${refused} claim${refused === 1 ? '' : 's'} it could not cite — refused. Nothing added.`
-        : 'The records establish nothing beyond what is already listed.');
+        : `Nothing new — either the records establish nothing beyond what is listed, or no model could answer${tried}.`, 4200);
       return;
     }
     await updateProposedCount();
