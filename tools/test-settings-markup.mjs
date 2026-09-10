@@ -131,7 +131,10 @@ assert.match(workspace, /id="memory-enabled"/, 'memory can be turned off');
 assert.match(workspace, /id="memory-offers"/, 'the "remember this?" offers can be turned off separately');
 assert.match(workspace, /id="memory-list"/, 'stored memories are listed');
 assert.match(workspace, /id="memory-clear"/, 'and can all be forgotten');
-assert.match(js, /confirm\(`Forget all/, 'forgetting everything is confirmed — nothing can rebuild it');
+assert.match(js, /confirmDelete\(\{\s*\n\s*title: `Forget all/, 'forgetting everything is confirmed — nothing can rebuild it');
+// The BRANDED dialog, never the OS box: prompt()/confirm() are unstyled, say "The extension
+// ChatPanel says", and in a panel may not appear at all. See tools/test-prompt-modal.mjs.
+assert.match(js, /promptText\(\{[\s\S]{0,200}?title: 'Remember something'/, 'adding a memory asks in a ChatPanel dialog');
 assert.match(js, /text\.onblur = async \(\) => \{/, 'each memory is editable in place');
 assert.match(js, /createElement\('textarea'\)[\s\S]{0,400}mem-text/, 'memory text is a textarea — shown in full, never truncated to one line');
 

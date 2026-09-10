@@ -548,7 +548,12 @@ function setupMemoryPrefs() {
       if (!all.length) return;
       // Irreversible and unrecoverable — memory is the one store with no source to rebuild
       // it from, so this is the one place a confirm is worth the friction.
-      if (!confirm(`Forget all ${all.length} memories? This cannot be undone.`)) return;
+      const { confirmDelete } = await import('./js/confirm-modal.js');
+      if (!(await confirmDelete({
+        title: `Forget all ${all.length} memories?`,
+        body: 'Everything ChatPanel knows about you is deleted. There is no source to rebuild it from, so this cannot be undone.',
+        confirmLabel: 'Forget all',
+      }))) return;
       await clearAllMemories();
       renderMemories();
     };
@@ -644,13 +649,32 @@ function memoryRow(m, { MEMORY_KINDS, MEMORY_KIND_NAMES, MAX_MEMORY_CHARS, forge
 }
 
 async function addMemoryRow() {
-  const text = prompt('What should ChatPanel remember about you?\n\nOne short sentence, e.g. “Prefers terse answers with no preamble”.');
-  if (!text?.trim()) return;
+  // The branded modal, never native prompt(): this asks for something the model will repeat
+  // back for months, so it gets the kind picker, the character budget and the example that an
+  // OS text box cannot show — and it works in the side panel, where prompt() does not.
+  const [{ promptText }, { MEMORY_KINDS, MEMORY_KIND_NAMES, MAX_MEMORY_CHARS, MIN_MEMORY_CHARS, rememberMemory }] =
+    await Promise.all([import('./js/confirm-modal.js'), memoryModule()]);
+  const res = await promptText({
+    title: 'Remember something',
+    body: 'One short sentence about you, written the way you’d want it repeated back. It goes to every agent, on every conversation.',
+    label: 'Memory',
+    placeholder: 'Prefers terse answers with no preamble',
+    hint: 'Enter to save',
+    confirmLabel: 'Remember',
+    multiline: true,
+    maxLength: MAX_MEMORY_CHARS,
+    minLength: MIN_MEMORY_CHARS,
+    choice: {
+      label: 'Kind',
+      value: 'preference',
+      options: MEMORY_KIND_NAMES.map((k) => ({ value: k, label: MEMORY_KINDS[k].label, hint: MEMORY_KINDS[k].hint })),
+    },
+  });
+  if (!res) return;
   try {
-    const { rememberMemory } = await memoryModule();
-    await rememberMemory({ text: text.trim(), kind: 'preference', source: { via: 'user', surface: 'settings' } });
+    await rememberMemory({ text: res.text, kind: res.choice, source: { via: 'user', surface: 'settings' } });
   } catch (e) {
-    alert(e.message || 'Could not save that memory.');
+    toast(e.message || 'Could not save that memory.');
   }
   renderMemories();
 }
@@ -2994,10 +3018,18 @@ async function renameSavedVoice(id, current) {
   const url = normalizeGatewayUrl($('gw-url').value);
   const st = $('gw-tts-voice-status');
   if (!url || !id) return;
-  const next = prompt('Rename this voice', current || '');
-  if (next === null) return;                       // cancelled
-  const clean = next.trim();
-  if (!clean || clean === current) return;
+  const { promptText } = await import('./js/confirm-modal.js');
+  const res = await promptText({
+    title: 'Rename this voice',
+    label: 'Voice name',
+    placeholder: 'My voice',
+    value: current || '',
+    confirmLabel: 'Rename',
+    maxLength: 60,
+  });
+  if (!res) return;                                // cancelled
+  const clean = res.text;
+  if (clean === current) return;
   try {
     await updateTtsVoice(url, { id, name: clean });
     st.className = 'status ok'; st.textContent = `✓ Renamed to "${clean}"`;
@@ -3012,7 +3044,11 @@ async function deleteSavedVoice(id, name) {
   if (!url || !id) return;
   // A voice print is about a person. Deleting it is permanent, so it is confirmed
   // and said plainly.
-  if (!confirm(`Delete the voice "${name}"? The voice print is removed from this machine permanently.`)) return;
+  const { confirmDelete } = await import('./js/confirm-modal.js');
+  if (!(await confirmDelete({
+    title: `Delete the voice “${name}”?`,
+    body: 'The voice print is removed from this machine permanently.',
+  }))) return;
   try {
     await deleteTtsVoice(url, id);
     st.className = 'status ok'; st.textContent = '✓ Deleted';

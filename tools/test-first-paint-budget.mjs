@@ -69,21 +69,18 @@ const BUDGET = {
   // which is a bad way to learn about a budget. The engines themselves are still
   // pinned OFF this graph in OFF_LIMITS, so what grew is client plumbing, not the
   // deferral leaking.
-  // 820 → 832. The derived layer put NOTHING on this graph — briefs reach a turn through
-  // retrieval, so the panel never imports them. What landed is ~3.7 KB: the NER label map in
-  // js/pii-detect.js (the ai4privacy vocabulary the active model actually speaks, without
-  // which person names went to the model in plaintext) and the Briefs button plus its
-  // composer handoff. The remaining ~8 KB of headroom is unrelated in-flight growth in
-  // js/confirm-modal.js — RE-TIGHTEN THIS to ~824 when that work lands and can carry its own
-  // budget decision, or the ratchet stops turning.
-  // 832 → 836 for the redaction preview's four states. It is ~2 KB of branches and copy in a
-  // panel that had one state and a bare `catch {}`, and every KB of it is a case where the
-  // shield was lit and nothing was being redacted — a silent privacy indicator is worth more
-  // than the bytes.
-  // 836 → 840 for the render-boundary placeholder scrub. Redaction is for the model's
-  // benefit, so a [[PERSON_5]] reaching the screen is always a bug — and not every path has
-  // a vault to restore against (a local agent under "redact for remote only" has none),
-  // which is why the guarantee has to sit at the one call every path ends at.
+  // 820 → 828 for promptText in js/confirm-modal.js — the branded ask-for-a-line dialog that
+  // replaces native prompt(), which puts up an OS box titled "The extension ChatPanel says"
+  // and is refused outright in a side panel, turning the button that called it into a dead
+  // one. It is on this graph because the panel is where it is needed most.
+  // 828 → 832 for the derived layer's share, which put NOTHING structural on this graph —
+  // briefs reach a turn through retrieval — only the NER label map in js/pii-detect.js and
+  // the Briefs button plus its composer handoff (~3.7 KB together).
+  // 832 → 836 for the redaction preview's four states: ~2 KB of branches and copy in a panel
+  // that had one state and a bare `catch {}`, every KB of it a case where the shield was lit
+  // and nothing was being redacted.
+  // 836 → 840 for the render-boundary placeholder scrub — not every path has a vault to
+  // restore against, so the guarantee sits at the one call every path ends at.
   'sidepanel.js': 840,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat

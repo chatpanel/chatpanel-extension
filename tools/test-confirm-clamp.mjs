@@ -24,9 +24,15 @@ assert.match(modal, /const bodyText = clamp\(body, MAX_BODY\);/, 'and so must th
 // Clamping at the ONE place, not at a dozen call sites that will not remember. Both fields
 // go through the same helper — the side panel's dialog was unbounded while the history
 // dashboard's had its own private truncation, which is exactly how one of them got missed.
-assert.equal((modal.match(/clamp\(title|clamp\(body/g) || []).length, 2, 'title and body both clamped');
+// EVERY dialog in the module, not just the first one written: the destructive confirm, the
+// passphrase ask and the text prompt each clamp both fields. A new dialog that forgets is
+// exactly how the side panel got a card taller than the viewport the first time.
+const dialogs = (modal.match(/^export function /gm) || []).length;
+assert.equal((modal.match(/clamp\(title, MAX_TITLE\)/g) || []).length, dialogs, 'every dialog clamps its title');
+assert.equal((modal.match(/clamp\(body, MAX_BODY\)/g) || []).length, dialogs, 'and its body');
 assert.doesNotMatch(modal, /t\.textContent = title;/, 'nothing may bypass it');
 assert.doesNotMatch(modal, /b\.textContent = body;/, 'nor for the body');
+assert.doesNotMatch(modal, /\.textContent = title;/, 'nor in any other dialog');
 // The full text stays reachable rather than being destroyed.
 assert.match(modal, /b\.title = String\(body\)/, 'the untruncated text belongs on hover');
 

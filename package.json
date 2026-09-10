@@ -75,6 +75,7 @@
     "test:alert-sound": "node tools/test-alert-sound.mjs",
     "test:job-visibility": "node tools/test-job-visibility.mjs",
     "test:confirm-clamp": "node tools/test-confirm-clamp.mjs",
+    "test:prompt-modal": "node tools/test-prompt-modal.mjs",
     "test:monitor-profile": "node tools/test-monitor-profile.mjs",
     "test:voice-refinement": "node tools/test-voice-refinement.mjs",
     "test:scribe-cadence": "node tools/test-scribe-cadence.mjs",

@@ -150,9 +150,11 @@ function loopSrc() { return read('js/voice-loop.js'); }
   }
   assert.match(settings, /\$\('gw-tts-record'\)\.onclick/, 'the record control must be wired');
   assert.match(settings, /refreshTtsVoices\(\)/, 'the saved-voice list must load with the rest of the section');
+  // Renaming asks in the same dialog everything else does — never a native prompt().
+  assert.match(settings, /promptText\(\{[\s\S]{0,120}?Rename this voice/, 'renaming a voice asks in the branded dialog');
 
   // Deleting someone's voice print is permanent, so it must be confirmed.
-  assert.match(settings, /confirm\(/, 'deleting a voice print must ask first');
+  assert.match(settings, /confirmDelete\(\{[\s\S]{0,120}?Delete the voice/, 'deleting a voice print must ask first, in the branded dialog');
   assert.match(settings, /permanently/i, 'and must say that it is permanent');
 
   // The recorder touches getUserMedia and an AudioContext; it must stay lazy.

@@ -218,8 +218,19 @@ export function mountArtifacts(root) {
         const suggested = /<title>([^<]{1,60})<\/title>/i.exec(html)?.[1]?.trim()
           || (html.match(/<h1[^>]*>([^<]{1,60})<\/h1>/i)?.[1]?.trim())
           || 'My widget';
-        const name = prompt('Keep this widget as:', suggested);
-        if (!name) return;
+        // The branded modal, not native prompt() — which the side panel cannot be trusted
+        // to show at all, making "Keep" look like a dead button.
+        const { promptText } = await import('./confirm-modal.js');
+        const kept = await promptText({
+          title: 'Keep this widget',
+          body: 'It lands in your Widgets pane. Keeping grants it nothing — you approve any capabilities there, later.',
+          label: 'Name',
+          value: suggested,
+          confirmLabel: 'Keep',
+          maxLength: 64,
+        });
+        if (!kept) return;
+        const name = kept.text;
         try {
           const { saveWidget, setWidgetState } = await import('./widgets-store.js');
           const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64) || `widget-${Date.now()}`;
