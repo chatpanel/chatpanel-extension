@@ -217,6 +217,42 @@ export function noteActionItems(order = NOTE_ACTION_ORDER) {
     .map((k) => ({ key: k, label: NOTE_ACTIONS[k].label, hint: NOTE_ACTIONS[k].hint }));
 }
 
+/** How much of the note rides along with a command — bounds the tokens, not the meaning. */
+export const NOTE_CONTEXT_MAX_CHARS = 4000;
+
+/**
+ * The note itself (minus the command line) as grounding for an `@command` or `@[Agent]` task.
+ *
+ * "Summarize above", "action items for this meeting", "translate that" — the instruction
+ * points at the document it sits in, and a model given only the instruction answers that
+ * there is nothing to summarize. So the note travels with the task: everything before the
+ * line (`head`) and after it (`tail`), the title when there is one, and a preface telling
+ * the model to resolve references — a date, a [[wikilink]], a meeting link's #id — against
+ * THIS text rather than free-searching history for a guess.
+ *
+ * Capped at `max` characters so a long note cannot blow the budget; the client's redaction
+ * harness sees it like any other user turn. An empty note yields '' — there is nothing to
+ * ground in, and a frame around nothing would only cost tokens.
+ */
+export function noteCommandContext(head, tail, { title = '', max = NOTE_CONTEXT_MAX_CHARS } = {}) {
+  const body = `${head ?? ''}\n${tail ?? ''}`.replace(/\n{3,}/g, '\n\n').trim();
+  if (!body) return '';
+  const clipped = body.length > max ? `${body.slice(0, max)}\n…(note truncated)` : body;
+  const t = String(title || '').trim();
+  return `The note I'm editing${t ? ` (title: "${t}")` : ''} is below. Resolve any reference in my instruction — "this meeting", "above", a date, a name, a [[wikilink]] or a URL (a meeting link's #id identifies that exact meeting) — against THIS note, not a guess. If a tool lets you fetch something referenced here by id, use that id.\n\n"""\n${clipped}\n"""`;
+}
+
+/**
+ * The user turn for a command: the grounding (when there is any) and then the instruction,
+ * separated so the model cannot mistake the note for the ask. One function, because the
+ * separator is part of the contract — a client that joined them with a different rule
+ * would get a different answer from the same note.
+ */
+export function groundedInstruction(instruction, context) {
+  const ask = String(instruction ?? '');
+  return context ? `${context}\n\n---\nInstruction: ${ask}` : ask;
+}
+
 function clamp(n, lo, hi) {
   const x = Number.isFinite(n) ? n : lo;
   return Math.max(lo, Math.min(hi, x));

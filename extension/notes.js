@@ -3112,16 +3112,15 @@ async function persistJobBody(job) {
 }
 
 // The note itself (minus the command line) as grounding context, so an instruction
-// like "action items for this meeting" resolves against what's ACTUALLY in the note —
-// a linked meeting's #id, a date, a [[wikilink]] — instead of the model free-searching
-// history and grabbing the wrong one. Capped to bound tokens; redacted by the harness.
-function noteCommandContext(head, tail) {
-  const body = `${head}\n${tail}`.replace(/\n{3,}/g, '\n\n').trim();
-  if (!body) return '';
-  const MAX = 4000;
-  const clipped = body.length > MAX ? `${body.slice(0, MAX)}\n…(note truncated)` : body;
-  const title = (current?.title || '').trim();
-  return `The note I'm editing${title ? ` (title: "${title}")` : ''} is below. Resolve any reference in my instruction — "this meeting", a date, a name, a [[wikilink]] or a URL (a meeting link's #id identifies that exact meeting) — against THIS note, not a guess. If a tool lets you fetch something referenced here by id, use that id.\n\n"""\n${clipped}\n"""`;
+// like "action items for this meeting" or "summarize above" resolves against what's
+// ACTUALLY in the note — a linked meeting's #id, a date, a [[wikilink]], the table above —
+// instead of the model free-searching history and grabbing the wrong one. The frame is
+// @chatpanel/events/note-actions.js (`noteCommandContext` + `groundedInstruction`), shared
+// with the desktop so the two clients ground a task the same way; the note is capped there
+// to bound tokens and redacted by the harness like any other user turn.
+async function noteCommandContext(head, tail) {
+  const na = await preloadNoteActions();
+  return na.noteCommandContext(head, tail, { title: current?.title || '' });
 }
 
 // The OTHER configured agents that are participating in THIS note — detected by their
@@ -3243,7 +3242,7 @@ async function runNoteJob({
   try { redaction = deps.buildRedaction({ settings, license }); } catch { /* redaction off */ }
   job.tools = (tools?.specs || []).map((s) => s.name).filter(Boolean);
   job.redacted = !!redaction;
-  const noteCtx = noteCommandContext(head, tail); // ground in the note's own content
+  const noteCtx = await noteCommandContext(head, tail); // ground in the note's own content
 
   noteJobs.set(job.id, job);
   recordActivity(job);
@@ -3267,7 +3266,7 @@ async function runNoteJob({
       signal: job.abort.signal,
       tools,
       redaction,
-      messages: [{ role: 'user', content: noteCtx ? `${noteCtx}\n\n---\nInstruction: ${instruction}` : instruction }],
+      messages: [{ role: 'user', content: _na.groundedInstruction(instruction, noteCtx) }],
       onDelta: (d) => {
         job.out += d; job.status = 'writing'; job.statusText = 'writing…';
         if (region) {
