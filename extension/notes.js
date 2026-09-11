@@ -2333,13 +2333,17 @@ async function agentDeps() {
 // The model-router bridge (SWARM_ROLES / swarmCandidates / roleAgent / getRouter) lives
 // in js/notes-swarm-router.js — a portable, DI'd primitive with no editor state.
 
-const AGENT_ACTION_LABEL = { continue: 'Continue writing', summarize: 'Summarize', tasks: 'Turn into tasks', improve: 'Improve writing' };
-const AGENT_SPECS = {
-  continue: { sys: "You are a writing assistant continuing the user's note. Match their voice, tone and markdown style, and continue naturally from where the text stops. Output ONLY the continuation — no preamble, no repeating prior text.", max: 700 },
-  summarize: { sys: 'Summarize the text concisely in GitHub-flavored markdown — a few tight bullets or a short paragraph. Output ONLY the summary.', max: 500 },
-  tasks: { sys: 'Convert the text into a GitHub-flavored markdown checklist: one actionable item per line as "- [ ] item". Output ONLY the checklist.', max: 700 },
-  improve: { sys: 'Rewrite the text to be clearer and more concise while preserving its meaning, tone and markdown formatting. Output ONLY the rewritten text.', max: 1000 },
-};
+// The prompts, the frame an answer lands in (head · output · tail), the `@command` grammar
+// and the `/` and `@` triggers are @chatpanel/events/note-actions.js — the same module the
+// desktop reads, so the two clients cannot ask a model different things for one button.
+// Loaded at idle like the authoring gestures: it is not on first paint, and it is resolved
+// long before anyone has typed an `@table …` line. Until it lands the triggers return null,
+// which is the correct degradation (the palette simply does not open yet).
+let _na = null;
+function preloadNoteActions() {
+  if (_na) return Promise.resolve(_na);
+  return import('./js/events/note-actions.js').then((m) => { _na = m; return m; });
+}
 
 let agentAbort = null;
 function setAgentBusy(busy) {
@@ -2354,19 +2358,17 @@ function closeAgentMenu() { $('n-agent-menu').classList.add('hidden'); }
 async function runAgentAction(kind) {
   closeAgentMenu();
   if (!current || agentAbort) return;
-  const spec = AGENT_SPECS[kind];
+  const na = await preloadNoteActions();
+  const spec = na.NOTE_ACTIONS[kind];
+  if (!spec) return;
   const ta = $('n-body');
   const body = bodyText(); // synced from CM when Live is active
   const { start: s0, end: s1 } = bodySel();
-  const sel = body.slice(s0, s1);
 
-  // Frame WHERE the streamed output lands (head + output + tail) per action.
-  let target, head, tail;
-  if (kind === 'continue') { target = body; head = body + (body && !/\s$/.test(body) ? '\n\n' : ''); tail = ''; }
-  else if (kind === 'summarize') { target = sel || body; head = body.replace(/\s+$/, '') + '\n\n## Summary\n\n'; tail = ''; }
-  else if (kind === 'tasks') { if (!sel.trim()) return toast('Select some text to turn into tasks'); target = sel; head = body.slice(0, s0); tail = body.slice(s1); }
-  else if (kind === 'improve') { target = sel || body; if (sel) { head = body.slice(0, s0); tail = body.slice(s1); } else { head = ''; tail = ''; } }
-  if (!target || !target.trim()) return toast('Nothing to work with yet');
+  // WHERE the streamed output lands (head + output + tail) is decided by the shared frame.
+  const frame = na.frameNoteAction(kind, body, s0, s1);
+  if (frame.error) return toast(frame.error === 'select' ? 'Select some text to turn into tasks' : na.NOTE_ACTION_ERRORS[frame.error]);
+  const { target, head, tail } = frame;
 
   let deps;
   try { deps = await agentDeps(); } catch { return toast('Agent unavailable'); }
@@ -2393,7 +2395,7 @@ async function runAgentAction(kind) {
   render(); // show the placeholder immediately so it's clear something is happening
   try {
     await deps.streamChat({
-      agent: { ...resolved, systemPrompt: spec.sys, maxTokens: spec.max, temperature: 0.5 },
+      agent: { ...resolved, systemPrompt: spec.system, maxTokens: spec.maxTokens, temperature: na.NOTE_ACTION_TEMPERATURE },
       settings,
       signal: agentAbort.signal,
       messages: [{ role: 'user', content: target }],
@@ -2416,7 +2418,7 @@ async function runAgentAction(kind) {
         // note normalizes back to "You", so the history reads "You 100%" for AI-written text.
         const author = targetAgent.name || resolved.model || resolved.bridgeAgent || 'AI';
         recordEdit({ author, discrete: true });
-        pushVersion(author, `${AGENT_ACTION_LABEL[kind] || kind} · ${author}`);
+        pushVersion(author, `${na.noteActionLabel(kind)} · ${author}`);
       }
       current.body = finalBody;
       autoGrow();
@@ -2695,7 +2697,7 @@ async function maybeAutocomplete() {
     ac.mode = 'cmd';
     ac.range = at;
     const q = at.word.toLowerCase();
-    const cmds = NOTE_COMMANDS
+    const cmds = (_na?.NOTE_COMMANDS || [])
       .filter((c) => c.cmd.startsWith(q) || c.label.toLowerCase().startsWith(q))
       .map((c) => ({ cmd: c.cmd, hint: c.hint }));
     const agents = mentionTargets
@@ -2725,7 +2727,7 @@ async function maybeAutocomplete() {
     ac.mode = 'slash';
     ac.range = slash;
     const q = slash.word.toLowerCase();
-    ac.items = SLASH_ACTIONS.filter((a) => !q || a.key.startsWith(q) || a.label.toLowerCase().includes(q));
+    ac.items = _na.filterNoteActions(slashActions(), q);
     ac.index = 0;
     return renderAc();
   }
@@ -2800,73 +2802,40 @@ function acceptAc() {
   bodyReplaceRange(hasClose ? title : `${title}]]`, r.start, r.end, r.start + title.length + 2);
 }
 
-// ── @ commands — AI actions that generate/fetch and insert inline ────────────────
-// Slice 1: a built-in set. Slice 2 will surface user Skills flagged "available in
-// Notes". Commands with tools:true can fetch live data via web search.
-const NOTE_COMMANDS = [
-  { cmd: 'insert', label: 'Insert', hint: 'generate or fetch, then insert', tools: true, sys: 'You insert content into the user\'s note. Follow the instruction. If it needs current, live, or web data, USE the web_search tool to fetch it — never guess or use stale knowledge. Output ONLY the content to insert as clean GitHub-flavored markdown — no preamble, no closing remarks.' },
-  { cmd: 'table', label: 'Table', hint: 'produce a markdown table', tools: true, sys: 'Produce the requested data as a GitHub-flavored markdown table. If it needs live/current data, USE the web_search tool. Output ONLY the table.' },
-  { cmd: 'list', label: 'List', hint: 'produce a bullet/task list', tools: true, sys: 'Produce the requested content as a GitHub-flavored markdown list (use - [ ] for actionable tasks). Use web_search for live data. Output ONLY the list.' },
-  { cmd: 'summarize', label: 'Summarize', hint: 'summarize a topic', tools: false, sys: 'Summarize the requested topic concisely in markdown. Output ONLY the summary.' },
-  { cmd: 'translate', label: 'Translate', hint: 'translate to a language', tools: false, sys: 'Translate the requested text to the requested language, preserving markdown. Output ONLY the translation.' },
-];
-// Matches @command anywhere on the line (not just at the start) so it works mid-note.
-const NOTE_CMD_RE = new RegExp(`@(${NOTE_COMMANDS.map((c) => c.cmd).join('|')})\\b[ \\t]*(.*)$`, 'i');
+// ── @ commands, the "/" palette and the triggers — the shared grammar, bound to the editor ──
+// The command specs (`NOTE_COMMANDS`, with tools:true for the ones that want live data) and
+// the trigger detection live in note-actions.js. These bind them to the active surface.
+function currentTriggerQuery(trigger) {
+  if (!_na) return null;
+  return _na.triggerQueryAt(bodyText(), bodyCursor(), trigger, { hasSelection: bodyHasSelection() });
+}
+// The @word / "/word" / "#word" being typed at the cursor (line-start or after whitespace),
+// or null. "#" won't fire on a markdown heading ("# " has a space, breaking \w*).
+const currentAtQuery = () => currentTriggerQuery('@');
+const currentSlashQuery = () => currentTriggerQuery('/');
+const currentHashQuery = () => currentTriggerQuery('#');
 
-// The @word being typed at the cursor (start of line or after whitespace), or null.
-function currentAtQuery() {
-  if (bodyHasSelection()) return null;
-  const v = bodyText(); const pos = bodyCursor();
-  const line = v.slice(v.lastIndexOf('\n', pos - 1) + 1, pos);
-  const m = line.match(/(?:^|\s)@(\w*)$/);
-  if (!m) return null;
-  return { word: m[1], start: pos - m[1].length, end: pos };
+// The "/" command palette — agent actions on the note / selection. Each acts on its natural
+// target (selection, current line, or note) so the SAME content can go inline OR into a new
+// note depending on which you pick. Labels and hints for the shared four come from the
+// shared list; plan and research are this client's own.
+function slashActions() {
+  const A = _na?.NOTE_ACTIONS || {};
+  const shared = (key, icon, run) => ({ key, icon, label: A[key]?.label || key, hint: A[key]?.hint || '', run });
+  return [
+    { key: 'plan', icon: '🧭', label: 'Plan in a new note', hint: 'spin this into a linked plan note the swarm works', run: () => planInNewNote() },
+    shared('continue', '✍️', () => runAgentAction('continue')),
+    { key: 'research', icon: '🔎', label: 'Research this', hint: 'find related notes, chats & the web', run: () => runResearch({ web: true }) },
+    shared('tasks', '☑️', () => runAgentAction('tasks')),
+    shared('summarize', '📋', () => runAgentAction('summarize')),
+    shared('improve', '✨', () => runAgentAction('improve')),
+  ];
 }
 
-// ── "/" command palette — agent actions on the note / selection ───────────────────
-// Each acts on its natural target (selection, current line, or note) so the SAME
-// content can go inline OR into a new note depending on which you pick.
-const SLASH_ACTIONS = [
-  { key: 'plan', icon: '🧭', label: 'Plan in a new note', hint: 'spin this into a linked plan note the swarm works', run: () => planInNewNote() },
-  { key: 'continue', icon: '✍️', label: 'Continue writing', hint: 'draft inline from here', run: () => runAgentAction('continue') },
-  { key: 'research', icon: '🔎', label: 'Research this', hint: 'find related notes, chats & the web', run: () => runResearch({ web: true }) },
-  { key: 'tasks', icon: '☑️', label: 'Turn into tasks', hint: 'selection → checklist', run: () => runAgentAction('tasks') },
-  { key: 'summarize', icon: '📋', label: 'Summarize', hint: 'a tight summary', run: () => runAgentAction('summarize') },
-  { key: 'improve', icon: '✨', label: 'Improve writing', hint: 'rewrite clearer', run: () => runAgentAction('improve') },
-];
-// The "/word" being typed at the cursor (line-start or after whitespace), or null.
-function currentSlashQuery() {
-  if (bodyHasSelection()) return null;
-  const v = bodyText(); const pos = bodyCursor();
-  const line = v.slice(v.lastIndexOf('\n', pos - 1) + 1, pos);
-  const m = line.match(/(?:^|\s)\/(\w*)$/);
-  if (!m) return null;
-  return { word: m[1], start: pos - m[1].length, end: pos };
-}
-// The "#word" being typed (line-start or after whitespace) — the skill picker. Won't
-// fire on a markdown heading ("# " has a space, breaking \w*).
-function currentHashQuery() {
-  if (bodyHasSelection()) return null;
-  const v = bodyText(); const pos = bodyCursor();
-  const line = v.slice(v.lastIndexOf('\n', pos - 1) + 1, pos);
-  const m = line.match(/(?:^|\s)#(\w*)$/);
-  if (!m) return null;
-  return { word: m[1], start: pos - m[1].length, end: pos };
-}
-
-// The runnable "@command instruction" on the cursor's line, or null.
+// The runnable "@command instruction" on the cursor's line, or null — `{ spec, instruction,
+// start, end }`, the span running from the @ to the line end.
 function currentCommandLine() {
-  const v = bodyText(); const pos = bodyCursor();
-  const lineStart = v.lastIndexOf('\n', pos - 1) + 1;
-  let end = v.indexOf('\n', pos);
-  if (end < 0) end = v.length;
-  const line = v.slice(lineStart, end);
-  const m = line.match(NOTE_CMD_RE);
-  if (!m) return null;
-  const spec = NOTE_COMMANDS.find((c) => c.cmd === m[1].toLowerCase());
-  const instruction = (m[2] || '').trim();
-  if (!spec || !instruction) return null;
-  return { spec, instruction, start: lineStart + m.index, end }; // replace from the @ to line end
+  return _na ? _na.commandLineAt(bodyText(), bodyCursor()) : null;
 }
 
 // An "@[Agent Name] task" mention on the cursor's line, or null — the bracket form lets
@@ -3208,7 +3177,7 @@ async function runNoteCommand() {
     const skill = resolveSkillMention(ctx.instruction, settings, license, deps);
     await runNoteJob({
       deps, settings, license, targetAgent, resolved, head, tail, commandText, noteId,
-      cmdLabel: ctx.spec.cmd, systemPrompt: ctx.spec.sys, instruction: skill.instruction,
+      cmdLabel: ctx.spec.cmd, systemPrompt: ctx.spec.system, instruction: skill.instruction,
       armToolset: !!ctx.spec.tools, skillRun: skill.skillRun, regionId, regionFrom: useRegion ? ctx.start : 0,
       versionLabel: `@${ctx.spec.cmd}${skill.skillLabel ? ` #${skill.skillLabel}` : ''} · ${targetAgent.name || resolved.model || 'agent'}`,
     });
@@ -5438,7 +5407,10 @@ function init() {
   wireFind();
   // The authoring gestures must be resolved before the first Enter (a keydown handler can't
   // await), but they are far too late-mattering to sit on first paint — so: idle preload.
-  (window.requestIdleCallback || ((f) => setTimeout(f, 400)))(() => preloadAuthoring().then(updateWordCount));
+  (window.requestIdleCallback || ((f) => setTimeout(f, 400)))(() => {
+    preloadAuthoring().then(updateWordCount);
+    preloadNoteActions(); // the `/`, `@` and `@command` grammar — see the note at its declaration
+  });
 
   // Mirror the Notes UI + co-writer config (localStorage: swarm role→model overrides,
   // gear, source filter, layout) into chrome.storage so the service-worker auto-backup
