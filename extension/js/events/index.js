@@ -44,6 +44,10 @@ export {
   SWARM_ROLES, roleById, classifyModel, supportsSubagents, appoint, routeTeam,
 } from './cowriter-router.js';
 export {
+  SEARCH_ENGINES, RESULTS_PER_ENGINE, buildSearchUrl, unwrapRedirect, isResultHost,
+  pickResults, mergeEngineResults, engineOrder,
+} from './web-search.js';
+export {
   MAX_GRAPH_NODES, buildNoteGraph, egoGraph, trimGraph, graphStats,
 } from './note-graph.js';
 export {
