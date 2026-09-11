@@ -159,7 +159,10 @@ const BUDGET = {
   // a [[…]] is a PII placeholder, because [[PERSON_1]] was becoming a backlink and a graph
   // node. That module exists at ~3 KB precisely so this page does not import entity.js
   // (alias resolution + a Levenshtein) to answer a one-line question.
-  'notes.js': 418,
+  // 418 → 416: the @agent/#skill grammar became a shared module (events/note-mentions.js) and
+  // the research pane's ranking moved OFF this graph to its call site, which more than paid
+  // for it. Tightened rather than banked — an unspent budget stops being a guard.
+  'notes.js': 416,
   // The worker is the one entry point that CANNOT defer anything: `import()` throws on
   // ServiceWorkerGlobalScope, so every module it may ever need is static. It therefore keeps
   // the backup stores the pages just shed — js/backup-payload.js imports them for it — and

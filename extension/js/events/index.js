@@ -35,6 +35,23 @@ export {
   frameNoteAction, noteActionLabel, noteActionItems, filterNoteActions,
   commandLineAt, triggerQueryAt,
 } from './note-actions.js';
+export {
+  parseAgentMention, agentMentionAt, parseSkillMention, mergeSkillPrompt,
+  findSkillByName, findTargetByName, mentionAnswerPrefix,
+} from './note-mentions.js';
+export {
+  lintText, wordDiff, filterTypoEdits, editKey, applyEdits,
+  COWRITER_SYSTEM, COWRITER_TEMPERATURE,
+} from './cowriter.js';
+export {
+  salientTerms, topicTerms, researchRelevance, webQuery, researchSnippet,
+  rankResearchCards, mergeResearchLanes,
+} from './note-research.js';
+export {
+  PLAN_ROLES, PLAN_AUTHORS, PLAN_DECOMPOSE_SYSTEM, PLAN_DECOMPOSE_MAX_TOKENS,
+  PLAN_DECOMPOSE_TEMPERATURE, PLAN_SECTION_MAX_TOKENS, PLAN_SECTION_TEMPERATURE,
+  planSectionSystem, parsePlanTasks, planTitleFor, planParts, planBody, planAttribution,
+} from './note-plan.js';
 export { REACH, reachRank, reachSatisfies } from './reach.js';
 export { UPCASTERS, upcast, upcastAll } from './upcast.js';
 export {

@@ -1,8 +1,8 @@
 // Deterministic Editor pre-pass: doubled words, space runs, space-before-punctuation,
 // lone "i". Pure — the model is skipped when this finds fixes. Reuses the diff applier.
 import assert from 'node:assert/strict';
-import { lintText } from '../extension/js/cowriter-lint.js';
-import { applyEdits } from '../extension/js/cowriter-diff.js';
+import { lintText } from '../extension/js/events/cowriter.js';
+import { applyEdits } from '../extension/js/events/cowriter.js';
 
 const apply = (t) => applyEdits(t, lintText(t));
 

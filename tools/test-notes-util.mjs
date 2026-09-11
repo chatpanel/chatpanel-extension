@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 import {
   relTime, escapeHtml, highlight, escapeMdText, tagify, snippetOf,
   sourceKind, researchSnippet, compactInput, prettyTools, toolTitle, stepIcon,
-  parseAgentMention, salientTerms, topicTerms, researchRelevance,
-  parseSkillMention, mergeSkillPrompt, findSkillByName,
+  parseAgentMention, parseSkillMention, mergeSkillPrompt, findSkillByName,
 } from '../extension/js/notes-util.js';
+// The research grammar is shared and deliberately NOT re-exported by notes-util (it would
+// ride the Notes first-paint graph); the pane imports it at its call site, and so do we.
+import {
+  salientTerms, topicTerms, researchRelevance,
+} from '../extension/js/events/note-research.js';
 
 // ── time ──
 assert.equal(relTime(0), '');

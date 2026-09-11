@@ -86,87 +86,18 @@ export function stepIcon(s) {
   return '🔧';
 }
 
-// ── @agent mentions (pure) ──────────────────────────────────────────────────────
-// Pull an "@[Agent Name] task" mention out of a single note line. The instruction may
-// sit BEFORE or AFTER the token — "Update the plan @[Agent]" and "@[Agent] update the
-// plan" both resolve to the same task — so we take the whole line minus the token.
-// Returns { name, task } (both '' when the line carries no runnable @[…] mention).
-export function parseAgentMention(line) {
-  const s = String(line || '');
-  const m = s.match(/@\[([^\]\n]+)\]/);
-  if (!m) return { name: '', task: '' };
-  const name = m[1].trim();
-  const task = (s.slice(0, m.index) + ' ' + s.slice(m.index + m[0].length)).replace(/\s+/g, ' ').trim();
-  return { name, task };
-}
-
-// ── research relevance (pure) ───────────────────────────────────────────────────
-// Content-bearing terms of a query — lowercased words ≥4 chars that aren't stop-words,
-// so relevance is judged on what the note is ABOUT, not "can/you/plan/today". The stop set
-// also drops NOTE-META / agent / URL noise (claude, code, research, question, answer,
-// inline, source, https, www, …) that otherwise pollutes an auto-built search query.
-const RESEARCH_STOP = new Set(('the a an and or but for to of in on at by with from as is are was were be been being this that these those it its i you your my me we our they them he she his her can could would should will shall may might do does did done get got make made just like about into over under out up down off not no yes plan planning day today check please help note notes write writing claude code codex anthropic agent agents assistant research researcher question questions answer answers answered reply inline summary summarize source sources cite citation https http www com net org html url link links thing things using use used need needs want wants below above here there').split(/\s+/));
-export function salientTerms(q) {
-  const out = new Set();
-  for (const w of String(q || '').toLowerCase().match(/[a-z0-9][a-z0-9'-]{3,}/g) || []) {
-    if (!RESEARCH_STOP.has(w)) out.add(w);
-  }
-  return out;
-}
-// The note's TOPIC terms — content words ranked by FREQUENCY (most-repeated first), so an
-// auto-built web/relevance query reflects what the note is mostly ABOUT, not stray meta words
-// that merely appear early. Letters-only + stop-words dropped; ties broken by longer (more
-// specific) term. This is what a good search query is built from.
-export function topicTerms(text, n = 8) {
-  const freq = new Map();
-  for (const w of String(text || '').toLowerCase().match(/[a-z][a-z'-]{3,}/g) || []) {
-    if (RESEARCH_STOP.has(w)) continue;
-    freq.set(w, (freq.get(w) || 0) + 1);
-  }
-  return [...freq.entries()].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length).slice(0, n).map(([w]) => w);
-}
-// Relevance of a source card to the query's salient terms → a score (0 = unrelated;
-// callers sort by it and drop zeros). A single shared GENERIC word ("trip", "morning")
-// is NOT enough — that surfaces unrelated past notes (and their PII) — so a local card
-// must share TWO terms, or one SPECIFIC (≥6-char) term. `web` results are already
-// query-driven, so one shared term is enough to keep the junk out without over-gating.
-export function researchRelevance(card, salient, { web = false } = {}) {
-  if (!salient || !salient.size) return 0;
-  const hay = `${card?.title || ''} ${card?.snippet || ''}`.toLowerCase();
-  let hits = 0, specific = 0, score = 0;
-  for (const t of salient) {
-    if (!hay.includes(t)) continue;
-    hits++; score += t.length >= 6 ? 2 : 1;
-    if (t.length >= 6) specific++;
-  }
-  if (!hits) return 0;
-  if (web || hits >= 2 || specific >= 1) return score;
-  return 0; // a lone generic word → not related enough
-}
-
-// ── #skill mentions (pure) ─────────────────────────────────────────────────────
-// Pull a "#[Skill Name]" mention out of a note command/task instruction. Returns the
-// skill name (or '') and the instruction with the token removed.
-export function parseSkillMention(instruction) {
-  const s = String(instruction || '');
-  const m = s.match(/#\[([^\]\n]+)\]/);
-  if (!m) return { name: '', text: s.trim() };
-  return { name: m[1].trim(), text: s.replace(m[0], '').replace(/[ \t]{2,}/g, ' ').trim() };
-}
-// Merge a skill's saved prompt with the user's task: substitute {{input}} placeholders
-// when present, else append the task under the prompt.
-export function mergeSkillPrompt(prompt, task) {
-  const p = String(prompt || '');
-  const t = String(task || '');
-  if (/{{\s*input[^}]*}}/i.test(p)) return p.replace(/{{\s*input[^}]*}}/gi, t);
-  return p ? (t ? `${p}\n\n${t}` : p) : t;
-}
-// Resolve a skill by display name (exact, then contains) from settings.skills.
-export function findSkillByName(skills, name) {
-  const q = String(name || '').trim().toLowerCase();
-  if (!q) return null;
-  const list = Array.isArray(skills) ? skills : [];
-  return list.find((s) => String(s?.name || s?.title || '').toLowerCase() === q)
-    || list.find((s) => String(s?.name || s?.title || '').toLowerCase().includes(q))
-    || null;
-}
+// ── @agent and #skill mentions ──────────────────────────────────────────────────
+//
+// Moved to @chatpanel/events/note-mentions.js: the desktop needs exactly the same answers and
+// a mobile client will too, and a grammar implemented twice is one feature behaving as two.
+// Re-exported here rather than re-pointing every call site, because this module is already on
+// the Notes first-paint graph and the shared file REPLACES the code that used to sit here.
+//
+// The research helpers (salientTerms, topicTerms, researchRelevance, researchSnippet) went to
+// events/note-research.js and are deliberately NOT re-exported: they are used only by the
+// research pane, which is an action, and a re-export here would put them on first paint. The
+// pane imports them at its call site — that is the 3 KB the budget guard caught.
+export {
+  parseAgentMention, agentMentionAt, parseSkillMention, mergeSkillPrompt,
+  findSkillByName, findTargetByName, mentionAnswerPrefix,
+} from './events/note-mentions.js';

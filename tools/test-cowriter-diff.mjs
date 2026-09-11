@@ -1,7 +1,7 @@
 // Co-writer diff: minimal word-level edits with correct offsets, typo filtering,
 // dismissal keys, and application. Pure — the testable heart of the Editor co-writer.
 import assert from 'node:assert/strict';
-import { wordDiff, filterTypoEdits, editKey, applyEdits } from '../extension/js/cowriter-diff.js';
+import { wordDiff, filterTypoEdits, editKey, applyEdits } from '../extension/js/events/cowriter.js';
 
 // 1) single typo → one precise edit with exact offsets.
 {

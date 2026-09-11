@@ -14,10 +14,9 @@ import { renderMarkdown } from './js/markdown.js';
 import { openSidePanel } from './js/side-panel.js';
 import {
   relTime, escapeHtml, highlight, escapeMdText, tagify, snippetOf,
-  KIND_ICON, sourceKind, researchSnippet,
+  KIND_ICON, sourceKind,
   JOB_ICON, compactInput, prettyTools, toolTitle, stepIcon,
-  parseAgentMention, salientTerms, topicTerms, researchRelevance,
-  parseSkillMention, mergeSkillPrompt, findSkillByName,
+  parseAgentMention, parseSkillMention, mergeSkillPrompt, findSkillByName,
 } from './js/notes-util.js';
 import {
   SWARM_ROLES, SWARM_ROLE_META, swarmOverrides, swarmCandidates, roleAgent, getRouter,
@@ -2345,6 +2344,31 @@ function preloadNoteActions() {
   return import('./js/events/note-actions.js').then((m) => { _na = m; return m; });
 }
 
+// The planner's grammar — the decomposition prompt and how its answer is read, the plan
+// document, and the ledger that matches it character for character. Loaded when a plan is
+// actually started: it is the one note gesture that is never the first thing a user does.
+// The research pane's ranking grammar — what the note is ABOUT, and which results are close
+// enough to show. Off first paint deliberately (notes-util.js says why); every caller below
+// is already async.
+let _nr = null;
+function researchMod() {
+  if (_nr) return Promise.resolve(_nr);
+  return import('./js/events/note-research.js').then((m) => { _nr = m; return m; });
+}
+const researchSnippet = (t) => (_nr ? _nr.researchSnippet(t) : String(t || '').replace(/\s+/g, ' ').trim().slice(0, 160));
+
+let _plan = null;
+function planMod() {
+  if (_plan) return Promise.resolve(_plan);
+  return import('./js/events/note-plan.js').then((m) => { _plan = m; return m; });
+}
+// Sync forwarders for the paths that cannot await — the per-frame repaint inside the
+// orchestration, and the persist it calls. Every one of them runs downstream of
+// planInNewNote, which awaits planMod() before anything is drawn or saved.
+const planBody = (goal, tasks) => _plan.planBody(goal, tasks);
+const planAttribution = (goal, tasks, at) => _plan.planAttribution(goal, tasks, at);
+const planSectionSystem = (goal, task) => _plan.planSectionSystem(goal, task);
+
 let agentAbort = null;
 function setAgentBusy(busy) {
   const btn = $('n-agent');
@@ -2485,8 +2509,9 @@ async function planInNewNote(explicitTopic) {
   const resolved = deps.resolveTarget(targetAgent, settings);
 
   // 1) Create the plan note; 2) replace the selection in THIS note with a link to it.
-  const clean = topic.replace(/[#*_`>~[\]]/g, '').replace(/\s+/g, ' ').trim();
-  const title = `Plan: ${clean.slice(0, 60)}`;
+  const P = await planMod(); // the decomposition, the document and its ledger
+  const clean = P.planTitleFor(topic);
+  const title = `Plan: ${clean}`;
   let plan;
   try { plan = await createNote({ title, body: '' }); }
   catch (e) { if (e instanceof NoteLimitError) { noteCapReached(e.limit); return; } throw e; } // backstop: never fail silently
@@ -2521,14 +2546,12 @@ async function planInNewNote(explicitTopic) {
   try {
     // Phase A — decompose (one model call → JSON sub-tasks, each assigned a role).
     pstatus('Decomposing the goal…');
-    const dsys = 'You are a planning orchestrator. Break the goal into 3–6 concrete sub-tasks. For each, pick a role: "research" (needs facts, options, prices, or current info — it will web + history search) or "write" (drafting, structure, synthesis). Return ONLY compact JSON: {"tasks":[{"title":"short title","role":"research|write","prompt":"a focused instruction for this sub-task"}]}';
-    let tasks = [];
+    let raw = '';
     try {
-      const raw = await deps.streamChat({ agent: { ...resolved, systemPrompt: dsys, maxTokens: 600, temperature: 0.2 }, settings, redaction, signal: agentAbort.signal, messages: [{ role: 'user', content: `Goal:\n${topic}` }], onEvent: act.onEvent });
-      tasks = (JSON.parse((raw.match(/\{[\s\S]*\}/) || ['{}'])[0]).tasks || []).slice(0, 6)
-        .map((t) => ({ title: String(t.title || 'Task').slice(0, 80), role: t.role === 'research' ? 'research' : 'write', prompt: String(t.prompt || t.title || ''), done: false, working: false, output: '' }));
-    } catch { /* fall back below */ }
-    if (!tasks.length) tasks = [{ title: clean.slice(0, 60), role: 'write', prompt: topic, done: false, working: false, output: '' }];
+      raw = await deps.streamChat({ agent: { ...resolved, systemPrompt: P.PLAN_DECOMPOSE_SYSTEM, maxTokens: P.PLAN_DECOMPOSE_MAX_TOKENS, temperature: P.PLAN_DECOMPOSE_TEMPERATURE }, settings, redaction, signal: agentAbort.signal, messages: [{ role: 'user', content: `Goal:\n${topic}` }], onEvent: act.onEvent });
+    } catch { /* parsePlanTasks falls back to a single task carrying the goal */ }
+    const tasks = P.parsePlanTasks(raw, topic);
+    if (!tasks.length) return;
     planNote.tasks = tasks;
     renderPlan();
 
@@ -2575,28 +2598,14 @@ async function planInNewNote(explicitTopic) {
 // its authorship ledger, so they can't drift. The scaffold (title, live checklist, section
 // headings) is the Planner's; each filled section is authored by its member (Researcher
 // for research sub-tasks, Writer for the rest).
-function planParts(goal, tasks) {
-  const done = tasks.filter((t) => t.done).length;
-  const checklist = tasks.map((t, i) => `- [${t.done ? 'x' : ' '}] ${i + 1}. ${t.title}${t.working ? ' — _working…_' : ''}`).join('\n');
-  const parts = [{ author: 'Planner', text: `# ${goal}\n\n**Plan** — ${done}/${tasks.length} sub-tasks done\n\n${checklist}\n\n---\n\n` }];
-  tasks.forEach((t, i) => {
-    const who = t.role === 'research' ? 'Researcher' : 'Writer';
-    parts.push({ author: 'Planner', text: `## ${i + 1}. ${t.title}\n\n` });
-    parts.push({ author: t.output ? who : 'Planner', text: t.output || (t.working ? `_⏳ ${who} working…_` : '_pending_') });
-    parts.push({ author: 'Planner', text: i < tasks.length - 1 ? '\n\n' : '\n' });
-  });
-  return parts;
-}
-function planBody(goal, tasks) {
-  return planParts(goal, tasks).map((p) => p.text).join('');
-}
-// The authorship run-list matching planBody() exactly (sums to its length by construction).
-function planAttribution(goal, tasks, at) {
-  return mergeRuns(planParts(goal, tasks).map((p) => ({ len: p.text.length, author: p.author, at })));
-}
+// The plan document and its ledger are @chatpanel/events/note-plan.js — planParts builds the
+// text and the run-list from ONE list of authored parts, which is what stops the two drifting
+// (a plan note is written entirely by agents; a ledger that says "You" is a lie it repeats
+// forever). Imported at the top with the rest of the note grammar.
 
 // A research sub-task — token-free: history + WEB, formatted as cited bullets.
 async function researchTaskMd(prompt, note) {
+  await researchMod(); // researchSnippet's real implementation (its fallback is only a guard)
   const lines = [];
   try {
     if (!_ragMod) _ragMod = await import('./js/history-rag.js');
@@ -2619,10 +2628,9 @@ async function researchTaskMd(prompt, note) {
 async function writeTaskMd(deps, settings, license, redaction, goal, task, act, renderPlan) {
   const writer = await roleAgent(deps, settings, license, 'writer');
   const resolved = writer?.resolved || deps.resolveTarget(deps.getTarget(settings, settings.activeAgentId), settings);
-  const sys = `You are drafting ONE section of a plan for the goal "${goal}". Write the section titled "${task.title}". Instruction: ${task.prompt}. Be concrete and actionable — bullets, - [ ] tasks, or a small table for options. Output ONLY the section's markdown content (no heading, no preamble).`;
   task.output = '';
   await deps.streamChat({
-    agent: { ...resolved, systemPrompt: sys, maxTokens: 700, temperature: 0.5 },
+    agent: { ...resolved, systemPrompt: planSectionSystem(goal, task), maxTokens: _plan.PLAN_SECTION_MAX_TOKENS, temperature: _plan.PLAN_SECTION_TEMPERATURE },
     settings, redaction, signal: agentAbort.signal,
     messages: [{ role: 'user', content: task.prompt || task.title }],
     onDelta: (d) => { task.output += d; scheduleStreamRender(renderPlan); }, // one paint per frame
@@ -3533,7 +3541,7 @@ function makeNoteTools(job) {
 // ON BY DEFAULT, and only the ABSENCE of a stored value means on — an explicit '0' is a
 // person who turned it off and must stay off. It was opt-in on cost grounds, and that
 // reasoning had stopped being true: the Editor runs a deterministic pass FIRST
-// (cowriter-lint.js) and spends a token only on text that is already mechanically clean, the
+// (events/cowriter.js lintText) and spends a token only on text that is already mechanically clean, the
 // default gear is Ambient (suggest-only, nothing written for you), a per-minute budget caps
 // the rest, and with no model configured every member returns without calling anything. What
 // the opt-in actually bought was a feature nobody found.
@@ -3549,7 +3557,7 @@ let cwGen = 0;
 let cwSuggestions = [];
 let boardSuggestions = []; // the swarm's shared suggestion queue (Connector links, etc.) rendered alongside Editor fixes
 let _cwDiff = null;
-let _lintMod = null; // deterministic Editor pre-pass (cowriter-lint.js)
+let _lintMod = null; // deterministic Editor pre-pass (@chatpanel/events/cowriter.js)
 let cwModel = ''; // provenance: the model (or "deterministic pass") the Editor last used
 const cwDismissed = new Set();
 const boardDismissed = new Set();
@@ -3606,8 +3614,8 @@ async function runCowriter() {
 
   // Deterministic pass FIRST — mechanical fixes for free. Only spend a token if it's clean.
   try {
-    if (!_cwDiff) _cwDiff = await import('./js/cowriter-diff.js');
-    if (!_lintMod) _lintMod = await import('./js/cowriter-lint.js');
+    if (!_cwDiff) _cwDiff = await import('./js/events/cowriter.js');
+    if (!_lintMod) _lintMod = _cwDiff; // one shared module now — lint and diff travel together
   } catch { return; }
   const lint = _lintMod.lintText(para.text);
   if (lint.length) {
@@ -3658,8 +3666,8 @@ async function runTitleCheck() {
   const title = ($('n-title').value || '').trim();
   if (title.length < 6 || title === lastTitleChecked) return;
   try {
-    if (!_cwDiff) _cwDiff = await import('./js/cowriter-diff.js');
-    if (!_lintMod) _lintMod = await import('./js/cowriter-lint.js');
+    if (!_cwDiff) _cwDiff = await import('./js/events/cowriter.js');
+    if (!_lintMod) _lintMod = _cwDiff; // one shared module now — lint and diff travel together
   } catch { return; }
   const lintEdits = _lintMod.lintText(title);
   if (lintEdits.length) { lastTitleChecked = title; return offerTitleFixes(lintEdits, 'deterministic pass'); }
@@ -3893,9 +3901,6 @@ function researchQuery() {
 // notes-util.js so the same "content-bearing terms only" scoring is testable and
 // reusable. We build a targeted web query from the note's title + salient terms so the
 // search isn't a raw sentence that drags in unrelated results.
-function webQuery(title, salient) {
-  return [title, [...salient].slice(0, 8).join(' ')].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().slice(0, 120);
-}
 function setResearchStatus(t) { const el = $('n-research-status'); if (el) el.textContent = t || ''; }
 function clearResearch() {
   researchGen++; researchCards = []; researchBusy = false; researchQuestion = '';
@@ -3925,6 +3930,7 @@ async function runResearch({ web = false, question = '' } = {}) {
   // GROUNDED in what you're writing: the ranker returns its top-N even on a query of common
   // words, so gate results to those that actually share a salient term with the query —
   // otherwise unrelated past notes surface. Empty is better than irrelevant.
+  const { salientTerms, topicTerms, researchRelevance, webQuery } = await researchMod();
   const salient = salientTerms(q);
   let local = [];
   try {
