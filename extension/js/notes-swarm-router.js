@@ -12,6 +12,14 @@
 import { orderTargets } from './target-choice.js';
 
 // Role → routing preference. Consumed by the pure router's appoint().
+//
+// MIRRORED from @chatpanel/events/cowriter-router.js `SWARM_ROLES`, not imported from it, and
+// the reason is first paint: this module IS on the Notes first-paint graph (the swarm menu is
+// part of the toolbar) while the router is deliberately loaded on demand. A static import
+// here would drag the router onto the graph for data that is four lines of it.
+//
+// Mirrored data drifts, so `tools/test-cowriter-router.mjs` asserts these agree with the
+// shared list — same ids, same preferences, same names — and fails when they do not.
 export const SWARM_ROLES = {
   editor: { id: 'editor', prefer: 'cheap' },
   researcher: { id: 'researcher', prefer: 'balanced' },
@@ -27,10 +35,12 @@ export const SWARM_ROLE_META = [
   { id: 'factcheck', icon: '⚠️', name: 'Fact-checker', desc: 'Flags shaky claims (Focus)' },
 ];
 
-// The pure router, lazy-loaded once and cached (kept OFF the page load path).
+// The pure router, lazy-loaded once and cached (kept OFF the page load path). It lives in
+// @chatpanel/events now — the appointment logic is the same question every client asks, and
+// the desktop asks it too.
 let _router = null;
 export async function getRouter() {
-  if (!_router) _router = await import('./cowriter-router.js');
+  if (!_router) _router = await import('./events/cowriter-router.js');
   return _router;
 }
 

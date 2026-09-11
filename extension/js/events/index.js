@@ -41,6 +41,9 @@ export {
 } from './note-mentions.js';
 export { wikiQueryAt, rankLinkTargets } from './note-links.js';
 export {
+  SWARM_ROLES, roleById, classifyModel, supportsSubagents, appoint, routeTeam,
+} from './cowriter-router.js';
+export {
   MAX_GRAPH_NODES, buildNoteGraph, egoGraph, trimGraph, graphStats,
 } from './note-graph.js';
 export {

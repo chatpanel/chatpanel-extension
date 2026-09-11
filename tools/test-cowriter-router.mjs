@@ -1,7 +1,7 @@
 // Model router: tier classification, appointment by preference, overrides, subagent
 // mode, graceful fallback. Pure — portable across extension/gateway/bridge.
 import assert from 'node:assert/strict';
-import { classifyModel, supportsSubagents, appoint, routeTeam } from '../extension/js/cowriter-router.js';
+import { classifyModel, supportsSubagents, appoint, routeTeam } from '../extension/js/events/cowriter-router.js';
 
 // 1) tier classification from model ids.
 assert.equal(classifyModel('claude-haiku-4-5'), 'cheap');
@@ -64,3 +64,24 @@ const candidates = [
 }
 
 console.log('cowriter-router tests passed');
+
+// ── The mirrored role list has to stay a mirror ─────────────────────────────────────────
+//
+// notes-swarm-router.js carries its own copy of the roles rather than importing the shared
+// one, because it sits on the Notes first-paint graph and the router does not. That is a
+// deliberate duplication, which makes it one that has to be checked.
+import { SWARM_ROLES as SHARED } from '../extension/js/events/cowriter-router.js';
+import { SWARM_ROLES as LOCAL, SWARM_ROLE_META as META } from '../extension/js/notes-swarm-router.js';
+
+assert.deepEqual(
+  Object.keys(LOCAL).sort(),
+  SHARED.map((r) => r.id).sort(),
+  'the mirrored role ids drifted from @chatpanel/events/cowriter-router.js',
+);
+for (const role of SHARED) {
+  assert.equal(LOCAL[role.id].prefer, role.prefer, `${role.id}: routing preference drifted`);
+  const meta = META.find((m) => m.id === role.id);
+  assert.ok(meta, `${role.id}: missing from SWARM_ROLE_META`);
+  assert.equal(meta.name, role.name, `${role.id}: display name drifted`);
+}
+console.log('swarm roles mirror the shared list');
