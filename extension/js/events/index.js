@@ -39,6 +39,10 @@ export {
   parseAgentMention, agentMentionAt, parseSkillMention, mergeSkillPrompt,
   findSkillByName, findTargetByName, mentionAnswerPrefix,
 } from './note-mentions.js';
+export { wikiQueryAt, rankLinkTargets } from './note-links.js';
+export {
+  MAX_GRAPH_NODES, buildNoteGraph, egoGraph, trimGraph, graphStats,
+} from './note-graph.js';
 export {
   lintText, wordDiff, filterTypoEdits, editKey, applyEdits,
   COWRITER_SYSTEM, COWRITER_TEMPERATURE,
