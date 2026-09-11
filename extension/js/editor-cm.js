@@ -21,6 +21,10 @@ import {
 import { agentRegionsExtension, agentAuthorOf } from './notes-regions.js';
 import { renderMarkdown } from './markdown.js';
 import { writeRichToEvent } from './rich-clipboard.js'; // reuse the read-mode renderer for live table blocks
+import { posInView } from './follow-tail.js';
+// A `[[PERSON_1]]` placeholder is character-for-character a wikilink and is not one. Told
+// apart by TYPE, so a real `[[Q3_2026]]` still links — see events/redaction-tokens.js.
+import { isRedactionToken } from './events/redaction-tokens.js';
 
 // Markdown token → CSS class (colors/weights live in notes.css so themes control them).
 const HL = HighlightStyle.define([
@@ -246,7 +250,10 @@ export function linkTargetAt(state, pos) {
   const re = /\[\[([^\]\n]+)\]\]/g; let m;
   while ((m = re.exec(line.text))) {
     const s = line.from + m.index;
-    if (pos >= s && pos <= s + m[0].length) return { kind: 'wikilink', title: m[1].trim() };
+    if (pos >= s && pos <= s + m[0].length) {
+      const title = m[1].split('|')[0].trim(); // `[[Title|alias]]` — the LINK is before the pipe
+      return isRedactionToken(title) ? null : { kind: 'wikilink', title };
+    }
   }
   return null;
 }
@@ -272,6 +279,39 @@ function scanCitations(state, ranges, cursorLine, out) {
       out.push({ kind: 'conceal', from: start, to: innerFrom });
       out.push({ kind: 'sup', from: innerFrom, to: innerTo });
       out.push({ kind: 'conceal', from: innerTo, to: end });
+    }
+  }
+}
+
+/**
+ * `[[Wikilink]]` — one pair of brackets too many, until now.
+ *
+ * CodeMirror's markdown grammar reads `[[Deck]]` as a shortcut-reference Link `[Deck]` with a
+ * stray bracket on each side, so live preview hid the pair it knew about and left the pair it
+ * did not: the note rendered `[Deck]`, and every wikilink in the app looked like a typo. The
+ * grammar has no wikilink, so the outer pair is concealed here, by the SAME regex the corpus
+ * resolves links with (events/curate.js `wikilinksIn`) rather than a second spelling of it.
+ *
+ * Redaction placeholders are skipped: they share the syntax exactly, and drawing one as a
+ * link invites a click that would CREATE a page named after somebody we deliberately did not
+ * learn the name of.
+ */
+const WIKI_RE = /\[\[([^[\]\n]+)\]\]/g;
+function scanWikilinks(state, ranges, cursorLine, out) {
+  for (const { from, to } of ranges) {
+    const text = state.doc.sliceString(from, to);
+    WIKI_RE.lastIndex = 0;
+    let m;
+    while ((m = WIKI_RE.exec(text))) {
+      const start = from + m.index;
+      const end = start + m[0].length;
+      if (state.doc.lineAt(start).number === cursorLine) continue; // editing this line → raw
+      if (isRedactionToken(m[1].split('|')[0])) continue;
+      // Only the OUTER bracket of each pair: the inner one is a LinkMark the grammar already
+      // conceals, and concealing the same character twice is an overlapping decoration.
+      out.push({ kind: 'conceal', from: start, to: start + 1 });
+      out.push({ kind: 'wikilink', from: start + 1, to: end - 1 });
+      out.push({ kind: 'conceal', from: end - 1, to: end });
     }
   }
 }
@@ -309,12 +349,14 @@ function buildDecorations(view) {
   const cursorLine = view.state.doc.lineAt(view.state.selection.main.head).number;
   const descriptors = scanMarkdown(view.state, ranges, cursorLine);
   scanCitations(view.state, ranges, cursorLine, descriptors);
+  scanWikilinks(view.state, ranges, cursorLine, descriptors);
   const deco = [];
   for (const d of descriptors) {
     if (d.kind === 'line') deco.push(Decoration.line({ class: d.cls }).range(d.from));
     else if (d.kind === 'check') deco.push(Decoration.replace({ widget: new CheckboxWidget(d.checked) }).range(d.from, d.to));
     else if (d.kind === 'bullet') deco.push(Decoration.replace({ widget: new BulletWidget(d.glyph) }).range(d.from, d.to));
     else if (d.kind === 'sup') deco.push(Decoration.mark({ class: 'cm-sup' }).range(d.from, d.to));
+    else if (d.kind === 'wikilink') deco.push(Decoration.mark({ class: 'cm-tok-link cm-wikilink' }).range(d.from, d.to));
     else deco.push(Decoration.replace({}).range(d.from, d.to));
   }
   return Decoration.set(deco, true);
@@ -441,7 +483,14 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
         if (e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey) return false;
         const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
         if (pos == null) return false;
-        if (view.state.doc.lineAt(pos).number === view.state.doc.lineAt(view.state.selection.main.head).number) return false;
+        // The cursor's own line shows its raw markdown so it can be EDITED, and hijacking a
+        // click there would make the syntax unreachable. A wikilink is the exception: it has
+        // no address to edit, the whole token is the target, and the rule as written meant a
+        // second click on a link you had just clicked did nothing — you had to click away and
+        // come back. So the line guard applies to `[text](url)` and not to `[[Wikilink]]`.
+        const sameLine = view.state.doc.lineAt(pos).number
+          === view.state.doc.lineAt(view.state.selection.main.head).number;
+        if (sameLine && linkTargetAt(view.state, pos)?.kind !== 'wikilink') return false;
         // Citation <sup>[N]</sup> → jump to its Sources entry within the doc (footnote-style).
         const n = citationNumberAt(view.state, pos);
         if (n != null) {
@@ -498,17 +547,23 @@ export function createLiveEditor({ parent, doc = '', readOnly = false, placehold
     // streaming append/edit dispatches a tiny change instead of replacing the whole doc.
     // That's what keeps the live mirror flicker-free and the caret stable during AI writes.
     // `userEvent:'input.set'` lets the change listener tell programmatic sets from user edits.
-    setValue(v, { cursorToEnd = false } = {}) {
+    // `follow` keeps the END of the change in view while a model is streaming into the
+    // document — but only while it is ALREADY in view, so scrolling up to read what has
+    // landed stops the chasing instead of fighting it. See follow-tail.js.
+    setValue(v, { cursorToEnd = false, follow = false } = {}) {
       const cur = view.state.doc.toString();
       if (v === cur) return;
       const min = Math.min(cur.length, v.length);
       let s = 0; while (s < min && cur.charCodeAt(s) === v.charCodeAt(s)) s++;
       let e = 0; while (e < min - s && cur.charCodeAt(cur.length - 1 - e) === v.charCodeAt(v.length - 1 - e)) e++;
+      const end = v.length - e;
+      const chase = follow && !cursorToEnd && posInView(view, cur.length - e);
       dispatchChange({
-        changes: { from: s, to: cur.length - e, insert: v.slice(s, v.length - e) },
+        changes: { from: s, to: cur.length - e, insert: v.slice(s, end) },
         selection: cursorToEnd ? { anchor: v.length } : undefined,
         userEvent: 'input.set',
         scrollIntoView: cursorToEnd,
+        effects: chase ? EditorView.scrollIntoView(end, { y: 'nearest' }) : undefined,
       });
     },
     getSelection() { const s = view.state.selection.main; return { start: s.from, end: s.to, head: s.head }; },

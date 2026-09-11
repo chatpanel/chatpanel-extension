@@ -15,6 +15,7 @@
 import {
   EditorState, StateField, StateEffect, Annotation, EditorView, Decoration, WidgetType,
 } from './vendor/codemirror.js';
+import { posInView } from './follow-tail.js';
 
 // Marks a transaction as an AGENT write (carries the region id + author) so the guard lets it
 // through and the editor attributes the text to the agent (not "You").
@@ -124,14 +125,23 @@ export function beginRegion(view, id, label, from, to = from) {
   view.dispatch({ effects: addRegion.of({ id, label, from, to }) });
 }
 // Append `text` at the region's end (an agent write) and extend the region to cover it.
+//
+// The tail is kept in view only while it IS in view. This used to pass `scrollIntoView: true`
+// on every chunk, which meant a reader who scrolled up to see what the agent had written was
+// dragged back to the bottom a few times a second — the scroll was not theirs to keep for as
+// long as the write ran.
 export function appendRegion(view, id, text) {
   const r = activeRegions(view.state).find((x) => x.id === id);
   if (!r || !text) return;
+  const follow = posInView(view, r.to);
+  const end = r.to + text.length;
   view.dispatch({
     changes: { from: r.to, to: r.to, insert: text },
-    effects: setRegionRange.of({ id, from: r.from, to: r.to + text.length }),
+    effects: [
+      setRegionRange.of({ id, from: r.from, to: end }),
+      ...(follow ? [EditorView.scrollIntoView(end, { y: 'nearest' })] : []),
+    ],
     annotations: agentWrite.of({ id, label: r.label }),
-    scrollIntoView: true,
   });
 }
 // Replace the region's whole content (agent write) — for the initial placeholder or a reset.
