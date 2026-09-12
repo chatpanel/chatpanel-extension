@@ -46,7 +46,15 @@ export function restoreToolArgs(value, vault) {
 // [[LOCATION_1]] token as redacted and REFUSE to use it for a lookup ("I can't see
 // your real city") — the opposite of what we want. Weak models call the tool blindly
 // and it works (the harness restores the real value), so the note levels them up.
-export function placeholderToolNote({ toolData = 'real' } = {}) {
+//
+// `ownTools`: the model is a relayed CLI agent that brings tools of ITS OWN (Codex's web
+// search, a shell, files). Those run on the far side of the harness and receive the
+// placeholder LITERALLY — a search for "[[ORG_1]] stock price" finds nothing, and the agent
+// reports that "the lookup did not resolve the company". Seen exactly so, on the desktop:
+// Codex chose its own web search over ChatPanel's `find` on one turn and answered from
+// nothing. The extra sentence says which tools restore and which do not, so the choice is
+// no longer a coin toss.
+export function placeholderToolNote({ toolData = 'real', ownTools = false } = {}) {
   const intro =
     'PRIVACY PLACEHOLDERS: some values in this conversation are tokens like [[PERSON_1]], '
     + '[[LOCATION_1]], [[ORG_1]] that stand in for the user\'s real private data. ';
@@ -74,7 +82,14 @@ export function placeholderToolNote({ toolData = 'real' } = {}) {
     + 'Do NOT ask the user to re-type the value and do NOT refuse on privacy grounds — the lookup '
     + 'will work. The real values are restored in your final answer automatically, so write your '
     + 'answer using the placeholders too.';
-  return intro + remote + rules;
+  const own = ownTools
+    ? ' ONLY THE TOOLS LISTED IN THIS CONVERSATION restore placeholders. Any tool you bring '
+      + 'yourself — your own web search, shell, file or code tools — receives the placeholder '
+      + 'text literally and will find nothing. So for ANY lookup that involves a placeholder, '
+      + 'call the listed tool (for example `find` with action `web_search` or `history_search`) '
+      + 'rather than your own; use your own tools only for things that involve no placeholder.'
+    : '';
+  return intro + remote + rules + own;
 }
 
 // Tools whose results come from the PUBLIC web rather than from the user's own machine or

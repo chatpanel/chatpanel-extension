@@ -7,7 +7,9 @@ const providers = readFileSync(new URL('../extension/js/providers.js', import.me
 // Both provider loops run their rounds through turn-round.js now, which is where the call
 // id reaches execute; the bridge relay still calls execute directly.
 const turnRound = readFileSync(new URL('../extension/js/turn-round.js', import.meta.url), 'utf8');
-const toolset = readFileSync(new URL('../extension/js/toolset.js', import.meta.url), 'utf8');
+// The registry is the shared copy now (@chatpanel/events/toolset.js); the extension's own
+// file only hands in the MCP guidance. The contract under test lives in the vendored module.
+const toolset = readFileSync(new URL('../extension/js/events/toolset.js', import.meta.url), 'utf8');
 const store = readFileSync(new URL('../extension/js/store.js', import.meta.url), 'utf8');
 const turnTools = readFileSync(new URL('../extension/js/turn-tools.js', import.meta.url), 'utf8');
 // MCP gating moved out of turn-tools into a registered tool group — the decision is

@@ -31,6 +31,9 @@ const FILES = [
   // The tool round: what a tool does, how a round runs, what a result costs, how a tool
   // is found, and a workflow written down once.
   'tool-traits.js', 'tool-round.js', 'tool-result.js', 'tool-discovery.js', 'tool-schema.js', 'recipe.js',
+  // The registry, the one-tool-per-group dispatcher, and the two tools every client with a
+  // loop offers — so the desktop's `find` and `web_search` are this `find` and `web_search`.
+  'toolset.js', 'tool-dispatch.js', 'find-tool.js', 'web-search-tool.js',
 ];
 
 function pkgDir() {

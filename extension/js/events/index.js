@@ -185,6 +185,15 @@ export {
   resultToolSpec, RESULT_TOOL_NAME, DEFAULT_SHIELD, DEFAULT_STORE,
 } from './tool-result.js';
 export { findTools, findToolsResult, findActionArgs, oneLiner, overlapRank, FIND_ACTION } from './tool-discovery.js';
+// One registered tool per group, the registry that merges providers, and the two tools every
+// client with a loop offers — the SAME `find` and `web_search` on the panel and in the app.
+export { buildToolset } from './toolset.js';
+export {
+  DESCRIBE_ACTION, actionMenu, buildGroupDispatchSpec, validateAction, makeGroupDispatchExecutor,
+  withGuidance, makeDispatchProvider, estimateTokens,
+} from './tool-dispatch.js';
+export { FIND_TOOL_NAME, FIND_DESCRIPTION, FIND_RESIDENT, findDispatchProvider } from './find-tool.js';
+export { WEB_SEARCH_TOOL_NAME, WEB_SEARCH_TOOL_SYSTEM, WEB_SEARCH_SPEC, searchResultsToText, webSearchToolProvider } from './web-search-tool.js';
 export { compressToolSpec, compressToolSpecs, compressionStats, trimDescription, COMPRESSION_MODES, DEFAULT_COMPRESSION } from './tool-schema.js';
 export { validateRecipe, expandRecipe, recipeParams, mapInput, dryRunRecipe, runPlan, runRecipe, RecipeError, RECIPE_MODES } from './recipe.js';
 export { createManifest, ManifestError, SOURCES } from './manifest.js';

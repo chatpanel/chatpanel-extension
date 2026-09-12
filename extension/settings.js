@@ -18,7 +18,6 @@ import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, setAutoB
 import { decryptBackup, isEncryptedBackup } from './js/crypto-backup.js';
 import { googleDriveRedirectUri, connectGoogleDrive, disconnectGoogleDrive, getGoogleDriveConnection, listGoogleDriveBackups, downloadGoogleDriveBackup, googleDriveBackupDevice, latestGoogleDriveBackupsByDevice } from './js/drive-backup.js';
 import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, previewRedaction, traceFlow } from './js/providers.js';
-import { buildToolset } from './js/toolset.js';
 import { getMcpProviders } from './js/mcp-manager.js';
 import { historyToolProvider } from './js/history-rag.js';
 import { webSearchToolProvider, webSearchOpts, webSearchUsage } from './js/web-search.js';
@@ -5959,6 +5958,9 @@ async function buildHarnessTools(boxId = 'priv-flow-tools') {
       providers.push(...mcps);
     } catch { /* MCP unavailable — run without it */ }
   }
+  // Behind the "run flow" button only, so the registry (and the shared copy it wraps) stays
+  // off settings' first paint — it was the one static import putting it there.
+  const { buildToolset } = await import('./js/toolset.js');
   return buildToolset(providers);
 }
 

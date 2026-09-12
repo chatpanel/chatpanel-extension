@@ -1,81 +1,15 @@
-// A generic tool registry. The provider loop (js/providers.js) consumes a single
-// toolset shaped as { specs, execute, system } — historically that was just the
-// page-action tools. buildToolset() merges ANY number of providers (page tools,
-// each MCP server, future ones) into that same shape, so the loop is unchanged
-// and the tools become generic.
+// The generic tool registry — SHARED. `@chatpanel/events/toolset.js` is the implementation;
+// this file exists so the extension's imports stay put and so the one thing that is the
+// extension's own — the shared MCP guidance it prepends when any `mcp_*` tool is armed —
+// is handed in from here rather than known by the package.
 //
-// A provider is { specs: ToolSpec[], execute(name, input) => string | {text,image},
-//   system?: string }. ToolSpec is { name, description, parameters(JSON schema) }.
+// The desktop merges its providers through the identical function, which is the point:
+// "first provider to claim a name wins", the remote-tool set the harness reads, and the
+// hidden-tool index a recipe routes by are one rule each, not one per client.
 
+import { buildToolset as buildSharedToolset } from './events/toolset.js';
 import { mcpSharedSystem } from './tool-hints.js';
 
 export function buildToolset(providers) {
-  const list = (providers || []).filter((p) => p && p.specs?.length);
-  if (!list.length) return undefined;
-
-  const specs = [];
-  const route = new Map(); // tool name -> the provider.execute that owns it
-  // Tools that call a REMOTE server — from a provider flagged remote, or (fallback)
-  // whose name matches the mcp_ convention. The harness uses this exact set to keep
-  // PII off remote tools under "redact remote" (L3: no longer name-heuristic-only).
-  const remoteTools = new Set();
-  // What each HIDDEN tool does — a dispatcher's own index of the tools behind it
-  // (tool-traits.js). Top-level specs carry `annotations` and are classified at run time;
-  // this file is on settings' first paint, so it imports no classifier.
-  const traits = new Map();
-  // Tools that must run one at a time even when read-only: page tools share ONE tab.
-  const serialTools = new Set();
-  // The tools a dispatcher hides, and which dispatcher: a recipe step names the real tool.
-  const reach = [];
-  const hiddenVia = new Map();
-  const REMOTE_NAME_RE = /^mcp[_-]/i;
-  for (const p of list) {
-    const providerRemote = p.remote === true;
-    if (p.traits instanceof Map) for (const [k, v] of p.traits) if (!traits.has(k)) traits.set(k, v);
-    if (Array.isArray(p.reach) && p.specs.length === 1) {
-      for (const h of p.reach) if (h?.name && !hiddenVia.has(h.name)) { hiddenVia.set(h.name, p.specs[0].name); reach.push(h); }
-    }
-    for (const s of p.specs) {
-      if (route.has(s.name)) continue; // first provider to claim a name wins
-      specs.push(s);
-      route.set(s.name, p.execute);
-      if (providerRemote || REMOTE_NAME_RE.test(String(s.name || ''))) remoteTools.add(s.name);
-      if (p.serial === true) serialTools.add(s.name);
-    }
-  }
-  if (!specs.length) return undefined;
-
-  // Generic MCP rules + citation policy ONCE (not repeated per server), then each
-  // provider's server-specific inventory. Cuts thousands of tokens off the prompt
-  // when several MCP servers are armed.
-  const hasMcp = specs.some((s) => /^mcp[_-]/i.test(String(s?.name || '')));
-  const parts = [hasMcp ? mcpSharedSystem() : '', ...list.map((p) => p.system)];
-  const system = parts.map((x) => String(x || '').trim()).filter(Boolean).join('\n\n') || undefined;
-  // WHICH blurb costs what. The turn record reported one total for the whole preamble, so
-  // "2233 tokens for 'hello'" was visible but unattributable — and a number nobody can
-  // attribute is a number nobody can reduce.
-  const systemParts = {};
-  if (hasMcp) systemParts.mcp = Math.round(String(mcpSharedSystem() || '').length / 4);
-  for (const p of list) {
-    const t = Math.round(String(p.system || '').trim().length / 4);
-    // Named by the dispatcher tool it owns — 'page', 'find', 'mcp' — which is what the
-    // reader sees in the tools list and can act on.
-    if (t) systemParts[p.id || p.specs[0]?.name || 'group'] = t;
-  }
-
-  return {
-    specs,
-    system,
-    systemParts,
-    remoteTools,
-    traits,
-    serialTools,
-    reach,
-    hiddenVia,
-    async execute(name, input, meta = {}) {
-      const fn = route.get(name);
-      if (!fn) return JSON.stringify({ error: `Unknown tool: ${name}` });
-      return fn(name, input, meta);
-    },
-  };
+  return buildSharedToolset(providers, { mcpSystem: mcpSharedSystem });
 }
