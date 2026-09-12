@@ -26,10 +26,23 @@ export const VOICE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'muted
 // past echo cancellation. Two words is the cheapest filter that survives both.
 const MIN_BARGE_IN_WORDS = 2;
 
-export function createVoiceLoop({ listen, send, speakStream, onState, onError } = {}) {
+/**
+ * How long after muting a final transcript still counts as "what I said before I muted".
+ *
+ * A final only exists once the STT engine has heard a silence after the sentence — and
+ * muting stops the listener, whose teardown flushes that sentence as its last final. Both
+ * arrive AFTER the mute flag is set. Dropping them meant "say something, mute" lost the
+ * sentence every time: the engine had it, the loop threw it away. Muting is "stop hearing
+ * the room", not "forget what I just said". Longer than any end-of-sentence silence window
+ * plus a decode; anything later than this really was the room.
+ */
+export const MUTE_GRACE_MS = 4000;
+
+export function createVoiceLoop({ listen, send, speakStream, onState, onError, now = Date.now } = {}) {
   let state = 'idle';
   let running = false;
   let muted = false;
+  let mutedAt = 0;
   let stopListen = null;
   let turnToken = 0;      // bumped to abandon the turn in flight
   let speaking = null;    // the live speak queue, if any
@@ -105,7 +118,9 @@ export function createVoiceLoop({ listen, send, speakStream, onState, onError } 
           if (state === 'listening') setState('listening', t);
         },
         onFinal: (t) => {
-          if (!running || muted) return;
+          if (!running) return;
+          // Spoken before the mute, finalized after it: still the user's turn. See MUTE_GRACE_MS.
+          if (muted && now() - mutedAt > MUTE_GRACE_MS) return;
           const said = String(t || '').trim();
           if (!said) return;
           if (state === 'thinking' || state === 'speaking') {
@@ -154,6 +169,7 @@ export function createVoiceLoop({ listen, send, speakStream, onState, onError } 
       const next = !!on;
       if (next === muted) return;
       muted = next;
+      if (muted) mutedAt = now();
       if (!running) return;
       if (muted) {
         try { stopListen?.(); } catch { /* not listening */ }

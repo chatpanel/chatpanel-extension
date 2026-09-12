@@ -227,3 +227,35 @@ function rig({ reply = (t) => `reply to ${t}`, stream = false, hold = false } = 
 
 assert.deepEqual(VOICE_STATES, ['idle', 'listening', 'thinking', 'speaking', 'muted']);
 console.log('✓ voice-loop: mic stays open, barge-in cancels (and ignores one-word echo), speaks while generating, silence ignored, failures survive, mute closes the mic, stop beats late replies');
+
+// ── "say something, mute" must still send the something ────────────────────────
+// A final only exists after the engine hears a silence, and muting flushes the listener's
+// tail as its last final — both land AFTER the mute flag. They are the sentence spoken
+// before the mute, and they used to be thrown away.
+{
+  let clock = 1_000_000;
+  let handlers = null;
+  const sent = [];
+  const loop = createVoiceLoop({
+    now: () => clock,
+    listen: (h) => { handlers = h; return () => {}; },
+    send: async (text) => { sent.push(text); return 'ok'; },
+    // The loop pushes deltas into a speech QUEUE, not a promise — same shape as rig()'s.
+    speakStream: () => { let r; const done = new Promise((res) => { r = res; }); return { push: () => {}, end: () => r(), stop: () => r(), done }; },
+    onState: () => {},
+  });
+  loop.start();
+  const h = handlers;
+  loop.setMuted(true);
+  clock += 1500;                      // the end-of-sentence silence, then the flush
+  h.onFinal('send the release notes');
+  await settle();
+  assert.deepEqual(sent, ['send the release notes'], 'a final that lands just after muting is the sentence spoken before it, and is sent');
+  assert.equal(loop.state(), 'muted', 'and the loop rests muted afterwards, as asked');
+
+  clock += 10_000;                    // long after — this is the room, not the user
+  h.onFinal('the television in the background');
+  await settle();
+  assert.deepEqual(sent, ['send the release notes'], 'a final that arrives well after muting is ignored');
+  loop.stop();
+}
