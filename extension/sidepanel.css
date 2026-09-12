@@ -730,7 +730,11 @@ html.surface-tab .topbar { padding-top: calc(8px + env(safe-area-inset-top)); }
   background: var(--bg-soft); font-size: 12.5px; line-height: 1.5; color: var(--text-dim);
   max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
 }
-.redact-preview .rp-head { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--text-dim); opacity: .8; margin-bottom: 4px; }
+.redact-preview .rp-head { display: flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--text-dim); opacity: .8; margin-bottom: 4px; }
+.redact-preview .rp-head .ico { width: 13px; height: 13px; flex: none; }
+/* How many, and of what. The marks say where; this says what was taken out — the same
+   summary the sent message carries, so the two read alike. */
+.redact-preview .rp-sum { font-variant-numeric: tabular-nums; }
 /* What the preview does NOT cover. Deterministic mode cannot catch a name, and a preview
    that shows one back with the shield lit reads as "this is fine". */
 .redact-preview .rp-note { display: block; margin-top: 5px; font-size: 11px; color: var(--text-dim); opacity: .85; }

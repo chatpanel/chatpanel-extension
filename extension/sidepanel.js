@@ -6422,9 +6422,11 @@ async function runPiiPreview() {
     return; // the module itself is unreachable; there is nothing useful to say
   }
 
-  // Pass 1 — instant, no network.
+  // Pass 1 — instant, no network. KEPT, not just drawn: every state below re-renders it, so
+  // a detector that is missing or down costs the user the NAMES, never the whole panel.
+  let fast = null;
   try {
-    const fast = await mod.previewRedaction(state.settings, draft, { detect: false });
+    fast = await mod.previewRedaction(state.settings, draft, { detect: false });
     if (seq !== _piiPreviewSeq || !piiPreviewEnabled()) return;
     paintPiiPreview(panel, fast, mode, mode === 'model' ? 'pending' : 'patterns');
   } catch { /* even the deterministic pass failed — pass 2 will report it */ }
@@ -6441,7 +6443,7 @@ async function runPiiPreview() {
     ? !!det.targetId
     : !!det.backend && det.backend !== 'off' && !!det.url;
   if (!configured) {
-    paintPiiPreview(panel, null, mode, 'nodetector');
+    paintPiiPreview(panel, fast, mode, 'nodetector');
     return;
   }
 
@@ -6452,53 +6454,27 @@ async function runPiiPreview() {
     paintPiiPreview(panel, full, mode, 'ok');
   } catch (err) {
     if (seq !== _piiPreviewSeq || !piiPreviewEnabled()) return;
-    paintPiiPreview(panel, null, mode, 'failed', err);
+    paintPiiPreview(panel, fast, mode, 'failed', err);
   }
 }
 
 /**
- * One painter for all four states, so the panel can never show a redaction it did not
- * actually compute — the failure mode that makes a privacy indicator worse than none.
+ * One frame of the preview, drawn by js/redact-preview.js.
+ *
+ * The rendering lives in its own module for two reasons: it is the kind of small, focused
+ * capability another surface (notes, a future desktop-shaped panel) will want whole, and it
+ * must not sit on the side panel's first paint. The call site is already async, so the
+ * import costs nothing until the user actually turns the preview on.
  */
-function paintPiiPreview(panel, result, mode, status, err) {
-  if (status === 'nodetector') {
-    panel.innerHTML = '<span class="rp-head">🛡 What the model receives</span>'
-      + '<span class="rp-note rp-warn">Name detection is on but no detector is set up, so names, '
-      + 'orgs and places are NOT being redacted. Patterns still apply. '
-      + '<button type="button" class="rp-settings">Set up the detector</button></span>';
-    const go = panel.querySelector('.rp-settings');
-    if (go) go.onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#privacy') });
-    panel.classList.remove('hidden');
-    return;
-  }
-  if (status === 'failed') {
-    panel.innerHTML = '<span class="rp-head">🛡 What the model receives</span>'
-      + `<span class="rp-note rp-warn">Name detection is not answering${err?.message ? ` — ${escapeAttr(err.message)}` : ''}. `
-      + 'Patterns still apply; names, orgs and places are NOT being redacted.</span>';
-    panel.classList.remove('hidden');
-    return;
-  }
-  const { redacted, spans } = result;
-  let html = escapeAttr(redacted).replace(/\[\[[A-Z][A-Z0-9_]*_\d+\]\]/g, (m) => `<mark>${m}</mark>`);
-  // Pseudonyms aren't tokenized — highlight the alias text itself.
-  for (const s of spans.filter((x) => x.kind === 'alias')) {
-    const alias = escapeAttr(s.token);
-    if (alias) html = html.split(alias).join(`<mark>${alias}</mark>`);
-  }
-  // SAY WHEN NAMES ARE NOT COVERED. Deterministic mode catches emails, phones and card
-  // numbers by pattern and cannot catch a person's name — that needs the detector. A
-  // preview headed "what the model receives" that shows a name back unredacted, with the
-  // shield lit, reads as "this is fine", and the user has no reason to doubt it.
-  const note = status === 'patterns'
-    ? '<span class="rp-note">Patterns only — emails, phone and card numbers. '
-      + '<button type="button" class="rp-upgrade">Turn on name detection</button> to catch names, orgs and places.</span>'
-    : status === 'pending'
-      ? '<span class="rp-note">Checking for names…</span>'
-      : '';
-  panel.innerHTML = `<span class="rp-head">🛡 What the model receives</span>${html}${note}`;
-  const up = panel.querySelector('.rp-upgrade');
-  if (up) up.onclick = () => setPiiMode('model');
-  panel.classList.remove('hidden');
+async function paintPiiPreview(panel, result, mode, status, err) {
+  const { paintRedactPreview } = await import('./js/redact-preview.js');
+  paintRedactPreview(panel, {
+    result,
+    status,
+    err,
+    onSettings: () => chrome.tabs.create({ url: chrome.runtime.getURL('settings.html#privacy') }),
+    onEnableModel: () => setPiiMode('model'),
+  });
 }
 
 async function togglePiiPreview() {

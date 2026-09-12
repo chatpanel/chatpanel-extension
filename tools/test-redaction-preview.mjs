@@ -9,6 +9,10 @@
 //      as "nothing to redact" while the shield in the composer is still lit.
 //   2. On the deterministic tier it showed a person's name back unredacted with no note,
 //      which reads as "this is fine". Patterns cannot catch a name; only the detector can.
+//   3. A detector that was missing or down REPLACED the panel with an orange sentence. The
+//      user asked what the model receives; the answer they got was about the failure, and
+//      the redactions that were still going to happen (emails, phones, cards, dictionary)
+//      vanished from the screen along with it.
 //
 // So this file asserts the CONTRACT: the panel paints from the deterministic layer first,
 // upgrades when the detector lands, and says something specific in every other case.
@@ -97,24 +101,41 @@ assert.ok(body, 'runPiiPreview should still exist');
 
 assert.match(body, /previewRedaction\([^)]*\{\s*detect:\s*false\s*\}/s,
   'the panel must paint the deterministic pass BEFORE awaiting the detector');
-assert.ok(body.indexOf('detect: false') < body.indexOf("paintPiiPreview(panel, null, mode, 'failed'"),
+assert.ok(body.indexOf('detect: false') < body.indexOf("paintPiiPreview(panel, fast, mode, 'failed'"),
   'the instant paint has to come first, or there is nothing on screen while the model thinks');
-assert.match(body, /catch \(err\)[\s\S]*paintPiiPreview\(panel, null, mode, 'failed', err\)/,
+assert.match(body, /catch \(err\)[\s\S]*paintPiiPreview\(panel, fast, mode, 'failed', err\)/,
   'a detector failure must be REPORTED in the panel, never swallowed');
+// THE DETERMINISTIC RESULT SURVIVES THE FAILURE. Both broken states hand the painter the
+// pass-1 result, so a missing or dead detector costs the user the NAMES and not the panel.
+for (const state of ["'failed'", "'nodetector'"]) {
+  assert.ok(body.includes(`paintPiiPreview(panel, fast, mode, ${state}`),
+    `the ${state} state must still show what WAS redacted, not replace it with the warning`);
+}
 
 // No bare `catch {}` may wrap the detector call again — that is the exact line that made a
 // down detector look like a clean prompt.
 const bareCatches = body.match(/catch \{ \/\* best-effort/g) || [];
 assert.equal(bareCatches.length, 0, 'the swallow-everything catch must not come back');
 
-const painter = panel.slice(panel.indexOf('function paintPiiPreview('), panel.indexOf('async function togglePiiPreview()'));
+// The painter lives in its own module — small, focused, and OFF the side panel's first
+// paint (it is reached through an `await import()` at the call site).
+assert.match(body, /await import\('\.\/js\/redact-preview\.js'\)|paintPiiPreview\(/,
+  'the panel paints through the redact-preview module');
+assert.doesNotMatch(panel.slice(0, panel.indexOf('async function init')),
+  /^import .*redact-preview\.js/m,
+  'the preview painter must not be a static import — it is action-only weight');
+const painter = read('extension/js/redact-preview.js');
 assert.match(painter, /rp-warn/, 'a detector that is not answering must look different from one that found nothing');
-assert.match(painter, /NOT being redacted/, 'and it must say plainly what is no longer covered');
+assert.match(painter, /are NOT redacted/, 'and it must say plainly what is no longer covered');
 assert.match(painter, /Patterns only/, 'the deterministic tier must disclose that it cannot catch names');
 assert.match(painter, /rp-upgrade/, 'and offer the one-click fix');
+// The warning is a NOTE under the text, not the text's replacement: the painter renders the
+// redacted draft whenever it has one, in every state.
+assert.match(painter, /if \(!result\)/, 'the painter must handle "no result" as the special case, not the norm');
+assert.match(painter, /Replaced \$\{tally\}/, 'and say what was replaced, by kind');
 
 const css = read('extension/sidepanel.css');
-for (const cls of ['rp-note', 'rp-upgrade', 'rp-warn']) {
+for (const cls of ['rp-note', 'rp-upgrade', 'rp-warn', 'rp-sum']) {
   assert.ok(css.includes(`.redact-preview .${cls}`), `${cls} is rendered but has no style`);
 }
 
