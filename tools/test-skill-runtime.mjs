@@ -70,7 +70,9 @@ assert.deepEqual(enabledSkills(undefined), [], 'A missing skill list should filt
 // whichever list forgot to check.
 const sidepanel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
 for (const [label, snippet] of [
-  ['slash-command match', "enabledSkills(state.settings.skills).find("],
+  // The match itself is shared (js/events/slash-commands.js filters to enabled skills — its
+  // own test covers that); what the panel must do is hand it the whole list, not a copy.
+  ['slash-command match', 'return matchSlashSkillShared(text, state.settings.skills);'],
   ['skills menu', 'for (const skill of enabledSkills(state.settings.skills)) {'],
   ['meeting monitors', 'return enabledSkills(state.settings?.skills).filter((s) => s.meeting && s.prompt);'],
   ['slash autocomplete', 'skills: enabledSkills(state.settings.skills),'],

@@ -233,6 +233,22 @@ export async function substituteSkillVars(text, { args = '', resolvers = {} } = 
 }
 
 /**
+ * The prompt a `/command args` sends.
+ *
+ * The typed args fill `{{input}}` when the author left a slot for them, and are appended
+ * after the prompt when not — never both, which is how "/fix this sentence" once landed
+ * in the prompt twice. Everything else `substituteSkillVars` reports (an empty selection,
+ * an invented placeholder) comes back untouched, so the caller can say so out loud.
+ */
+export async function expandSkillPrompt(prompt, { args = '', resolvers = {} } = {}) {
+  const src = String(prompt || '');
+  const a = String(args || '').trim();
+  const inline = lintSkillPrompt(src).hasInput;
+  const body = src + (!inline && a ? `\n\n${a}` : '');
+  return substituteSkillVars(body, { args: a, resolvers });
+}
+
+/**
  * The sentence prompt-assist needs so the model stops inventing placeholders.
  * Generated from SKILL_VARS so a variable added here reaches the assist prompt
  * without anyone remembering to update a string.

@@ -58,16 +58,18 @@ assert.doesNotMatch(
   'assist.js is on the panel’s static graph, so its skill-vars import must be dynamic too.',
 );
 
-// 1. Slash path: append the args only when there is no slot to put them in.
+// 1. Slash path: append the args only when there is no slot to put them in. That rule is
+//    `expandSkillPrompt` in the contract (its test proves it); the panel must go through it
+//    rather than re-deciding with its own lint — the desktop's /commands take the same path.
 assert.match(
   sidepanel,
-  /const inline = \(await skillVars\(\)\)\.lintSkillPrompt\(sk\.skill\.prompt\)\.hasInput;/,
-  'The slash path should ask the contract whether the prompt has an {{input}} slot.',
+  /text = await substituteVars\(sk\.skill\.prompt, \{ args: sk\.args, expand: true \}\);/,
+  'The slash path should expand the prompt through the shared expandSkillPrompt.',
 );
 assert.match(
   sidepanel,
-  /const body = sk\.skill\.prompt \+ \(!inline && sk\.args \? `\\n\\n\$\{sk\.args\}` : ''\);/,
-  'Typed args should be appended only when the prompt has no {{input}} slot.',
+  /\(expand \? expandSkillPrompt : substituteSkillVars\)/,
+  'substituteVars should route an expansion to expandSkillPrompt and a plain fill to substituteSkillVars.',
 );
 
 // 2. Menu path: the composer's text fills {{input}}; an empty slot parks the caret.

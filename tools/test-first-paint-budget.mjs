@@ -85,7 +85,11 @@ const BUDGET = {
   // confirm dialog, the `/recipe` slash items (js/slash-commands.js, already on this graph)
   // and the two closures buildTurnTools receives. The tool itself (js/recipe-tools.js) and
   // the engine (js/events/recipe.js) are `await import()`ed and pinned OFF below.
-  'sidepanel.js': 843,
+  // 843 → 847 for moving the /command grammar to @chatpanel/events (js/events/slash-commands.js)
+  // so the desktop's composer runs the same matching and labelling instead of a copy.
+  // js/slash-commands.js is now the extension's built-in list over the shared module; the
+  // ~2 KB is the shared file's documentation, not new code on this path.
+  'sidepanel.js': 847,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one

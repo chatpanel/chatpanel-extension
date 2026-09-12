@@ -131,7 +131,7 @@ import {
 import { upsertMeetingChatAttachment } from './js/meeting-chat-context.js';
 // history-rag.js (+ its meeting/search subgraph) is dynamic-imported inside send().
 import { enabledSkills, skillRunFromSkill } from './js/skill-runtime.js';
-import { skillInvocationLabel, skillInvocationOf, slashCommandInsert, slashCommandItems, matchSlashRecipe, recipeInvocationText } from './js/slash-commands.js';
+import { skillInvocationLabel, skillInvocationOf, slashCommandInsert, slashCommandItems, matchSlashRecipe, matchSlashSkill as matchSlashSkillShared, recipeInvocationText } from './js/slash-commands.js';
 import {
   HISTORY_CONTEXT_MODES,
   historyContextForMode,
@@ -1445,12 +1445,7 @@ function isActiveStreaming() {
 // Parse a leading "/command args" into its skill (or null). The caller applies
 // the skill's context/agent and substitutes variables — see applySkillPrep.
 function matchSlashSkill(text) {
-  const m = /^\/([a-z0-9_-]+)\s*([\s\S]*)$/i.exec(text);
-  if (!m) return null;
-  const skill = enabledSkills(state.settings.skills).find(
-    (s) => (s.command || '').toLowerCase() === m[1].toLowerCase(),
-  );
-  return skill ? { skill, args: m[2].trim() } : null;
+  return matchSlashSkillShared(text, state.settings.skills);
 }
 
 // Detect an inline "/search <terms>" (or "/web <terms>") directive ANYWHERE in the
@@ -2624,11 +2619,9 @@ async function send({ steer = false } = {}) {
       await applySkillPrep(sk.skill);
       skillInvocation = skillInvocationOf(sk.skill, sk.args);
       skillRun = skillRunFromSkill(sk.skill, { includeMeetings: can(state.license, 'liveMeetings') });
-      // Append the typed args ONLY when the prompt has no {{input}} slot to put
-      // them in — otherwise "/fix this sentence" landed in the prompt twice.
-      const inline = (await skillVars()).lintSkillPrompt(sk.skill.prompt).hasInput;
-      const body = sk.skill.prompt + (!inline && sk.args ? `\n\n${sk.args}` : '');
-      text = await substituteVars(body, { args: sk.args });
+      // The typed args fill {{input}} or go after the prompt — never both (shared
+      // expandSkillPrompt, so the desktop's /commands expand the same way).
+      text = await substituteVars(sk.skill.prompt, { args: sk.args, expand: true });
     }
 
     // /search <query>: render each enabled engine's SERP + top results in
@@ -8365,9 +8358,9 @@ const skillVarResolvers = () => ({
   selection: async () => (await captureSelection()).text || '',
 });
 
-async function substituteVars(text, { args = '' } = {}) {
-  const { substituteSkillVars } = await skillVars();
-  const out = await substituteSkillVars(text, { args, resolvers: skillVarResolvers() });
+async function substituteVars(text, { args = '', expand = false } = {}) {
+  const { substituteSkillVars, expandSkillPrompt } = await skillVars();
+  const out = await (expand ? expandSkillPrompt : substituteSkillVars)(text, { args, resolvers: skillVarResolvers() });
   // A slot that came back empty, or one that was never a real variable, leaves a
   // prompt reading "…rewrite:" with nothing after it. Both used to be silent.
   if (out.empty.includes('selection')) {
