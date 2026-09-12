@@ -146,7 +146,12 @@ export function skillDiscoveryProvider({ entries = [], loadPrompt, read }) {
     specs,
     async execute(name, args) {
       if (name === 'skill_open') {
-        const e = byHandle.get(String(args?.name || '').trim().toLowerCase());
+        // `name` is the declared argument; `skill` is what skill_file takes and what a model
+        // that has just read that spec reaches for. Refusing a skill it was just told exists —
+        // "No such skill. Available: summarize, …" for {skill:"summarize"} — is the failure
+        // this tolerates.
+        const handle = String(args?.name ?? args?.skill ?? args?.id ?? args?.command ?? '').trim().toLowerCase();
+        const e = byHandle.get(handle);
         if (!e) return `No such skill. Available: ${[...byHandle.keys()].join(', ')}`;
         opened.set(e.command, e);
         let prompt = '';

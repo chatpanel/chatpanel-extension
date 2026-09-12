@@ -51,6 +51,9 @@ const SKILLS = [
   // open a bridge-only skill → its body is fetched now
   const opened = await p.execute('skill_open', { name: 'microsoft-foundry' });
   assert.match(opened, /FULL FOUNDRY INSTRUCTIONS/);
+  // A model that has just read skill_file's spec reaches for `skill:` here too. Seen in a real
+  // transcript: {skill:"summarize"} answered "No such skill. Available: summarize, …".
+  assert.match(await p.execute('skill_open', { skill: 'microsoft-foundry' }), /FULL FOUNDRY INSTRUCTIONS/, 'the skill_file key is accepted too');
   assert.match(opened, /call skill_file/, 'and tells the model how to read a reference the instructions point at');
 
   // references are readable only AFTER opening
