@@ -5,13 +5,13 @@ import { readFileSync } from 'node:fs';
 
 import { runRound, parallelEligible } from '../extension/js/turn-round.js';
 import { createToolLoopGuard } from '../extension/js/providers.js';
-import { createAdaptiveToolPolicy } from '../extension/js/adaptive-tool-policy.js';
+import { createAdaptiveToolPolicy } from '../extension/js/events/adaptive-tool-policy.js';
 import { buildToolset } from '../extension/js/toolset.js';
 import { mcpDispatchProvider, MCP_TOOL_NAME } from '../extension/js/mcp-dispatch.js';
 import { narrowToolset } from '../extension/js/tool-select.js';
 import { rankToolSpecs } from '../extension/js/tool-rank.js';
 import { shieldToolset, exemptFromShield, mcpFenceEnvelope } from '../extension/js/tool-result-shield.js';
-import { McpClient, mcpProvider } from '../extension/js/mcp-client.js';
+import { McpClient, mcpProvider } from '../extension/js/events/mcp-client.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

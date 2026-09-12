@@ -3,7 +3,7 @@
 // a timer instead of building one.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { widgetAuthoringSystem } from '../extension/js/tool-hints.js';
+import { widgetAuthoringSystem } from '../extension/js/events/tool-hints.js';
 
 const sys = widgetAuthoringSystem();
 

@@ -1,3 +1,11 @@
+// GENERATED — do not edit.
+// Source of truth: chatpanel-events/mcp-manager.js (npm @chatpanel/events).
+// Edit there, then run: npm run sync:events
+//
+// Vendored because the extension loads raw ES modules with no bundler. The gateway
+// and bridge take the same package as an npm dependency instead; a future mobile or
+// desktop client takes it the same way, or speaks the wire contract if it is native.
+
 // Holds live MCP client connections so we don't re-handshake every message, and
 // turns the user's configured servers into tool providers for the registry.
 // Never throws — a server that won't connect is skipped so it can't break a chat.
@@ -17,11 +25,14 @@ const remoteViaBridge = (s, bridgeAvailable) =>
 
 // Build an McpClient from a server config: stdio (local command, via the bridge),
 // or http (Streamable HTTP) connected directly OR proxied through the bridge.
-function clientFor(s, bridgeUrl, bridgeAvailable) {
+// `bridgeToken` and `fetchImpl` ride through to the client: the desktop authenticates to the
+// bridge with the per-install token (an extension is authorized by its origin), and a test
+// hands in a fetch.
+function clientFor(s, bridgeUrl, bridgeAvailable, { bridgeToken = '', fetchImpl = null } = {}) {
   if (s.command) {
-    return new McpClient({ transport: 'stdio', id: s.id, command: s.command, args: s.args, env: s.env, bridgeUrl });
+    return new McpClient({ transport: 'stdio', id: s.id, command: s.command, args: s.args, env: s.env, bridgeUrl, bridgeToken, fetchImpl });
   }
-  return new McpClient({ url: s.url, headers: s.headers || {}, bridgeUrl, viaBridge: remoteViaBridge(s, bridgeAvailable) });
+  return new McpClient({ url: s.url, headers: s.headers || {}, bridgeUrl, viaBridge: remoteViaBridge(s, bridgeAvailable), bridgeToken, fetchImpl });
 }
 
 async function withTimeout(fn, ms) {
@@ -42,7 +53,7 @@ const inflight = new Map();
  * Connect (or reuse) one server. Never rejects — a broken server is reported and skipped,
  * because one bad entry must not take the others down.
  */
-function connectTask(s, { onError, timeoutMs, bridgeUrl, bridgeAvailable }) {
+function connectTask(s, { onError, timeoutMs, bridgeUrl, bridgeAvailable, bridgeToken, fetchImpl }) {
   const key = keyOf(s);
   const sig = sigOf(s);
   let entry = clients.get(key);
@@ -87,14 +98,14 @@ function connectTask(s, { onError, timeoutMs, bridgeUrl, bridgeAvailable }) {
  * for the next turn. A tool that shows up a message late is a far smaller cost than a
  * product that appears frozen on first use.
  */
-export async function getMcpProviders(servers, { onError, timeoutMs = 8000, bridgeUrl, bridgeAvailable = false, budgetMs = 4000 } = {}) {
+export async function getMcpProviders(servers, { onError, timeoutMs = 8000, bridgeUrl, bridgeAvailable = false, budgetMs = 4000, bridgeToken = '', fetchImpl = null } = {}) {
   const enabled = (servers || []).filter((s) => s && s.enabled !== false && (s.url || s.command));
   if (!enabled.length) return [];
 
   // Record each result as it lands, so when the budget expires we can take whatever is
   // ready without cancelling anything still in flight.
   const ready = new Array(enabled.length).fill(null);
-  const tasks = enabled.map((s, i) => connectTask(s, { onError, timeoutMs, bridgeUrl, bridgeAvailable })
+  const tasks = enabled.map((s, i) => connectTask(s, { onError, timeoutMs, bridgeUrl, bridgeAvailable, bridgeToken, fetchImpl })
     .then((p) => { ready[i] = p; return p; }));
 
   if (budgetMs > 0) {
@@ -112,8 +123,8 @@ export async function getMcpProviders(servers, { onError, timeoutMs = 8000, brid
 
 // Test a single server config (used by Settings "Test" button). Returns the
 // tool list on success; throws on failure.
-export async function testMcpServer(server, { timeoutMs = 8000, bridgeUrl, bridgeAvailable = false } = {}) {
-  const client = clientFor(server, bridgeUrl, bridgeAvailable);
+export async function testMcpServer(server, { timeoutMs = 8000, bridgeUrl, bridgeAvailable = false, bridgeToken = '', fetchImpl = null } = {}) {
+  const client = clientFor(server, bridgeUrl, bridgeAvailable, { bridgeToken, fetchImpl });
   const ms = server.command ? 45000 : (remoteViaBridge(server, bridgeAvailable) ? 20000 : timeoutMs);
   await withTimeout((signal) => client.connect(signal), ms);
   return client.tools;

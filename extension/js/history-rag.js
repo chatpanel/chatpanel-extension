@@ -4,7 +4,7 @@ import { getNote, getNoteIndex } from './store-notes.js';
 import { getMeetingMonitors, monitorsSearchText } from './store-monitors.js';
 import { peopleOfMeeting, anyPersonMatches } from './meeting-people.js';
 import { insightTopicItemsFromNotes } from './topic-extraction.js';
-import { sourceCitationSystem } from './tool-hints.js';
+import { sourceCitationSystem } from './events/tool-hints.js';
 import {
   buildHistoryRagAttachment,
   formatHistoryResults,

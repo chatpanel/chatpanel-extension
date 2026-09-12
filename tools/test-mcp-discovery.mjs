@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mcpProvider } from '../extension/js/mcp-client.js';
-import { combineSystemPrompt, sourceCitationSystem, mcpSharedSystem, toolStatus } from '../extension/js/tool-hints.js';
+import { mcpProvider } from '../extension/js/events/mcp-client.js';
+import { combineSystemPrompt, sourceCitationSystem, mcpSharedSystem, toolStatus } from '../extension/js/events/tool-hints.js';
 
 test('mcpProvider exposes an inventory prompt with exact callable tool names', () => {
   const provider = mcpProvider({

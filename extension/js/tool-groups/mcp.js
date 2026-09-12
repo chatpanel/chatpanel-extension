@@ -9,7 +9,7 @@ import { defineToolGroup } from '../events/tool-groups.js';
 import { buildToolset } from '../toolset.js';
 import { narrowToolset } from '../tool-select.js';
 import { mcpDispatchProvider } from '../mcp-dispatch.js';
-import { getMcpProviders } from '../mcp-manager.js';
+import { getMcpProviders } from '../events/mcp-manager.js';
 import { isPro, FREE_LIMITS } from '../license.js';
 import { MCP_TURN_MODES, DEFAULT_AUTO_TOOL_CAP, normalizeMcpTurnMode, shouldExposeMcpForTurn } from '../tool-policy.js';
 import { filterMcpServersForSkill } from '../skill-runtime.js';

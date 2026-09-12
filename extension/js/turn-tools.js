@@ -1,4 +1,4 @@
-import { widgetAuthoringSystem, vaultWidgetSystem, wantsVaultGuidance } from './tool-hints.js';
+import { widgetAuthoringSystem, vaultWidgetSystem, wantsVaultGuidance } from './events/tool-hints.js';
 // Turn capability — the ONE place a "model turn" is armed with tools + PII
 // redaction, shared by every ChatPanel surface (the side panel, the Notes
 // dashboard, and anything that comes next).

@@ -8,7 +8,7 @@
 // hidden-tool index a recipe routes by are one rule each, not one per client.
 
 import { buildToolset as buildSharedToolset } from './events/toolset.js';
-import { mcpSharedSystem } from './tool-hints.js';
+import { mcpSharedSystem } from './events/tool-hints.js';
 
 export function buildToolset(providers) {
   return buildSharedToolset(providers, { mcpSystem: mcpSharedSystem });

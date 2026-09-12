@@ -6,7 +6,7 @@
 import { runToolRound } from './events/tool-round.js';
 import { toolTraits } from './events/tool-traits.js';
 import { effectiveToolName, stepResultText, toolMadeProgress, modelLabelOf } from './providers.js';
-import { toolStatus } from './tool-hints.js';
+import { toolStatus } from './events/tool-hints.js';
 
 // Local tools whose reads may overlap: they touch the user's own data or the network,
 // never the one tab a page tool is driving. Everything not remote and not here runs one

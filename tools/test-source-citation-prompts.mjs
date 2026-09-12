@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const sidepanel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
-const toolHints = readFileSync(new URL('../extension/js/tool-hints.js', import.meta.url), 'utf8');
+const toolHints = readFileSync(new URL('../extension/js/events/tool-hints.js', import.meta.url), 'utf8');
 
 assert.match(toolHints, /export function sourceCitationSystem/, 'Tool hints should export one reusable source citation policy.');
 assert.match(sidepanel, /sourceCitationSystem/, 'Sidepanel should inject the source citation policy into answer turns.');

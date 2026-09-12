@@ -1,8 +1,19 @@
+// GENERATED — do not edit.
+// Source of truth: chatpanel-events/mcp-client.js (npm @chatpanel/events).
+// Edit there, then run: npm run sync:events
+//
+// Vendored because the extension loads raw ES modules with no bundler. The gateway
+// and bridge take the same package as an npm dependency instead; a future mobile or
+// desktop client takes it the same way, or speaks the wire contract if it is native.
+
 // Minimal MCP (Model Context Protocol) client over the Streamable HTTP transport
-// — enough to initialize, list tools, and call them. Runs straight from the
-// extension (MV3 can fetch HTTP/SSE; it CANNOT spawn stdio servers, so stdio MCP
-// servers must be fronted by the bridge as HTTP). JSON-RPC 2.0 over POST; the
+// — enough to initialize, list tools, and call them. JSON-RPC 2.0 over POST; the
 // server replies with either application/json or a text/event-stream of messages.
+//
+// SHARED: it runs in the extension (MV3 can fetch HTTP/SSE; it CANNOT spawn stdio servers,
+// so those are fronted by the bridge as HTTP) and in the desktop's main process, which
+// authenticates to the bridge with the per-install token (`bridgeToken`). `fetchImpl` is
+// injected for tests and for hosts that wrap fetch; the default is the global.
 //
 // Spec: https://modelcontextprotocol.io (Streamable HTTP, 2025-06-18).
 
@@ -17,7 +28,11 @@ export class McpClient {
   //   stdio — { transport:'stdio', id, command, args, env, bridgeUrl }: the
   //           extension can't spawn processes, so proxy JSON-RPC through the
   //           bridge's POST /mcp-local, which spawns & keeps the process alive.
-  constructor({ url, headers = {}, transport, id, command, args, env, bridgeUrl, viaBridge = false } = {}) {
+  constructor({ url, headers = {}, transport, id, command, args, env, bridgeUrl, viaBridge = false, bridgeToken = '', fetchImpl = null } = {}) {
+    this.fetch = fetchImpl || ((...a) => globalThis.fetch(...a));
+    // The bridge's /mcp-local and /mcp-remote are privileged: an extension is authorized by its
+    // origin, anything else by the bridge token it reads as the user.
+    this.bridgeToken = String(bridgeToken || '');
     this.transport = transport === 'stdio' || command ? 'stdio' : 'http';
     this.url = url;
     this.headers = headers || {};
@@ -50,7 +65,7 @@ export class McpClient {
   async _send(message, signal) {
     if (this.transport === 'stdio') return this._sendLocal(message, signal);
     if (this.viaBridge) return this._sendRemoteViaBridge(message, signal);
-    const res = await fetch(this.url, {
+    const res = await this.fetch(this.url, {
       method: 'POST',
       headers: this._hdrs(),
       body: JSON.stringify(message),
@@ -83,9 +98,9 @@ export class McpClient {
   async _sendLocal(message, signal) {
     let res;
     try {
-      res = await fetch(`${this.bridgeUrl}/mcp-local`, {
+      res = await this.fetch(`${this.bridgeUrl}/mcp-local`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(this.bridgeToken ? { Authorization: `Bearer ${this.bridgeToken}` } : {}) },
         body: JSON.stringify({
           server: { id: this.id, command: this.command, args: this.args, env: this.env },
           message,
@@ -120,9 +135,9 @@ export class McpClient {
   async _sendRemoteViaBridge(message, signal) {
     let res;
     try {
-      res = await fetch(`${this.bridgeUrl}/mcp-remote`, {
+      res = await this.fetch(`${this.bridgeUrl}/mcp-remote`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(this.bridgeToken ? { Authorization: `Bearer ${this.bridgeToken}` } : {}) },
         body: JSON.stringify({ url: this.url, headers: this._hdrs(), message }),
         signal,
       });
@@ -244,7 +259,7 @@ export class McpClient {
     // types, required, enums, bounds — stays whole; prose that repeats a parameter's own
     // name goes. `annotations` ride along so a round can tell a read from a write
     // (tool-traits.js). Deferred: this module is on settings' first paint (Test button).
-    const { compressToolSpec } = await import('./events/tool-schema.js');
+    const { compressToolSpec } = await import('./tool-schema.js');
     this.toolSpecs = this.tools.map((t) => {
       const raw = {
         name: t.name,
@@ -279,7 +294,7 @@ export class McpClient {
     try {
       return await this._rpc('tools/call', params, signal);
     } catch (e) {
-      const { isStaleMcpSession } = await import('./events/mcp-errors.js');
+      const { isStaleMcpSession } = await import('./mcp-errors.js');
       if (!isStaleMcpSession(e?.message)) throw e;
       await this.reconnect(signal);
       return this._rpc('tools/call', params, signal);

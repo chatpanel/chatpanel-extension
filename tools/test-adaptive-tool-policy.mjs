@@ -5,7 +5,7 @@ import {
   adaptiveToolRetryHint,
   createAdaptiveToolPolicy,
   isInvalidToolParametersResult,
-} from '../extension/js/adaptive-tool-policy.js';
+} from '../extension/js/events/adaptive-tool-policy.js';
 
 test('detects MCP invalid-parameter results from JSON and text errors', () => {
   assert.equal(isInvalidToolParametersResult('{"error":"MCP error -32602: Invalid request parameters"}'), true);

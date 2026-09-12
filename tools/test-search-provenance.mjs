@@ -2,8 +2,8 @@
 // tell you whether Brave or DuckDuckGo served it, or whether history came from the browser
 // index or the gateway's warm copy. Both differ in coverage and freshness.
 import assert from 'node:assert/strict';
-import { toolStatus } from '../extension/js/tool-hints.js';
-import { resultText } from '../extension/js/adaptive-tool-policy.js';
+import { toolStatus } from '../extension/js/events/tool-hints.js';
+import { resultText } from '../extension/js/events/adaptive-tool-policy.js';
 
 // A provider reports provenance through `note`; the model still reads `text` untouched.
 const webResult = { text: '1. [A Title](https://example.com)', note: 'ChatPanel · brave, startpage' };

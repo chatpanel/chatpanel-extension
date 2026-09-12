@@ -65,6 +65,13 @@ const ALLOWED = [
       + 'The worker only ever reads settings via getSettings(); nothing in its graph writes skills.',
   },
   {
+    file: 'js/store.js',
+    spec: './prefs-sync.js',
+    why: 'schedulePrefsPush() after saveSettings(), guarded by `typeof document === "undefined"` '
+      + 'so the worker never reaches the import(): the settings the worker writes (a bridge '
+      + 'token) are not shareable sections, and a document pushes them the next time it saves.',
+  },
+  {
     file: 'js/meeting-platforms.js',
     spec: './plugins.js',
     why: 'declareMeetingPlatforms(), called from the settings page to populate the Plugins '

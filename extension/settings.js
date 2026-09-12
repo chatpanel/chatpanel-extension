@@ -18,7 +18,6 @@ import { getBackupState, setAutoBackupEnabled, setAutoBackupPassphrase, setAutoB
 import { decryptBackup, isEncryptedBackup } from './js/crypto-backup.js';
 import { googleDriveRedirectUri, connectGoogleDrive, disconnectGoogleDrive, getGoogleDriveConnection, listGoogleDriveBackups, downloadGoogleDriveBackup, googleDriveBackupDevice, latestGoogleDriveBackupsByDevice } from './js/drive-backup.js';
 import { checkBridge, updateBridge, testAgent, listModelOptions, listBridgeModels, checkAgentCommand, previewRedaction, traceFlow } from './js/providers.js';
-import { getMcpProviders } from './js/mcp-manager.js';
 import { historyToolProvider } from './js/history-rag.js';
 import { webSearchToolProvider, webSearchOpts, webSearchUsage } from './js/web-search.js';
 import { fullRedactionUsage } from './js/pii-usage.js';
@@ -42,7 +41,6 @@ import {
   oauthSetupHelp,
   oauthStatusLabel,
 } from './js/oauth.js';
-import { testMcpServer } from './js/mcp-manager.js';
 import { MCP_CATALOG } from './js/mcp-catalog.js';
 import { argsToText, parseArgsInput, parseMcpConfig } from './js/mcp-config-import.js';
 import { fetchMcpRegistryPage } from './js/mcp-registry.js';
@@ -89,6 +87,11 @@ let mcpRegistryState = { query: '', items: [], nextCursor: '', loaded: false, lo
 
 async function init() {
   settings = await getSettings();
+  // What another client changed (prefs-sync.js) arrives before the page draws it.
+  try {
+    const pulled = await (await import('./js/prefs-sync.js')).pullPrefs(settings);
+    if (pulled.changed.length) settings = await saveSettings(pulled.settings);
+  } catch { /* no gateway */ }
   license = await getLicense();
   // Catch a just-completed checkout / sync-restore the moment Settings opens —
   // unless the user deliberately released Pro on this device (opt-out). Also
@@ -4318,6 +4321,9 @@ function mcpServerCard(server, index = 0) {
     status.classList.remove('ok', 'err');
     status.textContent = 'Connecting…';
     try {
+      // Behind the button: the MCP client is a third of the settings page's tool graph and is
+      // needed only when a server is tested or the harness runs.
+      const { testMcpServer } = await import('./js/events/mcp-manager.js');
       const tools = await testMcpServer(server, { bridgeUrl: settings.bridgeUrl, bridgeAvailable: bridgeState.ok });
       server.tools = tools;
       await saveSettings(settings);
@@ -5954,6 +5960,7 @@ async function buildHarnessTools(boxId = 'priv-flow-tools') {
     let bridgeOk = false;
     try { const h = await checkBridge(settings.bridgeUrl); bridgeOk = !!(h && h.ok); } catch { /* bridge down */ }
     try {
+      const { getMcpProviders } = await import('./js/events/mcp-manager.js');
       const mcps = await getMcpProviders(usable, { bridgeUrl: settings.bridgeUrl, bridgeAvailable: bridgeOk, onError: () => {} });
       providers.push(...mcps);
     } catch { /* MCP unavailable — run without it */ }

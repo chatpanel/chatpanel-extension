@@ -1,3 +1,12 @@
+// GENERATED — do not edit.
+// Source of truth: chatpanel-events/tool-hints.js (npm @chatpanel/events).
+// Edit there, then run: npm run sync:events
+//
+// Vendored because the extension loads raw ES modules with no bundler. The gateway
+// and bridge take the same package as an npm dependency instead; a future mobile or
+// desktop client takes it the same way, or speaks the wire contract if it is native.
+
+// The prompt text every client hands a model about its tools. Shared, so it reads the same everywhere.
 export function combineSystemPrompt(...parts) {
   return parts
     .map((p) => String(p || '').trim())

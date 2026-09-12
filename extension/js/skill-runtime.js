@@ -1,4 +1,4 @@
-import { sourceCitationSystem } from './tool-hints.js';
+import { sourceCitationSystem } from './events/tool-hints.js';
 
 function normalizeHistoryContext(value) {
   const v = String(value || 'none').toLowerCase();

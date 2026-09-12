@@ -81,7 +81,7 @@ import {
   setMonitorClosed,
 } from './js/store-monitors.js';
 import { renderMarkdown } from './js/markdown.js';
-import { combineSystemPrompt, sourceCitationSystem } from './js/tool-hints.js';
+import { combineSystemPrompt, sourceCitationSystem } from './js/events/tool-hints.js';
 import { getLicense, isPro, planLabel, can, canUseAgent, freeAgentId, freeAgentToAdopt, freeEndpointId, tierFor, FREE_LIMITS, subscribe } from './js/license.js';
 import { createVault } from './js/pii-redact.js';
 import { setPiiEntitlement, redactOnce, restore as restorePii, redactionFromSettings, displayText } from './js/pii-pipeline.js';
@@ -1285,6 +1285,12 @@ async function init() {
   // with its built-in panes and grows the pinned ones a moment later, rather than making the
   // panel wait on storage to show anything.
   requestIdleCallback?.(() => {
+    // Settings another client changed (the desktop's MCP servers, search engines, tool
+    // policy) are taken at idle so the next turn arms them. Quiet without a gateway.
+    import('./js/prefs-sync.js')
+      .then((m) => m.pullPrefs(state.settings))
+      .then((pulled) => { if (pulled?.changed.length) return updateSettings(pulled.settings).then((s) => { state.settings = s; }); })
+      .catch(() => {});
     import('./js/widgets-panel.js')
       .then((m) => { m.wireWidgetsPanel({ onPinsChanged: refreshWidgetPins }); return refreshWidgetPins(); })
       .catch(() => {});

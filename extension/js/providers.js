@@ -11,7 +11,7 @@
 // use, status) so the UI can show what a coding agent is doing.
 
 import { getEntitlementToken } from './license.js';
-import { createAdaptiveToolPolicy, resultText } from './adaptive-tool-policy.js';
+import { createAdaptiveToolPolicy, resultText } from './events/adaptive-tool-policy.js';
 import {
   redactionEnabled, redactionFromSettings, redactOutbound, redactResult, restoreDeep, makeStreamRestorer, restore,
   redactOpts, gatedScope,
@@ -25,7 +25,7 @@ import { makeSourceStore, manifestText, readSource, approxTokens } from './event
 import { extractUrls } from './events/sources.js';
 import { detectEntities, normalizeEntities, EXTRACT_SYS, withTimeout } from './pii-detect.js';
 import { createVault, redactText, restoreText, redactionSummary } from './pii-redact.js';
-import { combineSystemPrompt, toolStatus } from './tool-hints.js';
+import { combineSystemPrompt, toolStatus } from './events/tool-hints.js';
 import { getTarget, resolveTarget } from './store.js';
 import { authHeadersForEndpoint } from './oauth.js';
 import { mergeExtraBody, sanitizeExtraHeaders } from './request-options.js';

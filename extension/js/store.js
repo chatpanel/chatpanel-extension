@@ -752,7 +752,14 @@ export async function saveSettings(settings) {
   if (settings && typeof settings === 'object') settings.version = defaultSettings().version;
   _settingsCache = settings;
   await writeSettings(settings);
+  schedulePrefsPush(settings);
   return settings;
+}
+
+// Shareable sections → the gateway's prefs document (prefs-sync.js; documents only — the worker cannot import()).
+function schedulePrefsPush(settings) {
+  if (typeof document === 'undefined') return;
+  import('./prefs-sync.js').then((m) => m.schedulePush(settings, writeSettings)).catch(() => {});
 }
 
 export async function resetSkillsToDefaults() {

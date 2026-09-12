@@ -203,7 +203,12 @@ const BUDGET = {
   // the settings.js note. What it buys is briefs surviving a restore at all: the format
   // carried none before, so the knowledge layer had no backup, and a second client that
   // READS briefs without deriving them could only ever show the gateway's flattened copy.
-  'background.js': 572,
+  // 572 → 573 for nothing new running: js/tool-hints.js, js/adaptive-tool-policy.js and
+  // js/mcp-client.js moved to @chatpanel/events so the desktop runs the same MCP client, and
+  // a vendored copy carries the GENERATED banner the original did not (three of them, ~0.6
+  // KB); plus the one line in store.js that hands a saved settings object to prefs-sync.js —
+  // dynamically, and only from a document, so the worker never loads it.
+  'background.js': 573,
 };
 
 function staticGraph(entry) {

@@ -5,7 +5,7 @@ import {
   createToolLoopGuard,
   stableToolCallKey,
 } from '../extension/js/providers.js';
-import { toolStatus } from '../extension/js/tool-hints.js';
+import { toolStatus } from '../extension/js/events/tool-hints.js';
 
 assert.equal(
   stableToolCallKey('mcp_demo__search', { limit: 5, query: 'same' }),

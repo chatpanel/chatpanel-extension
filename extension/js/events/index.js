@@ -281,3 +281,13 @@ export { renderMarkdown, defaultLinkPolicy } from './markdown-render.js';
 // extension writes and MCP reads, so every client shows one transcript, not three.
 export { parseMeetingText, speakerStats, densityRibbon } from './meeting-text.js';
 export { speakerBreakdown, speakerTimeline, formatTalkTime, SPEAKER_SLOTS } from './meeting-shape.js';
+// A list of records as a person reads it, and what a meeting settled — both read, never derived.
+export { SORT_MODES, SORT_LABELS, sortStamp, sortRecords, filterRecords, dayBucket, rowTime, groupRecords } from './record-list.js';
+export { INSIGHT_KINDS, summarySections, insightKindOf, meetingInsights, hasInsights } from './meeting-insights.js';
+// The settings every client shares, and how two edited copies reconcile (per-section LWW).
+export { PREF_SECTIONS, PREF_SECTION_IDS, sectionValue, pickSections, applySections, sectionHash, mergeStamped, changedSections } from './client-prefs.js';
+// The MCP client (one per server, http or stdio-via-bridge) and the prompt text about tools.
+export { McpClient, mcpProvider } from './mcp-client.js';
+export { mcpSharedSystem, mcpInventorySystem, sourceCitationSystem, combineSystemPrompt, toolStatus, widgetAuthoringSystem, vaultWidgetSystem, wantsVaultGuidance } from './tool-hints.js';
+export { adaptiveToolRetryHint, createAdaptiveToolPolicy, isInvalidToolParametersResult } from './adaptive-tool-policy.js';
+export { getMcpProviders, testMcpServer, resetMcp } from './mcp-manager.js';
