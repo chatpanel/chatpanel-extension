@@ -292,3 +292,5 @@ export { mcpSharedSystem, mcpInventorySystem, sourceCitationSystem, combineSyste
 export { adaptiveToolRetryHint, createAdaptiveToolPolicy, isInvalidToolParametersResult } from './adaptive-tool-policy.js';
 export { getMcpProviders, testMcpServer, resetMcp } from './mcp-manager.js';
 export { WEATHER_TOOL_NAME, WEATHER_TOOL_SYSTEM, weatherToolProvider } from './weather-tool.js';
+// Attached context as the model sees it — <context> blocks, image blocks, deferred sources.
+export { renderContent, toChatMessages, toMultimodalMessages, imageAttachmentsOf, deferAttachedSources, withSourceTool, SOURCE_TOOL_SPEC } from './context-attachments.js';

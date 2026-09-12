@@ -37,7 +37,7 @@ const FILES = [
   // The settings every client shares, and how two edited copies reconcile.
   'client-prefs.js', 'record-list.js', 'meeting-insights.js',
   // The MCP client and the prompt text about tools — the desktop runs the same client.
-  'mcp-client.js', 'mcp-manager.js', 'tool-hints.js', 'adaptive-tool-policy.js', 'weather-tool.js',
+  'mcp-client.js', 'mcp-manager.js', 'tool-hints.js', 'adaptive-tool-policy.js', 'weather-tool.js', 'context-attachments.js',
 ];
 
 function pkgDir() {
