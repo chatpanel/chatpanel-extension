@@ -259,3 +259,76 @@ console.log('✓ voice-loop: mic stays open, barge-in cancels (and ignores one-w
   assert.deepEqual(sent, ['send the release notes'], 'a final that arrives well after muting is ignored');
   loop.stop();
 }
+
+// ── the room does not get a turn ───────────────────────────────────────────────
+// Every final is SENT in a conversation, so a television or a colleague at the next desk
+// becomes a question. The gateway fingerprints each sentence; the loop keeps the
+// conversation to whoever started it — and a voice that is not in it may not barge in either.
+{
+  let clock = 2_000_000;
+  let handlers = null;
+  const sent = [];
+  const held = [];
+  const loop = createVoiceLoop({
+    now: () => clock,
+    listen: (h) => { handlers = h; return () => {}; },
+    send: async (text) => { sent.push(text); return `reply to ${text}`; },
+    speakStream: () => { let r; const done = new Promise((res) => { r = res; }); return { push: () => {}, end: () => r(), stop: () => r(), done }; },
+    onState: () => {},
+    onHeld: (h) => held.push(h),
+  });
+  loop.start();
+  const h = handlers;
+
+  h.onFinal('what is on my calendar', { speaker: { label: 'Speaker 1' } });
+  await settle();
+  assert.deepEqual(sent, ['what is on my calendar'], 'the first voice owns the conversation');
+  assert.equal(loop.primarySpeaker(), 'Speaker 1');
+
+  clock += 2000;
+  h.onFinal('and then the weather turned', { speaker: { label: 'Speaker 2' } });
+  await settle();
+  assert.deepEqual(sent, ['what is on my calendar'], 'the room is not a turn');
+  assert.equal(held.length, 1, 'and the caller is told, so it can say so rather than dropping it silently');
+  assert.equal(held[0].count, 1);
+
+  clock += 1000;
+  h.onFinal('add a reminder', { speaker: { label: 'Speaker 1' } });
+  await settle();
+  assert.deepEqual(sent, ['what is on my calendar', 'add a reminder'], 'and the person having it is still heard');
+
+  // No speaker at all — diarization off, or the model is missing. Everything is sent.
+  clock += 1000;
+  h.onFinal('no fingerprint on this one');
+  await settle();
+  assert.equal(sent.length, 3, 'a final with no speaker is always sent — the gate never silences you');
+  loop.stop();
+}
+
+// A voice that is not in the conversation must not barge in on the assistant either.
+{
+  let clock = 3_000_000;
+  let handlers = null;
+  let released = null;
+  const sent = [];
+  const loop = createVoiceLoop({
+    now: () => clock,
+    listen: (h) => { handlers = h; return () => {}; },
+    send: async (text) => { sent.push(text); await new Promise((r) => { released = r; }); return 'ok'; },
+    speakStream: () => { let r; const done = new Promise((res) => { r = res; }); return { push: () => {}, end: () => r(), stop: () => r(), done }; },
+    onState: () => {},
+  });
+  loop.start();
+  const h = handlers;
+  h.onFinal('summarise my week', { speaker: { label: 'Speaker 1' } });
+  await tick();
+  assert.equal(loop.state(), 'thinking');
+  clock += 1000;
+  h.onFinal('the television says something with several words in it', { speaker: { label: 'Speaker 2' } });
+  await settle();
+  assert.equal(loop.state(), 'thinking', 'the room does not cancel the answer you asked for');
+  assert.deepEqual(sent, ['summarise my week']);
+  released();
+  await settle();
+  loop.stop();
+}

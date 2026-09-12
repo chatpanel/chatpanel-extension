@@ -20,6 +20,8 @@
 //   speakStream()                  -> { push, end, stop, done }
 //   onState({ state, text })       'idle' | 'listening' | 'thinking' | 'speaking' | 'muted'
 
+import { createSpeakerGate } from './events/voice-speaker.js';
+
 export const VOICE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'muted'];
 
 // A barge-in has to be SPEECH, not a cough or the tail of our own audio leaking
@@ -38,11 +40,16 @@ const MIN_BARGE_IN_WORDS = 2;
  */
 export const MUTE_GRACE_MS = 4000;
 
-export function createVoiceLoop({ listen, send, speakStream, onState, onError, now = Date.now } = {}) {
+export function createVoiceLoop({ listen, send, speakStream, onState, onError, onHeld, now = Date.now } = {}) {
   let state = 'idle';
   let running = false;
   let muted = false;
   let mutedAt = 0;
+  // WHOSE VOICE. Every final is SENT here, so the television, the colleague at the next desk
+  // and the person answering their own phone all become questions. The gateway fingerprints
+  // each committed segment and labels the speaker; this decides whose turn it is. It fails
+  // OPEN in every uncertain case — see @chatpanel/events/voice-speaker.js.
+  const speakers = createSpeakerGate({ now });
   let stopListen = null;
   let turnToken = 0;      // bumped to abandon the turn in flight
   let speaking = null;    // the live speak queue, if any
@@ -117,12 +124,16 @@ export function createVoiceLoop({ listen, send, speakStream, onState, onError, n
           // the reply on screen.
           if (state === 'listening') setState('listening', t);
         },
-        onFinal: (t) => {
+        onFinal: (t, info) => {
           if (!running) return;
           // Spoken before the mute, finalized after it: still the user's turn. See MUTE_GRACE_MS.
           if (muted && now() - mutedAt > MUTE_GRACE_MS) return;
           const said = String(t || '').trim();
           if (!said) return;
+          // Before anything else, including barge-in: a voice that is not in this
+          // conversation must not interrupt the assistant either.
+          const who = speakers.admit(info || {});
+          if (!who.send) { onHeld?.({ speaker: who.speaker, text: said, count: speakers.heldCount() }); return; }
           if (state === 'thinking' || state === 'speaking') {
             // Barge-in. Require real words: a single fragment is usually our own
             // audio leaking past echo cancellation, and cutting the assistant off
@@ -152,9 +163,16 @@ export function createVoiceLoop({ listen, send, speakStream, onState, onError, n
     state: () => state,
     isRunning: () => running,
     isMuted: () => muted,
+    /** The voice this conversation belongs to, and how many others were held out. */
+    primarySpeaker: () => speakers.primary(),
+    heldCount: () => speakers.heldCount(),
+    /** Hear me again — for a voice the clustering merged or mislabelled. */
+    resetSpeaker: () => speakers.reset(),
     start() {
       if (running) return;
       running = true;
+      // A new conversation belongs to whoever speaks first in it.
+      speakers.reset();
       openMic();
       back();
     },

@@ -230,6 +230,9 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
         gatewayUrl,
         lang: settings?.ui?.dictation?.lang || undefined,
         endSilenceMs: END_SILENCE_MS,
+        // Fingerprint each sentence so the loop can tell the person having this conversation
+        // from the room. Optional and fail-open: no model, no speaker, everything is sent.
+        diarize: true,
         onInterim,
         onFinal,
         onError: ({ message }) => toast?.(`✕ ${message || 'Voice input failed'}`, 2800),
@@ -246,6 +249,11 @@ export async function startVoiceMode({ gatewayUrl, settings = {}, el, toast, sen
     // almost immediately instead of after the whole thing exists.
     speakStream: () => speakStream(speaker),
     onState: ({ state: st }) => setState(st),
+    // HELD, NOT DROPPED. A sentence the gate keeps out is still something the microphone
+    // heard, and silently discarding input is how a voice UI becomes unexplainable. Said
+    // once per conversation, not per sentence, so a talkative room does not become a
+    // stream of toasts.
+    onHeld: ({ count }) => { if (count === 1) toast?.('Another voice — ignoring it. Tap the mic twice to re-listen.', 3200); },
     onError: (m) => toast?.(`✕ ${m}`, 3000),
   });
 
