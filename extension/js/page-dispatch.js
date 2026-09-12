@@ -18,6 +18,8 @@
 // execution: `validateAction` compares arguments against the REAL spec and returns a
 // precise, correctable error rather than a failure — which weak models need anyway.
 
+import { FIND_ACTION, findToolsResult, findActionArgs } from './events/tool-discovery.js';
+
 export const DISPATCH_TOOL_NAME = 'page';
 const DESCRIBE = 'describe';
 
@@ -50,16 +52,23 @@ export function actionMenu(specs) {
  * bugs would be re-earned by a second hand-written copy. Callers supply only the wording
  * that is genuinely theirs.
  */
-export function buildGroupDispatchSpec({ name, description, specs }) {
+export function buildGroupDispatchSpec({ name, description, specs, hidden = 0 }) {
+  // When the menu is a SUBSET of what the group can reach (a relevance cap trimmed it),
+  // say so and name the way back: `find` searches every tool the group owns, listed or
+  // not. Without this line a tool the cap dropped was, for that turn, gone — the model
+  // could not ask for what it did not know existed.
+  const more = hidden > 0
+    ? `\n${hidden} more action${hidden === 1 ? '' : 's'} not listed — {"action":"${FIND_ACTION}","args":{"query":"<task words>"}} finds them by name.`
+    : '';
   return {
     name,
-    description: `${description}\n\nActions:\n${actionMenu(specs)}`,
+    description: `${description}\n\nActions:\n${actionMenu(specs)}${more}`,
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: [DESCRIBE, ...specs.map((s) => s.name)],
+          enum: [DESCRIBE, ...(hidden > 0 ? [FIND_ACTION] : []), ...specs.map((s) => s.name)],
           description: 'Which action to run.',
         },
         // A DECLARED envelope, not `additionalProperties`. Providers and MCP validators
@@ -73,6 +82,7 @@ export function buildGroupDispatchSpec({ name, description, specs }) {
           additionalProperties: true,
         },
         tool: { type: 'string', description: `With action="${DESCRIBE}": the action to describe.` },
+        ...(hidden > 0 ? findActionArgs() : {}),
       },
       required: ['action'],
       additionalProperties: true, // tolerated, but never relied upon — see `args`
@@ -118,8 +128,16 @@ export function validateAction(spec, args) {
  * confirmation gate and the site grant keep firing on the real action name — the
  * dispatcher must never become a way around them.
  */
-export function makeGroupDispatchExecutor({ name: dispatchName, specs, runAction }) {
-  const byName = new Map(specs.map((s) => [s.name, s]));
+/**
+ * @param specs  the MENU — what the dispatcher lists
+ * @param all    everything the group can reach; defaults to the menu. When larger, `find`
+ *               searches it and any action in it runs, listed or not.
+ * @param rank   `(specs, query) => specs` for `find`; the shared IDF ranker when given
+ */
+export function makeGroupDispatchExecutor({ name: dispatchName, specs, all = specs, runAction, rank }) {
+  const byName = new Map(all.map((s) => [s.name, s]));
+  for (const s of specs) byName.set(s.name, s); // the menu's copy wins a duplicate name
+  const menuNames = specs.map((s) => s.name);
   return async (name, input, meta) => {
     if (name !== dispatchName) return runAction(name, input, meta); // direct calls still work
     // Accept BOTH shapes. `args` is the declared envelope and the one the description
@@ -131,14 +149,20 @@ export function makeGroupDispatchExecutor({ name: dispatchName, specs, runAction
     const args = { ...rest, ...(envelope && typeof envelope === 'object' ? envelope : {}) };
     const action = String(rawAction || '');
 
+    if (action === FIND_ACTION) {
+      return findToolsResult(all, String(args.query ?? rawTool ?? ''), { rank, describeAction: DESCRIBE, menu: menuNames });
+    }
+
     if (action === DESCRIBE) {
       const spec = byName.get(String(args.tool || rawTool || ''));
       return JSON.stringify(
         spec
           ? {
             name: spec.name,
-            description: spec.description,
-            parameters: spec.parameters,
+            // The full contract when the menu carried a compressed one (mcp-client.js).
+            description: spec.full?.description || spec.description,
+            parameters: spec.full?.parameters || spec.parameters,
+            ...(spec.annotations ? { annotations: spec.annotations } : {}),
             callAs: { action: spec.name, args: '<the properties above, verbatim>' },
           }
           : { error: `Unknown action "${args.tool || rawTool}".`, actions: [...byName.keys()] },
@@ -147,7 +171,11 @@ export function makeGroupDispatchExecutor({ name: dispatchName, specs, runAction
 
     const spec = byName.get(action);
     if (!spec) {
-      return JSON.stringify({ error: `Unknown action "${action}".`, actions: [...byName.keys()] });
+      return JSON.stringify({
+        error: `Unknown action "${action}".`,
+        actions: menuNames,
+        ...(all.length > specs.length ? { hint: `${all.length - specs.length} more are reachable: {"action":"${FIND_ACTION}","args":{"query":"…"}} finds them.` } : {}),
+      });
     }
     const bad = validateAction(spec, args);
     if (bad) return JSON.stringify(bad);

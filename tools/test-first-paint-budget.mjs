@@ -155,7 +155,12 @@ const BUDGET = {
   // 1267 → 1269 for re-vendoring pii-detect.js at @chatpanel/pii 0.7.1: the in-process
   // transport guard (an injected fetch may skip the SSRF check, a config line may not). The
   // extension never uses that transport, but vendoring copies whole files, comments included.
-  'settings.js': 1269,
+  // 1269 → 1272 for the MCP session that survives a server restart: js/mcp-client.js (on
+  // this graph through the Test button) reconnects once on a stale session and compresses
+  // schemas as they arrive; js/toolset.js carries each dispatcher's traits index. The round
+  // runner and the response shield themselves are `await import()`ed from providers.js and
+  // pinned OFF this graph below.
+  'settings.js': 1272,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was
@@ -244,6 +249,14 @@ const OFF_LIMITS = {
   // Pinned off ALL entry points so a future static import fails here rather than
   // quietly costing every panel open ~460 KB of ONNX-adjacent plumbing.
   'js/speech.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  // The tool round: a round only exists once a model has asked for tools, and a result is
+  // only shielded once a tool has returned one. Both are reached from providers.js by
+  // `await import()`; a static import here would put ~40 KB on every page that can chat.
+  'js/turn-round.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/tool-result-shield.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/events/tool-round.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/events/tool-result.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/events/recipe.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/read-aloud.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/voice-loop.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/voice-mode.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],

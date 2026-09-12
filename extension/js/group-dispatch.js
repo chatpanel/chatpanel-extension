@@ -10,6 +10,7 @@
 // to reach for it, and whether its tools are remote. Everything structural is here.
 
 import { buildGroupDispatchSpec, makeGroupDispatchExecutor } from './page-dispatch.js';
+import { traitsIndex } from './events/tool-traits.js';
 
 /**
  * @param inner    a toolset ({ specs, execute, system }) — the real tools, kept whole.
@@ -19,18 +20,28 @@ import { buildGroupDispatchSpec, makeGroupDispatchExecutor } from './page-dispat
  *                 PRIVACY, not bookkeeping: the harness uses it to keep PII off remote
  *                 tools under "redact remote". A dispatcher that lost the flag would
  *                 quietly turn redacted tools into unredacted ones.
+ * @param all      every spec the group can reach when the menu (`inner.specs`) is a
+ *                 relevance-capped subset. `find` searches it; any action in it runs.
+ * @param rank     the ranker `find` uses — the shared IDF one, so discovery agrees with
+ *                 the narrowing that hid the tool in the first place.
  */
-export function makeDispatchProvider({ name, description, resident, inner, remote = false }) {
+export function makeDispatchProvider({ name, description, resident, inner, remote = false, all = null, rank = undefined }) {
   if (!inner || !inner.specs?.length) return null;
   const specs = inner.specs;
+  const reach = all && all.length > specs.length ? all : specs;
   return {
-    specs: [buildGroupDispatchSpec({ name, specs, description })],
+    specs: [buildGroupDispatchSpec({ name, specs, description, hidden: reach.length - specs.length })],
     system: resident,
     remote,
+    // What each REAL tool does to the world (annotations, else its name) — read by the
+    // round runner through the dispatcher, which otherwise hides every inner spec.
+    traits: traitsIndex(reach),
     execute: withGuidance(
       makeGroupDispatchExecutor({
         name,
         specs,
+        all: reach,
+        rank,
         // Routes on the REAL tool name so every guard, budget and gate downstream keeps
         // firing on the name it was written against. A dispatcher must never become a
         // way around them.

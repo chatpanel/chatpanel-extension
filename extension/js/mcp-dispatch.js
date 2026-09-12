@@ -34,8 +34,10 @@ const DESCRIPTION =
   + 'and how to use that server. Match the request\'s domain to the server\'s domain, and '
   + 'do not call these when the page or provided context already answers the question.';
 
-export function mcpDispatchProvider(inner) {
+export function mcpDispatchProvider(inner, { all = null, rank = undefined } = {}) {
   return makeDispatchProvider({
+    all,
+    rank,
     name: MCP_TOOL_NAME,
     description: DESCRIPTION,
     // Same lesson as the data and page groups: name the capability, not just the tool.

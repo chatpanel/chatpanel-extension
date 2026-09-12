@@ -240,11 +240,50 @@ export class McpClient {
   async listTools(signal) {
     const result = await this._rpc('tools/list', {}, signal);
     this.tools = result?.tools || [];
+    // Compressed as they arrive (events/tool-schema.js): the structure a call needs —
+    // types, required, enums, bounds — stays whole; prose that repeats a parameter's own
+    // name goes. `annotations` ride along so a round can tell a read from a write
+    // (tool-traits.js). Deferred: this module is on settings' first paint (Test button).
+    const { compressToolSpec } = await import('./events/tool-schema.js');
+    this.toolSpecs = this.tools.map((t) => {
+      const raw = {
+        name: t.name,
+        description: String(t.description || t.name).slice(0, 4096),
+        parameters: t.inputSchema || { type: 'object', properties: {} },
+        ...(t.annotations && typeof t.annotations === 'object' ? { annotations: t.annotations } : {}),
+      };
+      const spec = compressToolSpec(raw, this.compression || {});
+      // The uncompressed contract, for `describe` — asked for at the moment of calling,
+      // when a usage note is worth its tokens. Wire conversions pick fields explicitly.
+      if (spec !== raw) spec.full = { description: raw.description, parameters: raw.parameters };
+      return spec;
+    });
     return this.tools;
   }
 
-  callTool(name, args, signal) {
-    return this._rpc('tools/call', { name, arguments: args || {} }, signal);
+  // Handshake again from nothing. The session id is dropped FIRST: a restarted server has
+  // forgotten it, and presenting it on the new `initialize` earns the same 404 again.
+  async reconnect(signal) {
+    this.sessionId = null;
+    return this.connect(signal);
+  }
+
+  // One call, with one reconnect when the session turns out to be stale. The manager holds
+  // a client for as long as the config is unchanged, and no server stays alive that long:
+  // the bridge kills an idle stdio server after ten minutes (and replays `initialize` for
+  // the ones it respawns), an HTTP server restarts on a deploy and forgets the session.
+  // Reconnect and retry once, only for errors that mean "stale" (events/mcp-errors.js) —
+  // a genuine tool error is returned as such.
+  async callTool(name, args, signal) {
+    const params = { name, arguments: args || {} };
+    try {
+      return await this._rpc('tools/call', params, signal);
+    } catch (e) {
+      const { isStaleMcpSession } = await import('./events/mcp-errors.js');
+      if (!isStaleMcpSession(e?.message)) throw e;
+      await this.reconnect(signal);
+      return this._rpc('tools/call', params, signal);
+    }
   }
 }
 
@@ -280,10 +319,13 @@ function toToolResult(res) {
 // other servers.
 export function mcpProvider(client, serverName) {
   const prefix = `mcp_${slug(serverName)}__`;
-  const specs = (client.tools || []).map((t) => ({
+  // `toolSpecs`: the compressed contracts listTools() built; raw `tools` is the fallback.
+  const base = client.toolSpecs || (client.tools || []).map((t) => ({ name: t.name, description: t.description || t.name, parameters: t.inputSchema || { type: 'object', properties: {} } }));
+  const specs = base.map((t) => ({
+    ...t,
     name: prefix + t.name,
-    description: `[${serverName}] ${t.description || t.name}`.slice(0, 1024),
-    parameters: t.inputSchema || { type: 'object', properties: {} },
+    description: `[${serverName}] ${t.description}`.slice(0, 1024),
+    ...(t.full ? { full: { ...t.full, description: `[${serverName}] ${t.full.description}` } } : {}),
   }));
   return {
     specs,

@@ -4,6 +4,9 @@ import { readFileSync } from 'node:fs';
 const html = readFileSync(new URL('../extension/sidepanel.html', import.meta.url), 'utf8');
 const js = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
 const providers = readFileSync(new URL('../extension/js/providers.js', import.meta.url), 'utf8');
+// Both provider loops run their rounds through turn-round.js now, which is where the call
+// id reaches execute; the bridge relay still calls execute directly.
+const turnRound = readFileSync(new URL('../extension/js/turn-round.js', import.meta.url), 'utf8');
 const toolset = readFileSync(new URL('../extension/js/toolset.js', import.meta.url), 'utf8');
 const store = readFileSync(new URL('../extension/js/store.js', import.meta.url), 'utf8');
 const turnTools = readFileSync(new URL('../extension/js/turn-tools.js', import.meta.url), 'utf8');
@@ -27,8 +30,9 @@ assert.match(js, /withToolCancellation/, 'Sidepanel should wrap tools with cance
 assert.match(js, /skipToolCall/, 'Sidepanel should expose a skip action for running tools.');
 assert.match(js, /toolCancels:\s*new Map\(\)/, 'State should keep pending tool cancel handles.');
 assert.match(js, /renderMcpToolsBtn/, 'Composer should render the MCP tools mode.');
-assert.match(providers, /tools\.execute\(c\.name,\s*input,\s*\{\s*callId:\s*c\.id\s*\}\)/, 'OpenAI tools should pass a call id into execute.');
-assert.match(providers, /tools\.execute\(b\.name,\s*input,\s*\{\s*callId:\s*b\.id\s*\}\)/, 'Anthropic tools should pass a call id into execute.');
+assert.match(turnRound, /tools\.execute\(c\.name,\s*c\.input,\s*\{\s*callId:\s*c\.id\s*\}\)/, 'The tool round should pass a call id into execute.');
+assert.match(providers, /function streamOpenAI[\s\S]*import\('\.\/turn-round\.js'\)/, 'OpenAI tools should run through the tool round.');
+assert.match(providers, /function streamAnthropic[\s\S]*import\('\.\/turn-round\.js'\)/, 'Anthropic tools should run through the tool round.');
 assert.match(providers, /tools\.execute\(ev\.name,\s*ev\.input,\s*\{\s*callId:\s*ev\.id/, 'Bridge tool relay should pass a call id into execute.');
 assert.match(toolset, /async execute\(name,\s*input,\s*meta/, 'Toolset execute should preserve metadata for wrappers/providers.');
 

@@ -175,7 +175,18 @@ export {
   unfence, findJson, rewriteJson, repairJson, isNothing,
   coerce, parseStructured, createStructuredStream,
 } from './structured.js';
-export { explainMcpError, packageFromArgs } from './mcp-errors.js';
+export { explainMcpError, packageFromArgs, isStaleMcpSession } from './mcp-errors.js';
+// The tool round — what a tool does, how a round runs, what a result costs, how a tool is
+// found, and a workflow written down once (see docs/ROADMAP "the tool round" in chatpanel).
+export { toolTraits, bareToolName, canRunConcurrently, isCacheable, needsConfirmation, traitsIndex } from './tool-traits.js';
+export { planToolRound, runToolRound } from './tool-round.js';
+export {
+  createResultStore, shieldToolResult, runResultQuery, withResultShield, describeShape, compactValue,
+  resultToolSpec, RESULT_TOOL_NAME, DEFAULT_SHIELD, DEFAULT_STORE,
+} from './tool-result.js';
+export { findTools, findToolsResult, findActionArgs, oneLiner, overlapRank, FIND_ACTION } from './tool-discovery.js';
+export { compressToolSpec, compressToolSpecs, compressionStats, trimDescription, COMPRESSION_MODES, DEFAULT_COMPRESSION } from './tool-schema.js';
+export { validateRecipe, expandRecipe, recipeParams, mapInput, dryRunRecipe, runPlan, runRecipe, RecipeError, RECIPE_MODES } from './recipe.js';
 export { createManifest, ManifestError, SOURCES } from './manifest.js';
 export { createKernel, meetDecisions, KernelError, REQUIRED_PLUGINS, ALLOW_ALL } from './kernel.js';
 export { replay, formatReport, parseJsonl, toJsonl } from './harness.js';

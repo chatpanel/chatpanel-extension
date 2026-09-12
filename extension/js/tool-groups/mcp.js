@@ -13,6 +13,7 @@ import { getMcpProviders } from '../mcp-manager.js';
 import { isPro, FREE_LIMITS } from '../license.js';
 import { MCP_TURN_MODES, DEFAULT_AUTO_TOOL_CAP, normalizeMcpTurnMode, shouldExposeMcpForTurn } from '../tool-policy.js';
 import { filterMcpServersForSkill } from '../skill-runtime.js';
+import { rankToolSpecs } from '../tool-rank.js';
 
 /** Which servers this turn may use — the whole decision, with no connecting. */
 export function usableServers(ctx) {
@@ -52,8 +53,9 @@ export const mcpGroup = defineToolGroup({
       onError: ctx.onMcpError,
     });
     ctx.markMcpMs?.(Date.now() - t0);
-    let inner = buildToolset(mcps);
-    if (!inner) return null;
+    const full = buildToolset(mcps);
+    if (!full) return null;
+    let inner = full;
 
     const userCap = Number(settings?.ui?.maxToolsPerTurn) || 0;
     const cap = userCap || (turnMcpMode === MCP_TURN_MODES.AUTO ? DEFAULT_AUTO_TOOL_CAP : 0);
@@ -62,7 +64,10 @@ export const mcpGroup = defineToolGroup({
     // the outer narrow would exempt the entire set.
     if (cap) inner = narrowToolset(inner, ctx.userText || '', { cap, keep: () => false });
 
-    if (settings?.ui?.mcpDispatch === false) return { specs: inner.specs, system: inner.system, remote: true, execute: inner.execute };
-    return mcpDispatchProvider(inner);
+    if (settings?.ui?.mcpDispatch === false) return { specs: inner.specs, system: inner.system, remote: true, execute: inner.execute, traits: full.traits };
+    // The menu is the narrowed set; the REACH is everything. A tool the cap dropped is one
+    // `find` away rather than absent, and the ranker `find` uses is the one that ranked
+    // the menu, so the two never disagree about what "relevant" means.
+    return mcpDispatchProvider(inner, { all: full.specs, rank: rankToolSpecs });
   },
 });

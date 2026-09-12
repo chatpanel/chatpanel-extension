@@ -73,7 +73,7 @@ const REPLAYABLE_TOOLS = new Set([
 // applying: a screenshot takes {} every time, so four in a row look like a stuck loop and
 // get blocked, and the agent is left flailing for an argument it can vary. That is
 // exactly what happened once page tools moved behind one registered tool.
-function effectiveToolName(name, input) {
+export function effectiveToolName(name, input) {
   const action = input && typeof input === 'object' ? input.action : null;
   return typeof action === 'string' && action ? action : name;
 }
@@ -144,7 +144,7 @@ export function isMutatingCall(name, input) {
 // below" (atBottom === false) is progress; once atBottom is true the repeat guard
 // is allowed to bite again. For discrete-input tools, any successful application
 // (ok === true) is progress (see INPUT_PROGRESS_TOOLS above).
-function toolMadeProgress(name, result) {
+export function toolMadeProgress(name, result) {
   if (name === 'scroll') {
     try {
       return JSON.parse(resultText(result))?.atBottom === false;
@@ -499,24 +499,12 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
         function: { name: c.name, arguments: c.args },
       })),
     });
-    let blockedThisRound = 0;
-    for (const c of wanted) {
-      const input = safeJson(c.args);
-      // WHICH MODEL MADE THIS CALL. A turn can change model mid-flight — a failover after a
-      // provider declines — and attributing every action to whichever model finished the
-      // turn misreports the work. The one that drew the circle is not always the one that
-      // answered.
-      onEvent?.({ type: 'tool', name: c.name, phase: 'start', callId: c.id, input, model: modelLabelOf(agent) });
-      const guard = loopGuard.check(c.name, input);
-      if (guard.blocked) blockedThisRound += 1;
-      const result = guard.blocked || guard.replayed
-        ? guard.result
-        : await tools.execute(c.name, input, { callId: c.id });
-      adaptivePolicy.recordResult(c.name, result);
-      if (!guard.blocked && toolMadeProgress(c.name, result)) loopGuard.reset(guard.key);
-      loopGuard.remember(guard.key, c.name, input, result);
-      const _image = result && typeof result === 'object' ? result.image : undefined;
-      onEvent?.({ type: 'tool', name: c.name, phase: 'done', callId: c.id, image: _image, status: toolStatus(result), result: stepResultText(result) });
+    const { runRound } = await import('./turn-round.js'); // reads overlapped, writes in order
+    const round = await runRound(wanted, { tools, agent, loopGuard, adaptivePolicy, onEvent, argsOf: (c) => safeJson(c.args) });
+    const { blockedThisRound } = round;
+    for (let i = 0; i < round.calls.length; i += 1) {
+      const c = round.calls[i];
+      const result = round.results[i];
       const text = typeof result === 'string' ? result : (result?.text ?? '');
       msgs.push({ role: 'tool', tool_call_id: c.id, content: text });
       // OpenAI tool messages can't carry images — feed any screenshot back as a
@@ -659,20 +647,12 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
         ),
     });
     const results = [];
-    let blockedThisRound = 0;
-    for (const b of toolUses) {
-      const input = safeJson(b.json);
-      onEvent?.({ type: 'tool', name: b.name, phase: 'start', callId: b.id, input, model: modelLabelOf(agent) });
-      const guard = loopGuard.check(b.name, input);
-      if (guard.blocked) blockedThisRound += 1;
-      const result = guard.blocked || guard.replayed
-        ? guard.result
-        : await tools.execute(b.name, input, { callId: b.id });
-      adaptivePolicy.recordResult(b.name, result);
-      if (!guard.blocked && toolMadeProgress(b.name, result)) loopGuard.reset(guard.key);
-      loopGuard.remember(guard.key, b.name, input, result);
-      const _image = result && typeof result === 'object' ? result.image : undefined;
-      onEvent?.({ type: 'tool', name: b.name, phase: 'done', callId: b.id, image: _image, status: toolStatus(result), result: stepResultText(result) });
+    const { runRound } = await import('./turn-round.js'); // reads overlapped, writes in order
+    const round = await runRound(toolUses, { tools, agent, loopGuard, adaptivePolicy, onEvent, argsOf: (b) => safeJson(b.json) });
+    const { blockedThisRound } = round;
+    for (let i = 0; i < round.calls.length; i += 1) {
+      const b = round.calls[i];
+      const result = round.results[i];
       const text = typeof result === 'string' ? result : (result?.text ?? '');
       // Anthropic tool_result content may be a string OR blocks — attach the
       // screenshot as an image block so the model can see the page directly.
@@ -1028,7 +1008,7 @@ async function dispatchStream({ agent, messages, settings, signal, onDelta, onEv
 
 // A short, display-safe slice of a tool result for the Actions log — the model still
 // receives the FULL result; this is only what the user sees in the UI.
-function stepResultText(result) {
+export function stepResultText(result) {
   const t = resultText(result);
   if (!t) return '';
   const s = String(t);
@@ -1678,7 +1658,14 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   // "Redact for remote models only": a local model keeps data on-device, so skip
   // redaction entirely for it (the user chose not to pay the redaction cost locally).
   if (redaction && redaction.cfg && redaction.cfg.applyTo === 'remote' && isLocalAgent(agent)) redaction = null;
+  // THE RESPONSE SHIELD, on every path a tool result takes to a model. A result too big to
+  // read is stored, previewed, and paged through `get_result` (events/tool-result.js);
+  // what is bound here is only the store, the MCP fence and the self-sized exemptions
+  // (tool-result-shield.js). Deferred so an unarmed turn never loads it. On the redaction
+  // path below it wraps OUTSIDE the harness, so what it stores is the redacted result.
+  const { shieldToolset } = tools && typeof tools.execute === 'function' ? await import('./tool-result-shield.js') : {};
   if (!redaction || !redaction.vault || !redactionEnabled(redaction.cfg)) {
+    if (shieldToolset) tools = shieldToolset(tools, { settings });
     // This path returns early — which is exactly how the turn once escaped without
     // closing, and how it would now escape without a transcript. Both belong on every
     // exit, not on the one that happened to be edited last.
@@ -1796,13 +1783,14 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   let safeTools = tools;
   if (tools && typeof tools.execute === 'function') {
     const base = tools.execute.bind(tools);
-    safeTools = {
+    safeTools = shieldToolset({
       ...tools,
       // ② tool gets real values (or the redacted token for remote MCP under
-      // "redact remote"); ③ the result is re-redacted before the model sees it.
+      // "redact remote"); ③ the result is re-redacted before the model sees it — and only
+      // then shielded, so a paged excerpt later cannot leak what the preview did not.
       execute: async (name, input, meta) =>
         harness.toModelResult(name, await base(name, harness.toTool(name, input), meta)),
-    };
+    }, { settings });
   }
   // What the model is ABOUT to be shown — recorded before the call, so a turn that dies
   // mid-stream still says what was asked. Deliberately the REDACTED copy: it is what the
@@ -1849,7 +1837,7 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
  * read at each call rather than captured once — capturing it would attribute every action to
  * whichever model happened to start the turn.
  */
-function modelLabelOf(agent) {
+export function modelLabelOf(agent) {
   return agent?.routedVia?.model || agent?.model || null;
 }
 

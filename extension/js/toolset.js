@@ -19,14 +19,24 @@ export function buildToolset(providers) {
   // whose name matches the mcp_ convention. The harness uses this exact set to keep
   // PII off remote tools under "redact remote" (L3: no longer name-heuristic-only).
   const remoteTools = new Set();
+  // What each HIDDEN tool does to the world — a dispatcher's own index of the tools behind
+  // it (tool-traits.js), which nothing else can see. Top-level specs carry their own
+  // `annotations` and are classified by the round runner at run time; this file stays on
+  // settings' first paint, so it imports no classifier.
+  const traits = new Map();
+  // Tools that must run one at a time even when read-only: page tools share ONE tab and
+  // one debugger session, so two "reads" can still race each other for it.
+  const serialTools = new Set();
   const REMOTE_NAME_RE = /^mcp[_-]/i;
   for (const p of list) {
     const providerRemote = p.remote === true;
+    if (p.traits instanceof Map) for (const [k, v] of p.traits) if (!traits.has(k)) traits.set(k, v);
     for (const s of p.specs) {
       if (route.has(s.name)) continue; // first provider to claim a name wins
       specs.push(s);
       route.set(s.name, p.execute);
       if (providerRemote || REMOTE_NAME_RE.test(String(s.name || ''))) remoteTools.add(s.name);
+      if (p.serial === true) serialTools.add(s.name);
     }
   }
   if (!specs.length) return undefined;
@@ -54,6 +64,8 @@ export function buildToolset(providers) {
     system,
     systemParts,
     remoteTools,
+    traits,
+    serialTools,
     async execute(name, input, meta = {}) {
       const fn = route.get(name);
       if (!fn) return JSON.stringify({ error: `Unknown tool: ${name}` });

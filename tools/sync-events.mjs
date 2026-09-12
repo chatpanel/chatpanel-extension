@@ -28,6 +28,9 @@ const FILES = [
   'reach.js',
   'kernel.js', 'loop.js', 'trajectory.js', 'citations.js', 'adapters.js', 'tool-groups.js', 'search-engines.js', 'manifest.js', 'mcp-errors.js', 'meeting-analyzers.js', 'meeting-shape.js', 'rules.js', 'router.js', 'model-candidates.js', 'route-strategies.js', 'voice-speaker.js', 'tool-need.js', 'route-graph.js', 'sources.js', 'sources-retrieval.js', 'text-search.js', 'markdown-authoring.js', 'media-transcript.js', 'pdf-layout.js', 'skill-vars.js', 'skill-manifest.js', 'skill-sources.js', 'skill-scan.js', 'structured.js', 'extraction.js',
   'observability.js', 'flowchart.js', 'memory.js', 'note-actions.js', 'note-mentions.js', 'note-links.js', 'note-graph.js', 'cowriter-router.js', 'web-search.js', 'note-research.js', 'note-plan.js', 'cowriter.js', 'attribution.js', 'voice-intents.js', 'entity.js', 'curate.js', 'knowledge.js', 'knowledge-derive.js', 'distance.js', 'redaction-tokens.js', 'subject-kinds.js', 'subject-name.js', 'synthesis.js', 'promotion.js', 'schedule.js', 'vault.js', 'view.js', 'widget.js', 'tags.js', 'titles.js', 'weather.js',
+  // The tool round: what a tool does, how a round runs, what a result costs, how a tool
+  // is found, and a workflow written down once.
+  'tool-traits.js', 'tool-round.js', 'tool-result.js', 'tool-discovery.js', 'tool-schema.js', 'recipe.js',
 ];
 
 function pkgDir() {

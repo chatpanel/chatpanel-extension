@@ -93,3 +93,22 @@ export function packageFromArgs(args = []) {
   }
   return '';
 }
+
+// A session the server no longer recognises — the OTHER half of the respawn story.
+//
+// The bridge replays `initialize` for a stdio server it respawned, but an HTTP server that
+// restarted has forgotten the `Mcp-Session-Id` the client still presents (the spec says
+// 404), and a stdio server the bridge did NOT restart — a crash between two bridge
+// restarts, say — answers "not initialized". Both mean the same thing to a client holding a
+// connection it believes is live: handshake again, then retry once. Recognised here so the
+// extension, the gateway and the bridge agree on what counts as stale, and no client
+// treats "session not found" as "the tool is broken".
+const STALE_SESSION_RE = /\b(session (not found|expired|invalid|unknown)|invalid session|no (valid )?session|not initialized|before initialization|initialization was (not )?complete|-32002)\b/i;
+
+export function isStaleMcpSession(text, { status } = {}) {
+  if (status === 404) return true;
+  const t = String(text || '');
+  if (!t) return false;
+  if (/\bHTTP 404\b/.test(t)) return true;
+  return STALE_SESSION_RE.test(t);
+}
