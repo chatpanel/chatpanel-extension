@@ -11,8 +11,9 @@ import { toolStatus } from './tool-hints.js';
 // Local tools whose reads may overlap: they touch the user's own data or the network,
 // never the one tab a page tool is driving. Everything not remote and not here runs one
 // at a time, whatever its name says — a wrong "parallel" races the world, a wrong
-// "serial" only costs latency.
-export const PARALLEL_LOCAL_RE = /^(history_|web_search$|get_result$|skill_open$|skill_file$|recall$|memory_recall$|meeting_live_transcript$)/;
+// "serial" only costs latency. The `find` dispatcher is here as a whole: everything behind
+// it is a read of the user's data or the web (its writes are separate tools by design).
+export const PARALLEL_LOCAL_RE = /^(find$|history_|web_search$|weather$|get_result$|skill_open$|skill_file$|recall$|memory_recall$|meeting_live_transcript$)/;
 
 export function parallelEligible(tools, call, traits) {
   if (!traits?.readOnly) return false;
@@ -59,7 +60,8 @@ export async function runRound(wanted, { tools, agent, loopGuard, adaptivePolicy
     const guard = guards[i];
     adaptivePolicy.recordResult(c.name, result);
     if (!guard.blocked && toolMadeProgress(c.name, result)) loopGuard.reset(guard.key);
-    loopGuard.remember(guard.key, c.name, c.input, result);
+    // Only a read is remembered for replay — the traits decide, not a list of names.
+    loopGuard.remember(guard.key, c.name, c.input, result, { readOnly: !!traitsOf(c)?.readOnly });
   });
   return { calls, results, blockedThisRound };
 }

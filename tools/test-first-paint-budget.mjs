@@ -81,7 +81,11 @@ const BUDGET = {
   // and nothing was being redacted.
   // 836 → 840 for the render-boundary placeholder scrub — not every path has a vault to
   // restore against, so the guarantee sits at the one call every path ends at.
-  'sidepanel.js': 840,
+  // 840 → 843 for recipes on the panel: the approval card's title/scope options on the
+  // confirm dialog, the `/recipe` slash items (js/slash-commands.js, already on this graph)
+  // and the two closures buildTurnTools receives. The tool itself (js/recipe-tools.js) and
+  // the engine (js/events/recipe.js) are `await import()`ed and pinned OFF below.
+  'sidepanel.js': 843,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one
@@ -160,7 +164,9 @@ const BUDGET = {
   // schemas as they arrive; js/toolset.js carries each dispatcher's traits index. The round
   // runner and the response shield themselves are `await import()`ed from providers.js and
   // pinned OFF this graph below.
-  'settings.js': 1272,
+  // 1272 → 1273 for the Recipes section hook: nine lines that `await import()` the section
+  // (js/settings-recipes.js, pinned OFF below) into a card the Skills tab already paints.
+  'settings.js': 1273,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was
@@ -257,6 +263,8 @@ const OFF_LIMITS = {
   'js/events/tool-round.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/events/tool-result.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/events/recipe.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/recipe-tools.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/settings-recipes.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/read-aloud.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/voice-loop.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/voice-mode.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],

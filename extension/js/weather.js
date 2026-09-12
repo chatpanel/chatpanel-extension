@@ -47,6 +47,9 @@ export function weatherToolProvider({ fetchJson: injected = fetchJson } = {}) {
     specs: [
       {
         name: 'weather',
+        // A read, declared: the round runner overlaps reads and serialises everything it
+        // cannot classify, and "weather" is not a verb its name heuristic knows.
+        annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
         description:
           'Current conditions and a short forecast for one place, in a single request. Use this '
           + 'for any weather question instead of searching. Returns the location it actually '

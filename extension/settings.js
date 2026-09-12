@@ -120,6 +120,7 @@ async function init() {
   renderBridge();
   renderMcpServers();
   renderSkills();
+  renderRecipes();
   renderPrefs();
   setupNotesPrefs();
   setupMemoryPrefs();
@@ -4592,6 +4593,15 @@ const skillKey = (skill) => `skill:${skill.id || skill.command || skill.name || 
 // focus mid-keystroke), so filtering only toggles visibility on the live cards and
 // reads their CURRENT field values — a renamed-but-unsaved skill still matches.
 let skillFilter = '';
+
+// Saved recipes — deferred: this page is at its first-paint ceiling.
+function renderRecipes() {
+  const root = $('recipes');
+  if (!root) return;
+  import('./js/settings-recipes.js')
+    .then((m) => m.renderRecipes(root, { settings, onChange: (recipes) => { settings.recipes = recipes; renderRecipes(); } }))
+    .catch((e) => console.warn('[chatpanel] recipes:', e));
+}
 
 function renderSkills() {
   const root = $('skills');

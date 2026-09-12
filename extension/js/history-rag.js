@@ -475,6 +475,7 @@ export async function retrieveHistory(
 
 const HISTORY_SEARCH_SPEC = {
   name: 'history_search',
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   description: 'Search local ChatPanel chat history and, when available, meeting transcript history.',
   parameters: {
     type: 'object',
@@ -492,6 +493,7 @@ const HISTORY_SEARCH_SPEC = {
 
 const HISTORY_GET_SOURCE_SPEC = {
   name: 'history_get_source',
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   description: 'Fetch a larger excerpt of a single local history source returned by history_search. '
     + 'Requires an id that history_search actually returned — ids cannot be guessed.',
   parameters: {
@@ -510,6 +512,7 @@ const HISTORY_GET_SOURCE_SPEC = {
 
 const HISTORY_RELATED_SPEC = {
   name: 'history_related',
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   description: 'Find chats or meetings related to a local history source through shared graph topics.',
   parameters: {
     type: 'object',
@@ -524,6 +527,7 @@ const HISTORY_RELATED_SPEC = {
 
 const HISTORY_LIST_MEETINGS_SPEC = {
   name: 'history_list_meetings',
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   description:
     'List meetings from local history filtered by participant and/or time window, newest first. '
     + 'Use this for "who/when/latest" questions (e.g. "my latest 1:1 with Alex", "meetings in the last 2 weeks") '
@@ -546,6 +550,7 @@ const HISTORY_LIST_MEETINGS_SPEC = {
 
 const HISTORY_GET_MEETING_SPEC = {
   name: 'history_get_meeting',
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   description: 'Fetch a meeting transcript (and its summary) by id, e.g. an id returned by history_list_meetings. Accepts a bare id or a meeting:<id> source id.',
   parameters: {
     type: 'object',
@@ -559,6 +564,7 @@ const HISTORY_GET_MEETING_SPEC = {
 
 const MEETING_LIVE_SPEC = {
   name: 'meeting_live_transcript',
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   description:
     'Return the FRESH transcript of the meeting being captured RIGHT NOW (an ongoing/live call). '
     + 'This reads the real-time in-memory transcript, which is newer than history_get_meeting (that one reads a '

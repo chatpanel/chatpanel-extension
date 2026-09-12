@@ -36,6 +36,9 @@ export function makeDispatchProvider({ name, description, resident, inner, remot
     // What each REAL tool does to the world (annotations, else its name) — read by the
     // round runner through the dispatcher, which otherwise hides every inner spec.
     traits: traitsIndex(reach),
+    // …and WHICH tools are behind this name, so a recipe step can name the real tool and be
+    // routed through the dispatcher (buildToolset builds `hiddenVia` from it).
+    reach,
     execute: withGuidance(
       makeGroupDispatchExecutor({
         name,

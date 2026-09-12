@@ -690,6 +690,7 @@ export function webSearchToolProvider(opts = {}) {
     specs: [
       {
         name: 'web_search',
+        annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
         description:
           'Search the web and return ranked result snippets with their source URLs. Use this for ' +
           'current events, live prices/quotes, news, product/library docs, or any fact you are unsure ' +

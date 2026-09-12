@@ -57,8 +57,15 @@ function skillItem(skill) {
   };
 }
 
+// A saved recipe is a /command too. It is not a skill: nothing is expanded into a prompt.
+// The line becomes a plain request to run it, and the `recipe` tool does the rest.
+function recipeItem(recipe) {
+  return { type: 'recipe', command: recipe.name || '', icon: '🧩', description: recipe.description || 'Saved recipe', recipe };
+}
+
 export function slashCommandItems({
   skills = [],
+  recipes = [],
   prefix = '',
   skillsAllowed = false,
   canMeetings = false,
@@ -69,9 +76,24 @@ export function slashCommandItems({
     locked: item.feature === 'liveMeetings' && !canMeetings,
   }));
   const skillItems = skillsAllowed ? (skills || []).map(skillItem) : [];
-  return [...builtins, ...skillItems]
+  const recipeItems = (recipes || []).filter((r) => r && r.enabled !== false && r.name).map(recipeItem);
+  return [...builtins, ...skillItems, ...recipeItems]
     .filter((item) => item.command && item.command.toLowerCase().startsWith(normalized))
     .slice(0, 12);
+}
+
+/** "/open_bug Crash on start" → the recipe, and the rest of the line as its input. */
+export function matchSlashRecipe(text, recipes = []) {
+  const m = /^\/([a-z0-9_-]+)\s*([\s\S]*)$/i.exec(String(text || ''));
+  if (!m) return null;
+  const recipe = (recipes || []).find((r) => r && r.enabled !== false && String(r.name || '').toLowerCase() === m[1].toLowerCase());
+  return recipe ? { recipe, args: m[2].trim() } : null;
+}
+
+/** What the model receives for a recipe command: a request, not a prompt expansion. */
+export function recipeInvocationText(recipe, args = '') {
+  const a = String(args || '').trim();
+  return `Run the saved recipe "${recipe.name}"${a ? ` with this input: ${a}` : ''}. Use the recipe tool; if a parameter is missing, ask for it.`;
 }
 
 export function slashCommandInsert(item) {

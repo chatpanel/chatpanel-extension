@@ -55,6 +55,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert.equal(round.blockedThisRound, 0);
 }
 
+// ── 1b. the turn that showed the gap: two `find → weather` calls through the REAL data
+//        dispatcher must overlap. They ran one at a time, because `weather` declared nothing
+//        and is not a verb the name heuristic knows. Our own tools now say what they are.
+{
+  const { weatherToolProvider } = await import('../extension/js/weather.js');
+  const { dataDispatchProvider, DATA_TOOL_NAME } = await import('../extension/js/data-dispatch.js');
+  let active = 0; let peak = 0;
+  const weather = weatherToolProvider({ fetchJson: async () => { active += 1; peak = Math.max(peak, active); await sleep(20); active -= 1; return { current_condition: [{ temp_F: '54', temp_C: '12', FeelsLikeF: '52', FeelsLikeC: '11', weatherDesc: [{ value: 'Overcast' }], humidity: '77', windspeedMiles: '2', winddir16Point: 'ESE', precipMM: '0', uvIndex: '0' }], nearest_area: [{ areaName: [{ value: 'Issaquah' }], region: [{ value: 'Washington' }], country: [{ value: 'United States of America' }] }], weather: [] }; } });
+  assert.equal(weather.specs[0].annotations.readOnlyHint, true, 'weather declares itself a read');
+  const inner = buildToolset([weather]);
+  const find = dataDispatchProvider(inner);
+  assert.equal(find.traits.get('weather').readOnly, true, 'the dispatcher carries that trait');
+  const tools = buildToolset([find]);
+  const round = await runRound([
+    { id: 'w1', name: DATA_TOOL_NAME, args: { action: 'weather', args: { location: 'Issaquah, WA' } } },
+    { id: 'w2', name: DATA_TOOL_NAME, args: { action: 'weather', args: { location: 'Snoqualmie, WA' } } },
+  ], { tools, agent: {}, loopGuard: createToolLoopGuard(), adaptivePolicy: createAdaptiveToolPolicy(), onEvent: () => {}, argsOf: (c) => c.args });
+  assert.equal(peak, 2, 'two weather lookups for two towns ran together');
+  assert.ok(round.results.every((r) => /Weather for/.test(r?.text || r)), JSON.stringify(round.results));
+}
+
 // ── 2. parallelEligible is conservative ──────────────────────────────────────────────
 {
   const tools = { remoteTools: new Set(['mcp']), serialTools: new Set(['page']) };
@@ -62,6 +83,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert.equal(parallelEligible(tools, { name: 'mcp', input: {} }, { readOnly: false }), false);
   assert.equal(parallelEligible(tools, { name: 'page', input: { action: 'read_page' } }, { readOnly: true }), false, 'page tools share one tab');
   assert.equal(parallelEligible(tools, { name: 'find', input: { action: 'history_search' } }, { readOnly: true }), true, 'the data dispatcher\'s reads may overlap');
+  assert.equal(parallelEligible(tools, { name: 'find', input: { action: 'weather' } }, { readOnly: true }), true, 'so may weather through it');
+  assert.equal(parallelEligible(tools, { name: 'find', input: { action: 'weather' } }, { readOnly: false }), false, 'but never without the read trait');
   assert.equal(parallelEligible(tools, { name: 'note_write', input: {} }, { readOnly: true }), false, 'an unlisted local tool stays serial even when it looks like a read');
 }
 
@@ -193,3 +216,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 }
 
 console.log('tool round tests passed');
+
+// ── 8. a destructive remote tool asks first; the gate sees through the dispatcher ─────
+{
+  const turnTools = readFileSync(new URL('../extension/js/turn-tools.js', import.meta.url), 'utf8');
+  const sidepanel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  assert.match(turnTools, /withDestructiveGate\(toolset, \{ confirm: confirmDestructive, only: \(name\) => remote\.has\(name\) \}\)/, 'turn-tools gates the REMOTE set on the surface\'s dialog');
+  assert.match(sidepanel, /confirmDestructive: async \(\{ name, input \}\) =>/, 'the side panel supplies the dialog');
+  assert.match(sidepanel, /title: 'Allow this destructive action\?'/, 'with its own title, not "page action"');
+  assert.match(sidepanel, /return d === 'site' \? 'always' : d;/, '"Allow for this tool" maps to always');
+  // Behaviour, through the real turn-tools import of the shared gate.
+  const { withDestructiveGate } = await import('../extension/js/events/tool-traits.js');
+  const asked = [];
+  const toolset = buildToolset([mcpDispatchProvider(buildToolset([{ remote: true, specs: [{ name: 'mcp_gh__delete_repo', description: 'd', parameters: {} }, { name: 'mcp_gh__get_repo', description: 'g', parameters: {} }], execute: async (n) => `ran:${n}` }]))]);
+  const gated = withDestructiveGate(toolset, { confirm: async (q) => { asked.push(q.name); return 'deny'; }, only: (n) => toolset.remoteTools.has(n) });
+  assert.equal(await gated.execute(MCP_TOOL_NAME, { action: 'mcp_gh__get_repo', args: {} }), 'ran:mcp_gh__get_repo');
+  assert.equal(JSON.parse(await gated.execute(MCP_TOOL_NAME, { action: 'mcp_gh__delete_repo', args: {} })).declined, true);
+  assert.deepEqual(asked, ['mcp_gh__delete_repo']);
+}
+
+console.log('destructive gate tests passed');

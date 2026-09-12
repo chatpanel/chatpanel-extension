@@ -19,18 +19,22 @@ export function buildToolset(providers) {
   // whose name matches the mcp_ convention. The harness uses this exact set to keep
   // PII off remote tools under "redact remote" (L3: no longer name-heuristic-only).
   const remoteTools = new Set();
-  // What each HIDDEN tool does to the world — a dispatcher's own index of the tools behind
-  // it (tool-traits.js), which nothing else can see. Top-level specs carry their own
-  // `annotations` and are classified by the round runner at run time; this file stays on
-  // settings' first paint, so it imports no classifier.
+  // What each HIDDEN tool does — a dispatcher's own index of the tools behind it
+  // (tool-traits.js). Top-level specs carry `annotations` and are classified at run time;
+  // this file is on settings' first paint, so it imports no classifier.
   const traits = new Map();
-  // Tools that must run one at a time even when read-only: page tools share ONE tab and
-  // one debugger session, so two "reads" can still race each other for it.
+  // Tools that must run one at a time even when read-only: page tools share ONE tab.
   const serialTools = new Set();
+  // The tools a dispatcher hides, and which dispatcher: a recipe step names the real tool.
+  const reach = [];
+  const hiddenVia = new Map();
   const REMOTE_NAME_RE = /^mcp[_-]/i;
   for (const p of list) {
     const providerRemote = p.remote === true;
     if (p.traits instanceof Map) for (const [k, v] of p.traits) if (!traits.has(k)) traits.set(k, v);
+    if (Array.isArray(p.reach) && p.specs.length === 1) {
+      for (const h of p.reach) if (h?.name && !hiddenVia.has(h.name)) { hiddenVia.set(h.name, p.specs[0].name); reach.push(h); }
+    }
     for (const s of p.specs) {
       if (route.has(s.name)) continue; // first provider to claim a name wins
       specs.push(s);
@@ -66,6 +70,8 @@ export function buildToolset(providers) {
     remoteTools,
     traits,
     serialTools,
+    reach,
+    hiddenVia,
     async execute(name, input, meta = {}) {
       const fn = route.get(name);
       if (!fn) return JSON.stringify({ error: `Unknown tool: ${name}` });

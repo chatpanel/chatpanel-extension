@@ -51,7 +51,8 @@ assert.match(providersJs, /adaptivePolicy\.filterOpenAITools\(toolSpecs\)/, 'Ope
 // round into turn-round.js, where it runs once per call in the model's order.
 const turnRoundJs = readFileSync(new URL('../extension/js/turn-round.js', import.meta.url), 'utf8');
 assert.match(turnRoundJs, /adaptivePolicy\.recordResult\(c\.name, result\)/, 'The tool round should record invalid tool results.');
-assert.match(turnRoundJs, /loopGuard\.remember\(guard\.key, c\.name, c\.input, result\)/, 'The tool round should remember results for replay.');
+assert.match(turnRoundJs, /loopGuard\.remember\(guard\.key, c\.name, c\.input, result, \{ readOnly: /, 'The tool round should remember results for replay, gated on the read trait.');
+assert.doesNotMatch(providersJs, /REPLAYABLE_TOOLS = new Set/, 'The hand-kept replayable list is gone; traits decide.');
 assert.match(providersJs, /function streamOpenAI[\s\S]*runRound\(wanted, \{ tools, agent, loopGuard, adaptivePolicy/, 'OpenAI-compatible loop should hand its guard and policy to the round.');
 assert.match(providersJs, /function streamAnthropic[\s\S]*const loopGuard = createToolLoopGuard\(\);/, 'Anthropic loop should create a tool loop guard.');
 assert.match(providersJs, /adaptivePolicy\.filterAnthropicTools\(toolSpecs\)/, 'Anthropic loop should filter tools suppressed by adaptive policy.');

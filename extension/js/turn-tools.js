@@ -18,6 +18,7 @@ import { buildToolset } from './toolset.js';
 import { toolNeedFor } from './events/tool-need.js';
 import { ownToolsSystem } from './agent-capabilities.js';
 import { narrowToolset, isLocalToolSpec } from './tool-select.js';
+import { withDestructiveGate } from './events/tool-traits.js';
 import { buildToolGroups } from './tool-groups/index.js';
 import { usableServers } from './tool-groups/mcp.js';
 import { MCP_TURN_MODES, DEFAULT_AUTO_TOOL_CAP, normalizeMcpTurnMode } from './tool-policy.js';
@@ -49,6 +50,9 @@ export async function buildTurnTools({
   noteWriter = null,         // surface-built provider for WRITING notes (needs confirm + a window)
   memoryWriter = null,       // surface-built provider for WRITING memory (same: every write is confirmed)
   extraProviders = [],       // surface-specific providers prepended verbatim
+  confirmDestructive = null, // async ({ name, input, via }) => 'allow'|'always'|'deny' — the surface's dialog
+  confirmRecipeSave = null,  // async (detail, recipe) => 'allow'|'deny' — the approval card for a proposed recipe
+  saveRecipe = null,         // async (recipe) => void — persist an approved recipe
   onMcpError = () => {},
 } = {}) {
   const startedAt = Date.now();
@@ -153,12 +157,35 @@ export async function buildTurnTools({
     if (disc) providers.push(disc);
   }
 
+  // RECIPES — saved workflows, and the way to save one. The tool is registered when a recipe
+  // exists to run or a surface can approve a new one; a turn with neither pays nothing. It
+  // is BOUND after the toolset is built, because the toolset that runs its steps is the one
+  // it is a member of.
+  let recipeProvider = null;
+  const savedRecipes = Array.isArray(settings?.recipes) ? settings.recipes : [];
+  if (savedRecipes.some((r) => r && r.enabled !== false) || (confirmRecipeSave && saveRecipe)) {
+    const { recipeToolProvider } = await import('./recipe-tools.js');
+    recipeProvider = recipeToolProvider({ recipes: savedRecipes, confirmSave: confirmRecipeSave, saveRecipe });
+    providers.push(recipeProvider);
+  }
+
   const turnMcpMode = normalizeMcpTurnMode(mcpMode);
   const userCap = Number(settings?.ui?.maxToolsPerTurn) || 0;
   const cap = userCap || (turnMcpMode === MCP_TURN_MODES.AUTO ? DEFAULT_AUTO_TOOL_CAP : 0);
 
   let toolset = buildToolset(providers);
   if (toolset && cap) toolset = narrowToolset(toolset, userText, { cap, keep: isLocalToolSpec });
+  // ASK BEFORE DESTROYING. Page actions and the user's own data have had a confirmation
+  // since the beginning; a REMOTE tool that declares itself destructive (`destructiveHint`,
+  // or a name like `delete_repo`) ran unasked. The gate sits on the remote set only — the
+  // page and note tools confirm on their own — and sees through the `mcp` dispatcher to the
+  // real action. A surface with no window passes no dialog, and destructive calls are then
+  // refused rather than run: automation cannot reach further than a conversation can.
+  if (toolset) {
+    const remote = toolset.remoteTools || new Set();
+    toolset = withDestructiveGate(toolset, { confirm: confirmDestructive, only: (name) => remote.has(name) });
+  }
+  if (toolset && recipeProvider) recipeProvider.bind(toolset);
   if (toolset) { toolset.mcpMs = mcpMs; toolset.prepMs = Date.now() - startedAt; }
 
   const systemSkillRun =

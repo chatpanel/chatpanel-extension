@@ -107,3 +107,60 @@ export function traitsIndex(specs = []) {
   for (const s of specs) if (s?.name) index.set(s.name, toolTraits(s));
   return index;
 }
+
+/**
+ * Ask before a destructive call — the gate, as a toolset wrapper with the dialog injected.
+ *
+ * Page actions have had a confirmation card since the beginning; a tool on a connected
+ * server that DECLARES itself destructive (`destructiveHint`, or a name like `delete_repo`)
+ * had none: the model called it and it ran. This asks first, on the REAL tool name even
+ * when a dispatcher hides it, and refuses when there is nobody to ask — a background turn
+ * with no window cannot destroy anything a person did not approve.
+ *
+ * @param confirm  async ({ name, input, via }) => 'allow' | 'always' | 'deny'. `always`
+ *                 allows this tool for the rest of the toolset's life (one session).
+ *                 Omit it on a surface with no window: destructive calls are then refused
+ *                 with a message the model can act on.
+ * @param only     `(name) => boolean` — which top-level tools the gate covers (a host that
+ *                 already confirms its page and note tools passes its remote set).
+ * @param traitsOf `(name, input) => traits`; defaults to the toolset's index, then the name.
+ */
+export function withDestructiveGate(toolset, { confirm = null, only = () => true, traitsOf = null, effectiveName = defaultEffectiveName } = {}) {
+  if (!toolset || typeof toolset.execute !== 'function') return toolset;
+  const base = toolset.execute.bind(toolset);
+  const byName = new Map((toolset.specs || []).filter((s) => s?.name).map((s) => [s.name, s]));
+  const allowed = new Set();
+  const traits = traitsOf || ((name, input) => {
+    const eff = effectiveName(name, input);
+    return toolset.traits?.get(eff) || toolset.traits?.get(name) || toolTraits(byName.get(eff) || byName.get(name) || { name: eff });
+  });
+  return {
+    ...toolset,
+    async execute(name, input, meta) {
+      if (!only(name)) return base(name, input, meta);
+      const t = traits(name, input);
+      if (!needsConfirmation(t)) return base(name, input, meta);
+      const eff = effectiveName(name, input);
+      if (allowed.has(eff)) return base(name, input, meta);
+      if (!confirm) {
+        return JSON.stringify({
+          error: `"${eff}" is a destructive action and needs the user's confirmation, which this surface cannot ask for. Do not retry it; tell the user what you would do and let them run it from the side panel.`,
+          blocked: true, needsConfirmation: true, tool: eff,
+        });
+      }
+      const decision = await confirm({ name: eff, input, via: name === eff ? null : name, traits: t });
+      if (decision === 'always') allowed.add(eff);
+      if (decision !== 'allow' && decision !== 'always') {
+        return JSON.stringify({ error: `The user DECLINED "${eff}". Do not retry it — stop and ask the user how to proceed.`, blocked: true, declined: true, tool: eff });
+      }
+      return base(name, input, meta);
+    },
+  };
+}
+
+// A dispatcher carries the real action in `input.action`; the gate must see through it or
+// `mcp {action:"mcp_x__delete_repo"}` is judged by the name "mcp".
+function defaultEffectiveName(name, input) {
+  const action = input && typeof input === 'object' ? input.action : null;
+  return typeof action === 'string' && action ? action : name;
+}

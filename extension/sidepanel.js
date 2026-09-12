@@ -131,7 +131,7 @@ import {
 import { upsertMeetingChatAttachment } from './js/meeting-chat-context.js';
 // history-rag.js (+ its meeting/search subgraph) is dynamic-imported inside send().
 import { enabledSkills, skillRunFromSkill } from './js/skill-runtime.js';
-import { skillInvocationLabel, skillInvocationOf, slashCommandInsert, slashCommandItems } from './js/slash-commands.js';
+import { skillInvocationLabel, skillInvocationOf, slashCommandInsert, slashCommandItems, matchSlashRecipe, recipeInvocationText } from './js/slash-commands.js';
 import {
   HISTORY_CONTEXT_MODES,
   historyContextForMode,
@@ -310,7 +310,7 @@ function describePageAction(name, input = {}, host = 'this page') {
 
 // Inline confirmation card → resolves 'allow' | 'site' | 'deny'. Inline styles
 // (CSP allows style 'unsafe-inline'); CSS-var fallbacks keep it themed-or-not.
-function confirmPageAction(detail) {
+function confirmPageAction(detail, { title = 'Allow this page action?', iconName = 'pen', scopeLabel = 'Allow for this site' } = {}) {
   return new Promise((resolve) => {
     const ov = document.createElement('div');
     ov.className = 'cp-confirm-ov';
@@ -319,12 +319,12 @@ function confirmPageAction(detail) {
     ov.style.cssText = 'position:fixed;inset:0;z-index:2147483600;display:flex;align-items:flex-end;justify-content:center;background:rgba(0,0,0,.38);padding:12px';
     const card = document.createElement('div');
     card.style.cssText = 'width:100%;max-width:480px;background:var(--panel,#1b1d22);color:var(--fg,#e8e8ea);border:1px solid var(--border,#33363d);border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.4);padding:14px 16px;font:13px/1.45 system-ui,-apple-system,sans-serif';
-    const title = document.createElement('div');
-    title.innerHTML = icon('pen') + ' Allow this page action?';
-    title.style.cssText = 'font-weight:600;margin-bottom:6px';
+    const titleEl = document.createElement('div');
+    titleEl.innerHTML = icon(iconName) + ' ' + title;
+    titleEl.style.cssText = 'font-weight:600;margin-bottom:6px';
     const body = document.createElement('div');
     body.textContent = detail;
-    body.style.cssText = 'opacity:.92;margin-bottom:4px;word-break:break-word';
+    body.style.cssText = 'opacity:.92;margin-bottom:4px;word-break:break-word;white-space:pre-wrap;max-height:40vh;overflow-y:auto';
     const why = document.createElement('div');
     why.textContent = 'Requested by the AI based on page / tool content — review before allowing. Esc declines.';
     why.style.cssText = 'opacity:.6;font-size:11px;margin-bottom:12px';
@@ -346,8 +346,8 @@ function confirmPageAction(detail) {
       return b;
     };
     const denyBtn = mk('Decline', 'deny', false);
-    rowEl.append(denyBtn, mk('Allow for this site', 'site', false), mk('Allow', 'allow', true));
-    card.append(title, body, why, rowEl);
+    rowEl.append(denyBtn, ...(scopeLabel ? [mk(scopeLabel, 'site', false)] : []), mk('Allow', 'allow', true));
+    card.append(titleEl, body, why, rowEl);
     ov.append(card);
     // A STRAY CLICK IS NOT AN ANSWER. The backdrop used to decline, and declining is not soft:
     // the agent is told the user refused and must not retry, so the run stops and the prompt is
@@ -1020,6 +1020,24 @@ async function toolsetFor(
     connectors: (state.bridge?.agents || []).find((a) => a.id === resolvedAgent?.bridgeAgent)?.connectors || [],
     noteWriter: await noteWriteProvider(resolvedAgent),
     memoryWriter: await memoryWriteProvider(resolvedAgent),
+    // A REMOTE tool that declares itself destructive asks with the same card a page action
+    // uses. "Allow for this tool" stands for the rest of this toolset — one turn — which is
+    // the most a hurried click should ever buy (A3: session-scoped by default).
+    confirmDestructive: async ({ name, input }) => {
+      const args = (() => { try { return JSON.stringify(input?.args ?? input ?? {}); } catch { return ''; } })();
+      const detail = `Run “${name.replace(/^mcp_[^_]+__/, '')}” on a connected server${args && args !== '{}' ? ` with ${args.length > 160 ? `${args.slice(0, 157)}…` : args}` : ''}. This action is marked destructive.`;
+      const d = await confirmPageAction(detail, { title: 'Allow this destructive action?', iconName: 'delete', scopeLabel: 'Allow for this tool' });
+      if (d === 'deny') logEvent('policy.guard_denied', { capability: 'mcp.destructive', reason: `user-declined:${name}` });
+      return d === 'site' ? 'always' : d;
+    },
+    // A proposed recipe is shown step by step and saved only on Allow (A2: authored in
+    // conversation, approved before it exists). Runs of a saved one are not re-asked —
+    // destructive steps still are, by the gate above.
+    confirmRecipeSave: async (detail) => ((await confirmPageAction(detail, { title: 'Save this recipe?', iconName: 'plan', scopeLabel: null })) === 'allow' ? 'allow' : 'deny'),
+    saveRecipe: async (recipe) => {
+      state.settings = await updateSettings({ recipes: [...(state.settings.recipes || []).filter((r) => r?.name !== recipe.name), recipe] });
+      toast(`🧩 Saved recipe /${recipe.name}`);
+    },
     userText,
     attachments,
     mcpMode,
@@ -2590,6 +2608,10 @@ async function send({ steer = false } = {}) {
     let skillRun = state.pendingSkillRun || null;
     let skillInvocation = null;
     const sk = historyCommand || searchCommand ? null : matchSlashSkill(raw);
+    // A saved recipe's /command is a request to run it, not a prompt: the `recipe` tool
+    // (armed by buildTurnTools when recipes exist) does the work.
+    const rc = sk || historyCommand || searchCommand ? null : matchSlashRecipe(raw, state.settings.recipes);
+    if (rc) text = recipeInvocationText(rc.recipe, rc.args);
     if (sk && !skillsAllowed()) {
       upsell('customSkills');
     } else if (sk) {
@@ -8581,6 +8603,7 @@ function renderSlashMenu() {
   const prefix = m[1].toLowerCase();
   const matches = slashCommandItems({
     skills: enabledSkills(state.settings.skills),
+    recipes: state.settings.recipes,
     prefix,
     skillsAllowed: skillsAllowed(),
     canMeetings: can(state.license, 'liveMeetings'),

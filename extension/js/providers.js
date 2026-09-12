@@ -59,13 +59,11 @@ const MAX_STALLED_ROUNDS = Number(globalThis.CHATPANEL_MAX_STALLED_ROUNDS) || 2;
 // don't count toward the loop guard at all.
 const OBSERVATION_TOOLS = new Set(['inspect_page', 'read_canvas', 'screenshot', 'marked_screenshot']);
 
-// Pure reads whose repeated answer is the SAME answer, so a repeat can be served from what
-// the first call returned rather than refused. Deliberately not page ACTIONS: replaying a
-// click would be a lie about something that changes the world.
-const REPLAYABLE_TOOLS = new Set([
-  'web_search', 'read_page', 'history_search', 'history_get_source', 'history_related',
-  'history_list_meetings', 'history_get_meeting',
-]);
+// Which repeats may be ANSWERED from the first result rather than refused used to be a
+// hand-kept list of seven names here. It is now the tool's own traits (events/tool-traits.js:
+// annotations first, the name second) — a pure read asked twice has one answer, and a write
+// never replays, because replaying a click would be a lie about something that changed the
+// world. The round runner (turn-round.js) tells `remember` what it knows.
 
 // A DISPATCHER tool carries the real action in its arguments — `page` with
 // {action:'screenshot'} rather than a tool literally named `screenshot`. Every
@@ -210,9 +208,8 @@ export function createToolLoopGuard({
      * That is exactly what a user saw: a repeated `web_search` refused, the retry reworded
      * into a query with no results, and the model announcing it had no access to weather.
      */
-    remember(key, name, input, result) {
-      if (!key || !result) return;
-      if (!REPLAYABLE_TOOLS.has(effectiveToolName(name, input))) return;
+    remember(key, name, input, result, { readOnly = false } = {}) {
+      if (!key || !result || !readOnly) return;
       lastResult.set(key, result);
     },
 
@@ -695,7 +692,12 @@ export async function relayBridgeTool(base, ev, tools, onEvent, loopGuard = crea
         ? await tools.execute(ev.name, ev.input, { callId: ev.id, session: ev.session })
         : JSON.stringify({ error: 'no tools armed' });
     if (!guard.blocked && toolMadeProgress(ev.name, result)) loopGuard.reset(guard.key);
-    loopGuard.remember(guard.key, ev.name, ev.input, result);
+    // The CLI agent asks one call at a time, so there is no round here; the trait is read
+    // the same way the round reads it (the dispatcher's index, else the name).
+    const { toolTraits } = await import('./events/tool-traits.js');
+    const eff = effectiveToolName(ev.name, ev.input);
+    const traits = tools?.traits?.get(eff) || tools?.traits?.get(ev.name) || toolTraits({ name: eff });
+    loopGuard.remember(guard.key, ev.name, ev.input, result, { readOnly: !!traits.readOnly });
   } catch (e) {
     result = JSON.stringify({ error: String(e?.message || e) });
   } finally {
