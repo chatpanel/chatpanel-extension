@@ -104,3 +104,18 @@ assert.equal((await checkBridge('x', { fetchImpl: null, timeoutMs: 10 })).ok !==
   'a context with no fetch must still answer');
 
 console.log('bridge health: ok');
+
+// ── who started it ───────────────────────────────────────────────────────────────
+// Bridge 0.11.12+ reports `managedBy` when ChatPanel Desktop registered it as a login
+// service. The card uses it to stop offering install.sh for a runtime that is already
+// installed and kept current by the app. Older bridges omit it, and that must read as ''.
+{
+  const reply = (body) => async () => ({ ok: true, json: async () => body });
+  const managed = await checkBridge(DEFAULT_BRIDGE_URL, { fetchImpl: reply({ ok: true, version: '0.11.12', agents: [], managedBy: 'desktop' }) });
+  assert.equal(managed.managedBy, 'desktop');
+  const older = await checkBridge(DEFAULT_BRIDGE_URL, { fetchImpl: reply({ ok: true, version: '0.11.10', agents: [] }) });
+  assert.equal(older.managedBy, '', 'an older bridge says nothing, and nothing is not "desktop"');
+  const odd = await checkBridge(DEFAULT_BRIDGE_URL, { fetchImpl: reply({ ok: true, version: '0.11.12', agents: [], managedBy: { evil: 1 } }) });
+  assert.equal(odd.managedBy, '', 'a non-string is not trusted into the UI');
+}
+console.log('ok  bridge-health: managedBy passes through, absent reads as none');

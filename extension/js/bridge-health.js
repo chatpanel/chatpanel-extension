@@ -55,6 +55,9 @@ export async function checkBridge(bridgeUrl, { timeoutMs = HEALTH_TIMEOUT_MS, fe
       ok: true, agents: json.agents || [], version: json.version, update: json.update || null,
       skills: json.skills || null,
       workspace: json.workspace || '',
+      // Who started the process (bridge 0.11.12+): 'desktop' when ChatPanel Desktop registered
+      // it as a login service. Absent → '' — the install commands then apply.
+      managedBy: typeof json.managedBy === 'string' ? json.managedBy : '',
     };
   } catch (e) {
     // A timeout arrives as an AbortError, and "signal is aborted without reason" tells the

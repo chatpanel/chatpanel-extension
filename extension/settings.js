@@ -1810,12 +1810,25 @@ function installFor(which) {
  * interpolated into markup — they contain `&&` and `|`, and a Copy button that hands over
  * HTML-escaped text pastes something that does not run.
  */
-function installBlock(which, { running }) {
+function installBlock(which, { running, managedBy = '' }) {
   const wrap = document.createElement('details');
   wrap.className = 'runtime-install';
   // Kept as an id so testBridge() can still say "here is how" by opening this block, which
   // is where the commands live now that they no longer sit in a separate section below.
   wrap.id = `${which}-install-help`;
+  // Desktop-provided (`managedBy`, bridge 0.11.12+ / gateway 0.6.68+): the app keeps it at
+  // login and updates it with itself — install commands here would put a second copy over it.
+  if (managedBy === 'desktop') {
+    wrap.open = false;
+    const sum = document.createElement('summary');
+    sum.textContent = 'Provided by ChatPanel Desktop';
+    wrap.appendChild(sum);
+    const note = document.createElement('p');
+    note.className = 'muted tiny';
+    note.textContent = `ChatPanel Desktop keeps this ${which} running at login and updates it with the app — nothing to install here.`;
+    wrap.appendChild(note);
+    return wrap;
+  }
   wrap.open = !running; // not installed → show me how; installed → stay out of the way
   const sum = document.createElement('summary');
   sum.textContent = running ? 'Reinstall or update' : `Install the ${which}`;
@@ -1878,7 +1891,7 @@ async function renderLocalRuntime({ recheck = false } = {}) {
   const agentCount = (bridgeState?.agents || []).filter((a) => a.available).length;
   const skillCount = bridgeState?.skills?.count;
 
-  const row = ({ cls, name, on, statusText, detail, cta, install, next }) => {
+  const row = ({ cls, name, on, statusText, detail, cta, install, next, managedBy = '' }) => {
     const el = document.createElement('div');
     // `next` = "this is the step to do now". Only ever one row at a time, so it reads as a
     // recommendation rather than as decoration.
@@ -1889,7 +1902,7 @@ async function renderLocalRuntime({ recheck = false } = {}) {
     el.innerHTML = `${head}<div class="runtime-detail">${detail}</div>${cta ? `<div class="runtime-cta">${cta}</div>` : ''}`;
     // Appended, not interpolated: the commands carry `&&` and `|`, and a Copy button that
     // hands over HTML-escaped text pastes something that does not run.
-    if (install) el.appendChild(installBlock(install, { running: on }));
+    if (install) el.appendChild(installBlock(install, { running: on, managedBy }));
     return el;
   };
 
@@ -1898,23 +1911,25 @@ async function renderLocalRuntime({ recheck = false } = {}) {
   root.appendChild(row({
     cls: 'rt-bridge', name: 'Bridge', on: bridgeOn,
     statusText: bridgeOn
-      ? `Running · v${bridgeState.version}`
+      ? `Running · v${bridgeState.version}${bridgeState.managedBy === 'desktop' ? ' · via ChatPanel Desktop' : ''}`
       : 'Not running',
     detail: bridgeOn
       ? `Your local coding agents and skills.${Number.isFinite(agentCount) ? ` ${agentCount} agent${agentCount === 1 ? '' : 's'} ready` : ''}${Number.isFinite(skillCount) ? ` · ${skillCount} skill${skillCount === 1 ? '' : 's'} discoverable` : ''}.`
       : 'Runs your local coding agents (Claude Code, Codex, …) and makes your skills discoverable.',
     install: 'bridge',
+    managedBy: bridgeState?.managedBy || '',
     next: !bridgeOn, // nothing local works without this, so it is the step until it is done
   }));
   // Gateway — the optional upgrade. Absent is normal.
   root.appendChild(row({
     cls: 'rt-gateway', name: 'Gateway', on: gwOn,
-    statusText: gwOn ? `Running · v${gatewayState.version}` : 'Optional',
+    statusText: gwOn ? `Running · v${gatewayState.version}${gatewayState.managedBy === 'desktop' ? ' · via ChatPanel Desktop' : ''}` : 'Optional',
     detail: gwOn
       ? 'The privacy upgrade: PII redaction, model routing, and voice — in front of everything above.'
       : 'An optional upgrade that adds PII redaction, model routing and voice. You don\'t need it for local agents and skills.',
     cta: gwOn ? '' : '<a href="#gateway" class="runtime-link">What the gateway adds →</a>',
     install: 'gateway',
+    managedBy: gatewayState?.managedBy || '',
     // Once the bridge is up, the gateway is the next thing worth doing — and only then.
     // Highlighting it while the bridge is still missing would compete with the step that
     // actually has to happen first (the gateway needs the bridge running).

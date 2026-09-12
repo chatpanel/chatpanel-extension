@@ -136,3 +136,19 @@ assert.match(testBridge, /help\.open = true;/, 'a failed Test must reveal the in
 assert.match(testBridge, /scrollIntoView/, 'and scroll to them — this is the whole point');
 
 console.log('local runtime install: ok');
+
+// ── provided by ChatPanel Desktop: say so, and offer NO commands ──────────────────
+// When the desktop app registered a runtime as a login service (it reports `managedBy:
+// 'desktop'`), the install commands would install a second copy over the working one. The
+// block names the provider and where updates come from instead.
+const installBlockFn = /function installBlock\(which, \{ running, managedBy = '' \}\)\s*\{[\s\S]*?\n\}/.exec(js)?.[0] || '';
+assert.ok(installBlockFn, 'installBlock() must accept managedBy');
+const desktopBranch = /if \(managedBy === 'desktop'\) \{([\s\S]*?)\n  \}/.exec(installBlockFn)?.[1] || '';
+assert.ok(desktopBranch, 'installBlock() must have a desktop-provided branch');
+assert.match(desktopBranch, /Provided by ChatPanel Desktop/);
+assert.doesNotMatch(desktopBranch, /installFor\(|install-cmd/, 'no install commands for a runtime the desktop provides');
+assert.match(desktopBranch, /return wrap;/, 'the branch returns before the command list is built');
+assert.match(js, /managedBy: bridgeState\?\.managedBy \|\| ''/, 'the bridge row passes who provides it');
+assert.match(js, /managedBy: gatewayState\?\.managedBy \|\| ''/, 'the gateway row passes who provides it');
+assert.match(js, /via ChatPanel Desktop/, 'the status text says so too');
+console.log('ok  local-runtime-install: a desktop-provided runtime gets a name, not a curl line');

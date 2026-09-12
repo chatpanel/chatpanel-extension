@@ -149,7 +149,10 @@ const BUDGET = {
   // The BACKUP half of the knowledge layer is deliberately NOT in this number: putting
   // exportBriefs/importBriefs in store-briefs.js cost 4.8 KB, which is what sent this over
   // and is why they live in js/store-briefs-backup.js behind backup-payload.js instead.
-  'settings.js': 1266,
+  // 1266 → 1267 for the runtime card saying "Provided by ChatPanel Desktop" instead of a curl
+  // line when the bridge/gateway report managedBy — the branch is in the card's own DOM code,
+  // which paints on the Agents tab, so it cannot move behind an import.
+  'settings.js': 1267,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was
