@@ -152,7 +152,10 @@ const BUDGET = {
   // 1266 → 1267 for the runtime card saying "Provided by ChatPanel Desktop" instead of a curl
   // line when the bridge/gateway report managedBy — the branch is in the card's own DOM code,
   // which paints on the Agents tab, so it cannot move behind an import.
-  'settings.js': 1267,
+  // 1267 → 1269 for re-vendoring pii-detect.js at @chatpanel/pii 0.7.1: the in-process
+  // transport guard (an injected fetch may skip the SSRF check, a config line may not). The
+  // extension never uses that transport, but vendoring copies whole files, comments included.
+  'settings.js': 1269,
   // 914 → 415. The vendored CodeMirror bundle (495 KB) was reached through a STATIC import of
   // js/notes-regions.js — more than half this page's first paint, paid by every user who opens
   // Notes, including everyone who never turns Live mode on. Every function it provided was

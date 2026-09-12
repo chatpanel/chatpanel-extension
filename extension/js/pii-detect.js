@@ -244,6 +244,24 @@ const hostOf = (u) => { try { return new URL(String(u)).host; } catch { return '
 export async function detectEntities(text, cfg, { signal, fetchImpl = globalThis.fetch, strict = false, structured = NO_STRUCTURE, onEgress = null } = {}) {
   const det = cfg?.detection;
   if (!det || !det.backend || det.backend === 'off' || !det.url || typeof fetchImpl !== 'function') return [];
+  // AN IN-PROCESS DETECTOR SENDS NOTHING ANYWHERE, so the network guard below must not
+  // judge it by a URL it never dials.
+  //
+  // This is not a hypothetical. A host that runs the model in its own process passes a
+  // sentinel URL and a fetchImpl that ignores it entirely — and the sentinel failed the
+  // http(s) scheme check, threw, and was swallowed by the fail-open path. The result was a
+  // detector that reported itself ready, answered its own health route correctly, and
+  // contributed NOTHING to a single redaction: names, organisations and places went to the
+  // model in full while the UI said full tier.
+  //
+  // The opt-out is deliberately narrow. It requires the caller to have supplied its OWN
+  // fetch, so a `transport: 'in-process'` line in a config file cannot turn the SSRF guard
+  // off for a real network address — without an injected transport there is no in-process
+  // anything, and the flag is refused rather than honoured.
+  const inProcess = det.transport === 'in-process';
+  if (inProcess && fetchImpl === globalThis.fetch) {
+    throw new Error("detection.transport 'in-process' needs an injected fetch; refusing to treat a network call as in-process");
+  }
   const capped = String(text || '').slice(0, det.maxChars || 8000);
   if (capped.trim().length < 8) return [];
   const key = cacheKey(capped, det);
@@ -255,12 +273,12 @@ export async function detectEntities(text, cfg, { signal, fetchImpl = globalThis
     // only, never cloud metadata. Loopback/LAN allowed — a local NER server / Ollama
     // is the normal case. A blocked URL fails open (deterministic-only), or surfaces
     // to the Test button in strict mode.
-    assertEndpointUrl(det.url);
+    if (!inProcess) assertEndpointUrl(det.url);
     const t0 = Date.now();
     try {
       ents = await withTimeout(run(capped, det, signal, fetchImpl, structured), det.timeoutMs || 1500, signal);
-      report(onEgress, det, capped, t0, ents.length, null);
-    } catch (e) { report(onEgress, det, capped, t0, 0, e); throw e; }
+      if (!inProcess) report(onEgress, det, capped, t0, ents.length, null);
+    } catch (e) { if (!inProcess) report(onEgress, det, capped, t0, 0, e); throw e; }
   } catch (e) {
     if (strict) throw e; // surface errors to the Test button
     ents = []; // otherwise fail open — deterministic redaction still applies
