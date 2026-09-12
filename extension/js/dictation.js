@@ -224,7 +224,11 @@ function createGatewayDictation({
           let ev = null;
           try { ev = JSON.parse(line.slice(6)); } catch { continue; }
           if (ev.type === 'interim') onInterim?.(ev.text);
-          else if (ev.type === 'final') onFinal?.(ev.text, ev.speaker ? { speaker: ev.speaker } : undefined);
+          // The WHOLE final, not just its speaker: `endOfTurn` (gateway 0.6.71+) says whether
+          // the speaker actually stopped or the engine merely had to cut a long segment, and a
+          // conversation must not send the second kind. Absent on an older gateway — see
+          // voice-loop.js, which then behaves exactly as it always did.
+          else if (ev.type === 'final') onFinal?.(ev.text, { speaker: ev.speaker, reason: ev.reason, endOfTurn: ev.endOfTurn });
           else if (ev.type === 'progress' || ev.type === 'state') onStatus?.({ state: ev.state, pct: ev.pct });
           else if (ev.type === 'diarize-progress') onStatus?.({ state: 'diarize', pct: ev.pct }); // one-time speaker-model download
           else if (ev.type === 'language') onStatus?.({ state: 'language', lang: ev.lang }); // auto-detected spoken language

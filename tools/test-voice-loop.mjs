@@ -332,3 +332,83 @@ console.log('✓ voice-loop: mic stays open, barge-in cancels (and ignores one-w
   await settle();
   loop.stop();
 }
+
+// ── a long sentence is not four questions ──────────────────────────────────────
+// The engine commits a segment when the speaker pauses AND when one has run too long to
+// hold. Only the first is the end of a turn. Sending the second asked half a thought and
+// answered it: "…you should just continuously listen to it and then" went to the model.
+{
+  let clock = 4_000_000;
+  let handlers = null;
+  const sent = [];
+  const captions = [];
+  const loop = createVoiceLoop({
+    now: () => clock,
+    listen: (h) => { handlers = h; return () => {}; },
+    send: async (text) => { sent.push(text); return 'ok'; },
+    speakStream: () => { let r; const done = new Promise((res) => { r = res; }); return { push: () => {}, end: () => r(), stop: () => r(), done }; },
+    onState: ({ state, text }) => { if (state === 'listening' && text) captions.push(text); },
+  });
+  loop.start();
+  const h = handlers;
+
+  h.onFinal('okay so listen whenever you see that I am actually speaking', { endOfTurn: false, reason: 'length' });
+  await settle();
+  assert.deepEqual(sent, [], 'a segment the engine had to cut is not a question');
+  assert.equal(captions.at(-1), 'okay so listen whenever you see that I am actually speaking', 'but it is shown, so the speaker sees their sentence building');
+
+  h.onFinal('then you should just continuously listen', { endOfTurn: false, reason: 'length' });
+  await settle();
+  assert.deepEqual(sent, [], 'nor is the next one');
+
+  h.onFinal('and wait for me to finish', { endOfTurn: true, reason: 'silence' });
+  await settle();
+  assert.deepEqual(sent, ['okay so listen whenever you see that I am actually speaking then you should just continuously listen and wait for me to finish'],
+    'the pause ends the turn, and the whole sentence is asked once');
+
+  // The next sentence starts clean.
+  h.onFinal('thanks', { endOfTurn: true, reason: 'silence' });
+  await settle();
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1], 'thanks');
+  loop.stop();
+}
+
+// An older gateway says nothing about why it committed — everything is a turn, as before.
+{
+  let handlers = null;
+  const sent = [];
+  const loop = createVoiceLoop({
+    listen: (h) => { handlers = h; return () => {}; },
+    send: async (text) => { sent.push(text); return 'ok'; },
+    speakStream: () => { let r; const done = new Promise((res) => { r = res; }); return { push: () => {}, end: () => r(), stop: () => r(), done }; },
+    onState: () => {},
+  });
+  loop.start();
+  handlers.onFinal('what is the weather', { speaker: { label: 'Speaker 1' } });
+  await settle();
+  assert.deepEqual(sent, ['what is the weather'], 'no endOfTurn field: sent, exactly as it always was');
+  loop.stop();
+}
+
+// Stopping mid-sentence must not leave the fragment to be asked at the start of the next one.
+{
+  let handlers = null;
+  const sent = [];
+  const mk = () => createVoiceLoop({
+    listen: (h) => { handlers = h; return () => {}; },
+    send: async (text) => { sent.push(text); return 'ok'; },
+    speakStream: () => { let r; const done = new Promise((res) => { r = res; }); return { push: () => {}, end: () => r(), stop: () => r(), done }; },
+    onState: () => {},
+  });
+  const loop = mk();
+  loop.start();
+  handlers.onFinal('half a thought that never', { endOfTurn: false, reason: 'length' });
+  await settle();
+  loop.stop();
+  loop.start();
+  handlers.onFinal('a new question', { endOfTurn: true, reason: 'silence' });
+  await settle();
+  assert.deepEqual(sent, ['a new question'], 'the abandoned fragment does not lead the next turn');
+  loop.stop();
+}

@@ -40,11 +40,24 @@ const MIN_BARGE_IN_WORDS = 2;
  */
 export const MUTE_GRACE_MS = 4000;
 
+/**
+ * A safety valve on held-back speech, in characters.
+ *
+ * The engine cuts a segment it cannot hold and says so, and this loop stitches those pieces
+ * back together rather than asking half a sentence. That waits for a pause — which a person
+ * always eventually takes, but a stuck audio source never does. Roughly four minutes of
+ * continuous speech: far past any real sentence, and short of a buffer that never flushes,
+ * because a voice UI that has silently stopped sending looks exactly like a broken mic.
+ */
+export const MAX_PENDING_CHARS = 4000;
+
 export function createVoiceLoop({ listen, send, speakStream, onState, onError, onHeld, now = Date.now } = {}) {
   let state = 'idle';
   let running = false;
   let muted = false;
   let mutedAt = 0;
+  // Sentence so far, across the pieces the engine had to commit for length. See onFinal.
+  let pending = '';
   // WHOSE VOICE. Every final is SENT here, so the television, the colleague at the next desk
   // and the person answering their own phone all become questions. The gateway fingerprints
   // each committed segment and labels the speaker; this decides whose turn it is. It fails
@@ -122,7 +135,7 @@ export function createVoiceLoop({ listen, send, speakStream, onState, onError, o
           // Only caption partials while we are waiting for them; during an answer
           // they are the barge-in about to happen, and showing them competes with
           // the reply on screen.
-          if (state === 'listening') setState('listening', t);
+          if (state === 'listening') setState('listening', pending ? `${pending} ${t}` : t);
         },
         onFinal: (t, info) => {
           if (!running) return;
@@ -134,14 +147,31 @@ export function createVoiceLoop({ listen, send, speakStream, onState, onError, o
           // conversation must not interrupt the assistant either.
           const who = speakers.admit(info || {});
           if (!who.send) { onHeld?.({ speaker: who.speaker, text: said, count: speakers.heldCount() }); return; }
+
           if (state === 'thinking' || state === 'speaking') {
-            // Barge-in. Require real words: a single fragment is usually our own
-            // audio leaking past echo cancellation, and cutting the assistant off
-            // for that is worse than ignoring it.
+            // Barge-in. Judged on what was JUST heard, so the assistant stops the moment
+            // someone is clearly talking over it — not at the end of their sentence. Require
+            // real words: a single fragment is usually our own audio leaking past echo
+            // cancellation, and cutting the assistant off for that is worse than ignoring it.
             if (said.split(/\s+/).filter(Boolean).length < MIN_BARGE_IN_WORDS) return;
             cancelTurn();
           }
-          runTurn(said);
+
+          // NOT EVERY FINAL IS THE END OF A SENTENCE. The engine commits a segment when the
+          // speaker pauses — a turn — and also when a segment has run too long to hold, which
+          // is the middle of a sentence someone is still saying. Sending the second kind asked
+          // half a thought and answered it, and the speaker lost the rest:
+          //   "…you should just continuously listen to it and then" → sent.
+          // So a piece the engine had to cut is kept and stitched to what follows. An older
+          // gateway says nothing about why, and everything is a turn, exactly as before.
+          pending = pending ? `${pending} ${said}` : said;
+          if (info?.endOfTurn === false && pending.length < MAX_PENDING_CHARS) {
+            setState('listening', pending);
+            return;
+          }
+          const whole = pending;
+          pending = '';
+          runTurn(whole);
         },
       });
     } catch (e) {
@@ -153,6 +183,7 @@ export function createVoiceLoop({ listen, send, speakStream, onState, onError, o
   function stopAll() {
     cancelTurn();
     running = false;
+    pending = '';
     muted = false; // a new session starts with the mic open, not silently deaf
     try { stopListen?.(); } catch { /* not listening */ }
     stopListen = null;
@@ -173,6 +204,7 @@ export function createVoiceLoop({ listen, send, speakStream, onState, onError, o
       running = true;
       // A new conversation belongs to whoever speaks first in it.
       speakers.reset();
+      pending = '';
       openMic();
       back();
     },
