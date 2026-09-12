@@ -308,3 +308,64 @@ svg .gedge.hfade { opacity: .06; }
 .progate-card p { color: var(--muted); margin: 0 0 20px; line-height: 1.55; }
 
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #111827; color: #fff; padding: 11px 17px; border-radius: 11px; font-size: 14px; box-shadow: 0 16px 48px rgba(0,0,0,.4); z-index: 50; }
+
+/* ── Who spoke, as a picture ───────────────────────────────────────────────────
+   The band across the top of a meeting and the talk-time donut in Participants.
+
+   THE SPEAKER PALETTE IS NOT THEMED FROM THE UI TOKENS. It is five fixed steps
+   per mode, chosen against the card surface (#ffffff / #16191f) and validated for
+   the lightness band, a chroma floor, all-pairs colour-blind separation
+   (protan/deutan/tritan), normal-vision separation and 3:1 contrast. Nudging one
+   of these hues "to match the accent" breaks a check that no eye can re-run — if
+   they must change, re-validate the set, both modes, as a whole.
+
+   Slot order is rank order: --spk-1 is whoever talked most. Past five speakers the
+   tail shares --spk-other, a deliberate grey that is not a sixth identity. */
+:root {
+  --spk-1: #0754c6; --spk-2: #a14206; --spk-3: #1b8864; --spk-4: #a361fb; --spk-5: #a09600;
+  --spk-other: #767d88;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --spk-1: #4b8efe; --spk-2: #bd4d00; --spk-3: #1b8864; --spk-4: #9322fb; --spk-5: #a09600;
+    --spk-other: #7b828e;
+  }
+}
+
+.spk-band-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px 12px; margin-top: 16px; }
+/* Bars grow from the baseline, so the row is bottom-aligned and the gap between
+   them is surface, not a border — two adjacent speakers stay two marks. */
+.spk-band { display: flex; align-items: flex-end; gap: 2px; height: 54px; }
+.spk-bar { flex: 1 1 0; min-width: 0; border-radius: 3px 3px 1px 1px; background: var(--spk-other); }
+.spk-bar.quiet { height: 2px; border-radius: 1px; background: var(--border-strong); }
+.spk-axis { display: flex; justify-content: space-between; gap: 10px; margin-top: 7px; color: var(--faint); font-size: 11px; }
+.spk-axis span:nth-child(2) { text-align: center; }
+
+.spk-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; list-style: none; margin: 11px 0 0; padding: 0; }
+.spk-legend li { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12.5px; padding: 2px 0; border: 0; }
+.spk-legend li.lead .spk-name { font-weight: 650; color: var(--text); }
+.spk-chip { width: 9px; height: 9px; border-radius: 3px; flex: 0 0 auto; }
+.spk-name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spk-val { color: var(--text); font-variant-numeric: tabular-nums; }
+.spk-share { color: var(--faint); font-family: var(--mono); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+/* The donut is the glance; the legend beside it is the read. */
+.spk-talk { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+.spk-donut { width: 148px; height: 148px; flex: 0 0 auto; }
+.spk-slice { fill: none; stroke-width: 15; }
+.spk-centre { fill: var(--text); }
+.spk-hero { font-size: 19px; font-weight: 700; letter-spacing: -.02em; }
+.spk-sub { font-size: 10px; fill: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
+.spk-talk-side { flex: 1 1 220px; min-width: 0; }
+/* One per row here, not wrapped inline: this legend IS the table view the numbers live in. */
+.spk-talk-side .spk-legend { display: grid; grid-template-columns: auto 1fr auto auto; gap: 3px 14px; margin-top: 0; max-width: 400px; }
+.spk-talk-side .spk-legend li { display: contents; }
+.spk-talk-side .spk-legend .spk-val, .spk-talk-side .spk-legend .spk-share { text-align: right; }
+.spk-note { margin: 12px 0 0; color: var(--faint); font-size: 11.5px; line-height: 1.45; }
+
+.transcript .sp .spk-chip { margin-right: 6px; vertical-align: baseline; display: inline-block; }
+
+@media (max-width: 620px) {
+  .spk-band { height: 40px; }
+  .spk-talk { gap: 14px; }
+}

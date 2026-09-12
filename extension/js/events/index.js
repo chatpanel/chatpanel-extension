@@ -260,3 +260,4 @@ export { renderMarkdown, defaultLinkPolicy } from './markdown-render.js';
 // A meeting read back out of the flat text the warm store holds — the same grammar the
 // extension writes and MCP reads, so every client shows one transcript, not three.
 export { parseMeetingText, speakerStats, densityRibbon } from './meeting-text.js';
+export { speakerBreakdown, speakerTimeline, formatTalkTime, SPEAKER_SLOTS } from './meeting-shape.js';

@@ -19,6 +19,7 @@ import { buildMeetingTopicGraph, graphParticipantNames, graphTopicTerms } from '
 import { createDashboard, renderStats, renderRelated as renderRelatedCards } from './js/corpus-dashboard.js';
 import { initialHistoryView } from './js/history-state.js';
 import { isMeetingImageValue, participantRowsOfMeeting, peopleOfMeeting, speakerCountOfMeeting } from './js/meeting-people.js';
+import { speakerBandHtml, talkTimeChartHtml, speakerColors } from './js/meeting-charts.js';
 import { contentHash, insightTopicItemsFromNotes, makeTopicIndex, topicDisplayForMeetingSource, topicSourceTextForMeeting } from './js/topic-extraction.js';
 import { MEETING_INSIGHT_SECTIONS, composeMeetingInsightNotes, meetingInsightPrompt } from './js/meeting-insights.js';
 import { parseTranscriptText, repairImportedTranscriptDate, repairTranscriptParticipants } from './js/meeting-transcript-import.js';
@@ -338,6 +339,7 @@ function renderDetail() {
         <button class="btn danger" id="m-delete" type="button" title="Delete meeting" aria-label="Delete meeting">${icon('trash-2')}</button>
       </div>
     </div>
+    ${speakerBandHtml(rec)}
     <div class="metrics">
       <div class="metric"><div class="n">${decisions}</div><div class="l">Decisions</div></div>
       <div class="metric"><div class="n">${parsed.actions.length}</div><div class="l">Action items</div></div>
@@ -578,8 +580,11 @@ function renderParticipants() {
       </li>`).join('')}</ul>`
     : '<div class="tile-empty">No participants captured for this meeting.</div>';
 
+  const talk = talkTimeChartHtml(current.rec);
+
   $('m-tabbody').innerHTML = `
     <div class="tiles">
+      ${talk ? `<div class="tile span"><h3>${icon('timer')} Talk time</h3>${talk}</div>` : ''}
       <div class="tile span"><h3>${icon('users')} Participants</h3>${list}</div>
     </div>`;
 }
@@ -604,6 +609,7 @@ function transcriptSection(title, rows, query) {
 
 function renderTranscript() {
   const segs = current.rec.segments || [];
+  const speakers = speakerColors(current.rec); // same slot, same colour as the band above
   const chats = current.rec.chat || [];
   const participants = current.rec.participants || [];
   const body = $('m-tabbody');
@@ -616,7 +622,9 @@ function renderTranscript() {
       html: (query) => {
       const time = esc(new Date(s.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
       const spk = (s.speaker || '').trim();
-      const spHtml = isImg(spk) ? `<img class="av" src="${esc(spk)}" alt="" loading="lazy" />` : `<span class="sp">${esc(spk)}</span>`;
+      const spHtml = isImg(spk)
+        ? `<img class="av" src="${esc(spk)}" alt="" loading="lazy" />`
+        : `<span class="sp"><i class="spk-chip" style="background:${speakers.colorOf(spk)}"></i>${esc(spk)}</span>`;
       const tt = (s.text || '').trim();
       let bodyHtml;
       if (isImg(tt)) bodyHtml = `<a class="tline-imglink" href="${esc(tt)}" target="_blank" rel="noopener"><img class="tline-img" src="${esc(tt)}" alt="shared image" loading="lazy" /></a>`;
