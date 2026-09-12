@@ -42,11 +42,18 @@ export const FIND_DESCRIPTION =
 // meeting history" — while `find` was sitting in its toolset. The old line named the tool
 // and left the capability to be inferred, and inference is what small models are worst at.
 export const FIND_RESIDENT =
-  "You HAVE access to the user's own ChatPanel data — their past chats, notes, and "
-  + 'meeting transcripts and summaries — through the `find` tool, plus the web. When the '
-  + 'question is about past meetings, notes, people, decisions, or anything the user '
-  + 'discussed or wrote, call `find` FIRST and answer from what it returns. Never tell '
-  + 'the user you cannot access their meetings, notes or history: you can.';
+  "You HAVE access to the user's own ChatPanel data — past chats, notes, meeting "
+  + 'transcripts and summaries — through `find`, plus the web. For anything they discussed or '
+  + 'wrote, call `find` FIRST and answer from it; never say you cannot access their meetings, '
+  + 'notes or history. '
+  // Named here, resident, because a relayed agent with a web search of its own otherwise
+  // reaches for that: the desktop asked Codex about the weather, Codex searched on its own,
+  // read pages that were scripts and no temperature, and answered that it could not tell.
+  // The `weather` action answers in one request. And a `find` call is shown to the user as
+  // a step — an agent's own search is not. The whole block stays under the extension's
+  // 120-token resident cap (test-data-dispatch.mjs): the manual travels with `describe`.
+  + 'For anything current — weather, prices, news — use `find` (actions `weather`, '
+  + '`web_search`), not a search tool of your own; the user sees `find` calls as steps.';
 
 /**
  * Wrap the real search/read tools (history, web search, weather…) as the one `find` tool.

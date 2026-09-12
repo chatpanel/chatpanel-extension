@@ -87,7 +87,8 @@ export function placeholderToolNote({ toolData = 'real', ownTools = false } = {}
       + 'yourself — your own web search, shell, file or code tools — receives the placeholder '
       + 'text literally and will find nothing. So for ANY lookup that involves a placeholder, '
       + 'call the listed tool (for example `find` with action `web_search` or `history_search`) '
-      + 'rather than your own; use your own tools only for things that involve no placeholder.'
+      + 'rather than your own. Prefer the listed tools for lookups in general — the user sees '
+      + 'those as steps — and keep your own tools for what the listed ones cannot do.'
     : '';
   return intro + remote + rules + own;
 }

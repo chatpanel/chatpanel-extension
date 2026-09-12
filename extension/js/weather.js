@@ -12,7 +12,10 @@
 // had no access to weather. One JSON request answers the whole question.
 
 import { assertFetchable } from './context.js';
-import { getWeather, WEATHER_TIMEOUT_MS } from './events/weather.js';
+import { WEATHER_TIMEOUT_MS } from './events/weather.js';
+import { weatherToolProvider as sharedWeatherToolProvider } from './events/weather-tool.js';
+
+export { WEATHER_TOOL_SYSTEM } from './events/weather-tool.js';
 
 /**
  * Fetch JSON through the same host guard every other outbound request uses.
@@ -37,52 +40,7 @@ async function fetchJson(url, { timeoutMs = WEATHER_TIMEOUT_MS } = {}) {
   }
 }
 
-export const WEATHER_TOOL_SYSTEM =
-  'For weather, call `weather` FIRST — it answers the whole question in one request. Only '
-  + 'fall back to web_search if it tells you to. Report the location it says it resolved, '
-  + 'because a bare town name can geocode to the wrong place.';
-
 export function weatherToolProvider({ fetchJson: injected = fetchJson } = {}) {
-  return {
-    specs: [
-      {
-        name: 'weather',
-        // A read, declared: the round runner overlaps reads and serialises everything it
-        // cannot classify, and "weather" is not a verb its name heuristic knows.
-        annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
-        description:
-          'Current conditions and a short forecast for one place, in a single request. Use this '
-          + 'for any weather question instead of searching. Returns the location it actually '
-          + 'resolved to — say which place the answer is for.',
-        parameters: {
-          type: 'object',
-          properties: {
-            location: {
-              type: 'string',
-              description: 'A place, as the user said it. Add a state or country only if THEY did '
-                + '— "Fairview, OR" if they said so, plain "Fairview" if they did not.',
-            },
-          },
-          required: ['location'],
-          additionalProperties: false,
-        },
-      },
-    ],
-    system: WEATHER_TOOL_SYSTEM,
-    async execute(name, input) {
-      if (name !== 'weather') return JSON.stringify({ error: `Unknown tool: ${name}` });
-      const location = String(input?.location || '').trim();
-      if (!location) return 'No location provided to weather.';
-      const got = await getWeather(location, { fetchJson: injected });
-      // THE FALLBACK IS AN INSTRUCTION, not an error string. A model handed "weather failed"
-      // stops, or apologises; a model told which tool answers this next just uses it. The
-      // whole point of preferring one source is that it must degrade to the general one.
-      if (!got.ok) {
-        return `The weather service could not answer for "${location}" (${got.reason}). `
-          + `Now call web_search for "weather in ${location}" and answer from the results — `
-          + 'do not tell the user a tool failed.';
-      }
-      return { text: got.text, note: 'ChatPanel · wttr.in' };
-    },
-  };
+  // The spec, the guidance and the answer shape are the shared tool; the guarded fetch is ours.
+  return sharedWeatherToolProvider({ fetchJson: injected });
 }

@@ -291,3 +291,4 @@ export { McpClient, mcpProvider } from './mcp-client.js';
 export { mcpSharedSystem, mcpInventorySystem, sourceCitationSystem, combineSystemPrompt, toolStatus, widgetAuthoringSystem, vaultWidgetSystem, wantsVaultGuidance } from './tool-hints.js';
 export { adaptiveToolRetryHint, createAdaptiveToolPolicy, isInvalidToolParametersResult } from './adaptive-tool-policy.js';
 export { getMcpProviders, testMcpServer, resetMcp } from './mcp-manager.js';
+export { WEATHER_TOOL_NAME, WEATHER_TOOL_SYSTEM, weatherToolProvider } from './weather-tool.js';
