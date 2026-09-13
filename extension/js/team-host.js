@@ -197,7 +197,8 @@ export async function runTeamHere({ team, request, settings, license, like = '',
     });
   };
 
-  const callModel = async ({ taskId, role, model, system, prompt, tools, onDelta }) => {
+  // `signal` is the TASK's: an ask nobody answered aborts this member's turn, not the run's.
+  const callModel = async ({ taskId, role, model, system, prompt, tools, onDelta, signal: taskSignal }) => {
     const target = resolveTarget(getTarget(settings, model), settings);
     if (!target) return { ok: false, error: `no target for "${model}"` };
     const messages = [{ role: 'user', content: prompt }];
@@ -206,7 +207,7 @@ export async function runTeamHere({ team, request, settings, license, like = '',
     try {
       const out = await streamChat({
         agent: { ...target, systemPrompt: [target.systemPrompt, system].filter(Boolean).join('\n\n') },
-        messages, settings, signal: ac.signal, tools,
+        messages, settings, signal: taskSignal || ac.signal, tools,
         onDelta: (d) => { text += d; onDelta?.(d, text); },
         onEvent: (e) => {
           if (e?.type === 'usage') usage = e;
@@ -217,7 +218,7 @@ export async function runTeamHere({ team, request, settings, license, like = '',
       const full = typeof out === 'string' ? out : (out?.text ?? text);
       return { ok: true, text: full || text, usage: usage ? { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens } : null, aborted: ac.signal.aborted };
     } catch (e) {
-      if (ac.signal.aborted) return { ok: true, text, aborted: true, usage: null };
+      if (ac.signal.aborted || taskSignal?.aborted) return { ok: true, text, aborted: true, usage: null };
       return { ok: false, error: e?.message || String(e), text };
     }
   };

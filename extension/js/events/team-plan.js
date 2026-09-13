@@ -60,7 +60,11 @@ export function plannerPrompt(team, request) {
 /** One task per role, in declaration order, with the roles' own dependencies. */
 export function fixedPlan(team, request) {
   const req = String(request || '').trim();
-  return (team.roles || []).map((r) => ({
+  // The judge's work IS the merge: it reads the whole board and writes the answer. Giving it
+  // a task as well made a planner plan twice — once blind, in the first wave, and once at
+  // the end — and the first, done with no findings to read, was pure duplicate research.
+  const judge = team.merge === 'judge' ? team.judge : null;
+  return (team.roles || []).filter((r) => r.id !== judge || (team.roles || []).length === 1).map((r) => ({
     id: `t_${r.id}`,
     role: r.id,
     title: r.name || r.id,

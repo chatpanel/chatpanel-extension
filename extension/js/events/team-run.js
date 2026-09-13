@@ -29,6 +29,7 @@ import { createBudget } from './budget.js';
 import { fixedPlan, plannerPrompt, parsePlan, waves } from './team-plan.js';
 import { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, RUNNER } from './team-board.js';
 import { boardToolProvider, createAnswerBox, withBoardTool, DEFAULT_ASK_TIMEOUT_MS } from './board-tool.js';
+import { createRunCache, withRunCache } from './team-cache.js';
 import { converge } from './promotion.js';
 
 export const RUN_STATUSES = Object.freeze(['planning', 'running', 'merging', 'waiting', 'completed', 'partial', 'over-budget', 'stopped', 'failed']);
@@ -114,6 +115,7 @@ export async function runTeam({
   const board = createBoard({ now, state: resume?.board || null, onEvent: (type, ev) => say(type, ev) });
   // No answer box from the host means nobody can answer: asks are off, a member that asks is
   // told to proceed on its own assumption at once, and the budget stop is final.
+  const runCache = createRunCache(); // one lookup per run, across members
   const box = answers || createAnswerBox();
   const askMs = answers ? askTimeoutMs : 0;
   const startedAt = resume?.startedAt || now();
@@ -152,7 +154,7 @@ export async function runTeam({
 
   const finish = (status, extra = {}) => {
     const usage = budget.snapshot();
-    const out = { runId: id, team: t.name, status, plan: { by: planBy, tasks }, tasks: tasksOut, board: board.all(), threads: board.state(), usage, startedAt, endedAt: now(), ...extra };
+    const out = { runId: id, team: t.name, status, plan: { by: planBy, tasks }, tasks: tasksOut, board: board.all(), threads: board.state(), usage, lookups: { distinct: runCache.size, shared: runCache.shared }, startedAt, endedAt: now(), ...extra };
     // What a resume needs, on the record: the plan, what finished, the board, the spend.
     if (status === 'waiting') out.checkpoint = { runId: id, startedAt, plan: { by: planBy, tasks }, tasks: tasksOut, board: board.state(), budget: { cap: budget.cap, spent: usage.spent } };
     say('run.done', { status, usage, proposal: out.proposal || null, failedTaskIds: tasksOut.filter((x) => x.status === 'failed').map((x) => x.id), waitingTaskIds: tasksOut.filter((x) => x.status === 'waiting').map((x) => x.id), ...(out.checkpoint ? { checkpoint: out.checkpoint } : {}) });
@@ -214,7 +216,7 @@ export async function runTeam({
               return a;
             } : null,
           });
-          const tools = withBoardTool(await toolsFor(role), boardTool);
+          const tools = withBoardTool(withRunCache(await toolsFor(role), runCache, { role: role.id }), boardTool);
           // A model that is not there — not deployed, no key, gone — is not the task failing:
           // the next model on the roster is appointed and the task tried again, up to three
           // models. Anything else (a refusal, a timeout, a bad request) fails the task.
@@ -223,6 +225,8 @@ export async function runTeam({
             const m = modelFor(role, exclude);
             if (!m?.model) throw new Error(exclude.size ? `no model left for role "${role.id}" after ${[...exclude].join(', ')}` : `no model for role "${role.id}"`);
             if (attempt > 1) say('task.reappointed', { taskId: task.id, role: role.id, model: m.model, after: [...exclude] });
+            // Who is doing this task, for a ledger that shows the lanes — said per attempt.
+            say('task.model', { taskId: task.id, role: role.id, model: m.model, attempt });
             const res = await callModel({
               runId: id, taskId: task.id, role: role.id, model: m.model, mode: m.mode || role.mode,
               system: role.prompt, prompt, tools, signal: taskAc.signal,
@@ -253,6 +257,8 @@ export async function runTeam({
       const row = { id: task.id, role: task.role, title: task.title, status, text, error, usage, ms: now() - t0, findings, ...(askedAndWaiting ? { waitingOn: askedAndWaiting } : {}) };
       tasksOut.push(row);
       say(status === 'ok' ? 'task.done' : 'task.failed', { taskId: task.id, role: task.role, status, error, ms: row.ms, findings: findings.length, ...(askedAndWaiting ? { threadId: askedAndWaiting } : {}) });
+      // The spend so far, after every task — a ledger reads it live instead of at the end.
+      say('run.usage', { usage: budget.snapshot() });
       if (budget.exhausted()) overBudget = true;
     });
     // Over budget with work left: ask the person ONCE for more, on the board, before stopping.
@@ -282,13 +288,32 @@ export async function runTeam({
     const m = modelFor(judge);
     if (m?.model && budget.canAfford({ tokens: 0 })) {
       const prompt = [
-        `You are the ${judge.name || judge.id} of team "${t.name}". Review the team's findings for the request below and write the final answer — accurate, concise, and only what the findings support. Flag anything the members disagreed on.`,
+        `You are the ${judge.name || judge.id} of team "${t.name}". The members' work is on the board below (and in the board tool). Write the team's FINAL ANSWER to the request: complete, well organised, only what the findings support, with the refs they came from. Say plainly what was not found or assumed. Flag anything the members disagreed on. Do not research from scratch — verify a figure with a tool only where the board is silent or contradictory.`,
         `Request: ${String(request || '').trim()}`,
         boardText(board),
       ].join('\n\n');
-      const res = await callModel({ runId: id, taskId: 'merge', role: judge.id, model: m.model, mode: 'model', system: judge.prompt, prompt, tools: undefined, signal });
-      if (res?.usage) budget.charge(res.usage);
-      proposal = res?.ok ? { kind: 'answer', text: String(res.text || ''), by: judge.id } : mergeCheap(t, board.all(), tasksOut);
+      // The judge works with its own grants (it may verify a figure) and the board — and it
+      // is a run member like the others: a model that is not there rotates.
+      say('task.started', { taskId: 'merge', role: judge.id, title: `merge (${judge.name || judge.id})` });
+      const judgeTools = withBoardTool(withRunCache(await toolsFor(judge), runCache, { role: judge.id }), boardToolProvider({ board, role: judge.id, taskId: 'merge', taskIds: null }));
+      let res = null;
+      const excl = new Set();
+      for (let attempt = 1; attempt <= MAX_APPOINTMENTS; attempt++) {
+        const mm = attempt === 1 ? m : modelFor(judge, excl);
+        if (!mm?.model) break;
+        if (attempt > 1) say('task.reappointed', { taskId: 'merge', role: judge.id, model: mm.model, after: [...excl] });
+        say('task.model', { taskId: 'merge', role: judge.id, model: mm.model, attempt });
+        res = await callModel({ runId: id, taskId: 'merge', role: judge.id, model: mm.model, mode: 'model', system: judge.prompt, prompt, tools: judgeTools, signal, onDelta: (delta, full) => say('task.delta', { taskId: 'merge', role: judge.id, delta, text: full }) });
+        if (res?.usage) budget.charge(res.usage);
+        if (res?.ok && String(res.text || '').trim()) break;
+        const err = res?.ok ? 'the model returned no answer' : (res?.error || 'the model did not answer');
+        if (stopped() || !isModelUnavailable(err)) break;
+        excl.add(mm.model);
+      }
+      const judged = res?.ok && String(res.text || '').trim();
+      say(judged ? 'task.done' : 'task.failed', { taskId: 'merge', role: judge.id, status: judged ? 'ok' : 'failed', error: judged ? null : (res?.error || 'the judge did not answer'), findings: 0 });
+      say('run.usage', { usage: budget.snapshot() });
+      proposal = judged ? { kind: 'answer', text: String(res.text || ''), by: judge.id } : mergeCheap(t, board.all(), tasksOut);
     } else {
       proposal = mergeCheap(t, board.all(), tasksOut);
     }

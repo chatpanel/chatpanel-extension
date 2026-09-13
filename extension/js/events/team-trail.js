@@ -43,6 +43,9 @@ export function teamLanes(prev, ev) {
     case 'task.started': lanes.tasks[ev.taskId] = { ...(lanes.tasks[ev.taskId] || { id: ev.taskId, role: ev.role, title: ev.title }), status: 'running' }; break;
     case 'task.delta': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], text: ev.text }; break;
     case 'task.finding': lanes.findings += 1; if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], findings: (lanes.tasks[ev.taskId].findings || 0) + 1 }; break;
+    case 'task.model': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], model: ev.model }; break;
+    case 'task.tool': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], tools: (lanes.tasks[ev.taskId].tools || 0) + 1, lastTool: ev.text ? `${ev.name} ${ev.text}` : ev.name }; break;
+    case 'run.usage': lanes.usage = ev.usage; break;
     case 'task.waiting': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], status: 'waiting', waitingOn: ev.threadId }; lanes.waiting = [...(lanes.waiting || []), ev.threadId]; break;
     case 'task.done': case 'task.failed': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], status: ev.status || 'ok', ms: ev.ms }; break;
     case 'board.thread-status': if (ev.status !== 'waiting' && lanes.waiting) lanes.waiting = lanes.waiting.filter((x) => x !== ev.threadId); break;

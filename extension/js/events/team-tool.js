@@ -44,7 +44,8 @@ export function teamToolSpec(teams) {
       + '{"action":"dry_run","name":"<team>","request":"…"} shows roles, models, tools and budget without running; '
       + '{"action":"save","team":{…}} proposes a NEW team after a task that would benefit from several roles — the user approves it on a card. '
       + 'A team: {"name":"research" (a short identifier: letters, digits, - _; used as /research),"description":"…","roles":[{"id":"researcher","prompt":"…","prefer":"balanced","grants":["data","web"]},{"id":"writer","prompt":"…","prefer":"strong","grants":["none"]}],"merge":"judge","judge":"writer","budget":{"tokens":40000,"ms":300000}}. '
-      + 'grants: none | data | web | history | mcp | mcp:<server>. merge: judge | converge | concat | first. A budget is required.',
+      + 'grants: none | data | web | history | mcp | mcp:<server>. merge: judge | converge | concat | first. A budget is required. '
+      + 'Order the work with "dependsOn": a role that builds on another\'s findings (a budget checker on a researcher) lists it, so it runs after and reads the board instead of searching again. The judge does not need a task of its own - the merge is its work.',
     parameters: {
       type: 'object',
       properties: {
@@ -124,9 +125,12 @@ export function teamToolProvider({ teams = [], run = null, appoint = null, confi
       if (action === 'run') {
         if (!request) return json({ error: 'run needs a request — what should the team do?' });
         if (typeof run !== 'function') return json({ error: 'This surface cannot run a team.' });
-        const key = `${team.name}\n${request}`;
+        // ONE run per team per turn — keyed by the team, not the request: a model that
+        // re-runs after a partial result rephrases the request each time, and that was a
+        // second circle. Its partial result stands; the person decides what happens next.
+        const key = team.name;
         const prior = ran.get(key);
-        if (prior) return json({ error: `The "${team.name}" team already ran this request in this turn (run ${prior.runId}, ${prior.status}). Do not run it again: tell the user what happened — ${prior.summary} — and ask how to proceed.`, runId: prior.runId, status: prior.status, tasks: prior.tasks });
+        if (prior) return json({ error: `The "${team.name}" team already ran in this turn (run ${prior.runId}, ${prior.status}). Do not run it again, even with a different request: report what it produced — ${prior.summary} — with its proposal, and ask the user how to proceed.`, runId: prior.runId, status: prior.status, tasks: prior.tasks, proposal: prior.proposal });
         const dry = dryRunTeam(team, request, { appoint });
         if (!dry.ok) return json({ error: `No model is available for role(s): ${dry.missing.join(', ')}.`, roles: dry.roles });
         const result = await run({ team, request, toolset: bound });
@@ -134,10 +138,10 @@ export function teamToolProvider({ teams = [], run = null, appoint = null, confi
         const tasks = (result.tasks || []).map((x) => ({ id: x.id, role: x.role, status: x.status, ms: x.ms, findings: (x.findings || []).length, error: x.error || undefined }));
         const failed = tasks.filter((x) => x.status !== 'ok');
         const summary = failed.length ? failed.map((x) => `${x.role} ${x.status}${x.error ? ` (${x.error})` : ''}`).join('; ') : `${findings.length} findings`;
-        ran.set(key, { runId: result.runId, status: result.status, summary, tasks });
+        ran.set(key, { runId: result.runId, status: result.status, summary, tasks, proposal: result.proposal });
         const hint = result.status === 'over-budget' ? 'The team stopped at its budget; the proposal is what it had. Say so.'
           : result.status === 'failed' ? `The run FAILED — ${summary}. Do not run the team again this turn. Tell the user exactly which role failed and why, and ask whether to retry, change the team\'s models in Settings → Teams, or answer without the team.`
-          : failed.length ? `Some roles did not finish — ${summary}. Say so alongside the proposal.` : undefined;
+          : failed.length ? `Some roles did not finish — ${summary}. Present the proposal as the team's answer and say which role did not finish; do NOT run the team again this turn.` : undefined;
         return json({ name: team.name, runId: result.runId, status: result.status, proposal: result.proposal, tasks, findings, usage: result.usage, hint });
       }
       return json({ error: `Unknown action "${action}". Use run, dry_run or save.` });
