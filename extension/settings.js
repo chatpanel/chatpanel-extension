@@ -372,6 +372,10 @@ const PANEL_SUBTABS = {
   ] },
   skills: { bar: 'sk-subtabs', groups: [
     { id: 'skills', label: 'Skills', target: 'sk-skills' },
+    // A card without a tab here is a card nobody can reach: the bar shows ONE target at a
+    // time, so Recipes and Teams were rendered and hidden on every selection.
+    { id: 'recipes', label: 'Recipes', target: 'recipes' },
+    { id: 'teams', label: 'Teams', target: 'teams' },
     { id: 'sources', label: 'On this machine', target: 'skill-sources-card', requires: 'skill-sources-card' },
   ] },
   workspace: { bar: 'ws-subtabs', groups: [
