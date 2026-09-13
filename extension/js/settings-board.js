@@ -137,7 +137,7 @@ export function renderBoard(root, { settings, license = null }) {
         cap ? el('div', { class: 'muted tiny', text: `Budget ${cap.tokens ? `${spent?.tokens || 0} / ${cap.tokens} tokens` : ''}${cap.ms ? ` · ${Math.round((spent?.ms || 0) / 1000)}s / ${Math.round(cap.ms / 1000)}s` : ''}` }) : null,
         live && !run.stale ? el('button', { class: 'btn danger', type: 'button', text: 'Stop run', onclick: () => store.stop(run.id).then(refresh) }) : null,
         // A run whose client went away, or that stopped, waited or failed, picks up from its record.
-        run.resumable ? el('button', { class: 'btn primary', type: 'button', text: 'Resume here', title: 'Continue this run in this browser from its record — nothing already done is redone', onclick: async () => {
+        (run.resumable || (live && (run.quietMs || 0) > 60_000)) ? el('button', { class: 'btn primary', type: 'button', text: run.resumable ? 'Resume here' : `Resume here (quiet ${Math.round((run.quietMs || 0) / 1000)} s)`, title: 'Continue this run in this browser from its record — nothing already done is redone', onclick: async () => {
           const [{ streamChat }, { buildTurnTools }] = await Promise.all([import('./providers.js'), import('./turn-tools.js')]);
           const r = await resumeRunHere(settings, license, { runId: run.id, streamChat, buildTurnTools, bridgeUrl: settings.bridgeUrl || '', bridgeAvailable: false });
           if (!r.ok) state.err = r.error; refresh();
