@@ -1793,11 +1793,11 @@ function renderAgentMenu() {
   const endpoints = (s.endpoints || []).filter((e) => e.enabled !== false);
   const bridge = (s.agents || []).filter((a) => a.kind === 'bridge' && a.enabled !== false);
   if (endpoints.length) {
-    menu.appendChild(sectionLabel('API'));
+    menu.appendChild(sectionLabel('Models'));
     endpoints.forEach((e) => addItem(e));
   }
   if (bridge.length) {
-    menu.appendChild(sectionLabel('Agents'));
+    menu.appendChild(sectionLabel('Harnesses'));
     bridge.forEach((a) => addItem(a, 'local'));
   }
   const manage = document.createElement('button');

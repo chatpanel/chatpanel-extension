@@ -25,6 +25,7 @@
 // says so (`status: 'over-budget'`). Stop is one signal, fanned out.
 
 import { normalizeTeam } from './team.js';
+import { normalizeEngine, normalizeScm } from './scorecard.js';
 import { createBudget } from './budget.js';
 import { fixedPlan, plannerPrompt, parsePlan, waves } from './team-plan.js';
 import { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, RUNNER } from './team-board.js';
@@ -87,9 +88,15 @@ export function dryRunTeam(team, request, { appoint = null } = {}) {
 
 /**
  * @param callModel  `async ({ runId, taskId, role, model, mode, system, prompt, tools, signal, onDelta }) =>
- *                   { ok, text, usage?, error?, aborted? }` — the host's model turn
+ *                   { ok, text, usage?, error?, aborted?, scm? }` — the host's model turn; `scm`
+ *                   is what a harness did in a git checkout (`{ repo, branch, head, headAfter,
+ *                   commits }`), when the bridge reported one
  * @param toolsFor   `(role) => toolset | undefined` — narrowed to the role's grants by the host
- * @param appoint    `(role) => { model, mode } | null` — the host's roster through cowriter-router
+ * @param appoint    `(role) => { model, mode, engine?, reasons?, alternatives? } | null` — the host's
+ *                   roster through cowriter-router. `engine` (`{ kind: 'model'|'harness', id,
+ *                   model? }`) says WHAT the model id is, so the record can split by it;
+ *                   `reasons` and `alternatives` are why this one and who else could have —
+ *                   said as `task.routed`, which every run records from here on (pillars §13)
  * @param runRecipe  `async (name, params) => result` for `mode: 'recipe'` roles (optional)
  * @param emit       `(type, payload)` — run.started · plan.ready · task.started · task.finding ·
  *                   task.done · task.failed · run.merging · run.done; the host forwards them to
@@ -137,6 +144,21 @@ export async function runTeam({
     return (appoint ? appoint(r, { exclude }) : null) || (r.model && !exclude?.has(r.model) ? { model: r.model, mode: r.mode } : null);
   };
   const MAX_APPOINTMENTS = 3;
+  // The routing decision, on the record: which engine, why, who else could have. A host that
+  // does not say the kind gets `model` — the honest default for a bare id; the pilot's hosts
+  // both say. Exploration (a tier cheaper on purpose) is the project loop's, later; false here.
+  const routeOf = (m, role, { attempt = 1, exclude = null, handoff = null } = {}) => {
+    const reasons = Array.isArray(m.reasons) ? m.reasons.map(String) : [];
+    if (handoff) reasons.unshift(`handed off by ${handoff.by}${handoff.reason ? ` — ${handoff.reason}` : ''}`);
+    else if (!reasons.length && role.model && m.model === role.model) reasons.push('pinned by the role');
+    if (attempt > 1 && exclude?.size) reasons.push(`after ${[...exclude].join(', ')} (unavailable)`);
+    return {
+      engine: normalizeEngine(m.engine || { id: m.model }),
+      reasons,
+      alternatives: (Array.isArray(m.alternatives) ? m.alternatives : []).slice(0, 5).map((a) => normalizeEngine(a)).filter(Boolean),
+      exploration: false,
+    };
+  };
   // A model that was not there for one member is not there for the next: what failed as
   // unavailable anywhere in this run is skipped by every later appointment. Two members
   // each spent two minutes finding out the same agent was down.
@@ -207,6 +229,8 @@ export async function runTeam({
       // the record. Only a task that has never been attempted starts from the bare prompt.
       let transcript = was ? [...was.transcript] : [];
       const attempts = was?.attempts ? [...was.attempts] : [];
+      let routed = null; // the last routing decision, on the task row
+      let scm = null; // what the last attempt did in a checkout
       // The task's own abort: an ask nobody answered in time stops THIS member's turn (the
       // run then checkpoints), without stopping the run's other members. A person's hand-off
       // aborts it too, and names where the task continues.
@@ -258,6 +282,7 @@ export async function runTeam({
           let lastModel = was?.attempts?.at?.(-1)?.model || null;
           for (let attempt = 1; ; attempt++) {
             let m;
+            const handoffNow = handoffTo;
             if (handoffTo) {
               // A person's hand-off names the model; the task continues there whatever the
               // roster would have chosen. Said on the board, so everyone knows who has it.
@@ -275,7 +300,9 @@ export async function runTeam({
             if (attempt > 1 && lastErr) say('task.reappointed', { taskId: task.id, role: role.id, model: m.model, after: [...exclude], error: lastErr });
             // Who is doing this task, for a ledger that shows the lanes — said per attempt.
             say('task.model', { taskId: task.id, role: role.id, model: m.model, attempt });
-            attempts.push({ model: m.model, at: now(), continued: !!note });
+            routed = routeOf(m, role, { attempt, exclude, handoff: handoffNow });
+            say('task.routed', { taskId: task.id, role: role.id, attempt, ...routed });
+            attempts.push({ model: m.model, engine: routed.engine, at: now(), continued: !!note });
             const sent = messagesFor({ transcript }, { prompt, note });
             // The record grows AS THE ATTEMPT GOES: a host that reports each wire message the
             // moment it exists (a tool call, its result) puts it on the record then, so a
@@ -291,6 +318,8 @@ export async function runTeam({
             });
             usage = res?.usage || null;
             if (usage) budget.charge(usage);
+            // What the attempt did in a checkout, when the host's harness reported one (§14).
+            if (normalizeScm(res?.scm)) { scm = normalizeScm(res.scm); say('task.scm', { taskId: task.id, role: role.id, ...scm }); }
             // Whatever the attempt did is the task's now — on the record, before any verdict.
             // What the host already reported step by step is not reported again.
             transcript = mergeTranscript(sent, res);
@@ -335,14 +364,14 @@ export async function runTeam({
       if (findings.length) { board.add(findings); for (const f of findings) say('task.finding', { taskId: task.id, role: role.id, finding: f }); }
       const thread = board.threadForTask(task.id);
       if (thread && status !== 'waiting') board.setThreadStatus(thread.id, 'resolved');
-      const row = { id: task.id, role: task.role, title: task.title, status, text, error, usage, ms: now() - t0, findings, transcript: clipTranscript(transcript), attempts, ...(askedAndWaiting ? { waitingOn: askedAndWaiting } : {}) };
+      const row = { id: task.id, role: task.role, title: task.title, status, text, error, usage, ms: now() - t0, findings, transcript: clipTranscript(transcript), attempts, ...(routed ? { routed } : {}), ...(scm ? { scm } : {}), ...(askedAndWaiting ? { waitingOn: askedAndWaiting } : {}) };
       tasksOut.push(row);
       say(status === 'ok' ? 'task.done' : 'task.failed', { taskId: task.id, role: task.role, status, error, ms: row.ms, findings: findings.length, ...(askedAndWaiting ? { threadId: askedAndWaiting } : {}) });
       // The fact for the member's scorecard (scorecard.js): how big, with what, alongside whom,
       // in which role — produced here, attested by the store, never written by the agent.
       if (status === 'ok' || status === 'failed') {
         say('task.scored', {
-          agentId: role.agent || role.id, taskId: task.id, role: role.id, model: lastModelOf(attempts), outcome: status === 'ok' ? 'task.done' : 'task.failed',
+          agentId: role.agent || role.id, taskId: task.id, role: role.id, model: lastModelOf(attempts), engine: routed?.engine || null, scm: scm || undefined, outcome: status === 'ok' ? 'task.done' : 'task.failed',
           size: { ms: row.ms, steps: (row.transcript || []).length, tools: (row.transcript || []).filter((m) => m.role === 'tool').length, findings: findings.length, tokens: usage ? Number(usage.input_tokens || usage.prompt_tokens || 0) + Number(usage.output_tokens || usage.completion_tokens || 0) : 0 },
           roleKind: 'ic', tools: toolNamesOf(row.transcript), with: t.roles.filter((r) => r.id !== role.id).map((r) => r.agent || r.id),
           refs: [`run:${id}`, ...(board.threadForTask(task.id) ? [`thread:${board.threadForTask(task.id).id}`] : [])], error: error || undefined,
@@ -391,11 +420,15 @@ export async function runTeam({
       let res = null;
       const excl = new Set();
       let judgeErr = '';
+      let judgeModel = null; // the appointment that answered (or the last one tried)
+      let judgeRoute = null;
       for (let attempt = 1; attempt <= MAX_APPOINTMENTS; attempt++) {
         const mm = attempt === 1 ? (runExclude.has(m?.model) ? modelFor(judge, excluding(excl)) : m) : modelFor(judge, excluding(excl));
         if (!mm?.model) break;
         if (attempt > 1) say('task.reappointed', { taskId: 'merge', role: judge.id, model: mm.model, after: [...excl], error: judgeErr });
         say('task.model', { taskId: 'merge', role: judge.id, model: mm.model, attempt });
+        judgeModel = mm; judgeRoute = routeOf(mm, judge, { attempt, exclude: excl });
+        say('task.routed', { taskId: 'merge', role: judge.id, attempt, ...judgeRoute });
         res = await callModel({ runId: id, taskId: 'merge', role: judge.id, model: mm.model, mode: 'model', system: judge.prompt, prompt, tools: judgeTools, signal, onDelta: (delta, full) => say('task.delta', { taskId: 'merge', role: judge.id, delta, text: full }) });
         if (res?.usage) budget.charge(res.usage);
         if (res?.ok && String(res.text || '').trim()) break;
@@ -405,7 +438,9 @@ export async function runTeam({
       }
       const judged = res?.ok && String(res.text || '').trim();
       say(judged ? 'task.done' : 'task.failed', { taskId: 'merge', role: judge.id, status: judged ? 'ok' : 'failed', error: judged ? null : (res?.error || 'the judge did not answer'), findings: 0 });
-      say('task.scored', { agentId: judge.id, taskId: 'merge', role: judge.id, model: res ? (excl.size ? [...excl].at(-1) : m?.model) : m?.model, outcome: judged ? 'task.done' : 'task.failed', size: { ms: 0, steps: 1, tools: 0, findings: board.all().length, tokens: 0 }, roleKind: 'orchestrator', tools: [], with: t.roles.filter((r) => r.id !== judge.id).map((r) => r.agent || r.id), refs: [`run:${id}`] });
+      const judgeScm = normalizeScm(res?.scm);
+      if (judgeScm) say('task.scm', { taskId: 'merge', role: judge.id, ...judgeScm });
+      say('task.scored', { agentId: judge.id, taskId: 'merge', role: judge.id, model: judgeModel?.model || m?.model, engine: judgeRoute?.engine || null, scm: judgeScm || undefined, outcome: judged ? 'task.done' : 'task.failed', size: { ms: 0, steps: 1, tools: 0, findings: board.all().length, tokens: 0 }, roleKind: 'orchestrator', tools: [], with: t.roles.filter((r) => r.id !== judge.id).map((r) => r.agent || r.id), refs: [`run:${id}`] });
       say('run.usage', { usage: budget.snapshot() });
       proposal = judged ? { kind: 'answer', text: String(res.text || ''), by: judge.id } : mergeCheap(t, board.all(), tasksOut);
     } else {

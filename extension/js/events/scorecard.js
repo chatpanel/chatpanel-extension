@@ -21,11 +21,59 @@
 // against a job's needs with that record — the same function the evaluator starts from, so
 // an application's fit has reasons a person can read and overrule.
 //
+// The model is a variable, not a constant (architecture-pillars.md §13): every task fact also
+// says which ENGINE did it — a model endpoint or a harness (a CLI coding agent), and for a
+// harness the model it was asked to run — so `summarize` can split the card by engine
+// (`byEngine`) and a recruiter can tell an agent that did well on a small model from one
+// that was carried by a large one. And where the task ran in a git checkout (§14), the fact
+// carries `scm`: the branch and HEAD before and after, commits made, a PR when one was
+// opened, and whether it merged — the one outcome that does not come from a judge.
+//
 // Dependency-free: hashing is `crypto.subtle` (browser, Node, a phone), injectable for tests.
 
 export const SCORECARD_ENTRY_KINDS = Object.freeze(['task.done', 'task.failed', 'rating', 'created', 'interaction', 'role']);
 export const ROLE_KINDS = Object.freeze(['ic', 'orchestrator', 'manager', 'manager-of-managers']);
 export const SCORECARD_VERSION = 1;
+export const ENGINE_KINDS = Object.freeze(['model', 'harness']);
+
+/**
+ * An engine as the record keeps it: `{ kind, id, model?, label? }`. `kind` is `model` (an
+ * endpoint the client calls) or `harness` (a CLI coding agent the bridge runs — `id` is the
+ * harness, `model` the model it was asked to run, when one was named). A host that does not
+ * say the kind gets `model`, which is the honest default for a bare model id. A string is
+ * an id.
+ */
+export function normalizeEngine(e) {
+  if (!e) return null;
+  const src = typeof e === 'string' ? { id: e } : e;
+  const id = String(src.id || src.harnessId || src.model || '').trim();
+  if (!id) return null;
+  const kind = ENGINE_KINDS.includes(src.kind) ? src.kind : (src.harnessId ? 'harness' : 'model');
+  const model = src.model != null && String(src.model).trim() && String(src.model) !== id ? String(src.model).trim() : undefined;
+  return { kind, id, ...(model ? { model } : {}), ...(src.label && String(src.label) !== id ? { label: String(src.label).slice(0, 120) } : {}) };
+}
+
+/** One key per engine — what `byEngine` groups on and what the model ledger will be keyed by. */
+export function engineKey(e) {
+  const n = normalizeEngine(e);
+  return n ? `${n.kind}:${n.id}${n.model ? `/${n.model}` : ''}` : null;
+}
+
+/** What a task did in a checkout, as the record keeps it. Strings clipped, counts rounded. */
+export function normalizeScm(s) {
+  if (!s || typeof s !== 'object') return null;
+  const str = (v, n = 200) => (v == null || v === '' ? undefined : String(v).slice(0, n));
+  const out = {
+    repo: str(s.repo, 300), remote: str(s.remote, 300), base: str(s.base, 120), branch: str(s.branch, 120),
+    head: str(s.head, 64), headAfter: str(s.headAfter, 64),
+    commits: s.commits != null ? Math.max(0, Math.round(Number(s.commits) || 0)) : undefined,
+    pr: str(s.pr, 300),
+    merged: s.merged === true ? true : s.merged === false ? false : undefined,
+    dirty: s.dirty === true ? true : s.dirty === false ? false : undefined,
+  };
+  for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
+  return Object.keys(out).length ? out : null;
+}
 
 const enc = new TextEncoder();
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -68,6 +116,8 @@ export async function makeEntry(fact, prev, { now = () => Date.now(), subtle } =
     ...(fact.runId ? { runId: String(fact.runId) } : {}),
     ...(fact.taskId ? { taskId: String(fact.taskId) } : {}),
     ...(fact.model ? { model: String(fact.model) } : {}),
+    ...(normalizeEngine(fact.engine) ? { engine: normalizeEngine(fact.engine) } : {}),
+    ...(normalizeScm(fact.scm) ? { scm: normalizeScm(fact.scm) } : {}),
     ...(fact.size ? { size: sizeOf(fact.size) } : {}),
     ...(fact.roleKind ? { roleKind: ROLE_KINDS.includes(fact.roleKind) ? fact.roleKind : 'ic' } : {}),
     ...(Array.isArray(fact.tools) && fact.tools.length ? { tools: [...new Set(fact.tools.map(String))].sort() } : {}),
@@ -128,13 +178,53 @@ export function summarize(entries, { recent = 5 } = {}) {
   const tools = new Set(); const withAgents = new Set(); const created = new Set();
   const roles = { ic: 0, orchestrator: 0, manager: 0, 'manager-of-managers': 0 };
   const models = new Map();
+  // Per engine: how many tasks, how they went, how big, and the ratings that were ABOUT a
+  // task on it. A rating names its task by `about` (the seq of the entry it rates), by
+  // taskId, or — failing both — by runId when that run had exactly one task on the card.
+  const engines = new Map(); // key -> { engine, tasks, done, failed, tokens, ratings[] }
+  const engineOfEntry = new Map(); // seq -> key
+  const byTask = new Map(); const byRun = new Map(); // taskId -> seq, runId -> [seq]
+  const scm = { tasks: 0, commits: 0, prs: 0, merged: 0 };
   for (const e of list) {
     for (const t of e.tools || []) tools.add(t);
     for (const a of e.with || []) withAgents.add(a);
     for (const a of e.created || []) created.add(a);
     if (e.roleKind && (e.kind === 'task.done' || e.kind === 'task.failed' || e.kind === 'role')) roles[e.roleKind] = (roles[e.roleKind] || 0) + 1;
     if (e.model) models.set(e.model, (models.get(e.model) || 0) + 1);
+    if (e.kind === 'task.done' || e.kind === 'task.failed') {
+      const key = engineKey(e.engine);
+      if (key) {
+        const row = engines.get(key) || { engine: normalizeEngine(e.engine), tasks: 0, done: 0, failed: 0, tokens: 0, ratings: [] };
+        row.tasks += 1; row[e.kind === 'task.done' ? 'done' : 'failed'] += 1; row.tokens += e.size?.tokens || 0;
+        engines.set(key, row);
+        engineOfEntry.set(e.seq, key);
+        if (e.taskId) byTask.set(`${e.runId || ''}/${e.taskId}`, e.seq);
+        if (e.runId) byRun.set(e.runId, [...(byRun.get(e.runId) || []), e.seq]);
+      }
+      if (e.scm) { scm.tasks += 1; scm.commits += e.scm.commits || 0; if (e.scm.pr) scm.prs += 1; if (e.scm.merged) scm.merged += 1; }
+    }
   }
+  for (const e of list) {
+    if (e.kind !== 'rating' || !e.rating) continue;
+    const seq = e.rating.about != null ? e.rating.about
+      : e.taskId && byTask.has(`${e.runId || ''}/${e.taskId}`) ? byTask.get(`${e.runId || ''}/${e.taskId}`)
+        : e.runId && (byRun.get(e.runId) || []).length === 1 ? byRun.get(e.runId)[0] : null;
+    const key = seq != null ? engineOfEntry.get(seq) : null;
+    if (key) engines.get(key).ratings.push(e.rating.score);
+  }
+  const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+  const byEngine = [...engines.values()].sort((a, b) => b.tasks - a.tasks).map((r) => ({
+    key: engineKey(r.engine), ...r.engine, tasks: r.tasks, done: r.done, failed: r.failed,
+    failRate: r.tasks ? Math.round((r.failed / r.tasks) * 1000) / 1000 : 0,
+    tokens: r.tasks ? Math.round(r.tokens / r.tasks) : 0, // mean per task — the cost proxy until the ledger prices it
+    rating: { avg: mean(r.ratings), count: r.ratings.length },
+  }));
+  // 1 − spread of rating across engines it was rated on (≥ 2): low spread = robust to routing;
+  // high spread = it NEEDS a particular engine, a fact a recruiter respects, not a penalty.
+  const ratedEngines = byEngine.filter((r) => r.rating.avg != null).map((r) => r.rating.avg);
+  const engineIndependence = ratedEngines.length >= 2 ? Math.round((1 - (Math.max(...ratedEngines) - Math.min(...ratedEngines))) * 1000) / 1000 : null;
+  // Leverage (rating above the engine's own mean) and efficiency (rating ÷ cost) wait on the
+  // model ledger (§13.2, with A1): they need every engine's mean, which one card cannot know.
   const ratings = list.filter((e) => e.kind === 'rating' && e.rating).map((e) => e.rating.score);
   const avg = ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : null;
   const recentRatings = ratings.slice(-recent);
@@ -150,6 +240,9 @@ export function summarize(entries, { recent = 5 } = {}) {
     created: [...created],
     roles,
     models: [...models.entries()].sort((a, b) => b[1] - a[1]).map(([m, n]) => ({ model: m, tasks: n })),
+    byEngine,
+    engineIndependence,
+    scm,
     rating: { avg, count: ratings.length, recent: recentRatings.length ? recentRatings.reduce((a, b) => a + b, 0) / recentRatings.length : null },
     refs,
     since: list[0]?.at || null,

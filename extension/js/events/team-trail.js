@@ -27,6 +27,10 @@ export function teamLine(ev) {
     case 'task.handoff': return { type: 'status', text: `${role} handed off ${ev.from ? `from ${ev.from} ` : ''}to ${ev.to} by ${ev.by || 'person'}${ev.reason ? ` — ${ev.reason}` : ''}` };
     case 'task.step': return null;
     case 'task.scored': return null;
+    // The route is the lane's business (task.model already names it); the reasons are a line
+    // only when there are any — a re-appointment says its own.
+    case 'task.routed': return ev.reasons?.length && ev.attempt === 1 ? { type: 'status', text: `${role} → ${ev.engine?.id || '?'}${ev.engine?.model ? `/${ev.engine.model}` : ''} (${ev.reasons.join('; ')})` } : null;
+    case 'task.scm': return ev.commits ? { type: 'status', text: `${role} committed ${ev.commits} on ${ev.branch || 'a branch'}${ev.headAfter ? ` @ ${String(ev.headAfter).slice(0, 7)}` : ''}` } : null;
     case 'task.reappointed': return { type: 'status', text: `${role} → ${ev.model} (${(ev.after || []).join(', ')} unavailable${ev.error ? `: ${String(ev.error).slice(0, 120)}` : ''})` };
     case 'task.tool': return { type: 'tool', name: ev.name, text: `${role} ran ${ev.name}${ev.text ? ` — ${ev.text}` : ''}` };
     case 'task.finding': return { type: 'status', text: `${role}: ${String(ev.finding?.text || '').slice(0, 140)}` };
@@ -48,6 +52,8 @@ export function teamLanes(prev, ev) {
     case 'task.delta': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], text: ev.text }; break;
     case 'task.finding': lanes.findings += 1; if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], findings: (lanes.tasks[ev.taskId].findings || 0) + 1 }; break;
     case 'task.model': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], model: ev.model }; break;
+    case 'task.routed': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], engine: ev.engine || null }; break;
+    case 'task.scm': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], scm: { branch: ev.branch, commits: ev.commits || 0, head: ev.headAfter || ev.head } }; break;
     case 'task.handoff': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], model: ev.to, handoffs: (lanes.tasks[ev.taskId].handoffs || 0) + 1 }; break;
     case 'task.step': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], steps: (lanes.tasks[ev.taskId].steps || 0) + (ev.steps || []).length }; break;
     case 'task.tool': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], tools: (lanes.tasks[ev.taskId].tools || 0) + 1, lastTool: ev.text ? `${ev.name} ${ev.text}` : ev.name }; break;

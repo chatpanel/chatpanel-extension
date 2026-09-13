@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 
 globalThis.chrome = { storage: { onChanged: { addListener() {} }, local: { get: async () => ({}), set: async () => {} } } };
 
-const { appointerFor, createRunSync, runTeamHere } = await import('../extension/js/team-host.js');
+const { appointerFor, createRunSync, runTeamHere, engineOfCandidate, foldScm } = await import('../extension/js/team-host.js');
 
 const settings = {
   gatewayUrl: 'http://127.0.0.1:4320',
@@ -51,6 +51,21 @@ const pro = { plan: 'pro', status: 'active', exp: Date.now() / 1000 + 3600 };
   assert.ok(pinned && pinned.model !== 'ep-strong', 'a pinned model that failed gives way to the roster');
 }
 
+// The appointment says what the engine is — an endpoint is a model at a destination, an
+// installed agent is a harness — why it was chosen, and who else could have been.
+{
+  const a = appointerFor(settings, pro, { like: 'ep-strong2' })({ id: 'r', prefer: 'strong' });
+  assert.deepEqual(a.engine, { kind: 'model', id: 'ep-strong2', model: 'claude-opus-5', label: 'Strong too' });
+  assert.ok(a.reasons.includes('the target this chat is using') && a.reasons.some((r) => /strong/.test(r)), JSON.stringify(a.reasons));
+  assert.ok(a.alternatives.length >= 1 && !a.alternatives.some((x) => x.id === 'ep-strong2'));
+  const pinned = appointerFor(settings, pro)({ id: 'r', model: 'claude-code' });
+  assert.deepEqual([pinned.engine, pinned.reasons], [{ kind: 'harness', id: 'claude' }, ['pinned by the role']]);
+  assert.deepEqual(engineOfCandidate({ kind: 'bridge', id: 'cc', bridgeAgent: 'claude', model: 'opus' }), { kind: 'harness', id: 'claude', model: 'opus' });
+  let scm = foldScm(null, { type: 'scm', phase: 'before', repo: '/r', branch: 'cp/p/j', head: 'a1' });
+  scm = foldScm(scm, { type: 'scm', phase: 'after', repo: '/r', branch: 'cp/p/j', head: 'b2', headBefore: 'a1', commits: 2 });
+  assert.deepEqual(scm, { repo: '/r', branch: 'cp/p/j', head: 'a1', headAfter: 'b2', commits: 2 });
+}
+
 // A fake store in the gateway's wire shape.
 function fakeStore() {
   const events = [];
@@ -72,11 +87,16 @@ function fakeStore() {
   const store = fakeStore();
   const calls = [];
   const toolsets = [];
-  const streamChat = async ({ agent, messages, tools, onDelta }) => {
+  const streamChat = async ({ agent, messages, tools, onDelta, onEvent }) => {
     calls.push({ system: agent.systemPrompt, user: messages[0].content, tools });
     const text = agent.systemPrompt.includes('researcher')
       ? 'FINDING: the sky is blue [ref: web]\nThe sky is blue.'
       : 'Final: the sky is blue.';
+    if (agent.systemPrompt.includes('researcher')) {
+      // What a bridge-run harness reports about its checkout, before and after.
+      onEvent?.({ type: 'scm', phase: 'before', repo: '/r', branch: 'cp/p/j', head: 'a1' });
+      onEvent?.({ type: 'scm', phase: 'after', repo: '/r', branch: 'cp/p/j', head: 'b2', headBefore: 'a1', commits: 1 });
+    }
     onDelta(text);
     return { text };
   };
@@ -107,6 +127,15 @@ function fakeStore() {
   assert.ok(seen.includes('run.started') && seen.includes('run.done'));
   assert.deepEqual(store.events.map((e) => e.type).filter((t) => t === 'run.started' || t === 'run.done'), ['run.started', 'run.done'], 'the store receives the run in order');
   assert.equal(result.synced, true);
+  const routed = store.events.filter((e) => e.type === 'task.routed');
+  assert.equal(routed.length, 2, 'every appointment is on the record');
+  assert.ok(routed.every((e) => ['model', 'harness'].includes(e.engine?.kind) && e.reasons.length), JSON.stringify(routed));
+  const harness = routed.find((e) => e.engine.kind === 'harness');
+  assert.ok(harness && harness.reasons.includes('an installed agent'), 'the balanced role went to Claude Code — a harness, said as one');
+  const said = store.events.find((e) => e.type === 'task.scm');
+  assert.equal(said.role, 'researcher'); assert.equal(said.commits, 1); assert.equal(said.headAfter, 'b2');
+  const fact = store.events.find((e) => e.type === 'task.scored' && e.role === 'researcher');
+  assert.equal(fact.scm.branch, 'cp/p/j'); assert.deepEqual(fact.engine, { kind: 'harness', id: 'claude' });
 }
 
 // 3. A stop from the other client aborts the run here.

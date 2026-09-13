@@ -300,7 +300,7 @@ function wireTabs() {
   const showAlias = (name) => {
     const a = TAB_ALIAS[name];
     show(a.tab);
-    jumpToSection(a.section, { flash: false });
+    if (a.section) jumpToSection(a.section, { flash: false });
   };
   const select = (name) => {
     show(name);
@@ -316,6 +316,7 @@ function wireTabs() {
     select(t.dataset.tab);
     window.scrollTo({ top: 0 });
   }));
+  for (const a of document.querySelectorAll('[data-open-tab]')) a.onclick = (e) => { e.preventDefault(); select(a.dataset.openTab); window.scrollTo({ top: 0 }); };
   wireCollapsibleSections();
   // Priority: an explicit #hash (e.g. the Pro chip opens #license), else the
   // last-opened tab, else the default (API).
@@ -341,6 +342,8 @@ const K_SETTINGS_TAB = 'chatpanel:settingsTab';
 // used by notes.js/meetings.js and any stored last-tab) must keep landing on the thing
 // they name, so each alias resolves to a tab plus the section to open inside it.
 const TAB_ALIAS = {
+  models: { tab: 'api' },        // naming phase 1: "API" reads as Models; the panel id is code
+  harnesses: { tab: 'agents' },  // "Agents" (the CLIs) reads as Harnesses; #directory is the agents you define
   notes: { tab: 'workspace', section: 'ws-notes' },
   meetings: { tab: 'workspace', section: 'ws-meetings' },
   history: { tab: 'workspace', section: 'ws-history' },
@@ -2088,7 +2091,7 @@ function renderDestinations() {
   }
 
   // Agents (via the bridge / your login)
-  head('Agents (via the bridge · your login):');
+  head('Harnesses (via the bridge · your login):');
   const agentIds = (bridgeState && bridgeState.agents && bridgeState.agents.length)
     ? bridgeState.agents.map((a) => a.id)
     : ['codex', 'claude', 'opencode', 'pi'];

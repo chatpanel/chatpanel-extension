@@ -255,7 +255,7 @@ function wireForm() {
     // A skill the job points at may have been deleted; the select then has no such option and
     // would silently fall back to the first skill. Say so instead of rewriting the job.
     if (a.kind === 'skill' && what.value !== `skill:${a.skillId}`) {
-      onToast(`“${a.skillName || 'That skill'}” no longer exists — pick what this job should run`, 5000);
+      onToast(`“${a.skillName || 'That skill'}” no longer exists — pick what this automation should run`, 5000);
     }
     el.querySelector('.job-new')?.scrollIntoView({ block: 'nearest' });
     (text.hidden ? when : text).focus();
@@ -275,7 +275,7 @@ function wireForm() {
     const skills = getSkills();
     const skill = what.value.startsWith('skill:') ? skills.find((sk) => `skill:${sk.id}` === what.value) : null;
     const instruction = text.value.trim();
-    if (!keepAction && !skill && !instruction) { onToast('Say what the job should do'); return; }
+    if (!keepAction && !skill && !instruction) { onToast('Say what the automation should do'); return; }
     const values = param.value.split(',').map((v) => v.trim()).filter(Boolean);
     if (opt?.required && !values.length) { onToast(`Add at least one ${opt.field === 'terms' ? 'topic' : 'phrase'}`); return; }
     const [h, m] = (time.value || '08:00').split(':').map(Number);
@@ -367,7 +367,7 @@ export async function renderJobs() {
   if (!jobs.length) {
     const empty = document.createElement('div');
     empty.className = 'mon-empty';
-    empty.textContent = 'Nothing scheduled. Say “ChatPanel, set a timer for 10 minutes” during a meeting, or add a job from a skill.';
+    empty.textContent = 'Nothing scheduled. Say “ChatPanel, set a timer for 10 minutes” during a meeting, or add an automation from a skill.';
     list.appendChild(empty);
     return;
   }
@@ -389,7 +389,7 @@ export async function renderJobs() {
     const edit = document.createElement('button');
     edit.className = 'mon-card-min';
     edit.innerHTML = icon('edit');
-    edit.title = 'Edit this job';
+    edit.title = 'Edit this automation';
     edit.onclick = () => loadIntoForm?.(job);
     const pause = document.createElement('button');
     pause.className = 'mon-card-min';

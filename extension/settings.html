@@ -25,11 +25,12 @@
 
       <div class="shell">
         <aside class="sidenav" id="tabs">
-          <button class="tab active" data-tab="api"><span class="tab-ico" data-icon="plug"></span> API</button>
-          <button class="tab" data-tab="agents"><span class="tab-ico" data-icon="bot"></span> Agents</button>
-          <button class="tab" data-tab="mcp"><span class="tab-ico" data-icon="tools"></span> Tools</button>
-          <button class="tab" data-tab="skills"><span class="tab-ico" data-icon="skills"></span> Skills</button>
+          <button class="tab active" data-tab="api"><span class="tab-ico" data-icon="plug"></span> Models</button>
+          <button class="tab" data-tab="agents"><span class="tab-ico" data-icon="bot"></span> Harnesses</button>
+          <button class="tab" data-tab="directory"><span class="tab-ico" data-icon="bot"></span> Agents</button>
           <button class="tab" data-tab="teams"><span class="tab-ico" data-icon="people"></span> Teams</button>
+          <button class="tab" data-tab="skills"><span class="tab-ico" data-icon="skills"></span> Skills</button>
+          <button class="tab" data-tab="mcp"><span class="tab-ico" data-icon="tools"></span> Tools</button>
           <button class="tab" data-tab="workspace"><span class="tab-ico" data-icon="folder"></span> Workspace</button>
           <button class="tab" data-tab="channels"><span class="tab-ico" data-icon="chat"></span> Channels</button>
           <button class="tab" data-tab="privacy"><span class="tab-ico" data-icon="privacy"></span> Privacy &amp; Gateway</button>
@@ -44,7 +45,7 @@
       <section class="panel" data-panel="api">
         <div class="card">
           <div class="card-head">
-            <h2>API endpoints</h2>
+            <h2>Models <span class="sub">— the API endpoints ChatPanel calls directly</span></h2>
             <div class="card-actions">
               <button id="toggle-endpoints" class="btn ghost" type="button">Expand all</button>
               <button id="add-endpoint" class="btn primary">+ Add endpoint</button>
@@ -98,14 +99,15 @@
         </div>
         <div class="card">
           <div class="card-head">
-            <h2>Agents <span class="sub">— Claude Code, Codex, Antigravity CLI</span></h2>
+            <h2>Harnesses <span class="sub">— Claude Code, Codex, Antigravity and the other coding agents on this machine</span></h2>
             <div class="card-actions">
               <button id="toggle-agents" class="btn ghost" type="button">Expand all</button>
               <button id="add-agent" class="btn primary">+ Add agent</button>
             </div>
           </div>
           <p class="muted">
-            Use the coding agents already installed on your machine. Install &amp; start the
+            A harness is a coding agent already installed on your machine — one an agent of
+            yours can be given as its engine, or that you chat with directly. Install &amp; start the
             <strong>bridge</strong> in <strong>ChatPanel local</strong> above, then Test. They
             run locally, and each one appears here once the bridge finds it;
             <strong>Free includes one agent</strong> — your pick — and Pro unlocks Claude Code,
@@ -308,6 +310,23 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
       <!-- MEETINGS (live scribe preferences) -->
       <!-- TEAMS: agent teams and their boards (F8). The board is the desktop's Agents → Board,
            over the same gateway run store; a person answers, decides and replies here too. -->
+      <section class="panel hidden" data-panel="directory">
+        <div class="card" id="directory">
+          <div class="card-head">
+            <h2>Agents <span class="sub">— the ones you define</span></h2>
+          </div>
+          <p class="muted">
+            An agent is yours: a name, a specialty, a prompt, the skills and grants it carries,
+            and an <strong>engine</strong> — a model from <strong>Models</strong> or a coding agent
+            from <strong>Harnesses</strong>. Teams are made of them, and each keeps a scorecard
+            of the work it has actually done.
+          </p>
+          <p class="muted">
+            The directory arrives with the next release. Today the nearest thing is a
+            <strong>role</strong> inside a team — open <a href="#teams" data-open-tab="teams">Teams</a>.
+          </p>
+        </div>
+      </section>
       <section class="panel hidden" data-panel="teams">
         <nav id="tm-subtabs" class="subtabs" data-subtab-keep aria-label="Teams sections"></nav>
         <div class="card" id="board"></div>

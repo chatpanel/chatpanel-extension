@@ -30,7 +30,7 @@ export const PREF_SECTIONS = Object.freeze([
   { id: 'skills', label: 'Skills', path: ['skills'], kind: 'array' },
   { id: 'skillDirs', label: 'Skill folders', path: ['ui', 'skillDirs'], kind: 'array' },
   { id: 'recipes', label: 'Recipes', path: ['recipes'], kind: 'array' },
-  { id: 'teams', label: 'Agent teams', path: ['teams'], kind: 'array' },
+  { id: 'teams', label: 'Teams', path: ['teams'], kind: 'array' },
   { id: 'webSearch', label: 'Web search', path: ['ui', 'webSearch'], kind: 'object' },
   { id: 'tools', label: 'Tools', path: null, kind: 'object', keys: ['mcpToolsMode', 'maxToolsPerTurn', 'historyTools', 'historyContextMode', 'dataDispatch', 'toolResultMaxChars'] },
   { id: 'suggestions', label: 'Smart suggestions', path: ['ui', 'suggestions'], kind: 'object' },

@@ -143,19 +143,54 @@ export function rosterFor(settings, license, { like = '' } = {}) {
 }
 
 /**
- * `(role, { exclude }) => { model, label, mode }` — a usable pinned model wins; otherwise the
- * nearest tier, skipping what `exclude` names (models that failed as unavailable this run).
+ * What a candidate IS, for the record (events scorecard.js `normalizeEngine`): an installed
+ * agent is a harness — the bridge agent, and the model it was asked to run when one is
+ * named — and an endpoint is a model at a destination (the endpoint id), which is what the
+ * model ledger will be keyed by (pillars §13.2).
+ */
+export function engineOfCandidate(c) {
+  if (!c) return null;
+  if (c.kind === 'bridge') {
+    const id = c.bridgeAgent || c.id;
+    return { kind: 'harness', id, ...(c.model && c.model !== id ? { model: c.model } : {}) };
+  }
+  return { kind: 'model', id: c.id, ...(c.model ? { model: c.model } : {}), ...(c.name ? { label: c.name } : {}) };
+}
+
+/**
+ * `(role, { exclude }) => { model, label, mode, engine, reasons, alternatives }` — a usable
+ * pinned model wins; otherwise the nearest tier, skipping what `exclude` names (models that
+ * failed as unavailable this run). `engine`, `reasons` and `alternatives` go on the record
+ * as `task.routed` — which engine, why, who else could have.
  */
 export function appointerFor(settings, license, { like = '' } = {}) {
   const candidates = rosterFor(settings, license, { like });
+  const others = (chosen, n = 3) => candidates.filter((x) => x.usable && x.id !== chosen.id).slice(0, n).map(engineOfCandidate);
   return (role, { exclude = null } = {}) => {
     if (role.model && !exclude?.has?.(role.model)) {
       const c = candidates.find((x) => (x.id === role.model || x.model === role.model) && x.usable);
-      if (c) return { model: c.id, label: c.model, mode: role.mode === 'subagent' && c.kind === 'bridge' ? 'subagent' : 'model' };
+      if (c) return { model: c.id, label: c.model, mode: role.mode === 'subagent' && c.kind === 'bridge' ? 'subagent' : 'model', engine: engineOfCandidate(c), reasons: ['pinned by the role'], alternatives: others(c) };
     }
     const a = appoint({ id: role.id, prefer: role.prefer || 'balanced' }, candidates, { exclude });
-    return a ? { model: a.id, label: a.model, mode: role.mode === 'subagent' && a.mode === 'subagent' ? 'subagent' : 'model' } : null;
+    if (!a) return null;
+    const reasons = [`nearest to ${role.prefer || 'balanced'} (${a.tier}) in trust order`, ...(a.id === like ? ['the target this chat is using'] : a.kind === 'bridge' ? ['an installed agent'] : [])];
+    return { model: a.id, label: a.model, mode: role.mode === 'subagent' && a.mode === 'subagent' ? 'subagent' : 'model', engine: engineOfCandidate(a), reasons, alternatives: others(a) };
   };
+}
+
+/**
+ * The bridge says `scm` twice per attempt — before (where the agent starts) and after (what
+ * moved). One record per task: the first HEAD stays `head`, the last becomes `headAfter`,
+ * commits add up across rounds. The runner records it as task.scm and on the scorecard.
+ */
+export function foldScm(prev, e) {
+  if (!e || e.type !== 'scm') return prev;
+  const base = prev || {};
+  const out = e.phase === 'before'
+    ? { ...base, repo: e.repo || base.repo, remote: e.remote || base.remote, branch: e.branch || base.branch, head: base.head || e.head, dirty: e.dirty }
+    : { ...base, repo: e.repo || base.repo, remote: e.remote || base.remote, branch: e.branch || base.branch, head: base.head || e.headBefore || e.head, headAfter: e.head, commits: (base.commits || 0) + (Number(e.commits) || 0), dirty: e.dirty };
+  for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
+  return out;
 }
 
 /** Events to the gateway as they happen — batched, ordered, flushed on the way out. */
@@ -249,6 +284,7 @@ export async function runTeamHere({ team, request, settings, license, like = '',
     const messages = flattenForWire(sent);
     let text = '';
     let usage = null;
+    let scm = null; // the checkout a harness worked in, from the bridge's scm events
     // What this attempt adds to the transcript, rebuilt from the loop's tool events.
     const added = [];
     const open = new Map();
@@ -259,6 +295,7 @@ export async function runTeamHere({ team, request, settings, license, like = '',
         onDelta: (d) => { text += d; onDelta?.(d, text); },
         onEvent: (e) => {
           if (e?.type === 'usage') usage = e;
+          if (e?.type === 'scm') scm = foldScm(scm, e);
           if (e?.type === 'tool' && e.phase === 'start') {
             emit('task.tool', { runId: id, at: Date.now(), taskId, role, name: e.name, text: e.input?.action || '' });
             const call = { id: e.callId || `c${added.length}`, type: 'function', function: { name: e.name, arguments: JSON.stringify(e.input ?? {}) } };
@@ -275,7 +312,7 @@ export async function runTeamHere({ team, request, settings, license, like = '',
       const full = typeof out === 'string' ? out : (out?.text ?? text);
       const final = full || text;
       const wire = [...sent, ...added, ...(final.trim() ? [{ role: 'assistant', content: final }] : [])];
-      return { ok: true, text: final, usage: usage ? { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens } : null, aborted: ac.signal.aborted || taskSignal?.aborted, transcript: wire };
+      return { ok: true, text: final, usage: usage ? { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens } : null, aborted: ac.signal.aborted || taskSignal?.aborted, transcript: wire, ...(scm ? { scm } : {}) };
     } catch (e) {
       const wire = [...sent, ...added, ...(text.trim() ? [{ role: 'assistant', content: text }] : [])];
       if (ac.signal.aborted || taskSignal?.aborted) return { ok: true, text, aborted: true, usage: null, transcript: wire };
