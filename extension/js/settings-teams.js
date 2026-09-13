@@ -11,7 +11,7 @@
 
 import { getSettings, saveSettings } from './store.js';
 import { describeRole, starterTeams, blankTeam, teamFromForm, MERGE_POLICIES, PLAN_MODES, ROLE_PREFERS } from './events/team.js';
-import { runStore, rosterFor, appointerFor } from './team-host.js';
+import { runStore, rosterFor, appointerFor, answerAsk } from './team-host.js';
 
 const budgetText = (b = {}) => Object.entries(b).map(([k, v]) => `${k} ${v}`).join(' · ') || 'none';
 const when = (t) => (t ? new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
@@ -27,6 +27,25 @@ function el(tag, attrs = {}, ...children) {
   }
   for (const c of children) if (c != null) n.append(c);
   return n;
+}
+
+/** An ask waiting on the person, with its options and an answer box — the member resumes with the answer. */
+function askView(run, settings, refresh) {
+  const box = el('div');
+  const waiting = (run.threads?.threads || []).filter((t) => t.kind === 'ask' && t.status === 'waiting');
+  for (const t of waiting) {
+    const q = (run.threads.posts || []).find((p) => p.threadId === t.id && p.kind === 'question');
+    const card = el('div', { style: 'margin:8px 0;padding:10px 12px;border:1px solid var(--danger);border-radius:9px;font-size:12.6px' });
+    card.append(el('div', {}, el('b', { text: `${t.by} is waiting on you: ` }), q?.text || t.title));
+    const send = async (text) => { if (!text.trim()) return; const r = await answerAsk(settings, { runId: run.id, threadId: t.id, text: text.trim() }); if (!r.ok) card.append(el('div', { class: 'muted tiny', text: r.error })); else refresh(); };
+    const opts = el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin:8px 0' });
+    for (const o of t.ask?.options || []) opts.append(el('button', { class: 'btn', type: 'button', text: o, onclick: () => send(o) }));
+    const ta = el('textarea', { rows: '2', placeholder: 'Or type the answer', style: 'width:100%' });
+    const row = el('div', { style: 'display:flex;gap:8px;align-items:center;margin-top:6px' }, el('button', { class: 'btn primary', type: 'button', text: 'Answer', onclick: () => send(ta.value) }), el('span', { class: 'muted tiny', text: 'Posts as you; the member resumes with it.' }));
+    card.append(opts, ta, row);
+    box.append(card);
+  }
+  return box;
 }
 
 function boardView(run) {
@@ -167,7 +186,7 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
   // Runs — every client's, from the gateway. An older gateway (or none) says so; it is not an error.
   const store = runStore(settings);
   const runsHead = el('div', { class: 'card-head', style: 'margin-top:16px' }, el('h2', {}, 'Runs ', el('span', { class: 'sub', text: '' })));
-  const runsNote = el('p', { class: 'muted', text: 'Every run from any client — this panel or the desktop app — with its board and what it spent. Stop reaches the client running it.' });
+  const runsNote = el('p', { class: 'muted', text: 'Every run from any client — this panel or the desktop app — with its board and what it spent. Stop reaches the client running it; an ask waiting on you can be answered here, and the member resumes with it.' });
   const runsBox = el('div');
   root.append(runsHead, runsNote, runsBox);
   let open = null; // { id, run }
@@ -186,7 +205,7 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
       card.append(el('div', { class: 'entity-head' },
         el('strong', { text: r.team || 'team' }),
         el('span', { class: 'muted', text: (r.request || '').slice(0, 120) }),
-        el('span', { class: `chip ${r.stale ? 'warn' : r.status === 'completed' || live ? 'good' : 'warn'}`, text: r.stale ? 'stale' : r.status }),
+        el('span', { class: `chip ${r.stale ? 'warn' : r.status === 'completed' || live ? 'good' : 'warn'}`, text: r.stale ? 'stale' : r.waiting ? `waiting on you (${r.waiting})` : r.status }),
         el('span', { class: 'muted tiny', text: `${when(r.createdAt)} · ${r.client || '?'} · ${r.findings || 0} findings${r.usage?.spent?.tokens ? ` · ${r.usage.spent.tokens} tokens` : ''}` }),
         live ? el('button', { class: 'btn', type: 'button', text: 'Stop', style: 'margin-left:auto', onclick: () => store.stop(r.id).then(refresh) }) : null,
         el('button', { class: 'btn', type: 'button', text: open?.id === r.id ? 'Hide' : 'Board', style: live ? '' : 'margin-left:auto', onclick: async () => {
@@ -195,7 +214,11 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
           if (x.ok) { open = { id: r.id, run: x.data?.run || {} }; refresh(); }
         } }),
       ));
-      if (open?.id === r.id) card.append(boardView(open.run));
+      if (r.waiting && !(open?.id === r.id)) {
+        // A waiting ask is shown without opening the board: it needs the person now.
+        store.get(r.id).then((x) => { if (x.ok && alive) card.append(askView(x.data?.run || {}, settings, refresh)); });
+      }
+      if (open?.id === r.id) { card.append(askView(open.run, settings, refresh)); card.append(boardView(open.run)); }
       runsBox.append(card);
     }
   };

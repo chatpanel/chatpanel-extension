@@ -98,8 +98,8 @@ function fakeStore() {
   assert.equal(calls.length, 2, 'one model turn per role');
   const researcher = calls.find((c) => c.system.includes('researcher'));
   const writer = calls.find((c) => c.system.includes('writer'));
-  assert.ok(researcher.tools, 'a role granted web + mcp gets a toolset');
-  assert.equal(writer.tools, undefined, 'a role granted none gets no toolset');
+  assert.deepEqual(researcher.tools.specs.map((x) => x.name), ['board', 'web_search'], 'a role granted web + mcp gets the board and the host toolset');
+  assert.deepEqual(writer.tools.specs.map((x) => x.name), ['board'], 'a role granted none gets the board and nothing else');
   assert.equal(toolsets.length, 1);
   assert.deepEqual(toolsets[0].settings.mcpServers.map((s) => s.id), ['srv-a'], 'mcp:<server> narrows the servers a role can reach');
   assert.equal(toolsets[0].includeWebSearch, true);

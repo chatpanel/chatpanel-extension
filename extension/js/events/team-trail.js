@@ -18,6 +18,11 @@ export function teamLine(ev) {
     case 'run.started': return { type: 'status', text: `team ${ev.team}: ${(ev.roles || []).join(', ')}` };
     case 'plan.ready': return { type: 'status', text: `plan: ${(ev.tasks || []).length} task${(ev.tasks || []).length === 1 ? '' : 's'} (${ev.by})` };
     case 'task.started': return { type: 'tool', name: role, text: `${role} · ${ev.title || ev.taskId}` };
+    case 'task.waiting': return { type: 'status', text: `${role} is waiting on you — ${ev.text || 'a question on the board'}` };
+    case 'run.waiting': return { type: 'status', text: `waiting on you — ${ev.text || ev.type || 'a question on the board'}` };
+    case 'run.resumed': return { type: 'status', text: `team ${ev.team} resumed${(ev.carried || []).length ? ` (${ev.carried.length} task${ev.carried.length === 1 ? '' : 's'} carried over)` : ''}` };
+    case 'board.post': return ev.post && ev.post.kind !== 'finding' ? { type: 'status', text: `${ev.post.by} ${ev.post.replyTo ? 'replied' : 'posted'} (${ev.post.kind}): ${String(ev.post.text || '').slice(0, 120)}` } : null;
+    case 'board.decision': return { type: 'status', text: `${ev.by || 'someone'} ${ev.status} a post` };
     case 'task.reappointed': return { type: 'status', text: `${role} → ${ev.model} (${(ev.after || []).join(', ')} unavailable)` };
     case 'task.tool': return { type: 'tool', name: ev.name, text: `${role} ran ${ev.name}${ev.text ? ` — ${ev.text}` : ''}` };
     case 'task.finding': return { type: 'status', text: `${role}: ${String(ev.finding?.text || '').slice(0, 140)}` };
@@ -38,7 +43,10 @@ export function teamLanes(prev, ev) {
     case 'task.started': lanes.tasks[ev.taskId] = { ...(lanes.tasks[ev.taskId] || { id: ev.taskId, role: ev.role, title: ev.title }), status: 'running' }; break;
     case 'task.delta': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], text: ev.text }; break;
     case 'task.finding': lanes.findings += 1; if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], findings: (lanes.tasks[ev.taskId].findings || 0) + 1 }; break;
+    case 'task.waiting': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], status: 'waiting', waitingOn: ev.threadId }; lanes.waiting = [...(lanes.waiting || []), ev.threadId]; break;
     case 'task.done': case 'task.failed': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], status: ev.status || 'ok', ms: ev.ms }; break;
+    case 'board.thread-status': if (ev.status !== 'waiting' && lanes.waiting) lanes.waiting = lanes.waiting.filter((x) => x !== ev.threadId); break;
+    case 'run.waiting': lanes.waiting = [...(lanes.waiting || []), ev.threadId]; break;
     case 'run.done': lanes.status = ev.status; lanes.usage = ev.usage; break;
     default: break;
   }

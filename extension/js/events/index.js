@@ -202,8 +202,9 @@ export { recipeToolProvider, recipeToolSpec, describeRecipeForApproval, RECIPE_T
 export { createBudget, validateBudget, normalizeBudget, usageOf, BudgetError, BUDGET_DIMENSIONS } from './budget.js';
 export { defineTeam, validateTeam, normalizeTeam, normalizeGrants, grantAllows, describeRole, TeamError, ROLE_MODES, MERGE_POLICIES, PLAN_MODES, GRANTABLE, STARTER_TEAMS, starterTeams, blankTeam, teamFromForm, slugTeamName } from './team.js';
 export { fixedPlan, parsePlan, plannerPrompt, waves, breakCycles, TEAM_PLAN_SCHEMA } from './team-plan.js';
-export { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, FINDINGS_SCHEMA, FINDING_KINDS } from './team-board.js';
-export { runTeam, dryRunTeam, isModelUnavailable, TeamRunError, RUN_STATUSES } from './team-run.js';
+export { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, FINDINGS_SCHEMA, FINDING_KINDS, THREAD_KINDS, THREAD_STATUSES, POST_KINDS, POST_STATUSES, ASK_TYPES, emptyBoardState, foldBoard, findingsOf } from './team-board.js';
+export { boardToolProvider, boardToolSpec, createAnswerBox, withBoardTool, BOARD_TOOL_NAME, DEFAULT_ASK_TIMEOUT_MS } from './board-tool.js';
+export { runTeam, resumeTeam, dryRunTeam, isModelUnavailable, TeamRunError, RUN_STATUSES } from './team-run.js';
 export { teamToolProvider, teamToolSpec, describeTeamForApproval, TEAM_TOOL_NAME } from './team-tool.js';
 export { teamLine, teamLanes } from './team-trail.js';
 export { mcpDispatchProvider, MCP_TOOL_NAME } from './mcp-dispatch.js';

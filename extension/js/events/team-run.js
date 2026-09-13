@@ -27,10 +27,11 @@
 import { normalizeTeam } from './team.js';
 import { createBudget } from './budget.js';
 import { fixedPlan, plannerPrompt, parsePlan, waves } from './team-plan.js';
-import { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims } from './team-board.js';
+import { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, RUNNER } from './team-board.js';
+import { boardToolProvider, createAnswerBox, withBoardTool, DEFAULT_ASK_TIMEOUT_MS } from './board-tool.js';
 import { converge } from './promotion.js';
 
-export const RUN_STATUSES = Object.freeze(['planning', 'running', 'merging', 'completed', 'partial', 'over-budget', 'stopped', 'failed']);
+export const RUN_STATUSES = Object.freeze(['planning', 'running', 'merging', 'waiting', 'completed', 'partial', 'over-budget', 'stopped', 'failed']);
 const DEFAULT_CONCURRENCY = 3;
 
 export class TeamRunError extends Error {
@@ -96,15 +97,29 @@ export async function runTeam({
   team, request, callModel, toolsFor = () => undefined, appoint = null, runRecipe = null,
   now = () => Date.now(), newId = () => `run_${Math.random().toString(36).slice(2, 10)}`,
   emit = () => {}, signal = null, maxConcurrency = DEFAULT_CONCURRENCY, runId = null,
+  // Asks: the box a person's answers arrive in (the host feeds it from its UI and from the
+  // run store's tail), and how long a member waits before the run checkpoints. 0 = a member
+  // that asks is told to proceed on its own assumption at once.
+  answers = null, askTimeoutMs = DEFAULT_ASK_TIMEOUT_MS,
+  // A checkpoint from a run that ended `waiting` — see resumeTeam.
+  resume = null,
 } = {}) {
   if (typeof callModel !== 'function') throw new TeamRunError('BAD_RUN', 'callModel required');
   const t = normalizeTeam(team); // throws on a team without a budget — O1
-  const id = runId || newId();
-  const budget = createBudget(t.budget, { now });
-  const board = createBoard({ now });
-  const startedAt = now();
-  const tasksOut = [];
+  const id = runId || resume?.runId || newId();
+  const budget = createBudget(resume?.budget?.cap || t.budget, { now });
+  if (resume?.budget?.spent) budget.charge({ tokens: resume.budget.spent.tokens, calls: resume.budget.spent.calls, usd: resume.budget.spent.usd });
   const say = (type, payload = {}) => emit(type, { runId: id, at: now(), ...payload });
+  // Every change to the board is an event the run store folds — the other client reads it live.
+  const board = createBoard({ now, state: resume?.board || null, onEvent: (type, ev) => say(type, ev) });
+  // No answer box from the host means nobody can answer: asks are off, a member that asks is
+  // told to proceed on its own assumption at once, and the budget stop is final.
+  const box = answers || createAnswerBox();
+  const askMs = answers ? askTimeoutMs : 0;
+  const startedAt = resume?.startedAt || now();
+  // Tasks a checkpoint already finished are carried over, not re-run.
+  const tasksOut = (resume?.tasks || []).filter((x) => x.status === 'ok').map((x) => ({ ...x }));
+  const carried = new Set(tasksOut.map((x) => x.id));
   const roleOf = (rid) => t.roles.find((r) => r.id === rid);
   // `exclude` holds what failed as unavailable this run; a re-appointment skips it. A role's
   // pinned model is tried first and, when it is the one that failed, the roster steps in.
@@ -115,12 +130,12 @@ export async function runTeam({
   const MAX_APPOINTMENTS = 3;
   const stopped = () => !!signal?.aborted;
 
-  say('run.started', { team: t.name, request: String(request || ''), budget: t.budget, roles: t.roles.map((r) => r.id) });
+  say(resume ? 'run.resumed' : 'run.started', { team: t.name, request: String(request || ''), budget: budget.cap, roles: t.roles.map((r) => r.id), ...(resume ? { carried: [...carried] } : {}) });
 
   // ── plan ──────────────────────────────────────────────────────────────────────────────
-  let tasks;
-  let planBy = 'fixed';
-  if (t.plan === 'planner') {
+  let tasks = resume?.plan?.tasks?.length ? resume.plan.tasks : null;
+  let planBy = resume?.plan?.by || 'fixed';
+  if (!tasks && t.plan === 'planner') {
     const planner = strongestRole(t);
     const m = modelFor(planner);
     if (m && budget.canAfford({ tokens: 0 })) {
@@ -132,20 +147,37 @@ export async function runTeam({
   }
   if (!tasks) tasks = fixedPlan(t, request);
   say('plan.ready', { by: planBy, tasks: tasks.map((x) => ({ id: x.id, role: x.role, title: x.title, dependsOn: x.dependsOn })) });
+  // A thread per task, before anything runs: a member's findings and replies have a home.
+  for (const task of tasks) board.openThread({ taskId: task.id, kind: 'task', title: task.title || task.id, by: RUNNER });
 
   const finish = (status, extra = {}) => {
     const usage = budget.snapshot();
-    const out = { runId: id, team: t.name, status, plan: { by: planBy, tasks }, tasks: tasksOut, board: board.all(), usage, startedAt, endedAt: now(), ...extra };
-    say('run.done', { status, usage, proposal: out.proposal || null, failedTaskIds: tasksOut.filter((x) => x.status === 'failed').map((x) => x.id) });
+    const out = { runId: id, team: t.name, status, plan: { by: planBy, tasks }, tasks: tasksOut, board: board.all(), threads: board.state(), usage, startedAt, endedAt: now(), ...extra };
+    // What a resume needs, on the record: the plan, what finished, the board, the spend.
+    if (status === 'waiting') out.checkpoint = { runId: id, startedAt, plan: { by: planBy, tasks }, tasks: tasksOut, board: board.state(), budget: { cap: budget.cap, spent: usage.spent } };
+    say('run.done', { status, usage, proposal: out.proposal || null, failedTaskIds: tasksOut.filter((x) => x.status === 'failed').map((x) => x.id), waitingTaskIds: tasksOut.filter((x) => x.status === 'waiting').map((x) => x.id), ...(out.checkpoint ? { checkpoint: out.checkpoint } : {}) });
     return out;
   };
 
+  /**
+   * The runner asks the person (a budget, a direction). Same thread shape as a member's ask;
+   * answered from either client; null when nobody answered in time or asks are off.
+   */
+  const askPerson = async ({ type, text, options, taskId = null }) => {
+    if (askMs <= 0) return null;
+    const { thread } = board.ask({ taskId, by: RUNNER, type, text, options, timeoutMs: askMs });
+    say('run.waiting', { threadId: thread.id, askType: type, text, options });
+    return box.wait(thread.id, askMs, signal);
+  };
+  let waitingOnPerson = false; // a task that timed out on its ask — the run checkpoints
+
   // ── fan out, in waves ─────────────────────────────────────────────────────────────────
   let overBudget = false;
-  for (const wave of waves(tasks)) {
-    if (stopped() || overBudget) break;
+  let budgetAsked = !!resume?.budgetAsked;
+  for (const wave of waves(tasks.filter((x) => !carried.has(x.id)))) {
+    if (stopped() || overBudget || waitingOnPerson) break;
     await pool(wave, maxConcurrency, async (task) => {
-      if (stopped() || overBudget) { tasksOut.push({ id: task.id, role: task.role, status: 'skipped', text: '', findings: [] }); return; }
+      if (stopped() || overBudget || waitingOnPerson) { tasksOut.push({ id: task.id, role: task.role, status: 'skipped', text: '', findings: [] }); return; }
       const role = roleOf(task.role);
       const t0 = now();
       say('task.started', { taskId: task.id, role: task.role, title: task.title });
@@ -153,6 +185,11 @@ export async function runTeam({
       let usage = null;
       let status = 'ok';
       let error = null;
+      // The task's own abort: an ask nobody answered in time stops THIS member's turn (the
+      // run then checkpoints), without stopping the run's other members.
+      const taskAc = new AbortController();
+      signal?.addEventListener?.('abort', () => taskAc.abort(), { once: true });
+      let askedAndWaiting = null;
       try {
         if (role.mode === 'recipe') {
           if (typeof runRecipe !== 'function') throw new Error('this host cannot run recipes');
@@ -162,10 +199,22 @@ export async function runTeam({
           // A call's tokens are unknown until it returns; what can be asked beforehand is
           // whether the budget is already exhausted and whether one more call is allowed.
           if (!budget.canAfford({ tokens: 0 })) { overBudget = true; throw new Error('over budget'); }
-          const prior = boardText(board.all(), { taskIds: task.dependsOn?.length ? task.dependsOn : null });
+          // What this member reads: the threads of the tasks it depends on, answered asks (its
+          // own — a resumed task finds the person's answer here), settled discussions.
+          const prior = boardText(board, { taskIds: task.dependsOn?.length ? task.dependsOn : null, role: role.id });
           const prompt = [task.prompt, prior, findingsInstruction()].filter(Boolean).join('\n\n');
           // A host may build a toolset asynchronously (connecting MCP servers takes time).
-          const tools = await toolsFor(role);
+          // The board tool rides on top of whatever the role was granted.
+          const boardTool = boardToolProvider({
+            board, role: role.id, taskId: task.id, taskIds: task.dependsOn?.length ? task.dependsOn : null, askTimeoutMs: askMs, signal: taskAc.signal,
+            onAsk: (thread) => { say('task.waiting', { taskId: task.id, role: role.id, threadId: thread.id, text: thread.title }); },
+            waitFor: askMs > 0 ? async (threadId, ms, sig) => {
+              const a = await box.wait(threadId, ms, sig);
+              if (!a && !stopped()) { askedAndWaiting = threadId; taskAc.abort(); }
+              return a;
+            } : null,
+          });
+          const tools = withBoardTool(await toolsFor(role), boardTool);
           // A model that is not there — not deployed, no key, gone — is not the task failing:
           // the next model on the roster is appointed and the task tried again, up to three
           // models. Anything else (a refusal, a timeout, a bad request) fails the task.
@@ -176,12 +225,13 @@ export async function runTeam({
             if (attempt > 1) say('task.reappointed', { taskId: task.id, role: role.id, model: m.model, after: [...exclude] });
             const res = await callModel({
               runId: id, taskId: task.id, role: role.id, model: m.model, mode: m.mode || role.mode,
-              system: role.prompt, prompt, tools, signal,
+              system: role.prompt, prompt, tools, signal: taskAc.signal,
               onDelta: (delta, full) => say('task.delta', { taskId: task.id, role: role.id, delta, text: full }),
             });
             usage = res?.usage || null;
             if (usage) budget.charge(usage);
-            if (res?.aborted) { status = 'stopped'; break; }
+            if (askedAndWaiting) { status = 'waiting'; waitingOnPerson = true; break; }
+            if (res?.aborted || taskAc.signal.aborted) { status = 'stopped'; break; }
             // A turn that ended with nothing to say — an agent that exited, a stream that
             // died after its tool calls — is not a done task: three members "completed" empty
             // once, the run merged nothing, and the caller ran the team again. It is treated
@@ -193,21 +243,34 @@ export async function runTeam({
           }
         }
       } catch (e) {
-        status = overBudget ? 'over-budget' : 'failed';
-        error = String(e?.message || e);
+        if (askedAndWaiting) { status = 'waiting'; waitingOnPerson = true; }
+        else { status = overBudget ? 'over-budget' : 'failed'; error = String(e?.message || e); }
       }
       const findings = status === 'ok' ? parseFindings(text, { role: role.id, taskId: task.id }) : [];
       if (findings.length) { board.add(findings); for (const f of findings) say('task.finding', { taskId: task.id, role: role.id, finding: f }); }
-      const row = { id: task.id, role: task.role, title: task.title, status, text, error, usage, ms: now() - t0, findings };
+      const thread = board.threadForTask(task.id);
+      if (thread && status !== 'waiting') board.setThreadStatus(thread.id, 'resolved');
+      const row = { id: task.id, role: task.role, title: task.title, status, text, error, usage, ms: now() - t0, findings, ...(askedAndWaiting ? { waitingOn: askedAndWaiting } : {}) };
       tasksOut.push(row);
-      say(status === 'ok' ? 'task.done' : 'task.failed', { taskId: task.id, role: task.role, status, error, ms: row.ms, findings: findings.length });
+      say(status === 'ok' ? 'task.done' : 'task.failed', { taskId: task.id, role: task.role, status, error, ms: row.ms, findings: findings.length, ...(askedAndWaiting ? { threadId: askedAndWaiting } : {}) });
       if (budget.exhausted()) overBudget = true;
     });
+    // Over budget with work left: ask the person ONCE for more, on the board, before stopping.
+    if (overBudget && !budgetAsked && !stopped()) {
+      budgetAsked = true;
+      const left = tasks.filter((x) => !tasksOut.some((y) => y.id === x.id)).length;
+      const spent = budget.snapshot().spent;
+      const a = await askPerson({ type: 'budget', text: `The team has used its budget (${Object.entries(spent).filter(([k]) => budget.cap[k] !== undefined).map(([k, v]) => `${k} ${v} of ${budget.cap[k]}`).join(', ')}) with ${left} task${left === 1 ? '' : 's'} left. Raise it by half, or stop here with what it has?`, options: ['Raise by half', 'Stop here'] });
+      if (a && /raise|allow|yes|more|continue/i.test(a.text)) { budget.raise(1.5); overBudget = false; }
+    }
   }
   // Every planned task gets a row — what never ran is recorded as skipped, not forgotten.
   for (const task of tasks) if (!tasksOut.some((x) => x.id === task.id)) tasksOut.push({ id: task.id, role: task.role, title: task.title, status: 'skipped', text: '', findings: [] });
   if (stopped()) return finish('stopped');
-  if (overBudget) return finish('over-budget', { proposal: mergeCheap(t, board.all(), tasksOut) });
+  if (waitingOnPerson) return finish('waiting', { proposal: null, budgetAsked });
+  // Over budget is a STOP only when it left work undone; a budget spent on the last task
+  // is a run that finished, and the merge below falls back to the cheap one if it must.
+  if (overBudget && tasksOut.some((x) => x.status === 'skipped' || x.status === 'over-budget')) return finish('over-budget', { proposal: mergeCheap(t, board.all(), tasksOut) });
 
   // ── merge ─────────────────────────────────────────────────────────────────────────────
   say('run.merging', { policy: t.merge });
@@ -221,7 +284,7 @@ export async function runTeam({
       const prompt = [
         `You are the ${judge.name || judge.id} of team "${t.name}". Review the team's findings for the request below and write the final answer — accurate, concise, and only what the findings support. Flag anything the members disagreed on.`,
         `Request: ${String(request || '').trim()}`,
-        boardText(board.all()),
+        boardText(board),
       ].join('\n\n');
       const res = await callModel({ runId: id, taskId: 'merge', role: judge.id, model: m.model, mode: 'model', system: judge.prompt, prompt, tools: undefined, signal });
       if (res?.usage) budget.charge(res.usage);
@@ -238,8 +301,21 @@ export async function runTeam({
   } else {
     proposal = mergeCheap(t, board.all(), tasksOut);
   }
+  // The merge is a proposal thread: a draft the person approves, rejects or replies to.
+  if (proposal?.text || proposal?.agreed) {
+    const th = board.openThread({ kind: 'proposal', title: `Proposal — ${t.merge}`, by: proposal.by || RUNNER });
+    board.post({ threadId: th.id, by: proposal.by || RUNNER, kind: 'draft', status: 'proposed', text: proposal.text || (proposal.agreed || []).map((c) => c.text).join('\n'), refs: [] });
+  }
   const failed = tasksOut.some((x) => x.status !== 'ok');
   return finish(failed ? 'partial' : 'completed', { proposal });
+}
+
+/** Continue a run that ended `waiting` from its checkpoint — the answered ask is on the board. */
+export function resumeTeam({ checkpoint, ...deps } = {}) {
+  if (!checkpoint?.plan?.tasks) throw new TeamRunError('BAD_RESUME', 'a checkpoint with a plan is required');
+  // The waiting task runs again; its ask thread now holds the answer, and boardText gives it
+  // to the member. Tasks recorded `waiting`/`skipped` are dropped from the carried list.
+  return runTeam({ ...deps, resume: checkpoint });
 }
 
 /** No model: the members' work side by side, findings first — always available. */

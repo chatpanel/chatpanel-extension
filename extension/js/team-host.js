@@ -12,6 +12,7 @@
 // pays nothing, and the panel's first paint never carries the runner.
 
 import { runTeam } from './events/team-run.js';
+import { createAnswerBox } from './events/board-tool.js';
 import { grantAllows } from './events/team.js';
 import { appoint } from './events/cowriter-router.js';
 import { swarmCandidates } from './notes-swarm-router.js';
@@ -57,6 +58,10 @@ export function runStore(settings) {
     create: (run) => gwFetch(`${base}/v1/teams/runs`, { method: 'POST', body: JSON.stringify({ ...run, client: 'extension' }) }),
     append: (id, events) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/events`, { method: 'POST', body: JSON.stringify({ events }) }),
     stop: (id) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
+    // The board, from a person (gateway 0.6.81+): answer an ask, decide on a post, post a note.
+    answer: (id, body) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/answer`, { method: 'POST', body: JSON.stringify({ ...body, by: 'person' }) }),
+    decide: (id, body) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/decide`, { method: 'POST', body: JSON.stringify({ ...body, by: 'person' }) }),
+    post: (id, body) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/post`, { method: 'POST', body: JSON.stringify({ ...body, by: 'person' }) }),
     remove: (id) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     /** Tail a run's events (SSE). Returns a stop function. */
     tail(id, onEvent, { after = -1 } = {}) {
@@ -121,7 +126,12 @@ export function appointerFor(settings, license, { like = '' } = {}) {
 }
 
 /** Events to the gateway as they happen — batched, ordered, flushed on the way out. */
-export function createRunSync({ store, runId, team, request, onStopRequested = null }) {
+// The runs this panel is running right now: an answer from this panel's own UI reaches the
+// runner directly as well as through the gateway (which the desktop uses).
+const liveRuns = new Map();
+export const liveRun = (id) => liveRuns.get(String(id || '')) || null;
+
+export function createRunSync({ store, runId, team, request, onStopRequested = null, onRemote = null }) {
   let queue = [];
   let timer = null;
   let dead = false;
@@ -137,7 +147,8 @@ export function createRunSync({ store, runId, team, request, onStopRequested = n
     async start() {
       const res = await store.create({ id: runId, team, request });
       if (!res.ok) { dead = true; return false; }
-      if (onStopRequested) stopTail = store.tail(runId, (ev) => { if (ev?.type === 'run.stop-requested') onStopRequested(); });
+      // Watch our own run for what ANOTHER client did: a stop, an answer to an ask, a decision.
+      if (onStopRequested || onRemote) stopTail = store.tail(runId, (ev) => { if (ev?.type === 'run.stop-requested') onStopRequested?.(); else if (String(ev?.type || '').startsWith('board.')) onRemote?.(ev); });
       return true;
     },
     push(type, payload) {
@@ -155,13 +166,20 @@ export function createRunSync({ store, runId, team, request, onStopRequested = n
  * Run a team in the panel. `deps` is what only the surface has: `streamChat`,
  * `buildTurnTools` (turn-tools), the settings/license, the bridge, and `emit` for the trail.
  */
-export async function runTeamHere({ team, request, settings, license, like = '', bridgeUrl, bridgeAvailable, signal, emit = () => {}, streamChat, buildTurnTools, runId = null, store = null }) {
+export async function runTeamHere({ team, request, settings, license, like = '', bridgeUrl, bridgeAvailable, signal, emit = () => {}, streamChat, buildTurnTools, runId = null, store = null, askTimeoutMs = 10 * 60_000, resume = null }) {
   const ac = new AbortController();
   signal?.addEventListener?.('abort', () => ac.abort(), { once: true });
   const id = runId || `run_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
   const gw = store || runStore(settings);
-  const sync = createRunSync({ store: gw, runId: id, team: team.name, request, onStopRequested: () => ac.abort() });
+  // A person's answers to the members' asks — from this panel, or from the desktop through
+  // the gateway (the store's `board.post` of kind answer, on our tail).
+  const answers = createAnswerBox();
+  const sync = createRunSync({
+    store: gw, runId: id, team: team.name, request, onStopRequested: () => ac.abort(),
+    onRemote: (ev) => { const post = ev.payload?.post; if (ev.type === 'board.post' && post?.kind === 'answer') answers.answer(post.threadId, { text: post.text, by: post.by, id: post.id }); },
+  });
   await sync.start();
+  liveRuns.set(id, { answers, stop: () => ac.abort(), team: team.name });
   const appointRole = appointerFor(settings, license, { like });
 
   // A role's toolset: the same builder a turn uses, with only the groups the role may hold.
@@ -206,12 +224,21 @@ export async function runTeamHere({ team, request, settings, license, like = '',
 
   try {
     const result = await runTeam({
-      team, request, callModel, appoint: appointRole, runId: id, signal: ac.signal,
+      team, request, callModel, appoint: appointRole, runId: id, signal: ac.signal, answers, askTimeoutMs, resume,
       toolsFor: (role) => toolsFor(role),
       emit: (type, payload) => { sync.push(type, payload); emit(type, payload); },
     });
     return { ...result, synced: sync.synced };
   } finally {
+    liveRuns.delete(id);
     await sync.end();
   }
+}
+
+/** A person answers an ask: through the gateway (the record, the other client) and, when this panel runs it, straight to the runner. */
+export async function answerAsk(settings, { runId, threadId, text }) {
+  const r = await runStore(settings).answer(runId, { threadId, text });
+  const live = liveRun(runId);
+  if (live && !r.ok) live.answers.answer(threadId, { text, by: 'person' });
+  return r.ok || !!live ? { ok: true } : { ok: false, error: r.error };
 }

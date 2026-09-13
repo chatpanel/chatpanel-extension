@@ -75,7 +75,7 @@ export function usageOf(u = {}) {
 export function createBudget(declared, { now = () => Date.now() } = {}) {
   const v = validateBudget(declared);
   if (!v.ok) throw new BudgetError('INVALID', v.errors.join('; '));
-  const cap = normalizeBudget(declared);
+  const cap = { ...normalizeBudget(declared) };
   const startedAt = now();
   const spent = { tokens: 0, calls: 0, usd: 0 };
   const elapsed = () => now() - startedAt;
@@ -111,6 +111,12 @@ export function createBudget(declared, { now = () => Date.now() } = {}) {
     },
     remaining,
     exhausted,
+    /** A person raised the cap mid-run (a budget ask answered "allow"): by a factor, once. */
+    raise(factor = 1.5) {
+      const f = Math.max(1, Number(factor) || 1);
+      for (const k of Object.keys(cap)) if (cap[k] !== undefined) cap[k] = Math.ceil(cap[k] * f);
+      return { ...cap };
+    },
     snapshot() {
       return { cap, spent: { ...spent, ms: elapsed() }, remaining: remaining(), exhausted: exhausted() };
     },
