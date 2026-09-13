@@ -37,6 +37,9 @@ export const PREF_SECTIONS = Object.freeze([
   // SCM connections (scm-connection.js): kind, host, secret REF — never the token, which
   // stays in the machine's keychain / the bridge's secret store and does not travel.
   { id: 'connections', label: 'Connections', path: ['connections'], kind: 'array' },
+  // The project pages (F8 §12): the goal, its stakeholder, budget, repos, gate. Jobs and runs
+  // fold on the gateway's project record, not here.
+  { id: 'projects', label: 'Projects', path: ['projects'], kind: 'array' },
   { id: 'webSearch', label: 'Web search', path: ['ui', 'webSearch'], kind: 'object' },
   { id: 'tools', label: 'Tools', path: null, kind: 'object', keys: ['mcpToolsMode', 'maxToolsPerTurn', 'historyTools', 'historyContextMode', 'dataDispatch', 'toolResultMaxChars'] },
   { id: 'suggestions', label: 'Smart suggestions', path: ['ui', 'suggestions'], kind: 'object' },

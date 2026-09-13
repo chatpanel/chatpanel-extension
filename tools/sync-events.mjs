@@ -35,7 +35,7 @@ const FILES = [
   // loop offers — so the desktop's `find` and `web_search` are this `find` and `web_search`.
   'toolset.js', 'tool-dispatch.js', 'find-tool.js', 'web-search-tool.js', 'mcp-dispatch.js', 'recipe-tool.js',
   // Agent teams (F8): the contracts, the runner, the tool. Bound in js/team-host.js.
-  'budget.js', 'team.js', 'team-plan.js', 'team-board.js', 'board-tool.js', 'team-cache.js', 'team-task.js', 'team-record.js', 'scorecard.js', 'team-run.js', 'team-tool.js', 'team-trail.js',
+  'budget.js', 'team.js', 'team-plan.js', 'team-board.js', 'board-tool.js', 'team-cache.js', 'team-task.js', 'team-record.js', 'scorecard.js', 'project.js', 'job.js', 'gate.js', 'team-run.js', 'team-tool.js', 'team-trail.js',
   // The agent pool (A1): the cards, their engines, the engines' cards, the SCM connections.
   'engine.js', 'agent.js', 'model-ledger.js', 'scm-connection.js',
   // The settings every client shares, and how two edited copies reconcile.
