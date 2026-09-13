@@ -59,7 +59,10 @@ const strongestRole = (team) => [...team.roles].sort((a, b) => (TIER[b.prefer] ?
  */
 export function isModelUnavailable(error) {
   const m = String(error?.message || error || '');
-  return /model[_ ]not[_ ]found|not found|not deployed|inaccessible|does not exist|no such model|unknown model|unsupported model|not available|unavailable|no api key|not configured|"status":\s*(404|401|403)\b|\b(404|401|403)\b/i.test(m);
+  // Also: a relayed agent that exited, a provider that closed the stream, and a turn that
+  // came back with nothing — the model did not answer, and the next one might. A refusal,
+  // a timeout the caller set, a bad request or a budget stop are not this.
+  return /model[_ ]not[_ ]found|not found|not deployed|inaccessible|does not exist|no such model|unknown model|unsupported model|not available|unavailable|no api key|not configured|"status":\s*(404|401|403|500|502|503)\b|\b(404|401|403|502|503)\b|exited \d+|returned no answer|did not answer|closed the connection|couldn't reach|could not reach|ECONNREFUSED|overloaded|capacity/i.test(m);
 }
 
 export function dryRunTeam(team, request, { appoint = null } = {}) {
@@ -179,15 +182,12 @@ export async function runTeam({
             usage = res?.usage || null;
             if (usage) budget.charge(usage);
             if (res?.aborted) { status = 'stopped'; break; }
-            if (res?.ok) {
-              text = String(res?.text || '');
-              // A turn that ended with nothing to say — an agent that exited, a stream that
-              // died after its tool calls — is not a done task. Three members "completed"
-              // empty once, the run merged nothing, and the caller ran the team again.
-              if (!text.trim()) throw new Error('the model returned no answer');
-              break;
-            }
-            const err = res?.error || 'the model did not answer';
+            // A turn that ended with nothing to say — an agent that exited, a stream that
+            // died after its tool calls — is not a done task: three members "completed" empty
+            // once, the run merged nothing, and the caller ran the team again. It is treated
+            // like an unavailable model, so the next one on the roster gets the task.
+            if (res?.ok && String(res?.text || '').trim()) { text = String(res.text); break; }
+            const err = res?.ok ? 'the model returned no answer' : (res?.error || 'the model did not answer');
             if (attempt >= MAX_APPOINTMENTS || stopped() || !isModelUnavailable(err)) throw new Error(err);
             exclude.add(m.model);
           }

@@ -16,7 +16,7 @@ import {
   redactionEnabled, redactionFromSettings, redactOutbound, redactResult, restoreDeep, makeStreamRestorer, restore,
   redactOpts, gatedScope,
 } from './pii-pipeline.js';
-import { makeToolHarness, placeholderToolNote } from './tool-harness.js';
+import { makeToolHarness, placeholderToolNote, placeholderNote } from './tool-harness.js';
 import { canUseFullRedaction, recordFullRedaction } from './pii-usage.js';
 import { sanitizeUnicode } from './sanitize.js';
 // Pure, tiny and needed on every turn that carries an attachment — the retrieval contract
@@ -1719,7 +1719,12 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   // When tools are armed, tell the model placeholders are auto-restored for tools —
   // so privacy-aware models (Codex/Claude) USE them instead of refusing the lookup.
   // Appended AFTER redaction so it isn't itself redacted.
-  const systemPrompt = tools ? combineSystemPrompt(red.system, placeholderToolNote({ toolData: activeCfg.toolData })) : red.system;
+  // Without tools, the model still meets [[LOCATION_1]] — a coding agent told nothing about
+  // it stops to ask what the "unresolved placeholder" means. The short note goes out whenever
+  // the vault holds anything, i.e. something in this conversation was replaced.
+  const systemPrompt = tools
+    ? combineSystemPrompt(red.system, placeholderToolNote({ toolData: activeCfg.toolData }))
+    : (vault?.byToken?.size ? combineSystemPrompt(red.system, placeholderNote()) : red.system);
   const safeAgent = { ...agent, systemPrompt };
   const rawOnDelta = onDelta;
   // ONE RESTORER PER ATTEMPT. It buffers a partial placeholder across deltas, so a stream

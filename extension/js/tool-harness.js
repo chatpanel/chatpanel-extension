@@ -54,6 +54,22 @@ export function restoreToolArgs(value, vault) {
 // Codex chose its own web search over ChatPanel's `find` on one turn and answered from
 // nothing. The extra sentence says which tools restore and which do not, so the choice is
 // no longer a coin toss.
+/**
+ * The note for a turn with NO tools armed. The model still meets `[[LOCATION_1]]` in the
+ * conversation, and a coding agent told nothing about it stops to ask what the "unresolved
+ * placeholder" means — exactly what a redaction layer must never cause. So: treat it as a
+ * concrete value, write around it, echo it exactly; the real value is restored on the way
+ * back. Short, because there is nothing to call.
+ */
+export function placeholderNote() {
+  return 'PRIVACY PLACEHOLDERS: some values in this conversation are tokens like [[PERSON_1]], '
+    + '[[LOCATION_1]], [[ORG_1]] that stand in for the user\'s real private data. Treat each one as '
+    + 'a CONCRETE, specific value you already have — not missing or unknown information. Do not ask '
+    + 'what it stands for, do not say it is unresolved, and do not refuse on privacy grounds. Reason '
+    + 'and write with the placeholder exactly as written; the real value is restored in your answer '
+    + 'automatically.';
+}
+
 export function placeholderToolNote({ toolData = 'real', ownTools = false } = {}) {
   const intro =
     'PRIVACY PLACEHOLDERS: some values in this conversation are tokens like [[PERSON_1]], '
