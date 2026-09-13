@@ -23,7 +23,7 @@ export function teamLine(ev) {
     case 'run.resumed': return { type: 'status', text: `team ${ev.team} resumed${(ev.carried || []).length ? ` (${ev.carried.length} task${ev.carried.length === 1 ? '' : 's'} carried over)` : ''}` };
     case 'board.post': return ev.post && ev.post.kind !== 'finding' ? { type: 'status', text: `${ev.post.by} ${ev.post.replyTo ? 'replied' : 'posted'} (${ev.post.kind}): ${String(ev.post.text || '').slice(0, 120)}` } : null;
     case 'board.decision': return { type: 'status', text: `${ev.by || 'someone'} ${ev.status} a post` };
-    case 'task.reappointed': return { type: 'status', text: `${role} → ${ev.model} (${(ev.after || []).join(', ')} unavailable)` };
+    case 'task.reappointed': return { type: 'status', text: `${role} → ${ev.model} (${(ev.after || []).join(', ')} unavailable${ev.error ? `: ${String(ev.error).slice(0, 120)}` : ''})` };
     case 'task.tool': return { type: 'tool', name: ev.name, text: `${role} ran ${ev.name}${ev.text ? ` — ${ev.text}` : ''}` };
     case 'task.finding': return { type: 'status', text: `${role}: ${String(ev.finding?.text || '').slice(0, 140)}` };
     case 'task.done': return { type: 'status', text: `${role} done · ${ev.findings || 0} finding${ev.findings === 1 ? '' : 's'}` };

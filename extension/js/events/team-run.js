@@ -221,10 +221,11 @@ export async function runTeam({
           // the next model on the roster is appointed and the task tried again, up to three
           // models. Anything else (a refusal, a timeout, a bad request) fails the task.
           const exclude = new Set();
+          let lastErr = '';
           for (let attempt = 1; ; attempt++) {
             const m = modelFor(role, exclude);
             if (!m?.model) throw new Error(exclude.size ? `no model left for role "${role.id}" after ${[...exclude].join(', ')}` : `no model for role "${role.id}"`);
-            if (attempt > 1) say('task.reappointed', { taskId: task.id, role: role.id, model: m.model, after: [...exclude] });
+            if (attempt > 1) say('task.reappointed', { taskId: task.id, role: role.id, model: m.model, after: [...exclude], error: lastErr });
             // Who is doing this task, for a ledger that shows the lanes — said per attempt.
             say('task.model', { taskId: task.id, role: role.id, model: m.model, attempt });
             const res = await callModel({
@@ -243,7 +244,7 @@ export async function runTeam({
             if (res?.ok && String(res?.text || '').trim()) { text = String(res.text); break; }
             const err = res?.ok ? 'the model returned no answer' : (res?.error || 'the model did not answer');
             if (attempt >= MAX_APPOINTMENTS || stopped() || !isModelUnavailable(err)) throw new Error(err);
-            exclude.add(m.model);
+            exclude.add(m.model); lastErr = err;
           }
         }
       } catch (e) {
@@ -298,17 +299,18 @@ export async function runTeam({
       const judgeTools = withBoardTool(withRunCache(await toolsFor(judge), runCache, { role: judge.id }), boardToolProvider({ board, role: judge.id, taskId: 'merge', taskIds: null }));
       let res = null;
       const excl = new Set();
+      let judgeErr = '';
       for (let attempt = 1; attempt <= MAX_APPOINTMENTS; attempt++) {
         const mm = attempt === 1 ? m : modelFor(judge, excl);
         if (!mm?.model) break;
-        if (attempt > 1) say('task.reappointed', { taskId: 'merge', role: judge.id, model: mm.model, after: [...excl] });
+        if (attempt > 1) say('task.reappointed', { taskId: 'merge', role: judge.id, model: mm.model, after: [...excl], error: judgeErr });
         say('task.model', { taskId: 'merge', role: judge.id, model: mm.model, attempt });
         res = await callModel({ runId: id, taskId: 'merge', role: judge.id, model: mm.model, mode: 'model', system: judge.prompt, prompt, tools: judgeTools, signal, onDelta: (delta, full) => say('task.delta', { taskId: 'merge', role: judge.id, delta, text: full }) });
         if (res?.usage) budget.charge(res.usage);
         if (res?.ok && String(res.text || '').trim()) break;
         const err = res?.ok ? 'the model returned no answer' : (res?.error || 'the model did not answer');
         if (stopped() || !isModelUnavailable(err)) break;
-        excl.add(mm.model);
+        excl.add(mm.model); judgeErr = err;
       }
       const judged = res?.ok && String(res.text || '').trim();
       say(judged ? 'task.done' : 'task.failed', { taskId: 'merge', role: judge.id, status: judged ? 'ok' : 'failed', error: judged ? null : (res?.error || 'the judge did not answer'), findings: 0 });
