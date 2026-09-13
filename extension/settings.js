@@ -123,6 +123,7 @@ async function init() {
   renderMcpServers();
   renderSkills();
   renderRecipes();
+  renderTeams();
   renderPrefs();
   setupNotesPrefs();
   setupMemoryPrefs();
@@ -4616,6 +4617,20 @@ function renderRecipes() {
   import('./js/settings-recipes.js')
     .then((m) => m.renderRecipes(root, { settings, onChange: (recipes) => { settings.recipes = recipes; renderRecipes(); } }))
     .catch((e) => console.warn('[chatpanel] recipes:', e));
+}
+
+// Saved teams and their runs — deferred for the same reason; the runs list polls the gateway
+// only while rendered, and a re-render disposes the previous poll.
+let teamsDispose = null;
+function renderTeams() {
+  const root = $('teams');
+  if (!root) return;
+  import('./js/settings-teams.js')
+    .then((m) => {
+      teamsDispose?.();
+      teamsDispose = m.renderTeams(root, { settings, onChange: (teams) => { settings.teams = teams; renderTeams(); } });
+    })
+    .catch((e) => console.warn('[chatpanel] teams:', e));
 }
 
 function renderSkills() {

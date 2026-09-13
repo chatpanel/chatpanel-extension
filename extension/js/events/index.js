@@ -197,6 +197,15 @@ export { WEB_SEARCH_TOOL_NAME, WEB_SEARCH_TOOL_SYSTEM, WEB_SEARCH_SPEC, searchRe
 export { compressToolSpec, compressToolSpecs, compressionStats, trimDescription, COMPRESSION_MODES, DEFAULT_COMPRESSION } from './tool-schema.js';
 export { validateRecipe, expandRecipe, recipeParams, mapInput, dryRunRecipe, runPlan, runRecipe, RecipeError, RECIPE_MODES } from './recipe.js';
 export { recipeToolProvider, recipeToolSpec, describeRecipeForApproval, RECIPE_TOOL_NAME } from './recipe-tool.js';
+// Agent teams (F8): a team is data, a run is a turn of turns under a budget, members talk
+// through a typed board, nothing lands without a person.
+export { createBudget, validateBudget, normalizeBudget, usageOf, BudgetError, BUDGET_DIMENSIONS } from './budget.js';
+export { defineTeam, validateTeam, normalizeTeam, normalizeGrants, grantAllows, describeRole, TeamError, ROLE_MODES, MERGE_POLICIES, PLAN_MODES, GRANTABLE } from './team.js';
+export { fixedPlan, parsePlan, plannerPrompt, waves, breakCycles, TEAM_PLAN_SCHEMA } from './team-plan.js';
+export { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, FINDINGS_SCHEMA, FINDING_KINDS } from './team-board.js';
+export { runTeam, dryRunTeam, TeamRunError, RUN_STATUSES } from './team-run.js';
+export { teamToolProvider, teamToolSpec, describeTeamForApproval, TEAM_TOOL_NAME } from './team-tool.js';
+export { teamLine, teamLanes } from './team-trail.js';
 export { mcpDispatchProvider, MCP_TOOL_NAME } from './mcp-dispatch.js';
 export { createManifest, ManifestError, SOURCES } from './manifest.js';
 export { createKernel, meetDecisions, KernelError, REQUIRED_PLUGINS, ALLOW_ALL } from './kernel.js';
@@ -213,7 +222,7 @@ export { SOURCE_TRUST, SkillSourceError, defineSkillSource, createSkillSourceReg
 export { SKILL_MANIFEST_VERSION, SKILL_CONTEXTS, SKILL_HISTORY_SCOPES, SKILL_MCP_MODES, SKILL_TRUST, SKILL_FILE_KINDS, SKILL_UPCASTERS, SkillManifestError, isSafeSkillPath, originOf, trustOf, skillFiles, needsBridge, declaredAccess, originLabel, sameSkillOrigin, skillIsStale, validateSkill, upcastSkill, upcastSkills, normalizeSkill } from './skill-manifest.js';
 export { SKILL_VARS, SKILL_VAR_NAMES, skillVar, skillVarPattern, parseSkillVars, lintSkillPrompt, suggestSkillVar, substituteSkillVars, expandSkillPrompt, skillVarGuidance, SkillVarError } from './skill-vars.js';
 export { lineAt, writerAffordance, INSTRUCTION_RE, instructionOnLine, GOAL_MIN_NEW, goalDraftAllowed, createSpendMeter, writerTail, draftSeparator, groundingBlock, writerRequest, AUTOCOMPLETE_SYSTEM, AUTOCOMPLETE_MAX_TOKENS, AUTOCOMPLETE_TEMPERATURE, clipCompletion, GEARS, WRITER_PREFS, WRITER_PREF_DEFAULTS, normalizeWriterPrefs, normalizeIntent } from './cowriter-writer.js';
-export { SLASH_TYPING_RE, enabledSkills, slashCommandItems, matchSlashSkill, matchSlashRecipe, recipeInvocationText, slashCommandInsert, skillInvocationOf, skillInvocationLabel } from './slash-commands.js';
+export { SLASH_TYPING_RE, enabledSkills, slashCommandItems, matchSlashSkill, matchSlashRecipe, recipeInvocationText, matchSlashTeam, teamInvocationText, slashCommandInsert, skillInvocationOf, skillInvocationLabel } from './slash-commands.js';
 export { outlineOf, parseListItem, continueList, indentSelection, toggleWrap, toggleLinePrefix, toggleTask, toggleLink, docStats, selectionStats } from './markdown-authoring.js';
 export {
   MAX_TAG_LENGTH, MAX_TAGS, normalizeTag, normalizeTags, hasTag, addTag, removeTag, toggleTag,

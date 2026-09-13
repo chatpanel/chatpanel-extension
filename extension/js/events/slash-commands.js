@@ -45,6 +45,12 @@ function recipeItem(recipe) {
   return { type: 'recipe', command: recipe.name || '', icon: '🧩', description: recipe.description || 'Saved recipe', recipe };
 }
 
+// A saved TEAM answers to a slash the same way: `/research <request>` is a request to run
+// it, and the `team` tool does the rest.
+function teamItem(team) {
+  return { type: 'team', command: team.name || '', icon: '🧑‍🤝‍🧑', description: team.description || 'Agent team', team };
+}
+
 /** Skills that are switched on. Absence of the flag means enabled (older records have none). */
 export function enabledSkills(skills) {
   return (Array.isArray(skills) ? skills : []).filter((s) => !!s && s.enabled !== false);
@@ -66,6 +72,7 @@ export function slashCommandItems({
   builtins = [],
   skills = [],
   recipes = [],
+  teams = [],
   prefix = '',
   skillsAllowed = false,
   features = {},
@@ -78,7 +85,8 @@ export function slashCommandItems({
   }));
   const skillItems = skillsAllowed ? enabledSkills(skills).map(skillItem) : [];
   const recipeItems = (recipes || []).filter((r) => r && r.enabled !== false && r.name).map(recipeItem);
-  return [...own, ...skillItems, ...recipeItems]
+  const teamItems = (teams || []).filter((t) => t && t.enabled !== false && t.name).map(teamItem);
+  return [...own, ...skillItems, ...recipeItems, ...teamItems]
     .filter((item) => item.command && item.command.toLowerCase().startsWith(normalized))
     .slice(0, 12);
 }
@@ -106,6 +114,20 @@ export function matchSlashRecipe(text, recipes = []) {
 export function recipeInvocationText(recipe, args = '') {
   const a = String(args || '').trim();
   return `Run the saved recipe "${recipe.name}"${a ? ` with this input: ${a}` : ''}. Use the recipe tool; if a parameter is missing, ask for it.`;
+}
+
+/** "/research compare A and B" → the team, and the rest of the line as its request. */
+export function matchSlashTeam(text, teams = []) {
+  const m = /^\/([a-z0-9_-]+)\s*([\s\S]*)$/i.exec(String(text || ''));
+  if (!m) return null;
+  const team = (teams || []).find((t) => t && t.enabled !== false && String(t.name || '').toLowerCase() === m[1].toLowerCase());
+  return team ? { team, args: m[2].trim() } : null;
+}
+
+/** What the model receives for a team command: a request to run it, never a prompt expansion. */
+export function teamInvocationText(team, args = '') {
+  const a = String(args || '').trim();
+  return `Run the saved team "${team.name}"${a ? ` on this request: ${a}` : ''}. Use the team tool; if the request is unclear, ask first.`;
 }
 
 export function slashCommandInsert(item) {

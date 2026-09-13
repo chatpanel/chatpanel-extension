@@ -131,7 +131,7 @@ import {
 import { upsertMeetingChatAttachment } from './js/meeting-chat-context.js';
 // history-rag.js (+ its meeting/search subgraph) is dynamic-imported inside send().
 import { enabledSkills, skillRunFromSkill } from './js/skill-runtime.js';
-import { skillInvocationLabel, skillInvocationOf, slashCommandInsert, slashCommandItems, matchSlashRecipe, matchSlashSkill as matchSlashSkillShared, recipeInvocationText } from './js/slash-commands.js';
+import { skillInvocationLabel, skillInvocationOf, slashCommandInsert, slashCommandItems, matchSlashRecipe, matchSlashSkill as matchSlashSkillShared, matchSlashTeam, recipeInvocationText, teamInvocationText } from './js/slash-commands.js';
 import {
   HISTORY_CONTEXT_MODES,
   historyContextForMode,
@@ -992,7 +992,7 @@ function renderMemoryOffers(offers, convId) {
 // two can never drift. Returns undefined when nothing is armed.
 async function toolsetFor(
   resolvedAgent,
-  { turnId = null, historyRag = null, skillRun = null, mcpMode = MCP_TURN_MODES.AUTO, userText = '', attachments = [], pageTools = true } = {},
+  { turnId = null, convId = null, historyRag = null, skillRun = null, mcpMode = MCP_TURN_MODES.AUTO, userText = '', attachments = [], pageTools = true } = {},
 ) {
   // Page-action tools need a live tab + confirm dialogs — skip them for background
   // callers (e.g. auto-refreshing live monitors) that shouldn't drive the tab.
@@ -1038,6 +1038,22 @@ async function toolsetFor(
       state.settings = await updateSettings({ recipes: [...(state.settings.recipes || []).filter((r) => r?.name !== recipe.name), recipe] });
       toast(`🧩 Saved recipe /${recipe.name}`);
     },
+    // A proposed TEAM goes through the same gate; a run's events reach the activity strip so
+    // the person sees which role is working (F8 — the shared `teams` section, so the desktop
+    // has the team at its next open and reads the run's board from the gateway).
+    confirmTeamSave: async (detail) => ((await confirmPageAction(detail, { title: 'Save this team?', iconName: 'agent', scopeLabel: null })) === 'allow' ? 'allow' : 'deny'),
+    saveTeam: async (team) => {
+      state.settings = await updateSettings({ teams: [...(state.settings.teams || []).filter((t) => t?.name !== team.name), team] });
+      toast(`👥 Saved team /${team.name}`);
+    },
+    onTeamEvent: (type, ev) => {
+      const id = convId || state.conv?.id;
+      if (!id) return;
+      import('./js/events/team-trail.js').then(({ teamLine }) => {
+        const line = teamLine({ type, ...ev });
+        if (line) recordActivity(id, line.type === 'tool' ? { type: 'tool', name: line.name, summary: line.text } : { type: 'status', text: line.text });
+      });
+    },
     userText,
     attachments,
     mcpMode,
@@ -1081,6 +1097,7 @@ function runProfileForTurn(conv, assistant) {
     if (m.role === 'user') {
       return {
         turnId,
+        convId: conv.id,
         historyRag: m.historyRag || null,
         skillRun: m.skillRun || null,
         mcpMode: m.mcpMode || MCP_TURN_MODES.AUTO,
@@ -2613,6 +2630,9 @@ async function send({ steer = false } = {}) {
     // (armed by buildTurnTools when recipes exist) does the work.
     const rc = sk || historyCommand || searchCommand ? null : matchSlashRecipe(raw, state.settings.recipes);
     if (rc) text = recipeInvocationText(rc.recipe, rc.args);
+    // A saved team's /command runs the team (the `team` tool, armed the same way).
+    const tm = sk || rc || historyCommand || searchCommand ? null : matchSlashTeam(raw, state.settings.teams);
+    if (tm) text = teamInvocationText(tm.team, tm.args);
     if (sk && !skillsAllowed()) {
       upsell('customSkills');
     } else if (sk) {
@@ -8603,6 +8623,7 @@ function renderSlashMenu() {
   const matches = slashCommandItems({
     skills: enabledSkills(state.settings.skills),
     recipes: state.settings.recipes,
+    teams: state.settings.teams,
     prefix,
     skillsAllowed: skillsAllowed(),
     canMeetings: can(state.license, 'liveMeetings'),

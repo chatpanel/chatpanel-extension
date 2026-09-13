@@ -89,7 +89,13 @@ const BUDGET = {
   // so the desktop's composer runs the same matching and labelling instead of a copy.
   // js/slash-commands.js is now the extension's built-in list over the shared module; the
   // ~2 KB is the shared file's documentation, not new code on this path.
-  'sidepanel.js': 847,
+  // 847 → 849 for agent teams on the panel (F8 T1): the `/team` items in the shared grammar
+  // (js/events/slash-commands.js, on this graph), the `/team` match in send(), and the three
+  // closures buildTurnTools receives (save card, save, trail). The runner, the tool, the
+  // budget and the host binding (js/team-host.js, js/events/team-*.js) are `await import()`ed
+  // and pinned OFF below; the mid-turn ask card moved OUT of js/confirm-modal.js into
+  // js/ask-modal.js for the same reason, which is why this is +2 and not +6.
+  'sidepanel.js': 849,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one
@@ -274,6 +280,16 @@ const OFF_LIMITS = {
   'js/events/recipe.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/events/recipe-tool.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/settings-recipes.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/events/budget.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/events/team.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/events/team-plan.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/events/team-board.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/events/team-run.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/events/team-tool.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/events/team-trail.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/team-host.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/settings-teams.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/ask-modal.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/read-aloud.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/voice-loop.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/voice-mode.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],

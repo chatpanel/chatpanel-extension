@@ -382,3 +382,6 @@ export function promptText({
     if (input.value) input.select();
   });
 }
+
+// For js/ask-modal.js — the same chrome, loaded only when a turn asks.
+export const modalParts = { injectStyles, clamp, MAX_TITLE, MAX_BODY, TRASH_ICON };

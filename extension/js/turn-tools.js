@@ -53,6 +53,9 @@ export async function buildTurnTools({
   confirmDestructive = null, // async ({ name, input, via }) => 'allow'|'always'|'deny' — the surface's dialog
   confirmRecipeSave = null,  // async (detail, recipe) => 'allow'|'deny' — the approval card for a proposed recipe
   saveRecipe = null,         // async (recipe) => void — persist an approved recipe
+  confirmTeamSave = null,    // async (detail, team) => 'allow'|'deny' — the approval card for a proposed team
+  saveTeam = null,           // async (team) => void — persist an approved team (the shared `teams` section)
+  onTeamEvent = null,        // (type, event) => void — a team run's events, for the trail
   onMcpError = () => {},
 } = {}) {
   const startedAt = Date.now();
@@ -169,6 +172,30 @@ export async function buildTurnTools({
     providers.push(recipeProvider);
   }
 
+  // AGENT TEAMS (F8). The `team` tool is registered when a team exists to run or the surface
+  // can approve a new one. A run is a tool call inside this turn: each member gets THIS
+  // client's model turn and toolset, narrowed to its grants; every event goes to the trail
+  // and to the gateway's run store, where the desktop reads the board and can stop it.
+  let teamProvider = null;
+  const savedTeams = (Array.isArray(settings?.teams) ? settings.teams : []).filter((t) => t && t.enabled !== false);
+  if (savedTeams.length || (confirmTeamSave && saveTeam)) {
+    const [{ teamToolProvider }, host] = await Promise.all([import('./events/team-tool.js'), import('./team-host.js')]);
+    teamProvider = teamToolProvider({
+      teams: savedTeams,
+      appoint: host.appointerFor(settings, license),
+      confirmSave: confirmTeamSave,
+      saveTeam,
+      run: async ({ team, request }) => {
+        const { streamChat } = await import('./providers.js');
+        return host.runTeamHere({
+          team, request, settings, license, bridgeUrl, bridgeAvailable, streamChat, buildTurnTools,
+          emit: (type, ev) => onTeamEvent?.(type, ev),
+        });
+      },
+    });
+    providers.push(teamProvider);
+  }
+
   const turnMcpMode = normalizeMcpTurnMode(mcpMode);
   const userCap = Number(settings?.ui?.maxToolsPerTurn) || 0;
   const cap = userCap || (turnMcpMode === MCP_TURN_MODES.AUTO ? DEFAULT_AUTO_TOOL_CAP : 0);
@@ -186,6 +213,7 @@ export async function buildTurnTools({
     toolset = withDestructiveGate(toolset, { confirm: confirmDestructive, only: (name) => remote.has(name) });
   }
   if (toolset && recipeProvider) recipeProvider.bind(toolset);
+  if (toolset && teamProvider) teamProvider.bind(toolset);
   if (toolset) { toolset.mcpMs = mcpMs; toolset.prepMs = Date.now() - startedAt; }
 
   const systemSkillRun =
