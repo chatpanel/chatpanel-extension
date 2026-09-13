@@ -154,7 +154,9 @@ export function createRunSync({ store, runId, team, request, onStopRequested = n
     push(type, payload) {
       if (dead) return;
       queue.push({ type, ...payload });
-      if (type === 'run.done') { flush(); return; }
+      // What a person must see NOW goes at once: the end, and an ask (the thread before it
+      // in the queue goes with it — an answer must not beat its own question to the store).
+      if (type === 'run.done' || type === 'task.waiting' || type === 'run.waiting') { flush(); return; }
       if (!timer) timer = setTimeout(flush, FLUSH_EVERY_MS);
     },
     async end() { if (timer) clearTimeout(timer); await flush(); stopTail?.(); },
