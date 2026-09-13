@@ -239,7 +239,7 @@ export async function runTeamHere({ team, request, settings, license, like = '',
   };
 
   // `signal` is the TASK's: an ask nobody answered aborts this member's turn, not the run's.
-  const callModel = async ({ taskId, role, model, system, prompt, messages: transcript, tools, onDelta, signal: taskSignal }) => {
+  const callModel = async ({ taskId, role, model, system, prompt, messages: transcript, tools, onDelta, onStep, signal: taskSignal }) => {
     const target = resolveTarget(getTarget(settings, model), settings);
     if (!target) return { ok: false, error: `no target for "${model}"` };
     // The task's transcript, when it has one, flattened for the wire: every provider path
@@ -263,10 +263,11 @@ export async function runTeamHere({ team, request, settings, license, like = '',
             emit('task.tool', { runId: id, at: Date.now(), taskId, role, name: e.name, text: e.input?.action || '' });
             const call = { id: e.callId || `c${added.length}`, type: 'function', function: { name: e.name, arguments: JSON.stringify(e.input ?? {}) } };
             open.set(call.id, call);
-            added.push({ role: 'assistant', content: null, tool_calls: [call] });
+            const asked = { role: 'assistant', content: null, tool_calls: [call] };
+            added.push(asked); onStep?.(asked);
           } else if (e?.type === 'tool' && e.phase === 'done') {
             const callId = e.callId || [...open.keys()].at(-1);
-            if (callId) { open.delete(callId); added.push({ role: 'tool', tool_call_id: callId, content: String(e.result ?? '') }); }
+            if (callId) { open.delete(callId); const answered = { role: 'tool', tool_call_id: callId, content: String(e.result ?? '') }; added.push(answered); onStep?.(answered); }
           }
         },
         usage: { surface: 'team', sourceId: id },

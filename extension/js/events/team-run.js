@@ -277,17 +277,25 @@ export async function runTeam({
             say('task.model', { taskId: task.id, role: role.id, model: m.model, attempt });
             attempts.push({ model: m.model, at: now(), continued: !!note });
             const sent = messagesFor({ transcript }, { prompt, note });
+            // The record grows AS THE ATTEMPT GOES: a host that reports each wire message the
+            // moment it exists (a tool call, its result) puts it on the record then, so a
+            // process that dies mid-attempt leaves the work so far behind it, not nothing.
+            let live = sent;
+            if (sent.length > transcript.length) recordSteps(transcript, sent);
+            const onStep = (message) => { if (message && message.role) { live = [...live, message]; say('task.step', { taskId: task.id, role: role.id, steps: [clipTranscriptOne(message)] }); } };
             const res = await callModel({
               runId: id, taskId: task.id, role: role.id, model: m.model, mode: m.mode || role.mode,
               system: role.prompt, prompt, messages: sent, tools, signal: taskAc.signal,
               onDelta: (delta, full) => say('task.delta', { taskId: task.id, role: role.id, delta, text: full }),
+              onStep,
             });
             usage = res?.usage || null;
             if (usage) budget.charge(usage);
             // Whatever the attempt did is the task's now — on the record, before any verdict.
-            const before = transcript;
+            // What the host already reported step by step is not reported again.
             transcript = mergeTranscript(sent, res);
-            recordSteps(before, transcript);
+            if (transcript.length < live.length) transcript = live;
+            recordSteps(live, transcript);
             lastModel = m.model;
             attempts[attempts.length - 1].status = res?.ok ? (String(res?.text || '').trim() ? 'ok' : 'empty') : 'error';
             if (askedAndWaiting) { status = 'waiting'; waitingOnPerson = true; break; }
