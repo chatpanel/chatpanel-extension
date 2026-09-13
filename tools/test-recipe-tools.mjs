@@ -3,9 +3,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { recipeToolProvider, recipeToolSpec, describeRecipeForApproval, RECIPE_TOOL_NAME } from '../extension/js/recipe-tools.js';
+import { recipeToolProvider, recipeToolSpec, describeRecipeForApproval, RECIPE_TOOL_NAME } from '../extension/js/events/recipe-tool.js';
 import { buildToolset } from '../extension/js/toolset.js';
-import { mcpDispatchProvider, MCP_TOOL_NAME } from '../extension/js/mcp-dispatch.js';
+import { mcpDispatchProvider, MCP_TOOL_NAME } from '../extension/js/events/mcp-dispatch.js';
 import { withDestructiveGate } from '../extension/js/events/tool-traits.js';
 import { slashCommandItems, matchSlashRecipe, recipeInvocationText } from '../extension/js/slash-commands.js';
 

@@ -1,3 +1,11 @@
+// GENERATED — do not edit.
+// Source of truth: chatpanel-events/recipe-tool.js (npm @chatpanel/events).
+// Edit there, then run: npm run sync:events
+//
+// Vendored because the extension loads raw ES modules with no bundler. The gateway
+// and bridge take the same package as an npm dependency instead; a future mobile or
+// desktop client takes it the same way, or speaks the wire contract if it is native.
+
 // The `recipe` tool — a workflow the model did once, kept as data, and run by name.
 //
 // The engine is @chatpanel/events recipe.js: a recipe is `call` / `parallel` / `batch` /
@@ -19,8 +27,12 @@
 // turn, and the description already lists the saved recipes by name and parameters, which
 // is the whole catalogue. Bound LATE to the toolset it lives in (`bind`), because the
 // toolset that runs its steps is the one it is a member of.
+//
+// Shared: the extension and the desktop arm the same tool over the same `recipes` prefs
+// section, so a recipe approved in one client runs in the other. The approval card and
+// the store are the host's (injected); everything the model sees is here.
 
-import { validateRecipe, expandRecipe, dryRunRecipe, runPlan, recipeParams, RECIPE_MODES } from './events/recipe.js';
+import { validateRecipe, expandRecipe, dryRunRecipe, runPlan, recipeParams, RECIPE_MODES } from './recipe.js';
 
 export const RECIPE_TOOL_NAME = 'recipe';
 

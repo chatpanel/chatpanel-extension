@@ -83,7 +83,7 @@ const BUDGET = {
   // restore against, so the guarantee sits at the one call every path ends at.
   // 840 → 843 for recipes on the panel: the approval card's title/scope options on the
   // confirm dialog, the `/recipe` slash items (js/slash-commands.js, already on this graph)
-  // and the two closures buildTurnTools receives. The tool itself (js/recipe-tools.js) and
+  // and the two closures buildTurnTools receives. The tool itself (js/events/recipe-tool.js) and
   // the engine (js/events/recipe.js) are `await import()`ed and pinned OFF below.
   // 843 → 847 for moving the /command grammar to @chatpanel/events (js/events/slash-commands.js)
   // so the desktop's composer runs the same matching and labelling instead of a copy.
@@ -272,7 +272,7 @@ const OFF_LIMITS = {
   'js/events/tool-round.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/events/tool-result.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/events/recipe.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
-  'js/recipe-tools.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/events/recipe-tool.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/settings-recipes.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/read-aloud.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/voice-loop.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],

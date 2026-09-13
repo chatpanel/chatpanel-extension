@@ -164,7 +164,7 @@ export async function buildTurnTools({
   let recipeProvider = null;
   const savedRecipes = Array.isArray(settings?.recipes) ? settings.recipes : [];
   if (savedRecipes.some((r) => r && r.enabled !== false) || (confirmRecipeSave && saveRecipe)) {
-    const { recipeToolProvider } = await import('./recipe-tools.js');
+    const { recipeToolProvider } = await import('./events/recipe-tool.js');
     recipeProvider = recipeToolProvider({ recipes: savedRecipes, confirmSave: confirmRecipeSave, saveRecipe });
     providers.push(recipeProvider);
   }

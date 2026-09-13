@@ -1,6 +1,6 @@
 // Settings → Skills → Recipes: the saved workflows, readable and revocable.
 //
-// A recipe is authored in conversation and approved on a card (recipe-tools.js), so this
+// A recipe is authored in conversation and approved on a card (events/recipe-tool.js), so this
 // page never edits one — a person who wants a different recipe asks for it. What a person
 // needs here is the honest gallery: what each one does, step by step, with its parameters;
 // a switch; and a delete. Deferred from settings.js, which is at its first-paint ceiling.

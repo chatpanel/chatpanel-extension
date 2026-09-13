@@ -2242,6 +2242,10 @@ function fillGatewayForm(cfg) {
   $('gw-tools-narrow').checked = cfg.tools?.autoNarrow !== false;
   $('gw-tools-cap').value = cfg.tools?.maxPerTurn ?? 8;
   $('gw-tools-narrowall').checked = !!cfg.tools?.narrowAll;
+  // Agents through the gateway (0.6.75+): an older gateway echoes neither field, and the
+  // select then shows the default it actually runs with rather than a choice that took.
+  $('gw-agent-perm').value = ['default', 'acceptEdits', 'bypassPermissions'].includes(cfg.bridge?.permissionMode) ? cfg.bridge.permissionMode : 'default';
+  $('gw-agent-workdir').value = cfg.bridge?.workingDir || '';
   setGwDetectorRows();
   maybeSeedDestinations();
 }
@@ -3390,6 +3394,12 @@ function collectGatewayPatch() {
       autoNarrow: $('gw-tools-narrow').checked,
       maxPerTurn: Number($('gw-tools-cap').value) || 8,
       narrowAll: $('gw-tools-narrowall').checked,
+    },
+    // Only these two: url/agent/token have their own rows, and a stale token copy is how
+    // the desktop got 403 from a bridge ten milliseconds away.
+    bridge: {
+      permissionMode: $('gw-agent-perm').value,
+      workingDir: $('gw-agent-workdir').value.trim(),
     },
   };
   // The client only ever sends a Pro token — never a cap or usage count.

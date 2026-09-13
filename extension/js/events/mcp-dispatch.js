@@ -1,3 +1,11 @@
+// GENERATED — do not edit.
+// Source of truth: chatpanel-events/mcp-dispatch.js (npm @chatpanel/events).
+// Edit there, then run: npm run sync:events
+//
+// Vendored because the extension loads raw ES modules with no bundler. The gateway
+// and bridge take the same package as an npm dependency instead; a future mobile or
+// desktop client takes it the same way, or speaks the wire contract if it is native.
+
 // PROGRESSIVE DISCLOSURE for MCP servers — one registered tool instead of dozens.
 //
 // MCP is the largest resident cost by far: every connected server contributes a full JSON
@@ -16,7 +24,7 @@
 // dispatcher that dropped it would quietly convert redacted tools into unredacted ones.
 // That is the one property here worth a test of its own.
 
-import { makeDispatchProvider } from './group-dispatch.js';
+import { makeDispatchProvider } from './tool-dispatch.js';
 
 // Deliberately NOT `mcp_*`. buildToolset adds the ~600-token shared MCP rulebook whenever
 // a spec name matches /^mcp[_-]/, so a dispatcher called `mcp_call` would collapse the

@@ -196,6 +196,8 @@ export { FIND_TOOL_NAME, FIND_DESCRIPTION, FIND_RESIDENT, findDispatchProvider }
 export { WEB_SEARCH_TOOL_NAME, WEB_SEARCH_TOOL_SYSTEM, WEB_SEARCH_SPEC, searchResultsToText, webSearchToolProvider } from './web-search-tool.js';
 export { compressToolSpec, compressToolSpecs, compressionStats, trimDescription, COMPRESSION_MODES, DEFAULT_COMPRESSION } from './tool-schema.js';
 export { validateRecipe, expandRecipe, recipeParams, mapInput, dryRunRecipe, runPlan, runRecipe, RecipeError, RECIPE_MODES } from './recipe.js';
+export { recipeToolProvider, recipeToolSpec, describeRecipeForApproval, RECIPE_TOOL_NAME } from './recipe-tool.js';
+export { mcpDispatchProvider, MCP_TOOL_NAME } from './mcp-dispatch.js';
 export { createManifest, ManifestError, SOURCES } from './manifest.js';
 export { createKernel, meetDecisions, KernelError, REQUIRED_PLUGINS, ALLOW_ALL } from './kernel.js';
 export { replay, formatReport, parseJsonl, toJsonl } from './harness.js';

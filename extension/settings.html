@@ -1013,6 +1013,19 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                   <label class="check" style="margin-top:6px"><input type="checkbox" id="gw-tools-narrowall" />
                     Also narrow non-MCP tools — only if your client has no essential core tools</label>
                 </details>
+                <h3 class="priv-h" style="margin-top:14px">Agents driven through the gateway</h3>
+                <div class="row"><label>Permissions</label>
+                  <select id="gw-agent-perm">
+                    <option value="default">read-only — asks before writing</option>
+                    <option value="acceptEdits">acceptEdits — auto-edit files (recommended)</option>
+                    <option value="bypassPermissions">bypassPermissions — full access &amp; shell (trusted)</option>
+                  </select>
+                </div>
+                <div class="row"><label>Working dir</label>
+                  <input id="gw-agent-workdir" placeholder="/path/to/project — blank uses the ChatPanel workspace" /></div>
+                <p class="muted sm">What a CLI agent (Claude Code, Codex…) may do when another client — the desktop app,
+                  OpenCode — reaches it <em>through the gateway</em>. This panel's own agents use the Permissions set on
+                  each agent above. Needs gateway 0.6.75+.</p>
               </div>
             </div>
           </div>

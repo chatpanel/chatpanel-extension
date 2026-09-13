@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { buildToolset } from '../extension/js/toolset.js';
-import { mcpDispatchProvider, MCP_TOOL_NAME } from '../extension/js/mcp-dispatch.js';
+import { mcpDispatchProvider, MCP_TOOL_NAME } from '../extension/js/events/mcp-dispatch.js';
 import { estimate } from '../extension/js/group-dispatch.js';
 import { isLocalToolSpec } from '../extension/js/tool-select.js';
 
