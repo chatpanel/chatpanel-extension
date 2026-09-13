@@ -24,8 +24,12 @@ import { dryRunTeam } from './team-run.js';
 
 export const TEAM_TOOL_NAME = 'team';
 
+// The teams the model may see and run: enabled, named, and whole. A record another client
+// half-wrote (a name and nothing else) is not a team — Settings shows it for deleting.
+const usable = (teams) => (teams || []).filter((t) => t?.name && t.enabled !== false && validateTeam(t).ok);
+
 function catalogue(teams) {
-  const list = (teams || []).filter((t) => t && t.enabled !== false && t.name);
+  const list = usable(teams);
   if (!list.length) return 'No teams saved yet.';
   return `Saved teams: ${list.map((t) => `${t.name} (${(t.roles || []).map((r) => r.id).join(', ')})${t.description ? ` — ${t.description}` : ''}`).join('; ')}.`;
 }
@@ -74,7 +78,7 @@ const json = (v) => JSON.stringify(v);
  * @param saveTeam     `async (team) => void`
  */
 export function teamToolProvider({ teams = [], run = null, appoint = null, confirmSave = null, saveTeam = null } = {}) {
-  const byName = new Map((teams || []).filter((t) => t?.name && t.enabled !== false).map((t) => [t.name, t]));
+  const byName = new Map(usable(teams).map((t) => [t.name, t]));
   let bound = null;
   return {
     id: 'team',
