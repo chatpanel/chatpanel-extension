@@ -200,7 +200,7 @@ export { recipeToolProvider, recipeToolSpec, describeRecipeForApproval, RECIPE_T
 // Agent teams (F8): a team is data, a run is a turn of turns under a budget, members talk
 // through a typed board, nothing lands without a person.
 export { createBudget, validateBudget, normalizeBudget, usageOf, BudgetError, BUDGET_DIMENSIONS } from './budget.js';
-export { defineTeam, validateTeam, normalizeTeam, normalizeGrants, grantAllows, describeRole, TeamError, ROLE_MODES, MERGE_POLICIES, PLAN_MODES, GRANTABLE, STARTER_TEAMS, starterTeams, blankTeam, teamFromForm } from './team.js';
+export { defineTeam, validateTeam, normalizeTeam, normalizeGrants, grantAllows, describeRole, TeamError, ROLE_MODES, MERGE_POLICIES, PLAN_MODES, GRANTABLE, STARTER_TEAMS, starterTeams, blankTeam, teamFromForm, slugTeamName } from './team.js';
 export { fixedPlan, parsePlan, plannerPrompt, waves, breakCycles, TEAM_PLAN_SCHEMA } from './team-plan.js';
 export { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, FINDINGS_SCHEMA, FINDING_KINDS } from './team-board.js';
 export { runTeam, dryRunTeam, TeamRunError, RUN_STATUSES } from './team-run.js';

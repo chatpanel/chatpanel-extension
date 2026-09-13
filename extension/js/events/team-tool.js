@@ -19,7 +19,7 @@
 // receive the host's toolset narrowed to their grants, and the host builds that from the
 // same providers this tool is a member of.
 
-import { validateTeam, normalizeTeam, describeRole, TEAM_NAME_RE } from './team.js';
+import { validateTeam, normalizeTeam, describeRole, slugTeamName } from './team.js';
 import { dryRunTeam } from './team-run.js';
 
 export const TEAM_TOOL_NAME = 'team';
@@ -39,7 +39,7 @@ export function teamToolSpec(teams) {
       + 'Actions: {"action":"run","name":"<team>","request":"<what to do>"} runs one (streams; may take a while); '
       + '{"action":"dry_run","name":"<team>","request":"…"} shows roles, models, tools and budget without running; '
       + '{"action":"save","team":{…}} proposes a NEW team after a task that would benefit from several roles — the user approves it on a card. '
-      + 'A team: {"name":"research","description":"…","roles":[{"id":"researcher","prompt":"…","prefer":"balanced","grants":["data","web"]},{"id":"writer","prompt":"…","prefer":"strong","grants":["none"]}],"merge":"judge","judge":"writer","budget":{"tokens":40000,"ms":300000}}. '
+      + 'A team: {"name":"research" (a short identifier: letters, digits, - _; used as /research),"description":"…","roles":[{"id":"researcher","prompt":"…","prefer":"balanced","grants":["data","web"]},{"id":"writer","prompt":"…","prefer":"strong","grants":["none"]}],"merge":"judge","judge":"writer","budget":{"tokens":40000,"ms":300000}}. '
       + 'grants: none | data | web | history | mcp | mcp:<server>. merge: judge | converge | concat | first. A budget is required.',
     parameters: {
       type: 'object',
@@ -86,10 +86,10 @@ export function teamToolProvider({ teams = [], run = null, appoint = null, confi
       const action = String(input?.action || '');
 
       if (action === 'save') {
-        const team = input?.team;
+        // A name in prose ("Research Team") becomes the /command it will be run by.
+        const team = input?.team && typeof input.team === 'object' ? { ...input.team, name: slugTeamName(input.team.name) } : input?.team;
         const v = validateTeam(team);
-        if (!v.ok) return json({ error: 'The team is not valid.', problems: v.errors, hint: 'A team needs a name, roles with prompts and grants, and a budget.' });
-        if (!TEAM_NAME_RE.test(team.name)) return json({ error: 'name must be a short identifier.' });
+        if (!v.ok) return json({ error: 'The team is not valid.', problems: v.errors, hint: 'A team needs a name (letters, digits, - _), roles with prompts and grants, and a budget such as {"tokens":40000,"ms":300000}.' });
         if (byName.has(team.name)) return json({ error: `A team named "${team.name}" already exists. Pick another name.` });
         if (!confirmSave || !saveTeam) return json({ error: 'Saving a team needs the user\'s approval, which this surface cannot ask for. Describe the team and suggest saving it from the side panel or the desktop.' });
         const norm = normalizeTeam(team);

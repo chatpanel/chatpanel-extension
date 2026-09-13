@@ -160,6 +160,15 @@ export const STARTER_TEAMS = Object.freeze([
   },
 ]);
 
+/**
+ * A name as typed → the identifier a `/command` needs: "Research Team" → "research-team".
+ * Used by the tool's save and by the form, so a model that names a team in prose is not
+ * bounced for it; what cannot be shaped (nothing left) still fails validation.
+ */
+export function slugTeamName(name) {
+  return String(name || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z]+/, '').replace(/-+$/, '').slice(0, 64);
+}
+
 /** Fresh copies — a starter is a template, never the stored record. */
 export function starterTeams() {
   return STARTER_TEAMS.map((t) => ({ ...t, roles: t.roles.map((r) => ({ ...r, grants: [...r.grants] })), budget: { ...t.budget } }));
@@ -191,7 +200,7 @@ export function teamFromForm(form) {
   }
   const merge = form.merge || 'concat';
   const team = {
-    name: String(form.name || '').trim(),
+    name: slugTeamName(form.name),
     description: String(form.description || '').trim(),
     plan: form.plan || 'fixed',
     merge,
