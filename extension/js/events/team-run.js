@@ -338,6 +338,16 @@ export async function runTeam({
       const row = { id: task.id, role: task.role, title: task.title, status, text, error, usage, ms: now() - t0, findings, transcript: clipTranscript(transcript), attempts, ...(askedAndWaiting ? { waitingOn: askedAndWaiting } : {}) };
       tasksOut.push(row);
       say(status === 'ok' ? 'task.done' : 'task.failed', { taskId: task.id, role: task.role, status, error, ms: row.ms, findings: findings.length, ...(askedAndWaiting ? { threadId: askedAndWaiting } : {}) });
+      // The fact for the member's scorecard (scorecard.js): how big, with what, alongside whom,
+      // in which role — produced here, attested by the store, never written by the agent.
+      if (status === 'ok' || status === 'failed') {
+        say('task.scored', {
+          agentId: role.agent || role.id, taskId: task.id, role: role.id, model: lastModelOf(attempts), outcome: status === 'ok' ? 'task.done' : 'task.failed',
+          size: { ms: row.ms, steps: (row.transcript || []).length, tools: (row.transcript || []).filter((m) => m.role === 'tool').length, findings: findings.length, tokens: usage ? Number(usage.input_tokens || usage.prompt_tokens || 0) + Number(usage.output_tokens || usage.completion_tokens || 0) : 0 },
+          roleKind: 'ic', tools: toolNamesOf(row.transcript), with: t.roles.filter((r) => r.id !== role.id).map((r) => r.agent || r.id),
+          refs: [`run:${id}`, ...(board.threadForTask(task.id) ? [`thread:${board.threadForTask(task.id).id}`] : [])], error: error || undefined,
+        });
+      }
       // The spend so far, after every task — a ledger reads it live instead of at the end.
       say('run.usage', { usage: budget.snapshot() });
       if (budget.exhausted()) overBudget = true;
@@ -395,6 +405,7 @@ export async function runTeam({
       }
       const judged = res?.ok && String(res.text || '').trim();
       say(judged ? 'task.done' : 'task.failed', { taskId: 'merge', role: judge.id, status: judged ? 'ok' : 'failed', error: judged ? null : (res?.error || 'the judge did not answer'), findings: 0 });
+      say('task.scored', { agentId: judge.id, taskId: 'merge', role: judge.id, model: res ? (excl.size ? [...excl].at(-1) : m?.model) : m?.model, outcome: judged ? 'task.done' : 'task.failed', size: { ms: 0, steps: 1, tools: 0, findings: board.all().length, tokens: 0 }, roleKind: 'orchestrator', tools: [], with: t.roles.filter((r) => r.id !== judge.id).map((r) => r.agent || r.id), refs: [`run:${id}`] });
       say('run.usage', { usage: budget.snapshot() });
       proposal = judged ? { kind: 'answer', text: String(res.text || ''), by: judge.id } : mergeCheap(t, board.all(), tasksOut);
     } else {
@@ -428,6 +439,9 @@ export function resumeTeam({ checkpoint, ...deps } = {}) {
   if (!checkpoint?.plan?.tasks) throw new TeamRunError('BAD_RESUME', 'a checkpoint with a plan is required');
   return runTeam({ ...deps, resume: checkpoint });
 }
+
+const lastModelOf = (attempts) => (attempts || []).at(-1)?.model || null;
+const toolNamesOf = (transcript) => [...new Set((transcript || []).flatMap((m) => (m.role === 'assistant' && Array.isArray(m.tool_calls) ? m.tool_calls.map((c) => c.function?.name).filter(Boolean) : [])))];
 
 /** No model: the members' work side by side, findings first — always available. */
 function mergeCheap(team, findings, tasks) {

@@ -26,6 +26,7 @@ export function teamLine(ev) {
     case 'task.note': return { type: 'status', text: `${role}: ${ev.text}` };
     case 'task.handoff': return { type: 'status', text: `${role} handed off ${ev.from ? `from ${ev.from} ` : ''}to ${ev.to} by ${ev.by || 'person'}${ev.reason ? ` — ${ev.reason}` : ''}` };
     case 'task.step': return null;
+    case 'task.scored': return null;
     case 'task.reappointed': return { type: 'status', text: `${role} → ${ev.model} (${(ev.after || []).join(', ')} unavailable${ev.error ? `: ${String(ev.error).slice(0, 120)}` : ''})` };
     case 'task.tool': return { type: 'tool', name: ev.name, text: `${role} ran ${ev.name}${ev.text ? ` — ${ev.text}` : ''}` };
     case 'task.finding': return { type: 'status', text: `${role}: ${String(ev.finding?.text || '').slice(0, 140)}` };

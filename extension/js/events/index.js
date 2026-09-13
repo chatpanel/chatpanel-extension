@@ -206,6 +206,7 @@ export { createBoard, parseFindings, boardText, findingsInstruction, toBriefClai
 export { boardToolProvider, boardToolSpec, createAnswerBox, withBoardTool, BOARD_TOOL_NAME, DEFAULT_ASK_TIMEOUT_MS } from './board-tool.js';
 export { createRunCache, withRunCache } from './team-cache.js';
 export { emptyRun, foldRun, runFromEvents, checkpointFrom, isResumable, LIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES } from './team-record.js';
+export { canonical, sha256, makeEntry, verifyChain, attest, verifyAttested, summarize, fit, SCORECARD_ENTRY_KINDS, ROLE_KINDS, SCORECARD_VERSION } from './scorecard.js';
 export { messagesFor, mergeTranscript, clipTranscript, clipMessage, newSteps, continuationNote, createControl, STEP_MAX_CHARS, TASK_TRANSCRIPT_MAX_CHARS } from './team-task.js';
 export { runTeam, resumeTeam, dryRunTeam, isModelUnavailable, TeamRunError, RUN_STATUSES } from './team-run.js';
 export { teamToolProvider, teamToolSpec, describeTeamForApproval, TEAM_TOOL_NAME } from './team-tool.js';
