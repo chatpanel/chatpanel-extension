@@ -29,6 +29,7 @@
           <button class="tab" data-tab="agents"><span class="tab-ico" data-icon="bot"></span> Agents</button>
           <button class="tab" data-tab="mcp"><span class="tab-ico" data-icon="tools"></span> Tools</button>
           <button class="tab" data-tab="skills"><span class="tab-ico" data-icon="skills"></span> Skills</button>
+          <button class="tab" data-tab="teams"><span class="tab-ico" data-icon="people"></span> Teams</button>
           <button class="tab" data-tab="workspace"><span class="tab-ico" data-icon="folder"></span> Workspace</button>
           <button class="tab" data-tab="channels"><span class="tab-ico" data-icon="chat"></span> Channels</button>
           <button class="tab" data-tab="privacy"><span class="tab-ico" data-icon="privacy"></span> Privacy &amp; Gateway</button>
@@ -273,7 +274,6 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
           <button id="add-skill-bottom" class="btn add-row" type="button">+ Add skill</button>
         </div>
         <div class="card" id="recipes"></div>
-        <div class="card" id="teams"></div>
 
         <!-- Skills the bridge found on this machine. Hidden entirely unless a bridge
              that supports them is running — an absent source is not an error. -->
@@ -306,6 +306,14 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
       </section>
 
       <!-- MEETINGS (live scribe preferences) -->
+      <!-- TEAMS: agent teams and their boards (F8). The board is the desktop's Agents → Board,
+           over the same gateway run store; a person answers, decides and replies here too. -->
+      <section class="panel hidden" data-panel="teams">
+        <nav id="tm-subtabs" class="subtabs" data-subtab-keep aria-label="Teams sections"></nav>
+        <div class="card" id="board"></div>
+        <div class="card" id="teams"></div>
+      </section>
+
       <section class="panel hidden" data-panel="workspace">
         <nav id="ws-subtabs" class="subtabs" data-subtab-keep aria-label="Workspace sections"></nav>
 

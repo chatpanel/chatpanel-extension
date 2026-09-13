@@ -43,6 +43,7 @@ export function teamLanes(prev, ev) {
     case 'task.started': lanes.tasks[ev.taskId] = { ...(lanes.tasks[ev.taskId] || { id: ev.taskId, role: ev.role, title: ev.title }), status: 'running' }; break;
     case 'task.delta': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], text: ev.text }; break;
     case 'task.finding': lanes.findings += 1; if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], findings: (lanes.tasks[ev.taskId].findings || 0) + 1 }; break;
+    case 'task.note': return { type: 'status', text: `${role}: ${ev.text}` };
     case 'task.model': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], model: ev.model }; break;
     case 'task.tool': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], tools: (lanes.tasks[ev.taskId].tools || 0) + 1, lastTool: ev.text ? `${ev.name} ${ev.text}` : ev.name }; break;
     case 'run.usage': lanes.usage = ev.usage; break;

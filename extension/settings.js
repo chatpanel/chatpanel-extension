@@ -273,6 +273,8 @@ function wireTabs() {
     // Same lazy rule: each widget is a sandboxed iframe, so a user who never opens this tab
     // never mounts one.
     if (name === 'widgets') renderWidgetsGallery();
+    // The board polls the gateway while shown and stops when the tab is left.
+    if (name === 'teams') renderBoard(); else boardDispose?.();
     if (name === 'channels') renderChannels();
   };
   const exists = (name) => !!document.querySelector(`.tab[data-tab="${name}"]`);
@@ -373,10 +375,13 @@ const PANEL_SUBTABS = {
   skills: { bar: 'sk-subtabs', groups: [
     { id: 'skills', label: 'Skills', target: 'sk-skills' },
     // A card without a tab here is a card nobody can reach: the bar shows ONE target at a
-    // time, so Recipes and Teams were rendered and hidden on every selection.
+    // time, so Recipes was rendered and hidden on every selection.
     { id: 'recipes', label: 'Recipes', target: 'recipes' },
-    { id: 'teams', label: 'Teams', target: 'teams' },
     { id: 'sources', label: 'On this machine', target: 'skill-sources-card', requires: 'skill-sources-card' },
+  ] },
+  teams: { bar: 'tm-subtabs', groups: [
+    { id: 'board', label: 'Board', target: 'board' },
+    { id: 'teams', label: 'Teams', target: 'teams' },
   ] },
   workspace: { bar: 'ws-subtabs', groups: [
     { id: 'memory', label: 'Memory', target: 'ws-memory' },
@@ -4621,6 +4626,16 @@ function renderRecipes() {
   import('./js/settings-recipes.js')
     .then((m) => m.renderRecipes(root, { settings, onChange: (recipes) => { settings.recipes = recipes; renderRecipes(); } }))
     .catch((e) => console.warn('[chatpanel] recipes:', e));
+}
+
+// The board — every run's threads — deferred, polling only while the Teams tab is shown.
+let boardDispose = null;
+function renderBoard() {
+  const root = $('board');
+  if (!root) return;
+  import('./js/settings-board.js')
+    .then((m) => { boardDispose?.(); boardDispose = m.renderBoard(root, { settings }); })
+    .catch((e) => console.warn('[chatpanel] board:', e));
 }
 
 // Saved teams and their runs — deferred for the same reason; the runs list polls the gateway

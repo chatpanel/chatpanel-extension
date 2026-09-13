@@ -289,6 +289,7 @@ const OFF_LIMITS = {
   'js/events/team-trail.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/team-host.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/settings-teams.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/settings-board.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/ask-modal.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/read-aloud.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/voice-loop.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
