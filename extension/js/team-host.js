@@ -94,15 +94,28 @@ export function runStore(settings) {
   };
 }
 
-/** `(role) => { model, mode }` over the panel's endpoints and agents — usable ones only. */
-export function appointerFor(settings, license) {
-  const candidates = swarmCandidates({ canUseAgent }, settings, license).filter((c) => c.enabled !== false);
-  return (role) => {
-    if (role.model) {
+/**
+ * The roster: the panel's endpoints and agents, usable ones only, in trust order — the
+ * target the person is chatting with first (`like`), then the rest as configured. Ties in
+ * the appointer go to roster order, so this order is the preference.
+ */
+export function rosterFor(settings, license, { like = '' } = {}) {
+  const all = swarmCandidates({ canUseAgent }, settings, license).filter((c) => c.enabled !== false);
+  return [...all.filter((c) => c.id === like), ...all.filter((c) => c.id !== like)];
+}
+
+/**
+ * `(role, { exclude }) => { model, label, mode }` — a usable pinned model wins; otherwise the
+ * nearest tier, skipping what `exclude` names (models that failed as unavailable this run).
+ */
+export function appointerFor(settings, license, { like = '' } = {}) {
+  const candidates = rosterFor(settings, license, { like });
+  return (role, { exclude = null } = {}) => {
+    if (role.model && !exclude?.has?.(role.model)) {
       const c = candidates.find((x) => (x.id === role.model || x.model === role.model) && x.usable);
       if (c) return { model: c.id, label: c.model, mode: role.mode === 'subagent' && c.kind === 'bridge' ? 'subagent' : 'model' };
     }
-    const a = appoint({ id: role.id, prefer: role.prefer || 'balanced' }, candidates);
+    const a = appoint({ id: role.id, prefer: role.prefer || 'balanced' }, candidates, { exclude });
     return a ? { model: a.id, label: a.model, mode: role.mode === 'subagent' && a.mode === 'subagent' ? 'subagent' : 'model' } : null;
   };
 }
@@ -142,14 +155,14 @@ export function createRunSync({ store, runId, team, request, onStopRequested = n
  * Run a team in the panel. `deps` is what only the surface has: `streamChat`,
  * `buildTurnTools` (turn-tools), the settings/license, the bridge, and `emit` for the trail.
  */
-export async function runTeamHere({ team, request, settings, license, bridgeUrl, bridgeAvailable, signal, emit = () => {}, streamChat, buildTurnTools, runId = null, store = null }) {
+export async function runTeamHere({ team, request, settings, license, like = '', bridgeUrl, bridgeAvailable, signal, emit = () => {}, streamChat, buildTurnTools, runId = null, store = null }) {
   const ac = new AbortController();
   signal?.addEventListener?.('abort', () => ac.abort(), { once: true });
   const id = runId || `run_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
   const gw = store || runStore(settings);
   const sync = createRunSync({ store: gw, runId: id, team: team.name, request, onStopRequested: () => ac.abort() });
   await sync.start();
-  const appointRole = appointerFor(settings, license);
+  const appointRole = appointerFor(settings, license, { like });
 
   // A role's toolset: the same builder a turn uses, with only the groups the role may hold.
   const toolsFor = async (role) => {

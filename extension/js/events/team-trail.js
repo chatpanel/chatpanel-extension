@@ -18,6 +18,7 @@ export function teamLine(ev) {
     case 'run.started': return { type: 'status', text: `team ${ev.team}: ${(ev.roles || []).join(', ')}` };
     case 'plan.ready': return { type: 'status', text: `plan: ${(ev.tasks || []).length} task${(ev.tasks || []).length === 1 ? '' : 's'} (${ev.by})` };
     case 'task.started': return { type: 'tool', name: role, text: `${role} · ${ev.title || ev.taskId}` };
+    case 'task.reappointed': return { type: 'status', text: `${role} → ${ev.model} (${(ev.after || []).join(', ')} unavailable)` };
     case 'task.tool': return { type: 'tool', name: ev.name, text: `${role} ran ${ev.name}${ev.text ? ` — ${ev.text}` : ''}` };
     case 'task.finding': return { type: 'status', text: `${role}: ${String(ev.finding?.text || '').slice(0, 140)}` };
     case 'task.done': return { type: 'status', text: `${role} done · ${ev.findings || 0} finding${ev.findings === 1 ? '' : 's'}` };

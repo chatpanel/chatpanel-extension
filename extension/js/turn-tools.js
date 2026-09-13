@@ -182,13 +182,13 @@ export async function buildTurnTools({
     const [{ teamToolProvider }, host] = await Promise.all([import('./events/team-tool.js'), import('./team-host.js')]);
     teamProvider = teamToolProvider({
       teams: savedTeams,
-      appoint: host.appointerFor(settings, license),
+      appoint: host.appointerFor(settings, license, { like: resolvedAgent?.id || '' }),
       confirmSave: confirmTeamSave,
       saveTeam,
       run: async ({ team, request }) => {
         const { streamChat } = await import('./providers.js');
         return host.runTeamHere({
-          team, request, settings, license, bridgeUrl, bridgeAvailable, streamChat, buildTurnTools,
+          team, request, settings, license, like: resolvedAgent?.id || '', bridgeUrl, bridgeAvailable, streamChat, buildTurnTools,
           emit: (type, ev) => onTeamEvent?.(type, ev),
         });
       },

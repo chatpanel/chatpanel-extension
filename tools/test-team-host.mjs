@@ -18,6 +18,7 @@ const settings = {
   endpoints: [
     { id: 'ep-strong', name: 'Strong', kind: 'openai', baseUrl: 'https://example.com/v1', model: 'gpt-5', enabled: true },
     { id: 'ep-cheap', name: 'Cheap', kind: 'openai', baseUrl: 'https://example.com/v1', model: 'gpt-5-mini', enabled: true },
+    { id: 'ep-strong2', name: 'Strong too', kind: 'anthropic', baseUrl: 'https://example.com/v1', model: 'claude-opus-5', enabled: true },
   ],
   agents: [{ id: 'claude-code', name: 'Claude Code', kind: 'bridge', bridgeAgent: 'claude', enabled: true }],
   mcpServers: [{ id: 'srv-a', name: 'A', url: 'http://127.0.0.1:1/mcp' }, { id: 'srv-b', name: 'B', url: 'http://127.0.0.1:2/mcp' }],
@@ -36,6 +37,18 @@ const pro = { plan: 'pro', status: 'active', exp: Date.now() / 1000 + 3600 };
   const free = appointerFor(settings, null)({ id: 'writer', prefer: 'strong' });
   // On Free only the designated slots are usable; whatever is appointed must be usable.
   if (free) assert.ok(['ep-strong', 'ep-cheap', 'claude-code'].includes(free.model));
+}
+
+// The roster's order is the preference: the chat's own target first; a tie goes to it. And an
+// exclusion (a model that answered "not deployed") moves the appointment along.
+{
+  assert.equal(appointerFor(settings, pro)({ id: 'r', prefer: 'strong' }).model, 'ep-strong', 'two strong models: the first configured wins');
+  const like = appointerFor(settings, pro, { like: 'ep-strong2' })({ id: 'r', prefer: 'strong' });
+  assert.equal(like.model, 'ep-strong2', 'the chat\'s own target is first on the roster');
+  const next = appointerFor(settings, pro, { like: 'ep-strong2' })({ id: 'r', prefer: 'strong' }, { exclude: new Set(['ep-strong2']) });
+  assert.equal(next.model, 'ep-strong');
+  const pinned = appointerFor(settings, pro)({ id: 'r', model: 'ep-strong' }, { exclude: new Set(['ep-strong']) });
+  assert.ok(pinned && pinned.model !== 'ep-strong', 'a pinned model that failed gives way to the roster');
 }
 
 // A fake store in the gateway's wire shape.

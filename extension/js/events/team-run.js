@@ -52,6 +52,16 @@ const strongestRole = (team) => [...team.roles].sort((a, b) => (TIER[b.prefer] ?
  * What a person sees before approving a run: every role with the model it would get, its
  * grants and mode; the plan when it is fixed (a planner plans at run time); the budget.
  */
+/**
+ * Was this failure the MODEL being unreachable — not found, not deployed, no key, gone —
+ * rather than the request being wrong? The runner re-appoints on these and gives up on the
+ * rest. Provider wording varies; what they share is that a different model would answer.
+ */
+export function isModelUnavailable(error) {
+  const m = String(error?.message || error || '');
+  return /model[_ ]not[_ ]found|not found|not deployed|inaccessible|does not exist|no such model|unknown model|unsupported model|not available|unavailable|no api key|not configured|"status":\s*(404|401|403)\b|\b(404|401|403)\b/i.test(m);
+}
+
 export function dryRunTeam(team, request, { appoint = null } = {}) {
   const t = normalizeTeam(team);
   const roles = t.roles.map((r) => {
@@ -93,7 +103,13 @@ export async function runTeam({
   const tasksOut = [];
   const say = (type, payload = {}) => emit(type, { runId: id, at: now(), ...payload });
   const roleOf = (rid) => t.roles.find((r) => r.id === rid);
-  const modelFor = (r) => (appoint ? appoint(r) : null) || (r.model ? { model: r.model, mode: r.mode } : null);
+  // `exclude` holds what failed as unavailable this run; a re-appointment skips it. A role's
+  // pinned model is tried first and, when it is the one that failed, the roster steps in.
+  const modelFor = (r, exclude = null) => {
+    if (exclude?.size && r.model && exclude.has(r.model)) return appoint ? appoint({ ...r, model: undefined }, { exclude }) : null;
+    return (appoint ? appoint(r, { exclude }) : null) || (r.model && !exclude?.has(r.model) ? { model: r.model, mode: r.mode } : null);
+  };
+  const MAX_APPOINTMENTS = 3;
   const stopped = () => !!signal?.aborted;
 
   say('run.started', { team: t.name, request: String(request || ''), budget: t.budget, roles: t.roles.map((r) => r.id) });
@@ -140,8 +156,6 @@ export async function runTeam({
           const r = await runRecipe(role.recipe, { request: String(request || ''), task: task.prompt });
           text = typeof r === 'string' ? r : JSON.stringify(r);
         } else {
-          const m = modelFor(role);
-          if (!m?.model) throw new Error(`no model for role "${role.id}"`);
           // A call's tokens are unknown until it returns; what can be asked beforehand is
           // whether the budget is already exhausted and whether one more call is allowed.
           if (!budget.canAfford({ tokens: 0 })) { overBudget = true; throw new Error('over budget'); }
@@ -149,16 +163,27 @@ export async function runTeam({
           const prompt = [task.prompt, prior, findingsInstruction()].filter(Boolean).join('\n\n');
           // A host may build a toolset asynchronously (connecting MCP servers takes time).
           const tools = await toolsFor(role);
-          const res = await callModel({
-            runId: id, taskId: task.id, role: role.id, model: m.model, mode: m.mode || role.mode,
-            system: role.prompt, prompt, tools, signal,
-            onDelta: (delta, full) => say('task.delta', { taskId: task.id, role: role.id, delta, text: full }),
-          });
-          usage = res?.usage || null;
-          if (usage) budget.charge(usage);
-          if (res?.aborted) { status = 'stopped'; }
-          else if (!res?.ok) throw new Error(res?.error || 'the model did not answer');
-          text = String(res?.text || '');
+          // A model that is not there — not deployed, no key, gone — is not the task failing:
+          // the next model on the roster is appointed and the task tried again, up to three
+          // models. Anything else (a refusal, a timeout, a bad request) fails the task.
+          const exclude = new Set();
+          for (let attempt = 1; ; attempt++) {
+            const m = modelFor(role, exclude);
+            if (!m?.model) throw new Error(exclude.size ? `no model left for role "${role.id}" after ${[...exclude].join(', ')}` : `no model for role "${role.id}"`);
+            if (attempt > 1) say('task.reappointed', { taskId: task.id, role: role.id, model: m.model, after: [...exclude] });
+            const res = await callModel({
+              runId: id, taskId: task.id, role: role.id, model: m.model, mode: m.mode || role.mode,
+              system: role.prompt, prompt, tools, signal,
+              onDelta: (delta, full) => say('task.delta', { taskId: task.id, role: role.id, delta, text: full }),
+            });
+            usage = res?.usage || null;
+            if (usage) budget.charge(usage);
+            if (res?.aborted) { status = 'stopped'; break; }
+            if (res?.ok) { text = String(res?.text || ''); break; }
+            const err = res?.error || 'the model did not answer';
+            if (attempt >= MAX_APPOINTMENTS || stopped() || !isModelUnavailable(err)) throw new Error(err);
+            exclude.add(m.model);
+          }
         }
       } catch (e) {
         status = overBudget ? 'over-budget' : 'failed';

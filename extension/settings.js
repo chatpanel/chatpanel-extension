@@ -4632,7 +4632,7 @@ function renderTeams() {
   import('./js/settings-teams.js')
     .then((m) => {
       teamsDispose?.();
-      teamsDispose = m.renderTeams(root, { settings, onChange: (teams) => { settings.teams = teams; renderTeams(); } });
+      teamsDispose = m.renderTeams(root, { settings, license, onChange: (teams) => { settings.teams = teams; renderTeams(); } });
     })
     .catch((e) => console.warn('[chatpanel] teams:', e));
 }
