@@ -129,3 +129,78 @@ export function describeRole(r) {
   const grants = (r.grants || ['none']).join(', ');
   return `${r.name || r.id} — ${who}${r.mode && r.mode !== 'model' ? ` (${r.mode})` : ''} · tools: ${grants}`;
 }
+
+// ── Starters and the editor's form ───────────────────────────────────────────────────────
+//
+// A team is usually proposed in conversation, but a person's first team should not depend
+// on a model deciding to propose one. Both clients' Settings → Teams offer these as "Add
+// starter" and edit them on the same form as a blank team; `teamFromForm` is the one shaping
+// of that form into a team, so a field's meaning does not differ between clients.
+
+export const STARTER_TEAMS = Object.freeze([
+  {
+    name: 'research',
+    description: 'Research a question from the web and your own notes, then write it up.',
+    plan: 'fixed', merge: 'judge', judge: 'writer',
+    roles: [
+      { id: 'researcher', prompt: 'Research the request thoroughly. Search the web and the user\'s own history. Report each fact as a finding with where it came from; note disagreements between sources.', prefer: 'balanced', grants: ['web', 'data'] },
+      { id: 'writer', prompt: 'Write the answer the user asked for from the board\'s findings, citing them. Say plainly what was not found.', prefer: 'strong', grants: ['none'] },
+    ],
+    budget: { tokens: 40000, ms: 300000 },
+  },
+  {
+    name: 'review',
+    description: 'Two independent reads of a draft, reconciled into one set of comments.',
+    plan: 'fixed', merge: 'converge',
+    roles: [
+      { id: 'editor', prompt: 'Read the draft as an editor: structure, clarity, what is missing. One finding per issue, with the passage it refers to.', prefer: 'strong', grants: ['none'] },
+      { id: 'checker', prompt: 'Read the draft as a fact-checker: every claim that could be wrong, with what you checked against. Use the user\'s history and the web.', prefer: 'balanced', grants: ['data', 'web'] },
+    ],
+    budget: { tokens: 30000, ms: 240000 },
+  },
+]);
+
+/** Fresh copies — a starter is a template, never the stored record. */
+export function starterTeams() {
+  return STARTER_TEAMS.map((t) => ({ ...t, roles: t.roles.map((r) => ({ ...r, grants: [...r.grants] })), budget: { ...t.budget } }));
+}
+
+/** A blank team for the editor: one role, the smallest budget that is still a budget. */
+export function blankTeam() {
+  return { name: '', description: '', plan: 'fixed', merge: 'concat', judge: null, roles: [{ id: 'role1', prompt: '', prefer: 'balanced', grants: ['none'] }], budget: { tokens: 20000, ms: 300000 } };
+}
+
+/**
+ * The editor's form → a team, or the errors. Grants come as text ("web, data, mcp:srv"),
+ * the budget as numbers that may be blank; a blank judge under `merge: judge` is the last
+ * role, which is the writer in every starter.
+ */
+export function teamFromForm(form) {
+  const roles = (Array.isArray(form.roles) ? form.roles : []).map((r) => ({
+    id: String(r.id || '').trim(),
+    name: String(r.name || '').trim() || undefined,
+    prompt: String(r.prompt || ''),
+    prefer: r.prefer || 'balanced',
+    ...(r.model ? { model: String(r.model) } : {}),
+    grants: String(Array.isArray(r.grants) ? r.grants.join(',') : r.grants || 'none').split(/[,\s]+/).map((g) => g.trim()).filter(Boolean),
+  }));
+  const budget = {};
+  for (const k of ['tokens', 'calls', 'ms', 'usd']) {
+    const v = Number(form.budget?.[k]);
+    if (form.budget?.[k] !== '' && form.budget?.[k] != null && Number.isFinite(v) && v > 0) budget[k] = v;
+  }
+  const merge = form.merge || 'concat';
+  const team = {
+    name: String(form.name || '').trim(),
+    description: String(form.description || '').trim(),
+    plan: form.plan || 'fixed',
+    merge,
+    judge: merge === 'judge' ? (form.judge || roles[roles.length - 1]?.id || null) : null,
+    roles,
+    budget,
+    enabled: form.enabled !== false,
+    ...(form.createdAt ? { createdAt: form.createdAt } : {}),
+  };
+  const v = validateTeam(team);
+  return v.ok ? { ok: true, team: normalizeTeam(team) } : { ok: false, errors: v.errors };
+}
