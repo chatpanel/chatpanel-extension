@@ -681,6 +681,14 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
     // turn never needed it; the bridge also drops such a server on its own and says so.
     mcpDisabled: agent.mcpDisabled || '',
   };
+  // A TEAM ROLE'S RUN (team-host.js): the role's grants, so the bridge leashes or refuses a
+  // push; the worktree it should work in; the SCM connection to use when the checkout's
+  // remote alone does not say. Never a token — the bridge holds those.
+  if (agent.run && typeof agent.run === 'object') {
+    if (Array.isArray(agent.run.grants)) options.grants = agent.run.grants;
+    if (agent.run.workspace) options.workspace = agent.run.workspace;
+    if (agent.run.connectionId) options.connectionId = agent.run.connectionId;
+  }
   // "Bring your own" custom CLI (Pro) — carry the command spec plus the signed
   // entitlement token, which the bridge verifies OFFLINE before running anything.
   if (bridgeAgent === 'custom') {

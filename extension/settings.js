@@ -124,6 +124,8 @@ async function init() {
   renderSkills();
   renderRecipes();
   renderTeams();
+  renderAgentPool();
+  renderConnections();
   renderPrefs();
   setupNotesPrefs();
   setupMemoryPrefs();
@@ -344,6 +346,7 @@ const K_SETTINGS_TAB = 'chatpanel:settingsTab';
 const TAB_ALIAS = {
   models: { tab: 'api' },        // naming phase 1: "API" reads as Models; the panel id is code
   harnesses: { tab: 'agents' },  // "Agents" (the CLIs) reads as Harnesses; #directory is the agents you define
+  connections: { tab: 'agents', section: 'connections' }, // Settings → Connections: the SCM hubs the bridge holds tokens for
   notes: { tab: 'workspace', section: 'ws-notes' },
   meetings: { tab: 'workspace', section: 'ws-meetings' },
   history: { tab: 'workspace', section: 'ws-history' },
@@ -4653,6 +4656,23 @@ function renderTeams() {
       teamsDispose = m.renderTeams(root, { settings, license, onChange: (teams) => { settings.teams = teams; renderTeams(); } });
     })
     .catch((e) => console.warn('[chatpanel] teams:', e));
+}
+
+// The agent pool (Settings → Agents) and the SCM connections (Settings → Harnesses → Source
+// control) — deferred like the teams; both read the gateway/bridge only while rendered.
+function renderAgentPool() {
+  const root = $('directory');
+  if (!root) return;
+  import('./js/settings-agents.js')
+    .then((m) => m.renderAgents(root, { settings, license, onChange: (pool) => { settings.agentPool = pool; renderAgentPool(); renderTeams(); } }))
+    .catch((e) => console.warn('[chatpanel] agents:', e));
+}
+function renderConnections() {
+  const root = $('connections');
+  if (!root) return;
+  import('./js/settings-connections.js')
+    .then((m) => m.renderConnections(root, { settings, bridge: { url: settings.bridgeUrl, token: settings.bridgeToken || '' }, onChange: (list) => { settings.connections = list; renderConnections(); } }))
+    .catch((e) => console.warn('[chatpanel] connections:', e));
 }
 
 function renderSkills() {

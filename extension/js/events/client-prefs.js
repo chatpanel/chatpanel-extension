@@ -31,6 +31,12 @@ export const PREF_SECTIONS = Object.freeze([
   { id: 'skillDirs', label: 'Skill folders', path: ['ui', 'skillDirs'], kind: 'array' },
   { id: 'recipes', label: 'Recipes', path: ['recipes'], kind: 'array' },
   { id: 'teams', label: 'Teams', path: ['teams'], kind: 'array' },
+  // The agent pool (agent.js). NOT `settings.agents` — that key is the extension's harness
+  // list (its bridge "agents"), which the naming rule keeps; the pool lives beside it.
+  { id: 'agents', label: 'Agents', path: ['agentPool'], kind: 'array' },
+  // SCM connections (scm-connection.js): kind, host, secret REF — never the token, which
+  // stays in the machine's keychain / the bridge's secret store and does not travel.
+  { id: 'connections', label: 'Connections', path: ['connections'], kind: 'array' },
   { id: 'webSearch', label: 'Web search', path: ['ui', 'webSearch'], kind: 'object' },
   { id: 'tools', label: 'Tools', path: null, kind: 'object', keys: ['mcpToolsMode', 'maxToolsPerTurn', 'historyTools', 'historyContextMode', 'dataDispatch', 'toolResultMaxChars'] },
   { id: 'suggestions', label: 'Smart suggestions', path: ['ui', 'suggestions'], kind: 'object' },

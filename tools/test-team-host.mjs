@@ -164,3 +164,40 @@ function fakeStore() {
 }
 
 console.log('team-host: ok');
+
+// A1: a role that stands for an agent is filled from the pool on the way to a run — the
+// agent's prompt, its grants narrowed by the role, its engine mapped to THIS panel's target
+// — and a harness role takes its grants and its worktree to the bridge (`agent.run`).
+{
+  const { resolveTeamHere } = await import('../extension/js/team-host.js');
+  const pooled = {
+    ...settings,
+    agentPool: [
+      { id: 'researcher', name: 'Researcher', prompt: 'You are the researcher.', grants: ['web', 'data', 'mcp'], engine: { kind: 'auto', policy: { prefer: 'cheapest-that-clears' } } },
+      { id: 'implementer', name: 'Implementer', prompt: 'You are the implementer.', grants: ['shell', 'fs:write', 'scm:read', 'scm:push'], engine: { kind: 'harness', harnessId: 'claude' }, workdir: '/repos/x' },
+      { id: 'writer', name: 'Writer', prompt: 'You are the writer.', grants: ['none'], engine: { kind: 'model', providerId: 'ep-strong2', model: 'claude-opus-5' } },
+    ],
+  };
+  const team = { name: 'build', plan: 'fixed', merge: 'concat', roles: [{ id: 'r', agent: 'researcher', grants: ['web'] }, { id: 'i', agent: 'implementer' }, { id: 'w', agent: 'writer' }], budget: { tokens: 50000, ms: 60000 } };
+  const resolved = resolveTeamHere(team, pooled, pro, { like: 'ep-strong' });
+  assert.equal(resolved.roles[0].prompt, 'You are the researcher.');
+  assert.deepEqual(resolved.roles[0].grants, ['web'], 'narrowed by the role');
+  assert.equal(resolved.roles[0].prefer, 'cheap');
+  assert.equal(resolved.roles[1].model, 'claude-code', 'a harness engine is the installed agent that runs that CLI');
+  assert.equal(resolved.roles[2].model, 'ep-strong2', 'a model engine is the endpoint that serves it');
+  // The Assistant's engine is the chat's target.
+  const asst = resolveTeamHere({ name: 'a', roles: [{ id: 'a', agent: 'assistant' }], budget: { tokens: 1 } }, pooled, pro, { like: 'ep-cheap' });
+  assert.equal(asst.roles[0].model, 'ep-cheap');
+  assert.throws(() => resolveTeamHere({ name: 'x', roles: [{ id: 'x', agent: 'ghost' }], budget: { tokens: 1 } }, pooled, pro), /not in the pool/);
+  // A run: the harness role's streamChat target carries `run` with its grants and worktree.
+  const store = fakeStore();
+  const targets = [];
+  const streamChat = async ({ agent, onDelta }) => { targets.push(agent); onDelta('ok'); return { text: 'ok' }; };
+  const result = await runTeamHere({ team, request: 'build it', settings: pooled, license: pro, bridgeUrl: '', bridgeAvailable: false, streamChat, buildTurnTools: async () => ({ specs: [] }), store });
+  assert.equal(result.status, 'completed', JSON.stringify(result));
+  const impl = targets.find((t) => t.systemPrompt.includes('implementer'));
+  assert.deepEqual(impl.run.grants, ['shell', 'fs:write', 'scm:read', 'scm:push']);
+  assert.deepEqual(impl.run.workspace, { repo: '/repos/x', projectId: 'build', jobId: result.runId });
+  const res = targets.find((t) => t.systemPrompt.includes('researcher'));
+  assert.equal(res.run, undefined, 'a model role takes nothing to the bridge');
+}

@@ -44,7 +44,7 @@ export function teamToolSpec(teams) {
       + '{"action":"dry_run","name":"<team>","request":"…"} shows roles, models, tools and budget without running; '
       + '{"action":"save","team":{…}} proposes a NEW team after a task that would benefit from several roles — the user approves it on a card. '
       + 'A team: {"name":"research" (a short identifier: letters, digits, - _; used as /research),"description":"…","roles":[{"id":"researcher","prompt":"…","prefer":"balanced","grants":["data","web"]},{"id":"writer","prompt":"…","prefer":"strong","grants":["none"]}],"merge":"judge","judge":"writer","budget":{"tokens":40000,"ms":300000}}. '
-      + 'grants: none | data | web | history | mcp | mcp:<server>. merge: judge | converge | concat | first. A budget is required. '
+      + 'grants: none | data | web | history | mcp | mcp:<server> | shell | fs:write | scm:read | scm:push | scm:pr. A role may say "agent":"<id>" instead of a prompt to stand for an agent from the pool. merge: judge | converge | concat | first. A budget is required. '
       + 'Order the work with "dependsOn": a role that builds on another\'s findings (a budget checker on a researcher) lists it, so it runs after and reads the board instead of searching again. The judge does not need a task of its own - the merge is its work.',
     parameters: {
       type: 'object',
@@ -78,8 +78,16 @@ const json = (v) => JSON.stringify(v);
  * @param confirmSave  `async (detail, team) => 'allow' | 'deny'`; absent = save refused
  * @param saveTeam     `async (team) => void`
  */
-export function teamToolProvider({ teams = [], run = null, appoint = null, confirmSave = null, saveTeam = null } = {}) {
+/**
+ * `resolve` is the host's `(team) => team` that fills roles standing for agents from the
+ * pool (agent.js resolveTeam) — applied before a dry run and before a run, never to what is
+ * saved: the stored team keeps its references, the run gets the cards as they are now.
+ */
+export function teamToolProvider({ teams = [], run = null, appoint = null, confirmSave = null, saveTeam = null, resolve = null } = {}) {
   const byName = new Map(usable(teams).map((t) => [t.name, t]));
+  // A team whose roles stand for agents is filled from the pool on the way to a run; a
+  // resolver that throws (an agent missing from the pool) is the tool's error, not a crash.
+  const resolved = (t) => (typeof resolve === 'function' ? resolve(t) : t);
   let bound = null;
   // One run per team+request per turn. A run that failed, answered with nothing, or ran
   // out of budget comes back as a result the model must REPORT — asking for it again in the
@@ -105,7 +113,7 @@ export function teamToolProvider({ teams = [], run = null, appoint = null, confi
         if (byName.has(team.name)) return json({ error: `A team named "${team.name}" already exists. Pick another name.` });
         if (!confirmSave || !saveTeam) return json({ error: 'Saving a team needs the user\'s approval, which this surface cannot ask for. Describe the team and suggest saving it from the side panel or the desktop.' });
         const norm = normalizeTeam(team);
-        const dry = dryRunTeam(norm, '', { appoint });
+        const dry = dryRunTeam(resolved(norm), '', { appoint });
         const decision = await confirmSave(describeTeamForApproval(norm, dry), norm);
         if (decision !== 'allow') return json({ error: `The user did not save "${norm.name}". Do not propose it again this turn.`, declined: true });
         const stored = { ...norm, createdAt: Date.now() };
@@ -119,7 +127,8 @@ export function teamToolProvider({ teams = [], run = null, appoint = null, confi
       const request = String(input?.request || '').trim();
 
       if (action === 'dry_run') {
-        const dry = dryRunTeam(team, request, { appoint });
+        let dry;
+        try { dry = dryRunTeam(resolved(team), request, { appoint }); } catch (e) { return json({ error: e?.message || String(e) }); }
         return json({ name: team.name, ok: dry.ok, missing: dry.missing, roles: dry.roles, plan: dry.plan, tasks: dry.tasks, merge: dry.merge, budget: dry.budget });
       }
       if (action === 'run') {
@@ -131,9 +140,10 @@ export function teamToolProvider({ teams = [], run = null, appoint = null, confi
         const key = team.name;
         const prior = ran.get(key);
         if (prior) return json({ error: `The "${team.name}" team already ran in this turn (run ${prior.runId}, ${prior.status}). Do not run it again, even with a different request: report what it produced — ${prior.summary} — with its proposal, and ask the user how to proceed.`, runId: prior.runId, status: prior.status, tasks: prior.tasks, proposal: prior.proposal });
-        const dry = dryRunTeam(team, request, { appoint });
+        let dry;
+        try { dry = dryRunTeam(resolved(team), request, { appoint }); } catch (e) { return json({ error: e?.message || String(e) }); }
         if (!dry.ok) return json({ error: `No model is available for role(s): ${dry.missing.join(', ')}.`, roles: dry.roles });
-        const result = await run({ team, request, toolset: bound });
+        const result = await run({ team: resolved(team), request, toolset: bound });
         const findings = (result.board || []).map((f) => ({ role: f.role, kind: f.kind, text: f.text, refs: f.refs }));
         const tasks = (result.tasks || []).map((x) => ({ id: x.id, role: x.role, status: x.status, ms: x.ms, findings: (x.findings || []).length, error: x.error || undefined }));
         const failed = tasks.filter((x) => x.status !== 'ok');

@@ -183,6 +183,7 @@ export async function buildTurnTools({
     teamProvider = teamToolProvider({
       teams: savedTeams,
       appoint: host.appointerFor(settings, license, { like: resolvedAgent?.id || '' }),
+      resolve: (t) => host.resolveTeamHere(t, settings, license, { like: resolvedAgent?.id || '' }),
       confirmSave: confirmTeamSave,
       saveTeam,
       run: async ({ team, request }) => {

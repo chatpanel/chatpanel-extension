@@ -235,8 +235,9 @@ const { KNOWN_CAPABILITIES, complexityStrategy } = await import('../extension/js
 
 // Named rather than free-form: a capability only matters if something asks for it, and a
 // typo in a free-text field would make a model ineligible forever with no way to see why.
+// The four media capabilities (pillars §13.2) are named too — and never guessed from a name.
 assert.deepEqual(KNOWN_CAPABILITIES.map((c) => c.id).sort(),
-  ['coding', 'json', 'long-context', 'reasoning', 'tools', 'vision']);
+  ['audio', 'coding', 'image-out', 'json', 'long-context', 'reasoning', 'speech-in', 'speech-out', 'tools', 'vision']);
 assert.ok(KNOWN_CAPABILITIES.every((c) => c.label && c.hint), 'a lever has no explanation');
 
 // Inference is a starting point, not a verdict — the user corrects it.

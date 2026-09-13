@@ -133,6 +133,7 @@ export async function makeEntry(fact, prev, { now = () => Date.now(), subtle } =
 }
 
 const clamp01 = (n) => Math.max(0, Math.min(1, Number(n) || 0));
+const r3 = (v) => (v == null ? null : Math.round(v * 1000) / 1000);
 const sizeOf = (s) => ({ ms: Math.max(0, Math.round(Number(s.ms) || 0)), steps: Math.max(0, Math.round(Number(s.steps) || 0)), tools: Math.max(0, Math.round(Number(s.tools) || 0)), findings: Math.max(0, Math.round(Number(s.findings) || 0)), tokens: Math.max(0, Math.round(Number(s.tokens) || 0)) });
 
 /** Does every link hold? Returns `{ ok, at }` — `at` is the seq of the first broken entry. */
@@ -257,7 +258,7 @@ export function summarize(entries, { recent = 5 } = {}) {
  * summary is `summarize()`'s. Returns `{ score, reasons }` in [0, 1] — needs first (a type
  * without the tools cannot do the job), track record second, size third.
  */
-export function fit(job, type, summary = null) {
+export function fit(job, type, summary = null, { qualityOf = null, costOf = null, adjust = true } = {}) {
   const needs = job?.needs || {};
   const have = (xs) => new Set((xs || []).map((x) => String(x).toLowerCase()));
   const skills = have(type?.skills); const tools = have(type?.tools); const grants = have(type?.grants);
@@ -275,11 +276,18 @@ export function fit(job, type, summary = null) {
   const needScore = (cSkills * 0.5 + cTools * 0.3 + cGrants * 0.2);
   if (needScore === 1) reasons.push('has every skill, tool and grant the job names');
   let record = 0.5; // a fresh type is neither trusted nor distrusted
+  let adjusted = null;
   if (summary && summary.entries) {
     const doneRate = summary.jobsDone + summary.jobsFailed ? summary.jobsDone / (summary.jobsDone + summary.jobsFailed) : 0.5;
-    const rated = summary.rating.avg == null ? 0.5 : summary.rating.avg;
+    // The track record uses the MODEL-ADJUSTED rating when the caller can say what the
+    // engines were worth (§13.3): an agent rated 0.82 mostly on a weak engine ranks above
+    // one rated 0.82 on a frontier model. The reasons say so, and a person can turn it off.
+    adjusted = adjust && qualityOf && summary.rating.avg != null ? adjustSummary(summary, { qualityOf, costOf: costOf || undefined }) : null;
+    const rated = summary.rating.avg == null ? 0.5 : (adjusted?.adjusted ?? summary.rating.avg);
     record = doneRate * 0.5 + rated * 0.5;
-    reasons.push(`${summary.jobsDone} done, ${summary.jobsFailed} failed${summary.rating.avg != null ? `, rated ${Math.round(summary.rating.avg * 100)}%` : ''}`);
+    reasons.push(`${summary.jobsDone} done, ${summary.jobsFailed} failed${summary.rating.avg != null ? (adjusted && adjusted.adjusted !== adjusted.raw ? `, rated ${Math.round(adjusted.raw * 100)}% raw, ${Math.round(adjusted.adjusted * 100)}% adjusted — ${adjusted.basis[0] || 'engine-corrected'}` : `, rated ${Math.round(summary.rating.avg * 100)}%`) : ''}`);
+    if (adjusted?.leverage != null && adjusted.leverage > 0.05) reasons.push(`adds ${adjusted.leverage} over its engines' own quality`);
+    if (adjusted?.efficiency) reasons.push(`cleared the bar cheapest on ${adjusted.efficiency.engine}`);
     if (summary.roles.orchestrator + summary.roles.manager + summary.roles['manager-of-managers'] > 0) reasons.push(`has led: ${summary.roles.orchestrator} as orchestrator, ${summary.roles.manager} as manager`);
   } else {
     reasons.push('no record yet');
@@ -288,5 +296,48 @@ export function fit(job, type, summary = null) {
   const sizeScore = !wantSize ? 1 : Math.min(1, (summary?.size?.largestSteps || 0) / wantSize) * 0.5 + 0.5;
   if (wantSize && (summary?.size?.largestSteps || 0) < wantSize) reasons.push(`largest task so far ${summary?.size?.largestSteps || 0} steps; this one is ~${wantSize}`);
   const score = Math.round((needScore * 0.6 + record * 0.3 + sizeScore * 0.1) * 1000) / 1000;
-  return { score, reasons, parts: { needs: needScore, record, size: sizeScore } };
+  return { score, reasons, parts: { needs: needScore, record, size: sizeScore }, ...(adjusted ? { adjusted } : {}) };
 }
+
+// ── Agent scores, normalised by engine (§13.3) — what the model ledger's cards make possible ──
+
+/**
+ * The model-adjusted view of an agent's card (scorecard.js `summarize()`), given what its
+ * engines are worth: `qualityOf(key)` → the engine's quality in [0, 1] (the card's mean
+ * rating for the job kind when observed, else the router's guess) or null when unknown.
+ *
+ *   leverage      rating on an engine minus that engine's quality, weighted by tasks — what
+ *                 the agent's prompt and tools add that the model does not supply on its own
+ *   adjusted      the raw rating corrected for the engines it ran on: work done on a weak
+ *                 engine counts for more, on a strong one for less; `k` bounds the correction
+ *   efficiency    adjusted rating ÷ cost per task on the cheapest engine that cleared `bar`
+ *                 (`costOf(key)` → $/task or a token proxy; null when nothing is priced)
+ *
+ * Returns `{ raw, adjusted, leverage, efficiency, basis[] }` with `basis` the reasons a
+ * person reads ("60 % of its tasks ran on a 0.3-quality engine").
+ */
+export function adjustSummary(summary, { qualityOf = () => null, costOf = () => null, reference = 0.6, k = 0.3, bar = 0.5 } = {}) {
+  const raw = summary?.rating?.avg ?? null;
+  const rows = (summary?.byEngine || []).filter((r) => r.key);
+  const known = rows.map((r) => ({ ...r, quality: qualityOf(r.key) })).filter((r) => Number.isFinite(r.quality));
+  const totalTasks = known.reduce((n, r) => n + r.tasks, 0);
+  const basis = [];
+  if (raw == null || !known.length || !totalTasks) return { raw, adjusted: raw, leverage: null, efficiency: null, basis: raw == null ? ['not rated yet'] : ['engines not rated yet — raw rating used'] };
+  // Correction: how far below the reference the engines it ran on sit, task-weighted.
+  const correction = k * known.reduce((s, r) => s + (r.tasks / totalTasks) * (reference - r.quality), 0);
+  const adjusted = Math.max(0, Math.min(1, raw + correction));
+  const weak = known.filter((r) => r.quality < reference);
+  if (weak.length) basis.push(`${Math.round((weak.reduce((n, r) => n + r.tasks, 0) / totalTasks) * 100)} % of its tasks ran on ${weak.length === 1 ? `a ${weak[0].quality}-quality engine` : 'engines below the reference'}`);
+  const strong = known.filter((r) => r.quality > reference);
+  if (strong.length && !weak.length) basis.push(`ran on engines above the reference (${strong.map((r) => r.quality).join(', ')})`);
+  // Leverage over the engines it was rated on.
+  const rated = known.filter((r) => r.rating?.avg != null);
+  const ratedTasks = rated.reduce((n, r) => n + r.rating.count, 0);
+  const leverage = ratedTasks ? r3(rated.reduce((s, r) => s + (r.rating.count / ratedTasks) * (r.rating.avg - r.quality), 0)) : null;
+  if (leverage != null) basis.push(`${leverage >= 0 ? '+' : ''}${leverage} over its engines' own quality`);
+  // Efficiency on the cheapest engine that cleared the bar.
+  const cleared = rated.filter((r) => r.rating.avg >= bar).map((r) => ({ ...r, cost: costOf(r.key) ?? (r.tokens || null) })).filter((r) => r.cost != null && r.cost > 0).sort((a, b) => a.cost - b.cost);
+  const efficiency = cleared.length ? { value: r3(adjusted / cleared[0].cost), engine: cleared[0].key, costPerTask: cleared[0].cost } : null;
+  return { raw: r3(raw), adjusted: r3(adjusted), leverage, efficiency, basis };
+}
+

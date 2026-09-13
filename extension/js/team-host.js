@@ -15,6 +15,7 @@ import { runTeam } from './events/team-run.js';
 import { createAnswerBox } from './events/board-tool.js';
 import { createControl } from './events/team-task.js';
 import { grantAllows } from './events/team.js';
+import { resolveTeam } from './events/agent.js';
 import { appoint } from './events/cowriter-router.js';
 import { swarmCandidates } from './notes-swarm-router.js';
 import { canUseAgent } from './license.js';
@@ -96,6 +97,9 @@ export function runStore(settings) {
     checkpoint: (id) => withToken(() => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/checkpoint`)),
     claim: (id) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/claim`, { method: 'POST', body: JSON.stringify({ client: 'extension' }) }),
     remove: (id) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    // The records (gateway 0.6.87+ / 0.6.89+): an agent's attested scorecard; every engine's card.
+    scorecard: (agentId) => withToken(() => gwFetch(`${base}/v1/agents/${encodeURIComponent(agentId)}/scorecard`)),
+    engines: () => withToken(() => gwFetch(`${base}/v1/engines`)),
     /** Tail a run's events (SSE). Returns a stop function. */
     tail(id, onEvent, { after = -1 } = {}) {
       const ctrl = new AbortController();
@@ -155,6 +159,36 @@ export function engineOfCandidate(c) {
     return { kind: 'harness', id, ...(c.model && c.model !== id ? { model: c.model } : {}) };
   }
   return { kind: 'model', id: c.id, ...(c.model ? { model: c.model } : {}), ...(c.name ? { label: c.name } : {}) };
+}
+
+/**
+ * A team as the runner needs it: roles that stand for agents (`agent: <id>`) are filled from
+ * the pool (`settings.agentPool`, the shared `agents` section) — prompt, grants, skills,
+ * engine, working directory. The Assistant's engine is the target this chat is on; a
+ * `harness` engine becomes the installed agent that runs that CLI, a `model` engine the
+ * endpoint that serves that model (at that endpoint id when the card names one), so
+ * `callModel` is handed a target id this panel can resolve. Throws when a role names an
+ * agent the pool does not have — a team is not run with a hole in it.
+ */
+export function resolveTeamHere(team, settings, license, { like = '' } = {}) {
+  const candidates = rosterFor(settings, license, { like });
+  const chat = candidates.find((c) => c.id === like) || null;
+  const chatModel = chat ? (chat.kind === 'bridge' ? { kind: 'harness', harnessId: chat.bridgeAgent || chat.id, model: chat.model || undefined } : { kind: 'model', providerId: chat.id, model: chat.model || chat.id }) : null;
+  const targetFor = (engine) => {
+    if (engine.kind === 'harness') {
+      const c = candidates.find((x) => x.kind === 'bridge' && (x.bridgeAgent === engine.harnessId || x.id === engine.harnessId) && (!engine.model || !x.model || x.model === engine.model) && x.usable)
+        || candidates.find((x) => x.kind === 'bridge' && (x.bridgeAgent === engine.harnessId || x.id === engine.harnessId));
+      return c ? c.id : null;
+    }
+    if (engine.kind === 'model') {
+      const c = (engine.providerId ? candidates.find((x) => x.id === engine.providerId && (!x.model || x.model === engine.model)) : null)
+        || candidates.find((x) => x.kind !== 'bridge' && x.model === engine.model && x.usable)
+        || candidates.find((x) => x.kind !== 'bridge' && x.model === engine.model);
+      return c ? c.id : null;
+    }
+    return null;
+  };
+  return resolveTeam(team, Array.isArray(settings.agentPool) ? settings.agentPool : [], { chatModel, targetFor });
 }
 
 /**
@@ -257,6 +291,21 @@ export async function runTeamHere({ team, request, settings, license, like = '',
   await sync.start();
   liveRuns.set(id, { answers, control, stop: () => ac.abort(), team: team.name });
   const appointRole = appointerFor(settings, license, { like });
+  // Roles that stand for agents, filled from the pool now — the cards as they are at run time.
+  const resolved = resolveTeamHere(team, settings, license, { like });
+  const roleOf = (rid) => resolved.roles.find((r) => r.id === rid) || null;
+  // WHAT A HARNESS ROLE TAKES TO THE BRIDGE (pillars §14.2): its grants, so the bridge can
+  // leash a push to the job's own branch or refuse one; and, when the agent's card names a
+  // repository, a WORKTREE of it for this run — `cp/<team>/<run>` — shared by every harness
+  // role on that repository, so the Reviewer reads what the Implementer wrote. A project's
+  // and a job's own ids replace the team/run pair when project.js and job.js land (step 3).
+  const runFor = (r) => {
+    if (!r) return null;
+    const harness = r.engine?.kind === 'harness';
+    if (!harness) return null;
+    const workspace = r.workdir ? { repo: r.workdir, projectId: team.name, jobId: id } : null;
+    return { grants: r.grants || ['none'], ...(workspace ? { workspace } : {}) };
+  };
 
   // A role's toolset: the same builder a turn uses, with only the groups the role may hold.
   const toolsFor = async (role) => {
@@ -277,6 +326,7 @@ export async function runTeamHere({ team, request, settings, license, like = '',
   const callModel = async ({ taskId, role, model, system, prompt, messages: transcript, tools, onDelta, onStep, signal: taskSignal }) => {
     const target = resolveTarget(getTarget(settings, model), settings);
     if (!target) return { ok: false, error: `no target for "${model}"` };
+    const run = runFor(roleOf(role));
     // The task's transcript, when it has one, flattened for the wire: every provider path
     // here (OpenAI, Anthropic, a relayed agent) takes user/assistant text; not every one takes
     // another model's tool_calls. The record keeps the real shape (below).
@@ -290,7 +340,7 @@ export async function runTeamHere({ team, request, settings, license, like = '',
     const open = new Map();
     try {
       const out = await streamChat({
-        agent: { ...target, systemPrompt: [target.systemPrompt, system].filter(Boolean).join('\n\n') },
+        agent: { ...target, systemPrompt: [target.systemPrompt, system].filter(Boolean).join('\n\n'), ...(run ? { run } : {}) },
         messages, settings, signal: taskSignal || ac.signal, tools,
         onDelta: (d) => { text += d; onDelta?.(d, text); },
         onEvent: (e) => {
@@ -322,7 +372,7 @@ export async function runTeamHere({ team, request, settings, license, like = '',
 
   try {
     const result = await runTeam({
-      team, request, callModel, appoint: appointRole, runId: id, signal: ac.signal, answers, askTimeoutMs, resume, control,
+      team: resolved, request, callModel, appoint: appointRole, runId: id, signal: ac.signal, answers, askTimeoutMs, resume, control,
       toolsFor: (role) => toolsFor(role),
       emit: (type, payload) => { sync.push(type, payload); emit(type, payload); },
     });

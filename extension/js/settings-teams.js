@@ -11,7 +11,7 @@
 
 import { getSettings, saveSettings } from './store.js';
 import { describeRole, starterTeams, blankTeam, teamFromForm, MERGE_POLICIES, PLAN_MODES, ROLE_PREFERS } from './events/team.js';
-import { runStore, rosterFor, appointerFor, answerAsk } from './team-host.js';
+import { runStore, rosterFor, appointerFor, answerAsk, resolveTeamHere } from './team-host.js';
 
 const budgetText = (b = {}) => Object.entries(b).map(([k, v]) => `${k} ${v}`).join(' · ') || 'none';
 const when = (t) => (t ? new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
@@ -58,12 +58,12 @@ function boardView(run) {
   return box;
 }
 
-const toForm = (t) => ({ ...t, roles: (t.roles || []).map((r) => ({ ...r, grants: (r.grants || ['none']).join(', ') })), budget: { tokens: t.budget?.tokens ?? '', ms: t.budget?.ms ?? '', usd: t.budget?.usd ?? '' } });
+const toForm = (t) => ({ ...t, roles: (t.roles || []).map((r) => ({ ...r, grants: Array.isArray(r.grants) ? r.grants.join(', ') : (r.agent ? '' : 'none') })), budget: { tokens: t.budget?.tokens ?? '', ms: t.budget?.ms ?? '', usd: t.budget?.usd ?? '' } });
 const inp = (attrs, value, onInput) => { const n = el('input', attrs); n.value = value ?? ''; n.addEventListener('input', () => onInput(n.value)); return n; };
 const sel = (options, value, onChange) => { const n = el('select'); for (const o of options) n.append(el('option', { value: o[0], text: o[1] })); n.value = value; n.addEventListener('change', () => onChange(n.value)); return n; };
 
 /** The form — the same fields the `team` tool's save action takes. */
-function teamEditor({ initial, servers, roster, existingNames, onSave, onCancel }) {
+function teamEditor({ initial, servers, roster, pool = [], existingNames, onSave, onCancel }) {
   const f = toForm(initial);
   const root = el('div', { class: 'entity s-entity' });
   const errors = el('ul', { style: 'margin:4px 0;padding-left:18px;font-size:12.4px;color:var(--danger)' });
@@ -89,12 +89,15 @@ function teamEditor({ initial, servers, roster, existingNames, onSave, onCancel 
       const card = el('div', { class: 'entity', style: 'margin:6px 0' });
       card.append(el('div', { class: 'entity-head', style: 'gap:8px' },
         inp({ placeholder: 'role id', style: 'width:130px' }, r.id, (v) => { r.id = v.replace(/[^a-z0-9_-]/gi, '').toLowerCase(); }),
-        sel(ROLE_PREFERS.map((m) => [m, m]), r.prefer || 'balanced', (v) => { r.prefer = v; }),
-        sel([['', 'auto · by tier'], ...roster.map((c) => [c.id, `${c.name}${c.kind === 'bridge' ? ' (agent)' : ''}${c.usable ? '' : ' — not usable'}`]), ...(r.model && !roster.some((c) => c.id === r.model) ? [[r.model, `${r.model} (not available now)`]] : [])], r.model || '', (v) => { r.model = v || undefined; }),
-        inp({ placeholder: grantHint, title: `Tools this role may hold: ${grantHint}`, style: 'flex:1' }, r.grants, (v) => { r.grants = v; }),
+        // A role may STAND FOR an agent from the pool: its prompt, grants, skills and engine
+        // come from the card at run time; what is typed here narrows or adds to it.
+        sel([['', 'no agent · a role of its own'], ...pool.map((a) => [a.id, `agent: ${a.name || a.id}`]), ...(r.agent && !pool.some((a) => a.id === r.agent) ? [[r.agent, `agent: ${r.agent} (not in the pool)`]] : [])], r.agent || '', (v) => { r.agent = v || undefined; render(); }),
+        r.agent ? null : sel(ROLE_PREFERS.map((m) => [m, m]), r.prefer || 'balanced', (v) => { r.prefer = v; }),
+        r.agent ? null : sel([['', 'auto · by tier'], ...roster.map((c) => [c.id, `${c.name}${c.kind === 'bridge' ? ' (agent)' : ''}${c.usable ? '' : ' — not usable'}`]), ...(r.model && !roster.some((c) => c.id === r.model) ? [[r.model, `${r.model} (not available now)`]] : [])], r.model || '', (v) => { r.model = v || undefined; }),
+        inp({ placeholder: r.agent ? 'grants: blank = the agent’s; list some to narrow' : grantHint, title: `Tools this role may hold: ${grantHint}`, style: 'flex:1' }, r.grants, (v) => { r.grants = v; }),
         el('button', { class: 'btn', type: 'button', text: 'Remove', onclick: () => { f.roles.splice(i, 1); render(); }, ...(f.roles.length === 1 ? { disabled: '' } : {}) }),
       ));
-      const ta = el('textarea', { rows: '3', placeholder: 'What this role does.', style: 'width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px' });
+      const ta = el('textarea', { rows: r.agent ? '2' : '3', placeholder: r.agent ? 'Optional — what this role adds in this team; the agent’s own prompt is used.' : 'What this role does.', style: 'width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px' });
       ta.value = r.prompt || '';
       ta.addEventListener('input', () => { r.prompt = ta.value; });
       card.append(ta);
@@ -126,6 +129,7 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
   const roster = rosterFor(settings, license, { like: settings.activeAgentId || '' });
   const appointRole = appointerFor(settings, license, { like: settings.activeAgentId || '' });
   const servers = (Array.isArray(settings.mcpServers) ? settings.mcpServers : []).filter((x) => x && x.id);
+  const pool = (Array.isArray(settings.agentPool) ? settings.agentPool : []).filter((a) => a && a.id && a.enabled !== false);
   const persist = async (next) => {
     await saveSettings({ ...(await getSettings()), teams: next });
     onChange?.(next);
@@ -145,7 +149,7 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
     + 'Run it by typing /its-name in any chat, or by asking. Teams and their runs are shared with the desktop app.'));
   if (editing) {
     root.append(teamEditor({
-      initial: editing.team, servers, roster,
+      initial: editing.team, servers, roster, pool,
       existingNames: new Set(list.filter((_, j) => j !== editing.index).map((t) => t.name)),
       onCancel: () => renderTeams(root, { settings, onChange, license }),
       onSave: (team) => {
@@ -172,8 +176,11 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
       } }),
     ));
     const roles = el('ul', { class: 'muted', style: 'margin:0;padding-left:20px;font-size:12px' });
-    // Who the role would get on this panel's roster right now — seen here, not reported by a run.
-    for (const r of t.roles || []) {
+    // Who the role would get on this panel's roster right now — seen here, not reported by a
+    // run — with roles that stand for agents filled from the pool as a run would fill them.
+    let shown = t.roles || [];
+    try { shown = resolveTeamHere(t, settings, license, { like: settings.activeAgentId || '' }).roles; } catch (e) { card.append(el('div', { class: 'chip warn', text: e?.message || String(e) })); }
+    for (const r of shown) {
       const got = r.mode === 'recipe' ? null : appointRole(r);
       const li = el('li', { text: `${describeRole({ ...r, model: r.model || undefined })} ` });
       li.append(r.mode === 'recipe' ? '' : got ? el('span', { class: 'muted tiny', text: `→ ${got.label || got.model}` }) : el('span', { class: 'chip warn', text: 'no model available' }));

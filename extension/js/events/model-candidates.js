@@ -57,6 +57,12 @@ export const KNOWN_CAPABILITIES = Object.freeze([
   { id: 'long-context', label: 'Long context', hint: 'Handles large documents and long meetings.' },
   { id: 'coding', label: 'Coding', hint: 'Strong at writing and refactoring code.' },
   { id: 'json', label: 'Structured output', hint: 'Reliably returns valid JSON.' },
+  // The media capabilities (architecture-pillars.md §13.2). Never guessed from a name: a
+  // model earns these by proof (the ledger's `capability` entries) or by the person's word.
+  { id: 'speech-in', label: 'Speech in', hint: 'Takes audio as input — a meeting, a voice note.' },
+  { id: 'speech-out', label: 'Speech out', hint: 'Speaks its answer.' },
+  { id: 'audio', label: 'Audio', hint: 'Understands audio content beyond speech — music, sounds.' },
+  { id: 'image-out', label: 'Image out', hint: 'Generates images.' },
 ]);
 
 /**
@@ -260,6 +266,47 @@ export function applyOverride(inferred, override = {}) {
     out.reach = override.reach;
   }
   return out;
+}
+
+// ── The engine card over the guess (model-ledger.js, architecture-pillars.md §13.2) ──────
+
+import { DEFAULT_MIN_CALLS } from './model-ledger.js';
+export { DEFAULT_MIN_CALLS };
+const r3 = (v) => (v == null ? null : Math.round(v * 1000) / 1000);
+
+/**
+ * The override a card yields for model-candidates.js `applyOverride` — only the fields it
+ * has enough history for. `quality` is the mean rating (for `jobKind` when the card has
+ * ratings for it, else overall); `latencyMs` the observed p50 to first token (total when no
+ * ttft was recorded); `costPer1k` from the price when one is known; `available: false`
+ * only while it is declining right now. Returns `{ override, observed }`.
+ */
+export function cardOverride(card, { minCalls = DEFAULT_MIN_CALLS, jobKind = null } = {}) {
+  const override = {}; const observed = [];
+  if (!card) return { override, observed };
+  const q = (jobKind && card.quality?.byJobKind?.[jobKind]?.count >= minCalls) ? card.quality.byJobKind[jobKind] : card.quality?.overall;
+  if (q && q.count >= minCalls && q.avg != null) { override.quality = q.avg; observed.push('quality'); }
+  const lat = card.latency?.ttft?.n >= minCalls ? card.latency.ttft.p50 : card.latency?.total?.n >= minCalls ? card.latency.total.p50 : null;
+  if (lat != null) { override.latencyMs = lat; observed.push('latencyMs'); }
+  if (card.cost?.per1kIn != null && card.cost?.per1kOut != null) { override.costPer1k = r3((card.cost.per1kIn + card.cost.per1kOut) / 2); observed.push('costPer1k'); }
+  if (card.availability?.decliningNow) { override.available = false; observed.push('available'); }
+  return { override, observed };
+}
+
+/**
+ * A router model with its card applied: `applyOverride` with what the card observed, then
+ * withdrawn capabilities removed (a proof beats a guess in both directions). A person's own
+ * override (`userOverride`) is applied LAST — what they said outranks what was observed —
+ * except reach, which `applyOverride` already keeps outward-only. The result carries
+ * `observed: [...]` so the Context Ledger can say guess or observed per field.
+ */
+export function applyCard(inferred, card, { minCalls = DEFAULT_MIN_CALLS, jobKind = null, userOverride = null } = {}) {
+  const { override, observed } = cardOverride(card, { minCalls, jobKind });
+  let out = applyOverride(inferred, override);
+  const withdrawn = new Set(card?.capabilities?.withdrawn || []);
+  if (withdrawn.size && Array.isArray(out.capabilities)) { out = { ...out, capabilities: out.capabilities.filter((c) => !withdrawn.has(c)) }; observed.push('capabilities'); }
+  if (userOverride) out = applyOverride(out, userOverride);
+  return { ...out, observed };
 }
 
 export const REACH_RANK = { device: 0, trusted: 1, any: 2 };

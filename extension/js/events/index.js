@@ -200,13 +200,18 @@ export { recipeToolProvider, recipeToolSpec, describeRecipeForApproval, RECIPE_T
 // Agent teams (F8): a team is data, a run is a turn of turns under a budget, members talk
 // through a typed board, nothing lands without a person.
 export { createBudget, validateBudget, normalizeBudget, usageOf, BudgetError, BUDGET_DIMENSIONS } from './budget.js';
-export { defineTeam, validateTeam, normalizeTeam, normalizeGrants, grantAllows, describeRole, TeamError, ROLE_MODES, MERGE_POLICIES, PLAN_MODES, GRANTABLE, STARTER_TEAMS, starterTeams, blankTeam, teamFromForm, slugTeamName } from './team.js';
+export { defineTeam, validateTeam, normalizeTeam, normalizeGrants, grantAllows, scmAllows, describeRole, TeamError, ROLE_MODES, MERGE_POLICIES, PLAN_MODES, GRANTABLE, WORK_GRANTS, GRANT_RE, AGENT_REF_RE, STARTER_TEAMS, starterTeams, blankTeam, teamFromForm, slugTeamName } from './team.js';
 export { fixedPlan, parsePlan, plannerPrompt, waves, breakCycles, TEAM_PLAN_SCHEMA } from './team-plan.js';
 export { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, FINDINGS_SCHEMA, FINDING_KINDS, THREAD_KINDS, THREAD_STATUSES, POST_KINDS, POST_STATUSES, ASK_TYPES, emptyBoardState, foldBoard, findingsOf } from './team-board.js';
 export { boardToolProvider, boardToolSpec, createAnswerBox, withBoardTool, BOARD_TOOL_NAME, DEFAULT_ASK_TIMEOUT_MS } from './board-tool.js';
 export { createRunCache, withRunCache } from './team-cache.js';
 export { emptyRun, foldRun, runFromEvents, checkpointFrom, isResumable, LIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES } from './team-record.js';
-export { canonical, sha256, makeEntry, verifyChain, attest, verifyAttested, summarize, fit, SCORECARD_ENTRY_KINDS, ROLE_KINDS, SCORECARD_VERSION } from './scorecard.js';
+export { canonical, sha256, makeEntry, verifyChain, attest, verifyAttested, summarize, fit, adjustSummary, normalizeEngine, engineKey, normalizeScm, SCORECARD_ENTRY_KINDS, ROLE_KINDS, SCORECARD_VERSION, ENGINE_KINDS as RECORD_ENGINE_KINDS } from './scorecard.js';
+export { ENGINE_KINDS as ENGINE_SPEC_KINDS, ROUTE_PREFERS, normalizePolicy, normalizeEngineSpec, validateEngineSpec, engineRef, engineKeyOf, describeEngine, tierOf } from './engine.js';
+export { AGENT_ID_RE, APPLIES_TO, EGRESS_CLASSES, ASSISTANT_ID, AgentError, validateAgent, normalizeAgent, defineAgent, assistantAgent, engineOf, describeAgent, slugAgentId, resolveTeam, STARTER_AGENTS, starterAgents, blankAgent, agentFromForm, poolFor } from './agent.js';
+export { LEDGER_VERSION, LEDGER_ENTRY_KINDS, DECLINE_REASONS, WITHDRAW_AFTER, ledgerKey, normalizeCall, makeLedgerEntry, summarizeEngine } from './model-ledger.js';
+export { DEFAULT_MIN_CALLS, cardOverride, applyCard } from './model-candidates.js';
+export { SCM_KINDS, validateConnection, normalizeConnection, parseRemote, connectionFor, branchFor, worktreeDirFor, credentialEnv, describeConnection, blankConnection, connectionFromForm } from './scm-connection.js';
 export { messagesFor, mergeTranscript, clipTranscript, clipMessage, newSteps, continuationNote, createControl, STEP_MAX_CHARS, TASK_TRANSCRIPT_MAX_CHARS } from './team-task.js';
 export { runTeam, resumeTeam, dryRunTeam, isModelUnavailable, TeamRunError, RUN_STATUSES } from './team-run.js';
 export { teamToolProvider, teamToolSpec, describeTeamForApproval, TEAM_TOOL_NAME } from './team-tool.js';

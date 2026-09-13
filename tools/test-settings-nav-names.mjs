@@ -17,10 +17,15 @@ assert.deepEqual(tabs.slice(0, 6), [
 ], `the first six tabs, in pillar order: ${JSON.stringify(tabs.slice(0, 6))}`);
 assert.ok(tabs.every(([, label]) => label !== 'API'), 'nothing is called "API" any more');
 
-// Every tab has its panel; the directory panel says what an agent is and points at Teams.
+// Every tab has its panel; the directory panel is the Agents card (settings-agents.js), and
+// the Harnesses panel carries the SCM connections card (settings-connections.js).
 for (const [id] of tabs) assert.ok(html.includes(`data-panel="${id}"`), `panel for ${id}`);
-assert.match(html, /data-panel="directory"[\s\S]{0,600}?<strong>engine<\/strong>/, 'the directory explains the engine');
-assert.match(html, /data-open-tab="teams"/, 'and points at Teams');
+assert.match(html, /data-panel="directory">\s*<div class="card" id="directory"><\/div>/, 'the directory is rendered by settings-agents.js');
+assert.match(html, /<div class="card" id="connections"><\/div>/, 'connections live with the harnesses');
+assert.match(js, /connections: \{ tab: 'agents', section: 'connections' \}/, '#connections lands there');
+const agentsJs = readFileSync(new URL('../extension/js/settings-agents.js', import.meta.url), 'utf8');
+assert.match(agentsJs, /settings\.agentPool/, 'the pool is settings.agentPool');
+assert.doesNotMatch(agentsJs.replace(/^\s*\/\/.*$/gm, ''), /settings\.agents\b/, 'never settings.agents — that is the harness list');
 
 // The old words still land: #models → api, #harnesses → agents. The panel ids are code.
 assert.match(js, /models: \{ tab: 'api' \}/);

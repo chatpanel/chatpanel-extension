@@ -24,6 +24,7 @@
 // survive an `origin`, and a team a client stores as trusted is stored as nothing of the kind.
 
 import { validateBudget, normalizeBudget } from './budget.js';
+import { normalizeEngineSpec, validateEngineSpec, tierOf } from './engine.js';
 
 export const TEAM_NAME_RE = /^[a-z][a-z0-9_-]{0,63}$/i;
 export const ROLE_ID_RE = /^[a-z][a-z0-9_-]{0,31}$/i;
@@ -31,10 +32,22 @@ export const ROLE_MODES = Object.freeze(['model', 'subagent', 'recipe']);
 export const ROLE_PREFERS = Object.freeze(['cheap', 'balanced', 'strong']);
 export const MERGE_POLICIES = Object.freeze(['judge', 'converge', 'concat', 'first']);
 export const PLAN_MODES = Object.freeze(['fixed', 'planner']);
-/** The tool groups a role may hold. `mcp:<server>` narrows to one server; `mcp` is all of them. */
-export const GRANTABLE = Object.freeze(['none', 'data', 'web', 'mcp', 'history']);
-export const GRANT_RE = /^(none|data|web|history|mcp|mcp:[a-zA-Z0-9_.:-]{1,64})$/;
+/**
+ * The tool groups a role may hold. `mcp:<server>` narrows to one server; `mcp` is all of them.
+ *
+ * The work grants (architecture-pillars.md §14.2) are for an agent whose engine is a harness
+ * running in a checkout: `shell` and `fs:write` say so explicitly instead of riding along
+ * with the harness; `scm:read` reads the repo and its hub, `scm:push` pushes ITS OWN branch
+ * (`cp/<project>/<job>`), `scm:pr` opens a pull request, and `scm:merge` is held by the
+ * Gate — grantable only where the org's `gate.json` allows it. A chat-model role that holds
+ * one of these holds nothing: only a harness engine can use them, and the bridge enforces it.
+ */
+export const GRANTABLE = Object.freeze(['none', 'data', 'web', 'mcp', 'history', 'shell', 'fs:write', 'scm:read', 'scm:push', 'scm:pr', 'scm:merge']);
+export const WORK_GRANTS = Object.freeze(['shell', 'fs:write', 'scm:read', 'scm:push', 'scm:pr', 'scm:merge']);
+export const GRANT_RE = /^(none|data|web|history|mcp|mcp:[a-zA-Z0-9_.:-]{1,64}|shell|fs:write|scm:(read|push|pr|merge))$/;
 export const MAX_ROLES = 8;
+/** A role that stands for an agent from the pool: `agent` names it (agent.js `AGENT_ID_RE`). */
+export const AGENT_REF_RE = /^[a-z][a-z0-9_-]{0,63}$/i;
 
 export class TeamError extends Error {
   constructor(code, message) { super(message); this.name = 'TeamError'; this.code = code; }
@@ -67,7 +80,11 @@ export function validateTeam(team) {
       if (r.mode !== undefined && !ROLE_MODES.includes(r.mode)) errors.push(`${w}.mode: one of ${ROLE_MODES.join(', ')}`);
       if (r.prefer !== undefined && !ROLE_PREFERS.includes(r.prefer)) errors.push(`${w}.prefer: one of ${ROLE_PREFERS.join(', ')}`);
       if ((r.mode || 'model') === 'recipe' && !r.recipe) errors.push(`${w}.recipe: a recipe name is required in recipe mode`);
-      if ((r.mode || 'model') !== 'recipe' && !String(r.prompt || '').trim()) errors.push(`${w}.prompt: what this role does`);
+      if (r.agent !== undefined && r.agent !== null && !AGENT_REF_RE.test(String(r.agent))) errors.push(`${w}.agent: an agent id`);
+      // A role that stands for an agent takes its prompt from the pool (agent.js resolveTeam);
+      // a role that stands for nobody must say what it does.
+      if ((r.mode || 'model') !== 'recipe' && !r.agent && !String(r.prompt || '').trim()) errors.push(`${w}.prompt: what this role does`);
+      errors.push(...validateEngineSpec(r.engine, `${w}.engine`));
       const bad = (Array.isArray(r.grants) ? r.grants : []).filter((g) => !GRANT_RE.test(String(g)));
       if (bad.length) errors.push(`${w}.grants: not grantable: ${bad.join(', ')}${bad.some((g) => /^page/.test(String(g))) ? ' (a tab is one person\'s; a team may not act on it)' : ''}`);
     });
@@ -97,12 +114,21 @@ export function normalizeTeam(team, { builtin = false } = {}) {
       id: String(r.id),
       name: String(r.name || r.id).slice(0, 60),
       mode: ROLE_MODES.includes(r.mode) ? r.mode : 'model',
-      prefer: ROLE_PREFERS.includes(r.prefer) ? r.prefer : 'balanced',
+      prefer: ROLE_PREFERS.includes(r.prefer) ? r.prefer : (r.engine ? tierOf(r.engine) : 'balanced'),
       ...(r.model ? { model: String(r.model) } : {}),
+      ...(r.agent ? { agent: String(r.agent) } : {}),
+      ...(r.engine ? { engine: normalizeEngineSpec(r.engine) } : {}),
       prompt: String(r.prompt || '').trim().slice(0, 4000),
-      grants: normalizeGrants(r.grants),
+      // A role that stands for an agent holds the agent's grants unless it narrows them: no
+      // list means "the agent's", so the key is left out rather than stored as `none`.
+      ...(r.agent && !(Array.isArray(r.grants) && r.grants.length) ? {} : { grants: normalizeGrants(r.grants) }),
       ...(r.recipe ? { recipe: String(r.recipe) } : {}),
       ...(Array.isArray(r.dependsOn) ? { dependsOn: r.dependsOn.map(String).filter((d) => d !== r.id) } : {}),
+      // What agent.js resolveTeam fills from the pool; kept so the runner's roles carry it.
+      ...(Array.isArray(r.skills) && r.skills.length ? { skills: r.skills.map(String).slice(0, 32) } : {}),
+      ...(r.workdir ? { workdir: String(r.workdir).slice(0, 400) } : {}),
+      ...(r.egress === 'redacted' || r.egress === 'delegated' ? { egress: r.egress } : {}),
+      ...(r.memoryScope ? { memoryScope: String(r.memoryScope).slice(0, 120) } : {}),
     })),
     budget: normalizeBudget(team.budget),
     enabled: team.enabled !== false,
@@ -123,11 +149,25 @@ export function grantAllows(grants, groupId, serverId = '') {
   return g.includes(groupId);
 }
 
+/**
+ * The SCM ladder: `merge` ⊃ `pr` ⊃ `push` ⊃ `read` — a role that may open a PR may push the
+ * branch the PR is from, and anyone who may push may read. `push` is the role's OWN branch
+ * only; the bridge names it (`cp/<project>/<job>`) and refuses any other.
+ */
+const SCM_LADDER = ['read', 'push', 'pr', 'merge'];
+export function scmAllows(grants, action) {
+  const g = normalizeGrants(grants);
+  const want = SCM_LADDER.indexOf(String(action || '').replace(/^scm:/, ''));
+  if (want < 0 || g.includes('none')) return false;
+  const held = Math.max(-1, ...g.filter((x) => x.startsWith('scm:')).map((x) => SCM_LADDER.indexOf(x.slice(4))));
+  return held >= want;
+}
+
 /** One line a person reads per role: name · tier/model · grants · mode. */
 export function describeRole(r) {
   const who = r.model || r.prefer || 'balanced';
   const grants = (r.grants || ['none']).join(', ');
-  return `${r.name || r.id} — ${who}${r.mode && r.mode !== 'model' ? ` (${r.mode})` : ''} · tools: ${grants}`;
+  return `${r.name || r.id}${r.agent ? ` (agent: ${r.agent})` : ''} — ${who}${r.mode && r.mode !== 'model' ? ` (${r.mode})` : ''} · tools: ${grants}`;
 }
 
 // ── Starters and the editor's form ───────────────────────────────────────────────────────
@@ -158,6 +198,55 @@ export const STARTER_TEAMS = Object.freeze([
     ],
     budget: { tokens: 30000, ms: 240000 },
   },
+  // ── The engineering teams (architecture-pillars.md §12.2) — roles stand for the standing
+  // agents in agent.js STARTER_AGENTS; a role's prompt is the agent's, its engine the agent's.
+  // A feature that crosses repos recruits one Implementer per repo (the role says which via
+  // its prompt); these starters name one.
+  {
+    name: 'feature',
+    description: 'Architect plans, an Implementer builds on a branch, Reviewer and Tester check, Scribe writes it up. The Architect judges.',
+    plan: 'planner', merge: 'judge', judge: 'architect',
+    roles: [
+      { id: 'architect', agent: 'architect' },
+      { id: 'implementer', agent: 'implementer', dependsOn: ['architect'] },
+      { id: 'reviewer', agent: 'reviewer', dependsOn: ['implementer'] },
+      { id: 'tester', agent: 'tester', dependsOn: ['implementer'] },
+      { id: 'scribe', agent: 'scribe', dependsOn: ['reviewer', 'tester'] },
+    ],
+    budget: { tokens: 400000, ms: 3600000 },
+  },
+  {
+    name: 'fix',
+    description: 'One Implementer fixes it on a branch, the Tester runs the guard, the Scribe notes it.',
+    plan: 'fixed', merge: 'concat',
+    roles: [
+      { id: 'implementer', agent: 'implementer' },
+      { id: 'tester', agent: 'tester', dependsOn: ['implementer'] },
+      { id: 'scribe', agent: 'scribe', dependsOn: ['tester'] },
+    ],
+    budget: { tokens: 150000, ms: 1800000 },
+  },
+  {
+    name: 'docs',
+    description: 'The Architect decides what the docs should say; the Scribe proposes the text.',
+    plan: 'fixed', merge: 'concat',
+    roles: [
+      { id: 'architect', agent: 'architect' },
+      { id: 'scribe', agent: 'scribe', dependsOn: ['architect'] },
+    ],
+    budget: { tokens: 80000, ms: 900000 },
+  },
+  {
+    name: 'release',
+    description: 'The Tester runs the guard on the merged branch, Release bumps and asks before publishing, the Scribe records the version.',
+    plan: 'fixed', merge: 'concat',
+    roles: [
+      { id: 'tester', agent: 'tester' },
+      { id: 'release', agent: 'release', dependsOn: ['tester'] },
+      { id: 'scribe', agent: 'scribe', dependsOn: ['release'] },
+    ],
+    budget: { tokens: 60000, ms: 1800000 },
+  },
 ]);
 
 /**
@@ -171,7 +260,7 @@ export function slugTeamName(name) {
 
 /** Fresh copies — a starter is a template, never the stored record. */
 export function starterTeams() {
-  return STARTER_TEAMS.map((t) => ({ ...t, roles: t.roles.map((r) => ({ ...r, grants: [...r.grants] })), budget: { ...t.budget } }));
+  return STARTER_TEAMS.map((t) => ({ ...t, roles: t.roles.map((r) => ({ ...r, ...(r.grants ? { grants: [...r.grants] } : {}), ...(r.dependsOn ? { dependsOn: [...r.dependsOn] } : {}) })), budget: { ...t.budget } }));
 }
 
 /** A blank team for the editor: one role, the smallest budget that is still a budget. */
@@ -184,6 +273,7 @@ export function blankTeam() {
  * the budget as numbers that may be blank; a blank judge under `merge: judge` is the last
  * role, which is the writer in every starter.
  */
+const grantsText = (g) => String(Array.isArray(g) ? g.join(',') : g || '').split(/[,\s]+/).map((x) => x.trim()).filter(Boolean);
 export function teamFromForm(form) {
   const roles = (Array.isArray(form.roles) ? form.roles : []).map((r) => ({
     id: String(r.id || '').trim(),
@@ -191,7 +281,12 @@ export function teamFromForm(form) {
     prompt: String(r.prompt || ''),
     prefer: r.prefer || 'balanced',
     ...(r.model ? { model: String(r.model) } : {}),
-    grants: String(Array.isArray(r.grants) ? r.grants.join(',') : r.grants || 'none').split(/[,\s]+/).map((g) => g.trim()).filter(Boolean),
+    ...(r.agent ? { agent: String(r.agent).trim() } : {}),
+    ...(r.engine ? { engine: r.engine } : {}),
+    ...(Array.isArray(r.dependsOn) ? { dependsOn: r.dependsOn.map(String) } : {}),
+    // Blank grants on a role that stands for an agent mean "the agent's"; on any other role
+    // they mean none.
+    ...(grantsText(r.grants).length ? { grants: grantsText(r.grants) } : r.agent ? {} : { grants: ['none'] }),
   }));
   const budget = {};
   for (const k of ['tokens', 'calls', 'ms', 'usd']) {

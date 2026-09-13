@@ -144,6 +144,8 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
           <div id="bridge-agents"></div>
           <button id="add-agent-bottom" class="btn add-row" type="button">+ Add agent</button>
         </div>
+        <!-- SCM connections (pillars §14): the bridge holds the token; the record is shared. -->
+        <div class="card" id="connections"></div>
       </section>
 
       <!-- Tools: Web search + MCP servers -->
@@ -311,21 +313,7 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
       <!-- TEAMS: agent teams and their boards (F8). The board is the desktop's Agents → Board,
            over the same gateway run store; a person answers, decides and replies here too. -->
       <section class="panel hidden" data-panel="directory">
-        <div class="card" id="directory">
-          <div class="card-head">
-            <h2>Agents <span class="sub">— the ones you define</span></h2>
-          </div>
-          <p class="muted">
-            An agent is yours: a name, a specialty, a prompt, the skills and grants it carries,
-            and an <strong>engine</strong> — a model from <strong>Models</strong> or a coding agent
-            from <strong>Harnesses</strong>. Teams are made of them, and each keeps a scorecard
-            of the work it has actually done.
-          </p>
-          <p class="muted">
-            The directory arrives with the next release. Today the nearest thing is a
-            <strong>role</strong> inside a team — open <a href="#teams" data-open-tab="teams">Teams</a>.
-          </p>
-        </div>
+        <div class="card" id="directory"></div>
       </section>
       <section class="panel hidden" data-panel="teams">
         <nav id="tm-subtabs" class="subtabs" data-subtab-keep aria-label="Teams sections"></nav>

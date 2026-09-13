@@ -36,6 +36,8 @@ const FILES = [
   'toolset.js', 'tool-dispatch.js', 'find-tool.js', 'web-search-tool.js', 'mcp-dispatch.js', 'recipe-tool.js',
   // Agent teams (F8): the contracts, the runner, the tool. Bound in js/team-host.js.
   'budget.js', 'team.js', 'team-plan.js', 'team-board.js', 'board-tool.js', 'team-cache.js', 'team-task.js', 'team-record.js', 'scorecard.js', 'team-run.js', 'team-tool.js', 'team-trail.js',
+  // The agent pool (A1): the cards, their engines, the engines' cards, the SCM connections.
+  'engine.js', 'agent.js', 'model-ledger.js', 'scm-connection.js',
   // The settings every client shares, and how two edited copies reconcile.
   'client-prefs.js', 'record-list.js', 'meeting-insights.js',
   // The MCP client and the prompt text about tools — the desktop runs the same client.
