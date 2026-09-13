@@ -399,6 +399,10 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
       } catch {
         continue;
       }
+      // An error INSIDE the stream — the gateway's relay agent exited, a provider refused
+      // mid-way — arrives as `{ error }` after a 200. Reading only `choices` turns it into a
+      // turn that ended with nothing to say; a team member 'completed' empty that way.
+      if (json.error && !json.choices) throw new Error(typeof json.error === 'string' ? json.error : (json.error.message || JSON.stringify(json.error)));
       // Usage rides in a trailing chunk (choices often empty) when
       // stream_options.include_usage is honored. Accumulate across steps.
       if (json.usage) {

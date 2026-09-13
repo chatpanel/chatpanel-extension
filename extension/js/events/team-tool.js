@@ -80,6 +80,10 @@ const json = (v) => JSON.stringify(v);
 export function teamToolProvider({ teams = [], run = null, appoint = null, confirmSave = null, saveTeam = null } = {}) {
   const byName = new Map(usable(teams).map((t) => [t.name, t]));
   let bound = null;
+  // One run per team+request per turn. A run that failed, answered with nothing, or ran
+  // out of budget comes back as a result the model must REPORT — asking for it again in the
+  // same turn is the circle a person had to break by hand.
+  const ran = new Map();
   return {
     id: 'team',
     specs: [teamToolSpec(teams)],
@@ -120,18 +124,21 @@ export function teamToolProvider({ teams = [], run = null, appoint = null, confi
       if (action === 'run') {
         if (!request) return json({ error: 'run needs a request — what should the team do?' });
         if (typeof run !== 'function') return json({ error: 'This surface cannot run a team.' });
+        const key = `${team.name}\n${request}`;
+        const prior = ran.get(key);
+        if (prior) return json({ error: `The "${team.name}" team already ran this request in this turn (run ${prior.runId}, ${prior.status}). Do not run it again: tell the user what happened — ${prior.summary} — and ask how to proceed.`, runId: prior.runId, status: prior.status, tasks: prior.tasks });
         const dry = dryRunTeam(team, request, { appoint });
         if (!dry.ok) return json({ error: `No model is available for role(s): ${dry.missing.join(', ')}.`, roles: dry.roles });
         const result = await run({ team, request, toolset: bound });
         const findings = (result.board || []).map((f) => ({ role: f.role, kind: f.kind, text: f.text, refs: f.refs }));
-        return json({
-          name: team.name, runId: result.runId, status: result.status,
-          proposal: result.proposal,
-          tasks: (result.tasks || []).map((x) => ({ id: x.id, role: x.role, status: x.status, ms: x.ms, findings: (x.findings || []).length, error: x.error || undefined })),
-          findings,
-          usage: result.usage,
-          hint: result.status === 'over-budget' ? 'The team stopped at its budget; the proposal is what it had. Say so.' : undefined,
-        });
+        const tasks = (result.tasks || []).map((x) => ({ id: x.id, role: x.role, status: x.status, ms: x.ms, findings: (x.findings || []).length, error: x.error || undefined }));
+        const failed = tasks.filter((x) => x.status !== 'ok');
+        const summary = failed.length ? failed.map((x) => `${x.role} ${x.status}${x.error ? ` (${x.error})` : ''}`).join('; ') : `${findings.length} findings`;
+        ran.set(key, { runId: result.runId, status: result.status, summary, tasks });
+        const hint = result.status === 'over-budget' ? 'The team stopped at its budget; the proposal is what it had. Say so.'
+          : result.status === 'failed' ? `The run FAILED — ${summary}. Do not run the team again this turn. Tell the user exactly which role failed and why, and ask whether to retry, change the team\'s models in Settings → Teams, or answer without the team.`
+          : failed.length ? `Some roles did not finish — ${summary}. Say so alongside the proposal.` : undefined;
+        return json({ name: team.name, runId: result.runId, status: result.status, proposal: result.proposal, tasks, findings, usage: result.usage, hint });
       }
       return json({ error: `Unknown action "${action}". Use run, dry_run or save.` });
     },

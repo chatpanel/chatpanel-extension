@@ -179,7 +179,14 @@ export async function runTeam({
             usage = res?.usage || null;
             if (usage) budget.charge(usage);
             if (res?.aborted) { status = 'stopped'; break; }
-            if (res?.ok) { text = String(res?.text || ''); break; }
+            if (res?.ok) {
+              text = String(res?.text || '');
+              // A turn that ended with nothing to say — an agent that exited, a stream that
+              // died after its tool calls — is not a done task. Three members "completed"
+              // empty once, the run merged nothing, and the caller ran the team again.
+              if (!text.trim()) throw new Error('the model returned no answer');
+              break;
+            }
             const err = res?.error || 'the model did not answer';
             if (attempt >= MAX_APPOINTMENTS || stopped() || !isModelUnavailable(err)) throw new Error(err);
             exclude.add(m.model);
