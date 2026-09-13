@@ -79,7 +79,10 @@ export function teamToolProvider({ teams = [], run = null, appoint = null, confi
   return {
     id: 'team',
     specs: [teamToolSpec(teams)],
-    system: byName.size ? 'Saved agent teams exist (see the `team` tool). When a request is broad enough that several roles would do it better — research plus writing, several sources to reconcile — run the matching team rather than doing it all in one turn.' : '',
+    system: [
+      byName.size ? 'Saved agent teams exist (see the `team` tool). When a request is broad enough that several roles would do it better — research plus writing, several sources to reconcile — run the matching team rather than doing it all in one turn.' : '',
+      (confirmSave && saveTeam) ? 'When the user asks to create, make, set up or save a team (of agents / roles), do not run one: call the `team` tool with {"action":"save","team":{…}} — pick roles, prompts, grants and a budget from what they said, and ask only for what you cannot infer. The user approves it on a card.' : '',
+    ].filter(Boolean).join(' '),
     bind(toolset) { bound = toolset; },
     async execute(name, input) {
       if (name !== TEAM_TOOL_NAME) return json({ error: `Unknown tool: ${name}` });
