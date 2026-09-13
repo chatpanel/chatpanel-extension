@@ -71,7 +71,11 @@ assert.match(meetingsJs, /transcript-section-title/, 'Transcript tab should sepa
 assert.match(meetingsJs, /repairTranscriptParticipants/, 'Meetings should repair legacy imports where participants were stored as chat rows.');
 assert.match(meetingsJs, /repairImportedTranscriptDate/, 'Meetings should repair imported transcripts that were previously timestamped as today.');
 assert.match(meetingsJs, /await persistMeeting\(rec\)/, 'Meetings should persist repaired legacy participant records.');
-assert.match(meetingsJs, /function groupActionsByOwner/, 'Meeting action items should be grouped by owner/person before rendering.');
+// The grouping (and the notes parser it reads) is shared with the desktop's meeting page —
+// @chatpanel/events meeting-insights.js — so the page IMPORTS it rather than defining it.
+assert.match(meetingsJs, /import \{ parseMeetingNotes, groupActionsByOwner, demd \} from '\.\/js\/events\/meeting-insights\.js'/, 'Meeting action items should be grouped by owner through the shared parser.');
+assert.match(meetingsJs, /groupActionsByOwner\(actions\)\.map/, 'Meeting action items should be grouped by owner/person before rendering.');
+assert.doesNotMatch(meetingsJs, /function parseNotes\(/, 'The notes parser must not be re-declared here — it is the shared one.');
 assert.match(meetingsJs, /action-group/, 'Meeting action item groups should render with a dedicated group class.');
 assert.match(meetingsJs, /MEETING_INSIGHT_SECTIONS/, 'Generate insights should use independent section jobs.');
 assert.match(meetingsJs, /Promise\.allSettled/, 'Generate insights should run section extraction jobs in parallel.');

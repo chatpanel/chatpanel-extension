@@ -22,6 +22,7 @@ import { isMeetingImageValue, participantRowsOfMeeting, peopleOfMeeting, speaker
 import { speakerBandHtml, talkTimeChartHtml, speakerColors } from './js/meeting-charts.js';
 import { contentHash, insightTopicItemsFromNotes, makeTopicIndex, topicDisplayForMeetingSource, topicSourceTextForMeeting } from './js/topic-extraction.js';
 import { MEETING_INSIGHT_SECTIONS, composeMeetingInsightNotes, meetingInsightPrompt } from './js/meeting-insights.js';
+import { parseMeetingNotes, groupActionsByOwner, demd } from './js/events/meeting-insights.js';
 import { parseTranscriptText, repairImportedTranscriptDate, repairTranscriptParticipants } from './js/meeting-transcript-import.js';
 import { icon, iconForEmoji, hydrate } from './js/icons.js';
 import { mountTagEditor, mountTagFilter } from './js/tag-bar.js';
@@ -79,62 +80,10 @@ function toast(msg) {
 const peopleOf = peopleOfMeeting;
 
 // --- notes markdown → structured insights ----------------------------------
-const isBullet = (l) => /^\s*([-*+]|\d+\.)\s+/.test(l);
-const stripBullet = (l) => l.replace(/^\s*([-*+]|\d+\.)\s+/, '').trim();
-function sectionKind(h) {
-  const s = h.toLowerCase();
-  if (/tl;?dr|summary|overview|recap/.test(s)) return 'summary';
-  if (/topic|agenda/.test(s)) return 'topics';
-  if (/key moment|moments|highlight|decision/.test(s)) return 'moments';
-  if (/shared link|link|url|resource|reference/.test(s)) return 'links';
-  if (/action|task|next step|to-?do|follow-?up/.test(s)) return 'actions';
-  return null;
-}
-function badgeOf(text) {
-  const m = text.match(/\*{0,2}\[?\s*(decision|risk|question|highlight)\s*\]?\*{0,2}\s*:?/i);
-  if (m) return { badge: m[1].toLowerCase(), text: text.slice(m.index + m[0].length).trim() };
-  return { badge: 'highlight', text };
-}
-const demd = (s) => String(s).replace(/\*\*(.+?)\*\*/g, '$1').replace(/(^|[^*])\*(?!\s)(.+?)\*/g, '$1$2').replace(/`(.+?)`/g, '$1').replace(/_(.+?)_/g, '$1').trim();
-
-function parseNotes(md) {
-  const out = { summary: '', topics: [], moments: [], links: [], actions: [], hasAny: false };
-  if (!md || !md.trim()) return out;
-  const lines = md.split('\n');
-  let cur = 'summary';
-  const summaryParts = [];
-  lines.forEach((raw, idx) => {
-    const line = raw.replace(/\s+$/, '');
-    const h = line.match(/^#{1,6}\s+(.*)$/);
-    if (h) { cur = sectionKind(h[1]); return; }
-    if (!line.trim()) return;
-    if (cur === 'summary') summaryParts.push(isBullet(line) ? stripBullet(line) : line.trim());
-    else if (cur === 'topics') { if (isBullet(line)) out.topics.push(demd(stripBullet(line))); }
-    else if (cur === 'moments') { if (isBullet(line)) { const b = badgeOf(stripBullet(line)); out.moments.push({ badge: b.badge, text: demd(b.text) }); } }
-    else if (cur === 'links') {
-      if (isBullet(line)) {
-        const value = demd(stripBullet(line));
-        if (value && !/^no shared links\.?$/i.test(value)) out.links.push(value);
-      }
-    }
-    else if (cur === 'actions') {
-      const m = line.match(/^\s*[-*+]\s*\[([ xX])\]\s*(.*)$/);
-      if (m) {
-        let text = m[2].trim(); let owner = ''; let due = '';
-        const ow = text.match(/_\(([^)]+)\)_|\(([^)]+)\)/);
-        if (ow) { owner = (ow[1] || ow[2] || '').trim(); text = text.replace(ow[0], '').trim(); }
-        const du = text.match(/[—-]\s*_?([^_]+?)_?\s*$/);
-        if (du && /due|\d|mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|today|tomorrow|eod|eow|next/i.test(du[1])) {
-          due = du[1].replace(/^due\s*/i, '').trim(); text = text.slice(0, du.index).trim();
-        }
-        out.actions.push({ text: demd(text), done: m[1].toLowerCase() === 'x', owner: demd(owner), due, lineIndex: idx });
-      } else if (isBullet(line)) out.actions.push({ text: demd(stripBullet(line)), done: false, owner: '', due: '', lineIndex: idx });
-    }
-  });
-  out.summary = demd(summaryParts.join(' ').trim());
-  out.hasAny = !!(out.summary || out.topics.length || out.moments.length || out.links.length || out.actions.length);
-  return out;
-}
+// The five tiles are read by the SHARED parser (@chatpanel/events meeting-insights.js), so
+// the desktop's meeting page and this one cannot disagree about which line is a risk. The
+// section matcher, the badge reader, the owner/due grammar and `demd` all moved there.
+const parseNotes = parseMeetingNotes;
 
 // --- search ----------------------------------------------------------------
 function makeSnippet(d, terms) {
@@ -442,20 +391,6 @@ function renderInsights() {
       <div class="tile span"><h3>${icon('list-checks')} Action Items</h3>${actions}</div>
     </div>`;
   $('m-tabbody').querySelectorAll('.chk').forEach((cb) => (cb.onchange = () => toggleAction(Number(cb.dataset.line), Number(cb.dataset.i), cb.checked)));
-}
-
-function groupActionsByOwner(actions) {
-  const groups = new Map();
-  (actions || []).forEach((action, index) => {
-    const owner = (action.owner || '').trim() || 'Unassigned';
-    if (!groups.has(owner)) groups.set(owner, { owner, items: [] });
-    groups.get(owner).items.push({ action, index });
-  });
-  return [...groups.values()].sort((a, b) => {
-    if (a.owner === 'Unassigned') return 1;
-    if (b.owner === 'Unassigned') return -1;
-    return a.owner.localeCompare(b.owner);
-  });
 }
 
 function renderActionItems(actions) {

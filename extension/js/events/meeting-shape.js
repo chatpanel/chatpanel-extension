@@ -268,3 +268,23 @@ export function formatTalkTime(ms) {
   if (mins < 60) return `${mins} min`;
   return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`;
 }
+
+/**
+ * A "speaker" that is really an avatar URL. Some captures (Zoom among them) put the picture
+ * where the name goes, for a participant whose name was never captured. The URL is a fine
+ * identity — distinct people get distinct URLs, so the arithmetic above is right — but it
+ * is not a label, and printing it puts a tracking-shaped link in a legend. A chart calls
+ * such a speaker "Participant", numbered when there is more than one.
+ */
+export const isSpeakerImageValue = (value) => typeof value === 'string'
+  && /^https?:\/\/\S+$/i.test(value.trim())
+  && /\.(png|jpe?g|gif|webp|svg)(\?|#|$)|images\.zoom\.us|\/p\/v2\/|gravatar|avatar|googleusercontent|wbxcdn|teams\.(microsoft|live)/i.test(value);
+
+/** What to call each speaker on screen — names as they are, avatar URLs as "Participant n". */
+export function speakerLabeller(speakers) {
+  const names = (speakers || []).map((s) => (typeof s === 'string' ? s : s?.speaker));
+  const anon = names.filter(isSpeakerImageValue);
+  const numbered = anon.length > 1;
+  const index = new Map(anon.map((n, i) => [n, `Participant ${i + 1}`]));
+  return (name) => (isSpeakerImageValue(name) ? (numbered ? index.get(name) : 'Participant') : name);
+}
