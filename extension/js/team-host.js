@@ -13,6 +13,7 @@
 
 import { runTeam } from './events/team-run.js';
 import { createAnswerBox } from './events/board-tool.js';
+import { createControl } from './events/team-task.js';
 import { grantAllows } from './events/team.js';
 import { appoint } from './events/cowriter-router.js';
 import { swarmCandidates } from './notes-swarm-router.js';
@@ -44,6 +45,34 @@ async function gwFetch(url, opts = {}) {
 }
 
 /**
+ * A transcript as text every provider path accepts: a tool round becomes what the earlier
+ * attempt did and what came back, as assistant text — the next model reads it as the work
+ * so far, whatever provider is behind it.
+ */
+export function flattenForWire(messages) {
+  const out = [];
+  let acc = null;
+  const flush = () => { if (acc) { out.push({ role: 'assistant', content: acc.join('\n') }); acc = null; } };
+  for (const m of messages || []) {
+    if (!m || !m.role || m.role === 'system') continue;
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      acc = acc || [];
+      if (m.content) acc.push(String(m.content));
+      for (const c of m.tool_calls) acc.push(`[called ${c.function?.name || 'a tool'} with ${String(c.function?.arguments || '{}').slice(0, 1500)}]`);
+    } else if (m.role === 'tool') {
+      acc = acc || [];
+      acc.push(`[result: ${String(m.content || '').slice(0, 3000)}]`);
+    } else {
+      flush();
+      out.push({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '') });
+    }
+  }
+  flush();
+  // Two assistant messages in a row confuse some providers: fold them.
+  return out.reduce((acc2, m) => { const last = acc2.at(-1); if (last && last.role === m.role && m.role === 'assistant') last.content += `\n\n${m.content}`; else acc2.push({ ...m }); return acc2; }, []);
+}
+
+/**
  * The gateway's run store, from this client (gateway 0.6.78+). A POST carries the extension
  * Origin, which authorizes it; Chrome omits Origin on GETs to a permitted host, so reads and
  * the SSE tail need the token — handed over once by the same handshake prefs-sync uses.
@@ -62,6 +91,10 @@ export function runStore(settings) {
     answer: (id, body) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/answer`, { method: 'POST', body: JSON.stringify({ ...body, by: 'person' }) }),
     decide: (id, body) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/decide`, { method: 'POST', body: JSON.stringify({ ...body, by: 'person' }) }),
     post: (id, body) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/post`, { method: 'POST', body: JSON.stringify({ ...body, by: 'person' }) }),
+    // A task's continuation (gateway 0.6.85+): hand a task to another model; the checkpoint to resume; claim it when resuming.
+    handoff: (id, body) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/handoff`, { method: 'POST', body: JSON.stringify({ ...body, by: 'person' }) }),
+    checkpoint: (id) => withToken(() => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/checkpoint`)),
+    claim: (id) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/claim`, { method: 'POST', body: JSON.stringify({ client: 'extension' }) }),
     remove: (id) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     /** Tail a run's events (SSE). Returns a stop function. */
     tail(id, onEvent, { after = -1 } = {}) {
@@ -131,7 +164,7 @@ export function appointerFor(settings, license, { like = '' } = {}) {
 const liveRuns = new Map();
 export const liveRun = (id) => liveRuns.get(String(id || '')) || null;
 
-export function createRunSync({ store, runId, team, request, onStopRequested = null, onRemote = null }) {
+export function createRunSync({ store, runId, team, request, onStopRequested = null, onRemote = null, resuming = false }) {
   let queue = [];
   let timer = null;
   let dead = false;
@@ -145,7 +178,8 @@ export function createRunSync({ store, runId, team, request, onStopRequested = n
   };
   return {
     async start() {
-      const res = await store.create({ id: runId, team, request });
+      // A resumed run exists on the store already: claim it rather than create it.
+      const res = resuming && store.claim ? await store.claim(runId) : await store.create({ id: runId, team, request });
       if (!res.ok) { dead = true; return false; }
       // Watch our own run for what ANOTHER client did: a stop, an answer to an ask, a decision.
       if (onStopRequested || onRemote) stopTail = store.tail(runId, (ev) => { if (ev?.type === 'run.stop-requested') onStopRequested?.(); else if (String(ev?.type || '').startsWith('board.')) onRemote?.(ev); });
@@ -171,17 +205,22 @@ export function createRunSync({ store, runId, team, request, onStopRequested = n
 export async function runTeamHere({ team, request, settings, license, like = '', bridgeUrl, bridgeAvailable, signal, emit = () => {}, streamChat, buildTurnTools, runId = null, store = null, askTimeoutMs = 10 * 60_000, resume = null }) {
   const ac = new AbortController();
   signal?.addEventListener?.('abort', () => ac.abort(), { once: true });
-  const id = runId || `run_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+  const id = runId || resume?.runId || `run_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
   const gw = store || runStore(settings);
   // A person's answers to the members' asks — from this panel, or from the desktop through
   // the gateway (the store's `board.post` of kind answer, on our tail).
   const answers = createAnswerBox();
+  const control = createControl();
   const sync = createRunSync({
-    store: gw, runId: id, team: team.name, request, onStopRequested: () => ac.abort(),
-    onRemote: (ev) => { const post = ev.payload?.post; if (ev.type === 'board.post' && post?.kind === 'answer') answers.answer(post.threadId, { text: post.text, by: post.by, id: post.id }); },
+    store: gw, runId: id, team: team.name, request, resuming: !!resume, onStopRequested: () => ac.abort(),
+    onRemote: (ev) => {
+      const post = ev.payload?.post;
+      if (ev.type === 'board.post' && post?.kind === 'answer') answers.answer(post.threadId, { text: post.text, by: post.by, id: post.id });
+      else if (ev.type === 'task.handoff-requested' && ev.payload?.taskId && ev.payload?.model) control.handoff(ev.payload.taskId, ev.payload.model, ev.payload.by || 'person', ev.payload.reason || '');
+    },
   });
   await sync.start();
-  liveRuns.set(id, { answers, stop: () => ac.abort(), team: team.name });
+  liveRuns.set(id, { answers, control, stop: () => ac.abort(), team: team.name });
   const appointRole = appointerFor(settings, license, { like });
 
   // A role's toolset: the same builder a turn uses, with only the groups the role may hold.
@@ -200,12 +239,19 @@ export async function runTeamHere({ team, request, settings, license, like = '',
   };
 
   // `signal` is the TASK's: an ask nobody answered aborts this member's turn, not the run's.
-  const callModel = async ({ taskId, role, model, system, prompt, tools, onDelta, signal: taskSignal }) => {
+  const callModel = async ({ taskId, role, model, system, prompt, messages: transcript, tools, onDelta, signal: taskSignal }) => {
     const target = resolveTarget(getTarget(settings, model), settings);
     if (!target) return { ok: false, error: `no target for "${model}"` };
-    const messages = [{ role: 'user', content: prompt }];
+    // The task's transcript, when it has one, flattened for the wire: every provider path
+    // here (OpenAI, Anthropic, a relayed agent) takes user/assistant text; not every one takes
+    // another model's tool_calls. The record keeps the real shape (below).
+    const sent = Array.isArray(transcript) && transcript.length ? transcript : [{ role: 'user', content: prompt }];
+    const messages = flattenForWire(sent);
     let text = '';
     let usage = null;
+    // What this attempt adds to the transcript, rebuilt from the loop's tool events.
+    const added = [];
+    const open = new Map();
     try {
       const out = await streamChat({
         agent: { ...target, systemPrompt: [target.systemPrompt, system].filter(Boolean).join('\n\n') },
@@ -213,21 +259,32 @@ export async function runTeamHere({ team, request, settings, license, like = '',
         onDelta: (d) => { text += d; onDelta?.(d, text); },
         onEvent: (e) => {
           if (e?.type === 'usage') usage = e;
-          if (e?.type === 'tool' && e.phase === 'start') emit('task.tool', { runId: id, at: Date.now(), taskId, role, name: e.name, text: e.input?.action || '' });
+          if (e?.type === 'tool' && e.phase === 'start') {
+            emit('task.tool', { runId: id, at: Date.now(), taskId, role, name: e.name, text: e.input?.action || '' });
+            const call = { id: e.callId || `c${added.length}`, type: 'function', function: { name: e.name, arguments: JSON.stringify(e.input ?? {}) } };
+            open.set(call.id, call);
+            added.push({ role: 'assistant', content: null, tool_calls: [call] });
+          } else if (e?.type === 'tool' && e.phase === 'done') {
+            const callId = e.callId || [...open.keys()].at(-1);
+            if (callId) { open.delete(callId); added.push({ role: 'tool', tool_call_id: callId, content: String(e.result ?? '') }); }
+          }
         },
         usage: { surface: 'team', sourceId: id },
       });
       const full = typeof out === 'string' ? out : (out?.text ?? text);
-      return { ok: true, text: full || text, usage: usage ? { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens } : null, aborted: ac.signal.aborted };
+      const final = full || text;
+      const wire = [...sent, ...added, ...(final.trim() ? [{ role: 'assistant', content: final }] : [])];
+      return { ok: true, text: final, usage: usage ? { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens } : null, aborted: ac.signal.aborted || taskSignal?.aborted, transcript: wire };
     } catch (e) {
-      if (ac.signal.aborted || taskSignal?.aborted) return { ok: true, text, aborted: true, usage: null };
-      return { ok: false, error: e?.message || String(e), text };
+      const wire = [...sent, ...added, ...(text.trim() ? [{ role: 'assistant', content: text }] : [])];
+      if (ac.signal.aborted || taskSignal?.aborted) return { ok: true, text, aborted: true, usage: null, transcript: wire };
+      return { ok: false, error: e?.message || String(e), text, transcript: wire };
     }
   };
 
   try {
     const result = await runTeam({
-      team, request, callModel, appoint: appointRole, runId: id, signal: ac.signal, answers, askTimeoutMs, resume,
+      team, request, callModel, appoint: appointRole, runId: id, signal: ac.signal, answers, askTimeoutMs, resume, control,
       toolsFor: (role) => toolsFor(role),
       emit: (type, payload) => { sync.push(type, payload); emit(type, payload); },
     });
@@ -236,6 +293,34 @@ export async function runTeamHere({ team, request, settings, license, like = '',
     liveRuns.delete(id);
     await sync.end();
   }
+}
+
+/**
+ * Resume a run from its record, here: the checkpoint from the gateway, the team from the
+ * shared section, the same binding a chat turn uses. Finished tasks are carried; interrupted
+ * ones continue their transcripts on the roster as it is now. Runs in the background; the
+ * Board shows it like any run.
+ */
+export async function resumeRunHere(settings, license, { runId, streamChat, buildTurnTools, bridgeUrl = '', bridgeAvailable = false, emit = () => {} }) {
+  if (liveRun(runId)) return { ok: false, error: 'this run is already running here' };
+  const store = runStore(settings);
+  const cp = await store.checkpoint(runId);
+  if (!cp.ok || !cp.data?.checkpoint) return { ok: false, error: cp.error || 'no checkpoint on the record' };
+  const rec = await store.get(runId);
+  const teamName = rec.ok ? rec.data?.run?.team : '';
+  const team = (settings.teams || []).find((t) => t?.name === teamName);
+  if (!team) return { ok: false, error: `the team "${teamName}" is no longer saved` };
+  runTeamHere({ team, request: rec.data?.run?.request || '', settings, license, bridgeUrl, bridgeAvailable, streamChat, buildTurnTools, emit, resume: cp.data.checkpoint, store })
+    .catch((e) => console.warn('[chatpanel] team resume:', e?.message || e));
+  return { ok: true, runId };
+}
+
+/** A person hands a task to another model: through the gateway (the record, the other client) and straight to a run this panel runs. */
+export async function handoffTask(settings, { runId, taskId, model, reason = '' }) {
+  const r = await runStore(settings).handoff(runId, { taskId, model, reason });
+  const live = liveRun(runId);
+  if (live && !r.ok) live.control.handoff(taskId, model, 'person', reason);
+  return r.ok || !!live ? { ok: true } : { ok: false, error: r.error };
 }
 
 /** A person answers an ask: through the gateway (the record, the other client) and, when this panel runs it, straight to the runner. */

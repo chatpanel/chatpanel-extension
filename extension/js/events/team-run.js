@@ -30,6 +30,7 @@ import { fixedPlan, plannerPrompt, parsePlan, waves } from './team-plan.js';
 import { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, RUNNER } from './team-board.js';
 import { boardToolProvider, createAnswerBox, withBoardTool, DEFAULT_ASK_TIMEOUT_MS } from './board-tool.js';
 import { createRunCache, withRunCache } from './team-cache.js';
+import { messagesFor, mergeTranscript, clipTranscript, clipMessage as clipTranscriptOne, newSteps, continuationNote } from './team-task.js';
 import { converge } from './promotion.js';
 
 export const RUN_STATUSES = Object.freeze(['planning', 'running', 'merging', 'waiting', 'completed', 'partial', 'over-budget', 'stopped', 'failed']);
@@ -104,6 +105,9 @@ export async function runTeam({
   answers = null, askTimeoutMs = DEFAULT_ASK_TIMEOUT_MS,
   // A checkpoint from a run that ended `waiting` — see resumeTeam.
   resume = null,
+  // The host's control channel (team-task.js createControl): a person hands a task to another
+  // model from the board, on either client; the runner continues the task's transcript there.
+  control = null,
 } = {}) {
   if (typeof callModel !== 'function') throw new TeamRunError('BAD_RUN', 'callModel required');
   const t = normalizeTeam(team); // throws on a team without a budget — O1
@@ -119,9 +123,12 @@ export async function runTeam({
   const box = answers || createAnswerBox();
   const askMs = answers ? askTimeoutMs : 0;
   const startedAt = resume?.startedAt || now();
-  // Tasks a checkpoint already finished are carried over, not re-run.
+  // Tasks a checkpoint already finished are carried over, not re-run. Tasks it left
+  // interrupted — waiting, stopped, failed, or running when the process died — are resumed
+  // from their transcripts, not started again.
   const tasksOut = (resume?.tasks || []).filter((x) => x.status === 'ok').map((x) => ({ ...x }));
   const carried = new Set(tasksOut.map((x) => x.id));
+  const interrupted = new Map((resume?.tasks || []).filter((x) => x.status !== 'ok' && Array.isArray(x.transcript) && x.transcript.length).map((x) => [x.id, x]));
   const roleOf = (rid) => t.roles.find((r) => r.id === rid);
   // `exclude` holds what failed as unavailable this run; a re-appointment skips it. A role's
   // pinned model is tried first and, when it is the one that failed, the roster steps in.
@@ -161,7 +168,9 @@ export async function runTeam({
     const usage = budget.snapshot();
     const out = { runId: id, team: t.name, status, plan: { by: planBy, tasks }, tasks: tasksOut, board: board.all(), threads: board.state(), usage, lookups: { distinct: runCache.size, shared: runCache.shared }, startedAt, endedAt: now(), ...extra };
     // What a resume needs, on the record: the plan, what finished, the board, the spend.
-    if (status === 'waiting') out.checkpoint = { runId: id, startedAt, plan: { by: planBy, tasks }, tasks: tasksOut, board: board.state(), budget: { cap: budget.cap, spent: usage.spent } };
+    // A run that did not complete can be resumed from its record — the plan, every task's
+    // transcript and status, the board, the spend — by any client, any time later.
+    if (status !== 'completed') out.checkpoint = { runId: id, startedAt, plan: { by: planBy, tasks }, tasks: tasksOut.map((x) => ({ ...x, findings: undefined })), board: board.state(), budget: { cap: budget.cap, spent: usage.spent }, budgetAsked: !!extra.budgetAsked };
     say('run.done', { status, usage, proposal: out.proposal || null, failedTaskIds: tasksOut.filter((x) => x.status === 'failed').map((x) => x.id), waitingTaskIds: tasksOut.filter((x) => x.status === 'waiting').map((x) => x.id), ...(out.checkpoint ? { checkpoint: out.checkpoint } : {}) });
     return out;
   };
@@ -187,16 +196,33 @@ export async function runTeam({
       if (stopped() || overBudget || waitingOnPerson) { tasksOut.push({ id: task.id, role: task.role, status: 'skipped', text: '', findings: [] }); return; }
       const role = roleOf(task.role);
       const t0 = now();
-      say('task.started', { taskId: task.id, role: task.role, title: task.title });
+      const was = interrupted.get(task.id) || null;
+      say('task.started', { taskId: task.id, role: task.role, title: task.title, ...(was ? { resumed: true, steps: was.transcript.length } : {}) });
       let text = '';
       let usage = null;
       let status = 'ok';
       let error = null;
+      // THE TASK'S TRANSCRIPT — its conversation so far, apart from any one model. An attempt
+      // continues it; a hand-off continues it on another model; a resume continues it from
+      // the record. Only a task that has never been attempted starts from the bare prompt.
+      let transcript = was ? [...was.transcript] : [];
+      const attempts = was?.attempts ? [...was.attempts] : [];
       // The task's own abort: an ask nobody answered in time stops THIS member's turn (the
-      // run then checkpoints), without stopping the run's other members.
-      const taskAc = new AbortController();
-      signal?.addEventListener?.('abort', () => taskAc.abort(), { once: true });
+      // run then checkpoints), without stopping the run's other members. A person's hand-off
+      // aborts it too, and names where the task continues.
+      let taskAc = new AbortController();
+      const onRunAbort = () => taskAc.abort();
+      signal?.addEventListener?.('abort', onRunAbort, { once: true });
       let askedAndWaiting = null;
+      let handoffTo = control?._pendingFor?.(task.id) || null;
+      const unsubscribe = control?._subscribe?.((req) => {
+        if (req.type !== 'handoff' || req.taskId !== task.id) return false;
+        handoffTo = req; taskAc.abort(); return true;
+      }) || null;
+      const recordSteps = (before, after) => {
+        const added = newSteps(before, after);
+        if (added.length) say('task.step', { taskId: task.id, role: role.id, steps: added.map((m) => clipTranscriptOne(m)) });
+      };
       try {
         if (role.mode === 'recipe') {
           if (typeof runRecipe !== 'function') throw new Error('this host cannot run recipes');
@@ -227,20 +253,45 @@ export async function runTeam({
           // models. Anything else (a refusal, a timeout, a bad request) fails the task.
           const exclude = new Set();
           let lastErr = '';
+          // What the next attempt is told, when it continues rather than starts.
+          let note = was ? continuationNote(was.status === 'waiting' ? { kind: 'answer', answer: 'see the board' } : { kind: 'resume', reason: was.error || was.status }) : null;
+          let lastModel = was?.attempts?.at?.(-1)?.model || null;
           for (let attempt = 1; ; attempt++) {
-            const m = modelFor(role, excluding(exclude));
+            let m;
+            if (handoffTo) {
+              // A person's hand-off names the model; the task continues there whatever the
+              // roster would have chosen. Said on the board, so everyone knows who has it.
+              m = { model: handoffTo.model, mode: role.mode };
+              const th = board.threadForTask(task.id);
+              if (th) board.post({ threadId: th.id, by: RUNNER, kind: 'decision', text: `Handed off from ${lastModel || 'the roster'} to ${handoffTo.model} by ${handoffTo.by}${handoffTo.reason ? ` — ${handoffTo.reason}` : ''}.` });
+              say('task.handoff', { taskId: task.id, role: role.id, from: lastModel, to: handoffTo.model, by: handoffTo.by, reason: handoffTo.reason || '' });
+              note = continuationNote({ kind: 'handoff', from: lastModel, to: handoffTo.model, reason: `handed off by ${handoffTo.by}` });
+              handoffTo = null;
+              taskAc = new AbortController(); signal?.addEventListener?.('abort', onRunAbort, { once: true });
+            } else {
+              m = modelFor(role, excluding(exclude));
+            }
             if (!m?.model) throw new Error(exclude.size ? `no model left for role "${role.id}" after ${[...exclude].join(', ')}` : `no model for role "${role.id}"`);
-            if (attempt > 1) say('task.reappointed', { taskId: task.id, role: role.id, model: m.model, after: [...exclude], error: lastErr });
+            if (attempt > 1 && lastErr) say('task.reappointed', { taskId: task.id, role: role.id, model: m.model, after: [...exclude], error: lastErr });
             // Who is doing this task, for a ledger that shows the lanes — said per attempt.
             say('task.model', { taskId: task.id, role: role.id, model: m.model, attempt });
+            attempts.push({ model: m.model, at: now(), continued: !!note });
+            const sent = messagesFor({ transcript }, { prompt, note });
             const res = await callModel({
               runId: id, taskId: task.id, role: role.id, model: m.model, mode: m.mode || role.mode,
-              system: role.prompt, prompt, tools, signal: taskAc.signal,
+              system: role.prompt, prompt, messages: sent, tools, signal: taskAc.signal,
               onDelta: (delta, full) => say('task.delta', { taskId: task.id, role: role.id, delta, text: full }),
             });
             usage = res?.usage || null;
             if (usage) budget.charge(usage);
+            // Whatever the attempt did is the task's now — on the record, before any verdict.
+            const before = transcript;
+            transcript = mergeTranscript(sent, res);
+            recordSteps(before, transcript);
+            lastModel = m.model;
+            attempts[attempts.length - 1].status = res?.ok ? (String(res?.text || '').trim() ? 'ok' : 'empty') : 'error';
             if (askedAndWaiting) { status = 'waiting'; waitingOnPerson = true; break; }
+            if (handoffTo) { note = null; continue; } // the person moved it: continue the transcript there
             if (res?.aborted || taskAc.signal.aborted) { status = 'stopped'; break; }
             // A turn that ended with nothing to say — an agent that exited, a stream that
             // died after its tool calls — is not a done task: three members "completed" empty
@@ -257,19 +308,26 @@ export async function runTeam({
               if (mine.length) { text = mine.map((p) => p.text).join('\n\n'); say('task.note', { taskId: task.id, role: role.id, text: 'answered from its board posts' }); break; }
             }
             const err = res?.ok ? 'the model returned no answer' : (res?.error || 'the model did not answer');
+            attempts[attempts.length - 1].error = err;
             if (attempt >= MAX_APPOINTMENTS || stopped() || !isModelUnavailable(err)) throw new Error(err);
             exclude.add(m.model); runExclude.add(m.model); lastErr = err;
+            // The next model CONTINUES this transcript; it does not start over.
+            note = continuationNote({ kind: 'handoff', from: m.model, reason: err });
+            const th = board.threadForTask(task.id);
+            if (th) board.post({ threadId: th.id, by: RUNNER, kind: 'note', text: `${m.model} stopped (${err.slice(0, 160)}); the task continues on the next model with its work so far.` });
           }
         }
       } catch (e) {
         if (askedAndWaiting) { status = 'waiting'; waitingOnPerson = true; }
         else { status = overBudget ? 'over-budget' : 'failed'; error = String(e?.message || e); }
+      } finally {
+        unsubscribe?.();
       }
       const findings = status === 'ok' ? parseFindings(text, { role: role.id, taskId: task.id }) : [];
       if (findings.length) { board.add(findings); for (const f of findings) say('task.finding', { taskId: task.id, role: role.id, finding: f }); }
       const thread = board.threadForTask(task.id);
       if (thread && status !== 'waiting') board.setThreadStatus(thread.id, 'resolved');
-      const row = { id: task.id, role: task.role, title: task.title, status, text, error, usage, ms: now() - t0, findings, ...(askedAndWaiting ? { waitingOn: askedAndWaiting } : {}) };
+      const row = { id: task.id, role: task.role, title: task.title, status, text, error, usage, ms: now() - t0, findings, transcript: clipTranscript(transcript), attempts, ...(askedAndWaiting ? { waitingOn: askedAndWaiting } : {}) };
       tasksOut.push(row);
       say(status === 'ok' ? 'task.done' : 'task.failed', { taskId: task.id, role: task.role, status, error, ms: row.ms, findings: findings.length, ...(askedAndWaiting ? { threadId: askedAndWaiting } : {}) });
       // The spend so far, after every task — a ledger reads it live instead of at the end.
@@ -352,11 +410,14 @@ export async function runTeam({
   return finish(failed ? 'partial' : 'completed', { proposal });
 }
 
-/** Continue a run that ended `waiting` from its checkpoint — the answered ask is on the board. */
+/**
+ * Continue a run from its checkpoint — one that waited on a person, was stopped, failed, or
+ * whose process died. Finished tasks are carried; interrupted ones continue from their
+ * transcripts on whatever model the roster gives them now (or a hand-off names); the board
+ * and the spend carry over. Any client, any time later: the checkpoint is on the record.
+ */
 export function resumeTeam({ checkpoint, ...deps } = {}) {
   if (!checkpoint?.plan?.tasks) throw new TeamRunError('BAD_RESUME', 'a checkpoint with a plan is required');
-  // The waiting task runs again; its ask thread now holds the answer, and boardText gives it
-  // to the member. Tasks recorded `waiting`/`skipped` are dropped from the carried list.
   return runTeam({ ...deps, resume: checkpoint });
 }
 

@@ -4634,7 +4634,7 @@ function renderBoard() {
   const root = $('board');
   if (!root) return;
   import('./js/settings-board.js')
-    .then((m) => { boardDispose?.(); boardDispose = m.renderBoard(root, { settings }); })
+    .then((m) => { boardDispose?.(); boardDispose = m.renderBoard(root, { settings, license }); })
     .catch((e) => console.warn('[chatpanel] board:', e));
 }
 

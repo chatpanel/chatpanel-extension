@@ -10,7 +10,7 @@
 // Deferred from settings.js (its first paint is at ceiling); polls while on screen and
 // disposes its poll on re-render, the way settings-teams.js does.
 
-import { runStore, answerAsk } from './team-host.js';
+import { runStore, answerAsk, handoffTask, resumeRunHere, rosterFor } from './team-host.js';
 import { renderMarkdown } from './markdown.js';
 
 const POLL_MS = 4000;
@@ -41,10 +41,11 @@ const chip = (t) => {
 };
 
 /** Returns a disposer. */
-export function renderBoard(root, { settings }) {
+export function renderBoard(root, { settings, license = null }) {
   root._boardDispose?.();
   root.innerHTML = '';
   const store = runStore(settings);
+  const roster = rosterFor(settings, license, { like: settings.activeAgentId || '' });
   const state = { runs: {}, sel: null, reply: null, loaded: new Set(), err: '' };
   let alive = true;
 
@@ -119,11 +120,28 @@ export function renderBoard(root, { settings }) {
       el('div', {},
         el('div', { class: 'brun-t' }, el('b', { text: run.team }), el('span', { class: 'muted tiny mono', text: ` ${run.id} · ${when(run.createdAt)} · ${run.client || '?'} ` }), chip({ status: run.status })),
         el('div', { class: 'muted tiny brun-req', text: run.request || '' }),
-        el('div', { class: 'blanes' }, ...(run.tasks || []).map((t) => el('span', { class: `blane${t.status === 'waiting' ? ' waiting' : ''}` }, el('i', { style: `background:${colour(t.role, roles)}` }), el('b', { text: t.role }), el('span', { class: 'muted tiny', text: ` ${t.status}${t.model ? ` · ${t.model}` : ''}${t.findings ? ` · ${t.findings} findings` : ''}` })))),
+        el('div', { class: 'blanes' }, ...(run.tasks || []).map((t) => {
+          const lane = el('span', { class: `blane${t.status === 'waiting' ? ' waiting' : ''}`, title: t.transcript?.length ? `${t.transcript.length} steps on the record` : '' }, el('i', { style: `background:${colour(t.role, roles)}` }), el('b', { text: t.role }), el('span', { class: 'muted tiny', text: ` ${t.status}${t.model ? ` · ${t.model}` : ''}${t.findings ? ` · ${t.findings} findings` : ''}` }));
+          // A task can be handed to another model mid-run: it CONTINUES its transcript there.
+          if (live && !run.stale && (t.status === 'running' || t.status === 'waiting') && roster.length) {
+            const sel = el('select', { class: 'blane-ho', title: 'Hand this task to another model — it continues from where it is' });
+            sel.append(el('option', { value: '', text: 'hand off…' }));
+            for (const c of roster.filter((x) => x.usable && x.id !== t.model)) sel.append(el('option', { value: c.id, text: c.kind === 'bridge' ? `${c.name} (agent)` : c.name }));
+            sel.addEventListener('change', async () => { const m = sel.value; if (!m) return; const r = await handoffTask(settings, { runId: run.id, taskId: t.id, model: m, reason: 'handed off from the board' }); if (!r.ok) state.err = r.error; refresh(); });
+            lane.append(sel);
+          }
+          return lane;
+        })),
       ),
       el('div', { class: 'brun-side' },
         cap ? el('div', { class: 'muted tiny', text: `Budget ${cap.tokens ? `${spent?.tokens || 0} / ${cap.tokens} tokens` : ''}${cap.ms ? ` · ${Math.round((spent?.ms || 0) / 1000)}s / ${Math.round(cap.ms / 1000)}s` : ''}` }) : null,
-        live ? el('button', { class: 'btn danger', type: 'button', text: 'Stop run', onclick: () => store.stop(run.id).then(refresh) }) : null,
+        live && !run.stale ? el('button', { class: 'btn danger', type: 'button', text: 'Stop run', onclick: () => store.stop(run.id).then(refresh) }) : null,
+        // A run whose client went away, or that stopped, waited or failed, picks up from its record.
+        run.resumable ? el('button', { class: 'btn primary', type: 'button', text: 'Resume here', title: 'Continue this run in this browser from its record — nothing already done is redone', onclick: async () => {
+          const [{ streamChat }, { buildTurnTools }] = await Promise.all([import('./providers.js'), import('./turn-tools.js')]);
+          const r = await resumeRunHere(settings, license, { runId: run.id, streamChat, buildTurnTools, bridgeUrl: settings.bridgeUrl || '', bridgeAvailable: false });
+          if (!r.ok) state.err = r.error; refresh();
+        } }) : null,
       ),
     ));
     right.append(el('div', { class: 'bthead' }, el('h3', { text: thread.title }), el('div', { class: 'muted tiny' }, chip(thread), ` ${thread.kind}${thread.by && thread.by !== 'runner' ? ` · opened by ${thread.by}` : ''} · ${posts.length} post${posts.length === 1 ? '' : 's'}`)));

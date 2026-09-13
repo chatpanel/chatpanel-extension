@@ -17,12 +17,15 @@ export function teamLine(ev) {
   switch (ev.type) {
     case 'run.started': return { type: 'status', text: `team ${ev.team}: ${(ev.roles || []).join(', ')}` };
     case 'plan.ready': return { type: 'status', text: `plan: ${(ev.tasks || []).length} task${(ev.tasks || []).length === 1 ? '' : 's'} (${ev.by})` };
-    case 'task.started': return { type: 'tool', name: role, text: `${role} · ${ev.title || ev.taskId}` };
+    case 'task.started': return { type: 'tool', name: role, text: `${role} · ${ev.title || ev.taskId}${ev.resumed ? ` (resumed, ${ev.steps} steps so far)` : ''}` };
     case 'task.waiting': return { type: 'status', text: `${role} is waiting on you — ${ev.text || 'a question on the board'}` };
     case 'run.waiting': return { type: 'status', text: `waiting on you — ${ev.text || ev.type || 'a question on the board'}` };
     case 'run.resumed': return { type: 'status', text: `team ${ev.team} resumed${(ev.carried || []).length ? ` (${ev.carried.length} task${ev.carried.length === 1 ? '' : 's'} carried over)` : ''}` };
     case 'board.post': return ev.post && ev.post.kind !== 'finding' ? { type: 'status', text: `${ev.post.by} ${ev.post.replyTo ? 'replied' : 'posted'} (${ev.post.kind}): ${String(ev.post.text || '').slice(0, 120)}` } : null;
     case 'board.decision': return { type: 'status', text: `${ev.by || 'someone'} ${ev.status} a post` };
+    case 'task.note': return { type: 'status', text: `${role}: ${ev.text}` };
+    case 'task.handoff': return { type: 'status', text: `${role} handed off ${ev.from ? `from ${ev.from} ` : ''}to ${ev.to} by ${ev.by || 'person'}${ev.reason ? ` — ${ev.reason}` : ''}` };
+    case 'task.step': return null;
     case 'task.reappointed': return { type: 'status', text: `${role} → ${ev.model} (${(ev.after || []).join(', ')} unavailable${ev.error ? `: ${String(ev.error).slice(0, 120)}` : ''})` };
     case 'task.tool': return { type: 'tool', name: ev.name, text: `${role} ran ${ev.name}${ev.text ? ` — ${ev.text}` : ''}` };
     case 'task.finding': return { type: 'status', text: `${role}: ${String(ev.finding?.text || '').slice(0, 140)}` };
@@ -43,8 +46,9 @@ export function teamLanes(prev, ev) {
     case 'task.started': lanes.tasks[ev.taskId] = { ...(lanes.tasks[ev.taskId] || { id: ev.taskId, role: ev.role, title: ev.title }), status: 'running' }; break;
     case 'task.delta': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], text: ev.text }; break;
     case 'task.finding': lanes.findings += 1; if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], findings: (lanes.tasks[ev.taskId].findings || 0) + 1 }; break;
-    case 'task.note': return { type: 'status', text: `${role}: ${ev.text}` };
     case 'task.model': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], model: ev.model }; break;
+    case 'task.handoff': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], model: ev.to, handoffs: (lanes.tasks[ev.taskId].handoffs || 0) + 1 }; break;
+    case 'task.step': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], steps: (lanes.tasks[ev.taskId].steps || 0) + (ev.steps || []).length }; break;
     case 'task.tool': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], tools: (lanes.tasks[ev.taskId].tools || 0) + 1, lastTool: ev.text ? `${ev.name} ${ev.text}` : ev.name }; break;
     case 'run.usage': lanes.usage = ev.usage; break;
     case 'task.waiting': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], status: 'waiting', waitingOn: ev.threadId }; lanes.waiting = [...(lanes.waiting || []), ev.threadId]; break;

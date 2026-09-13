@@ -205,6 +205,8 @@ export { fixedPlan, parsePlan, plannerPrompt, waves, breakCycles, TEAM_PLAN_SCHE
 export { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, FINDINGS_SCHEMA, FINDING_KINDS, THREAD_KINDS, THREAD_STATUSES, POST_KINDS, POST_STATUSES, ASK_TYPES, emptyBoardState, foldBoard, findingsOf } from './team-board.js';
 export { boardToolProvider, boardToolSpec, createAnswerBox, withBoardTool, BOARD_TOOL_NAME, DEFAULT_ASK_TIMEOUT_MS } from './board-tool.js';
 export { createRunCache, withRunCache } from './team-cache.js';
+export { emptyRun, foldRun, runFromEvents, checkpointFrom, isResumable, LIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES } from './team-record.js';
+export { messagesFor, mergeTranscript, clipTranscript, clipMessage, newSteps, continuationNote, createControl, STEP_MAX_CHARS, TASK_TRANSCRIPT_MAX_CHARS } from './team-task.js';
 export { runTeam, resumeTeam, dryRunTeam, isModelUnavailable, TeamRunError, RUN_STATUSES } from './team-run.js';
 export { teamToolProvider, teamToolSpec, describeTeamForApproval, TEAM_TOOL_NAME } from './team-tool.js';
 export { teamLine, teamLanes } from './team-trail.js';

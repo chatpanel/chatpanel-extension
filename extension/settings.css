@@ -1439,3 +1439,5 @@ hr.sep { border: none; border-top: 1px solid var(--border); margin: 16px 0 14px;
 .bcompose { border-top: 1px solid var(--border); padding: 10px 16px 14px; background: var(--elev); display: flex; flex-direction: column; gap: 6px; }
 .btn.ok { color: var(--ok); border-color: var(--ok); }
 @media (max-width: 860px) { .board { grid-template-columns: 1fr; } .board-threads { border-right: 0; border-bottom: 1px solid var(--border); max-height: 260px; } }
+
+.blane-ho { width: auto; padding: 1px 6px; font-size: 11px; border-radius: 6px; margin-left: 4px; }
