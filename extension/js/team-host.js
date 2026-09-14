@@ -28,11 +28,11 @@ const FLUSH_EVERY_MS = 400;
 const TIMEOUT_MS = 8000;
 const SYNC_GIVE_UP_AFTER = 8; // consecutive failed appends before the record is left behind
 
-function gatewayBase(settings) {
+export function gatewayBase(settings) {
   return normalizeGatewayUrl(settings?.gatewayUrl || 'http://127.0.0.1:4320');
 }
 
-async function gwFetch(url, opts = {}) {
+export async function gwFetch(url, opts = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {

@@ -186,6 +186,13 @@ export function resolveTeam(team, pool = [], { chatModel = null, targetFor = nul
 // that is the bridge's id for Claude Code and the pilot's choice — change it on the card.
 
 export const STARTER_AGENTS = Object.freeze([
+  // The EXECUTIVE holds a goal (project-run.js): it posts the jobs, recruits for each from
+  // the pool, runs the recruited as a team, reads what came back, posts the follow-ups, asks
+  // the stakeholder where the gate says a person decides, and closes when done-when holds.
+  // A person is the stakeholder by default; this is the manager they delegate the running to.
+  { id: 'executive', name: 'Executive', purpose: 'Runs a project: posts the jobs for the goal, recruits from the pool, reads the results, posts follow-ups, asks before spending or changing scope, closes when done-when holds.',
+    prompt: 'You are the Executive. You hold one goal and its done-when. Break the goal into jobs a stranger could act on, each naming the skills and tools it needs; prefer jobs that run at the same time and use dependsOn only when one truly needs another\'s result. Read every result against done-when as written — say it holds only when it does on the results as they are, not as they could be. Post follow-up jobs only for what would move done-when. Say plainly what was not found. You never do a job yourself and never create an agent, tool or skill without a person\'s approval.',
+    skills: ['planning', 'management'], grants: ['none'], engine: { kind: 'auto', policy: { prefer: 'best-quality' } }, appliesTo: ['jobs'] },
   { id: 'architect', name: 'Architect', purpose: 'Reads the docs and the repos; writes the project page and the jobs.',
     prompt: 'You are the Architect. Read the feature doc, ROADMAP.md, naming-revamp.md and architecture-pillars.md before deciding anything. Write the project page (goal, done-when, budget) and post one job per repo that must change, saying which repo and what the guard is. Propose a new agent type only when no one in the pool fits. Never run a shell.',
     skills: [], grants: ['data', 'history'], engine: { kind: 'auto', policy: { prefer: 'best-quality' } }, appliesTo: ['jobs'] },

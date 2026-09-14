@@ -39,6 +39,14 @@ export function teamLine(ev) {
     case 'task.failed': return { type: 'error', text: `${role} ${ev.status || 'failed'}${ev.error ? ` — ${ev.error}` : ''}` };
     case 'run.merging': return { type: 'status', text: `merging (${ev.policy})` };
     case 'run.done': return { type: 'status', text: `team ${ev.status}${ev.usage?.spent?.tokens ? ` · ${ev.usage.spent.tokens} tokens` : ''}` };
+    // A PROJECT (project-run.js): the executive's steps, the jobs, the report — the same
+    // strip a run's lines go to, so a person sees the loop move without opening the board.
+    case 'project.thinking': return { type: 'status', text: `executive is ${ev.what === 'project_review' ? 'reviewing the round' : 'planning the jobs'}${ev.model ? ` (${ev.model})` : ''}` };
+    case 'project.status': return { type: 'status', text: `project ${ev.status}${ev.by ? ` (${ev.by})` : ''}` };
+    case 'project.decision': return ev.kind === 'answer' || ev.kind === 'status' ? null : { type: 'status', text: `${ev.by || 'executive'} · ${ev.kind}: ${String(ev.text || '').split('\n')[0].slice(0, 140)}` };
+    case 'job.posted': return { type: 'status', text: `job posted: ${ev.job?.title || ev.job?.id || '?'}${ev.job?.needs?.skills?.length ? ` (${ev.job.needs.skills.join(', ')})` : ''}` };
+    case 'job.updated': return ev.job?.status && ['recruited', 'done', 'failed'].includes(ev.job.status) ? { type: ev.job.status === 'failed' ? 'error' : 'status', text: `job ${ev.job.id} ${ev.job.status}${ev.job.recruited?.agentId ? ` → ${ev.job.recruited.agentId}` : ''}${ev.job.status === 'failed' && ev.job.result?.text ? ` — ${String(ev.job.result.text).slice(0, 120)}` : ''}` } : null;
+    case 'project.report': return { type: 'status', text: `report written (${ev.by || 'executive'})` };
     default: return null;
   }
 }

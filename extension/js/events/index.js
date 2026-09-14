@@ -210,6 +210,9 @@ export { validateProject, normalizeProject, defineProject, canTransition as canP
 // Job POSTINGS (F8 §12) — `jobs.js` is the scheduler and keeps `defineJob`; a posting is a JobPost here.
 export { validateJob as validateJobPost, normalizeJob as normalizeJobPost, defineJob as defineJobPost, canTransition as canJobPostTransition, applyAll, jobToRole, readyJobs, blankJob as blankJobPost, jobFromForm as jobPostFromForm, JobError as JobPostError, JOB_STATUSES as JOB_POST_STATUSES, JOB_ID_RE as JOB_POST_ID_RE } from './job.js';
 export { validateGate, normalizeGate, effectiveGate, gateAllows, DEFAULT_GATE, AUTONOMY, HUMAN_FLAGS, CHECKS } from './gate.js';
+// The executive loop (F8 §12.2.5): a goal run as a project — jobs, recruiting, rounds run as
+// teams, the review, follow-ups, done-when — every step on the project record.
+export { runProject, roundJobs, teamForRound, jobResults, roundBudget, parseJobs, parseReview, jobsPrompt, reviewPrompt, PROJECT_JOBS_SCHEMA, PROJECT_REVIEW_SCHEMA, ProjectRunError, EXECUTIVE, MAX_JOBS_PER_ROUND, MAX_ROUNDS, PROJECT_RUN_STATUSES } from './project-run.js';
 export { canonical, sha256, makeEntry, verifyChain, attest, verifyAttested, summarize, fit, adjustSummary, normalizeEngine, engineKey, normalizeScm, SCORECARD_ENTRY_KINDS, ROLE_KINDS, SCORECARD_VERSION, ENGINE_KINDS as RECORD_ENGINE_KINDS } from './scorecard.js';
 export { ENGINE_KINDS as ENGINE_SPEC_KINDS, ROUTE_PREFERS, normalizePolicy, normalizeEngineSpec, validateEngineSpec, engineRef, engineKeyOf, describeEngine, tierOf } from './engine.js';
 export { AGENT_ID_RE, APPLIES_TO, EGRESS_CLASSES, ASSISTANT_ID, AgentError, validateAgent, normalizeAgent, defineAgent, assistantAgent, engineOf, describeAgent, slugAgentId, resolveTeam, STARTER_AGENTS, starterAgents, blankAgent, agentFromForm, poolFor } from './agent.js';

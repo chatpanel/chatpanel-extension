@@ -310,7 +310,7 @@ function describePageAction(name, input = {}, host = 'this page') {
 
 // Inline confirmation card → resolves 'allow' | 'site' | 'deny'. Inline styles
 // (CSP allows style 'unsafe-inline'); CSS-var fallbacks keep it themed-or-not.
-function confirmPageAction(detail, { title = 'Allow this page action?', iconName = 'pen', scopeLabel = 'Allow for this site' } = {}) {
+function confirmPageAction(detail, { title = 'Allow this page action?', iconName = 'pen', scopeLabel = 'Allow for this site', allowLabel = 'Allow', denyLabel = 'Decline' } = {}) {
   return new Promise((resolve) => {
     const ov = document.createElement('div');
     ov.className = 'cp-confirm-ov';
@@ -345,8 +345,8 @@ function confirmPageAction(detail, { title = 'Allow this page action?', iconName
       b.onclick = () => done(val);
       return b;
     };
-    const denyBtn = mk('Decline', 'deny', false);
-    rowEl.append(denyBtn, ...(scopeLabel ? [mk(scopeLabel, 'site', false)] : []), mk('Allow', 'allow', true));
+    const denyBtn = mk(denyLabel, 'deny', false);
+    rowEl.append(denyBtn, ...(scopeLabel ? [mk(scopeLabel, 'site', false)] : []), mk(allowLabel, 'allow', true));
     card.append(titleEl, body, why, rowEl);
     ov.append(card);
     // A STRAY CLICK IS NOT AN ANSWER. The backdrop used to decline, and declining is not soft:
@@ -1045,6 +1045,14 @@ async function toolsetFor(
     saveTeam: async (team) => {
       state.settings = await updateSettings({ teams: [...(state.settings.teams || []).filter((t) => t?.name !== team.name), team] });
       toast(`👥 Saved team /${team.name}`);
+    },
+    // The EXECUTIVE's asks (a project's first jobs, a follow-up round, a new agent, more
+    // budget, closing) come to the same card, with the loop's own two answers as the buttons.
+    askProject: async ({ type, text, options }) => {
+      const [yes, no] = Array.isArray(options) && options.length ? options : ['Yes', 'No'];
+      const title = type === 'budget' ? 'The project needs more budget' : type === 'permission' ? 'The executive asks your permission' : type === 'direction' ? 'The executive asks for direction' : 'The executive asks';
+      const d = await confirmPageAction(text, { title, iconName: 'agent', scopeLabel: null, allowLabel: yes, denyLabel: no || 'No' });
+      return { text: d === 'allow' ? yes : (no || 'No'), by: 'person' };
     },
     onTeamEvent: (type, ev) => {
       const id = convId || state.conv?.id;

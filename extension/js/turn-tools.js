@@ -56,6 +56,7 @@ export async function buildTurnTools({
   confirmTeamSave = null,    // async (detail, team) => 'allow'|'deny' — the approval card for a proposed team
   saveTeam = null,           // async (team) => void — persist an approved team (the shared `teams` section)
   onTeamEvent = null,        // (type, event) => void — a team run's events, for the trail
+  askProject = null,         // async ({ type, text, options }) => { text, by } | null — the executive's asks to the person (a project's scope, budget, close)
   onMcpError = () => {},
 } = {}) {
   const startedAt = Date.now();
@@ -178,7 +179,7 @@ export async function buildTurnTools({
   // and to the gateway's run store, where the desktop reads the board and can stop it.
   let teamProvider = null;
   const savedTeams = (Array.isArray(settings?.teams) ? settings.teams : []).filter((t) => t && t.enabled !== false);
-  if (savedTeams.length || (confirmTeamSave && saveTeam)) {
+  if (savedTeams.length || (confirmTeamSave && saveTeam) || askProject) {
     const [{ teamToolProvider }, host] = await Promise.all([import('./events/team-tool.js'), import('./team-host.js')]);
     teamProvider = teamToolProvider({
       teams: savedTeams,
@@ -193,6 +194,15 @@ export async function buildTurnTools({
           emit: (type, ev) => onTeamEvent?.(type, ev),
         });
       },
+      // A GOAL: the executive loop (project-host.js), on a surface that can ask the person.
+      // Without a card the loop stops at its first ask, so the action is offered only with one.
+      runProject: askProject ? async ({ goal, title, doneWhen, budget }) => {
+        const [{ streamChat }, ph] = await Promise.all([import('./providers.js'), import('./project-host.js')]);
+        return ph.runProjectHere({
+          goal, title, doneWhen, budget, settings, license, like: resolvedAgent?.id || '', bridgeUrl, bridgeAvailable, streamChat, buildTurnTools,
+          ask: askProject, emit: (type, ev) => onTeamEvent?.(type, ev),
+        });
+      } : null,
     });
     providers.push(teamProvider);
   }

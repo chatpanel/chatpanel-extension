@@ -19,7 +19,7 @@ const ASK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
  *
  * @returns 'allow' | 'always' | 'deny'
  */
-export function askPerson({ title = 'Allow this?', body = '', scopeLabel = null, allowLabel = 'Allow', danger = false } = {}) {
+export function askPerson({ title = 'Allow this?', body = '', scopeLabel = null, allowLabel = 'Allow', denyLabel = 'Decline', danger = false } = {}) {
   injectStyles();
   return new Promise((resolve) => {
     const ov = document.createElement('div');
@@ -63,7 +63,7 @@ export function askPerson({ title = 'Allow this?', body = '', scopeLabel = null,
       b.onclick = () => done(value);
       return b;
     };
-    const deny = mk('Decline', 'deny', 'cp-confirm-cancel');
+    const deny = mk(denyLabel || 'Decline', 'deny', 'cp-confirm-cancel');
     row.append(deny);
     if (scopeLabel) row.append(mk(scopeLabel, 'always', 'cp-confirm-cancel'));
     row.append(mk(allowLabel, 'allow', danger ? 'cp-confirm-danger' : 'cp-prompt-ok'));
