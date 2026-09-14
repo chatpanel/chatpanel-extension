@@ -141,15 +141,24 @@ export function renderBoard(root, { settings, license = null }) {
     // cancel, a post — calls drawThread itself and restores the draft into the new box.)
     const typing = focusedBox();
     if (typing && typing.value && !opts.force) return;
-    drawThread();
+    drawThread(opts);
   };
 
-  const drawThread = () => {
+  const drawThread = (opts = {}) => {
+    const run = state.sel ? state.runs[state.sel.runId] : null;
+    const thread = run?.threads?.threads.find((t) => t.id === state.sel.threadId);
+    // The poll redraws only when the THREAD changed — a rebuilt pane loses the reader's
+    // place (someone scrolled to the bottom to read before typing was thrown back to the
+    // top every four seconds). When it must redraw, the scroll position is carried over,
+    // pinned to the bottom for a reader who was there.
+    const key = run && thread ? `${run.id}:${thread.id}:${run.lastEventAt || 0}:${run.status}:${thread.status}:${run.threads.posts.length}:${(run.tasks || []).map((t) => `${t.status}${t.transcript?.length || 0}${(t.text || '').length}`).join(',')}` : 'none';
+    if (!opts.force && key === state.drawnKey) return;
+    state.drawnKey = key;
+    const prevList = right.querySelector('.bposts');
+    const scroll = prevList ? { top: prevList.scrollTop, atBottom: prevList.scrollHeight - prevList.clientHeight - prevList.scrollTop < 12 } : null;
     const was = focusedBox();
     boxes = [];
     right.innerHTML = '';
-    const run = state.sel ? state.runs[state.sel.runId] : null;
-    const thread = run?.threads?.threads.find((t) => t.id === state.sel.threadId);
     if (!run || !thread) { right.append(el('div', { class: 'muted tiny', style: 'padding:18px', text: 'Pick a thread.' })); return; }
     const roles = run.roles || [];
     const posts = run.threads.posts.filter((p) => p.threadId === thread.id);
@@ -206,7 +215,7 @@ export function renderBoard(root, { settings, license = null }) {
         acts.append(el('button', { class: 'btn ok', type: 'button', text: 'Approve', onclick: () => store.decide(run.id, { postId: p.id, status: 'approved' }).then(refresh) }));
         acts.append(el('button', { class: 'btn danger', type: 'button', text: 'Reject', onclick: () => store.decide(run.id, { postId: p.id, status: 'rejected' }).then(refresh) }));
       }
-      acts.append(el('button', { class: 'btn ghost', type: 'button', text: 'Reply', onclick: () => { state.reply = p; drawThread(); } }));
+      acts.append(el('button', { class: 'btn ghost', type: 'button', text: 'Reply', onclick: () => { state.reply = p; drawThread({ force: true }); } }));
       body.append(acts);
       list.append(el('div', { class: `bpost${depth ? ' reply' : ''}`, style: depth ? `margin-left:${38 + (depth - 1) * 14}px` : '' }, el('span', { class: `bav${depth ? ' sm' : ''}`, style: `background:${colour(p.by, roles)}`, text: initial(p.by) }), body));
       for (const r of posts.filter((x) => x.replyTo === p.id)) post(r, depth + 1);
@@ -249,8 +258,9 @@ export function renderBoard(root, { settings, license = null }) {
       if (!posts.length) list.append(el('div', { class: 'muted tiny', text: 'Nothing posted here yet.' }));
     }
     right.append(list);
+    if (scroll) list.scrollTop = scroll.atBottom ? list.scrollHeight : scroll.top;
     const compose = el('div', { class: 'bcompose' });
-    if (state.reply) compose.append(el('div', { class: 'muted tiny' }, 'Replying to ', el('b', { text: state.reply.by }), ' · ', el('button', { class: 'btn ghost', type: 'button', text: 'cancel', onclick: () => { state.reply = null; drawThread(); } })));
+    if (state.reply) compose.append(el('div', { class: 'muted tiny' }, 'Replying to ', el('b', { text: state.reply.by }), ' · ', el('button', { class: 'btn ghost', type: 'button', text: 'cancel', onclick: () => { state.reply = null; drawThread({ force: true }); } })));
     const ta = draftBox(`reply:${thread.id}`, { rows: '2', placeholder: 'Reply in this thread — as a member. “decide: …” settles it.' });
     const send = async () => {
       const text = ta.value.trim(); if (!text) return;
