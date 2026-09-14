@@ -63,7 +63,20 @@ export function renderBoard(root, { settings, license = null }) {
   root.innerHTML = '';
   const store = runStore(settings);
   const roster = rosterFor(settings, license, { like: settings.activeAgentId || '' });
-  const state = { runs: {}, sel: null, reply: null, loaded: new Set(), err: '', drafts: {} };
+  const state = { runs: {}, sel: null, reply: null, loaded: new Set(), err: '', drafts: {}, rows: { threadId: null, map: new Map() }, strip: { sig: '', el: null }, touchedAt: 0 };
+  // WHAT A PERSON IS DOING BEATS WHAT THE POLL WANTS TO DRAW. A dropdown they opened, a fold
+  // they just unfolded, a button under the pointer: the pane is left alone while any of that is
+  // going on (a rebuilt pane closed the hand-off menu and folded the row they were reading,
+  // every four seconds). Rows are cached by their stable id and REUSED when unchanged, so an
+  // open fold stays open across the polls that do redraw.
+  root.addEventListener('pointerdown', () => { state.touchedAt = Date.now(); }, true);
+  root.addEventListener('toggle', () => { state.touchedAt = Date.now(); }, true);
+  root.addEventListener('keydown', () => { state.touchedAt = Date.now(); }, true);
+  const interacting = () => {
+    const a = document.activeElement;
+    if (a && root.contains(a) && (a.tagName === 'SELECT' || a.tagName === 'BUTTON')) return true;
+    return Date.now() - state.touchedAt < 1500;
+  };
 
   // A box the person may be typing in: its text survives a redraw, and so does its focus.
   let boxes = []; // the draft boxes of the current thread pane
@@ -156,6 +169,7 @@ export function renderBoard(root, { settings, license = null }) {
     // pinned to the bottom for a reader who was there.
     const key = run && thread ? `${run.id}:${thread.id}:${run.lastEventAt || 0}:${describeSpend(spendOf(run))}:${runState(run).key}:${run.status}:${thread.status}:${run.threads.posts.length}:${(run.tasks || []).map((t) => `${t.status}${t.transcript?.length || 0}${(t.text || '').length}`).join(',')}` : 'none';
     if (!opts.force && key === state.drawnKey) return;
+    if (!opts.force && interacting()) return; // the next poll will draw it; nothing is lost, the record is on the store
     state.drawnKey = key;
     const prevList = right.querySelector('.bposts');
     const scroll = prevList ? { top: prevList.scrollTop, atBottom: prevList.scrollHeight - prevList.clientHeight - prevList.scrollTop < 12 } : null;
@@ -168,8 +182,12 @@ export function renderBoard(root, { settings, license = null }) {
     const live = LIVE.has(run.status);
     const rs = runState(run);
     const spend = spendOf(run);
-    // The run strip.
-    right.append(el('div', { class: 'brun-strip' },
+    // The run strip — reused when nothing on it changed, so a hand-off menu a person opened
+    // is the same element after the poll.
+    const stripSig = JSON.stringify([run.id, rs.key, rs.detail, describeSpend(spend), spend?.exhausted, run.resumable, Math.round((run.quietMs || 0) / 30000), roster.map((c) => c.id), (run.tasks || []).map((t) => [t.id, t.role, t.status, t.model, t.findings, t.transcript?.length || 0])]);
+    if (state.strip.el && state.strip.sig === stripSig) right.append(state.strip.el);
+    else { state.strip = { sig: stripSig, el: buildStrip() }; right.append(state.strip.el); }
+    function buildStrip() { return el('div', { class: 'brun-strip' },
       el('div', {},
         el('div', { class: 'brun-t' }, el('b', { text: run.team }), el('span', { class: 'muted tiny mono', text: ` ${run.id} · ${when(run.createdAt)} · ${run.client || '?'} ` }), runChip(run), rs.detail ? el('span', { class: 'muted tiny', text: ` ${rs.detail}` }) : null),
         el('div', { class: 'muted tiny brun-req', text: run.request || '' }),
@@ -196,7 +214,7 @@ export function renderBoard(root, { settings, license = null }) {
           if (!r.ok) state.err = `resume: ${r.error}`; refresh();
         } }) : null,
       ),
-    ));
+    ); }
     right.append(el('div', { class: 'bthead' }, el('h3', { text: thread.title }), el('div', { class: 'muted tiny' }, chip(thread), ` ${thread.kind}${thread.parent ? ` · sub-task of ${run.tasks?.find((x) => x.id === thread.parent)?.title || thread.parent}` : ''}${thread.holder ? ` · held by ${thread.holder}` : ''}${thread.by && thread.by !== 'runner' ? ` · opened by ${thread.by}` : ''} · ${posts.length} post${posts.length === 1 ? '' : 's'}`)));
     const list = el('div', { class: 'bposts' });
     const post = (p, depth) => {
@@ -227,8 +245,25 @@ export function renderBoard(root, { settings, license = null }) {
       if (strikable) acts.append(el('button', { class: 'btn ghost', type: 'button', text: 'Strike', title: 'Wrong or stale: drop this finding from what the members and the merge read', onclick: () => store.decide(run.id, { postId: p.id, status: 'rejected' }).then(refresh) }));
       acts.append(el('button', { class: 'btn ghost', type: 'button', text: 'Reply', onclick: () => { state.reply = p; drawThread({ force: true }); } }));
       body.append(acts);
-      list.append(el('div', { class: `bpost${depth ? ' reply' : ''}`, style: depth ? `margin-left:${38 + (depth - 1) * 14}px` : '' }, el('span', { class: `bav${depth ? ' sm' : ''}`, style: `background:${colour(p.by, roles)}`, text: initial(p.by) }), body));
-      for (const r of posts.filter((x) => x.replyTo === p.id)) post(r, depth + 1);
+      return el('div', { class: `bpost${depth ? ' reply' : ''}`, style: depth ? `margin-left:${38 + (depth - 1) * 14}px` : '' }, el('span', { class: `bav${depth ? ' sm' : ''}`, style: `background:${colour(p.by, roles)}`, text: initial(p.by) }), body);
+    };
+    // A post and its replies, in reading order, each with a stable id and a signature of
+    // what could change on it.
+    const postRows = (p, depth) => {
+      const out = [{ id: `post:${p.id}`, sig: JSON.stringify([p.status, p.decidedBy, p.text, p.refs, depth, p.kind === 'question' && thread.status === 'waiting', state.reply?.id === p.id]), build: () => post(p, depth) }];
+      for (const r of posts.filter((x) => x.replyTo === p.id)) out.push(...postRows(r, depth + 1));
+      return out;
+    };
+    // The list is REBUILT FROM CACHE: a row whose signature is unchanged is the same element
+    // (its fold stays open); only new or changed rows are built. Rows no longer on the log go.
+    const cache = state.rows.threadId === thread.id ? state.rows.map : new Map();
+    state.rows = { threadId: thread.id, map: new Map() };
+    const place = (row) => {
+      const had = cache.get(row.id);
+      const node = had && had.sig === row.sig ? had.el : row.build();
+      if (!node) return;
+      state.rows.map.set(row.id, { sig: row.sig, el: node });
+      list.append(node);
     };
     // A timeline row that is not a post: who · what · when, the body folded when it is long.
     const fold = (text, open = false) => {
@@ -260,11 +295,12 @@ export function renderBoard(root, { settings, license = null }) {
     const log = thread.kind === 'task' && thread.taskId ? workLogFor(run, thread.taskId) : [];
     if (log.length) {
       for (const e of log) {
-        if (e.kind === 'post') { if (!e.post.replyTo) post(e.post, 0); continue; }
-        const r = rowFor(e); if (r) list.append(r);
+        if (e.kind === 'post') { if (!e.post.replyTo) for (const row of postRows(e.post, 0)) place(row); continue; }
+        // A row's own fields are its signature (`at` is stable per entry; the live text changes and is rebuilt).
+        place({ id: e.id || `${e.kind}:${e.at}`, sig: JSON.stringify([e.kind, e.text, e.status, e.error, e.model, e.name, e.live]), build: () => rowFor(e) });
       }
     } else {
-      for (const p of posts.filter((x) => !x.replyTo)) post(p, 0);
+      for (const p of posts.filter((x) => !x.replyTo)) for (const row of postRows(p, 0)) place(row);
       if (!posts.length) list.append(el('div', { class: 'muted tiny', text: 'Nothing posted here yet.' }));
     }
     right.append(list);

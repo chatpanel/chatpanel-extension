@@ -42,10 +42,13 @@ export function describeCall(call) {
 }
 
 /**
- * The timeline of one task: `[{ kind, at, by, attempt, ... }]`, oldest first. Every entry has
+ * The timeline of one task: `[{ id, kind, at, by, attempt, ... }]`, oldest first. Every entry has
  * an `at`; a step recorded without one (an older build) inherits its attempt's, so the order
  * still holds. `by` is the role for what the member did, `runner` for the runner's lines, and
- * whoever posted for a post.
+ * whoever posted for a post. `id` is STABLE across polls — the step's index on the record, the
+ * post's id, the attempt's number — so a board can keep the row a person opened while the
+ * log grows underneath it (a row keyed by its position remounted on every new step, and the
+ * fold a reader had opened snapped shut every four seconds).
  */
 export function workLogFor(run, taskId) {
   const task = (run?.tasks || []).find((t) => t.id === taskId);
@@ -54,7 +57,7 @@ export function workLogFor(run, taskId) {
   const out = [];
   const attempts = Array.isArray(task.attempts) ? task.attempts : [];
   const baseAt = num(task.startedAt, num(attempts[0]?.at, num(run?.startedAt, 0)));
-  attempts.forEach((a, i) => out.push({ kind: 'attempt', at: num(a.at, baseAt + i), by: 'runner', attempt: i + 1, model: a.model || '', engine: a.engine || null, continued: !!a.continued, status: a.status || null, error: a.error || null }));
+  attempts.forEach((a, i) => out.push({ id: `attempt:${i + 1}`, kind: 'attempt', at: num(a.at, baseAt + i), by: 'runner', attempt: i + 1, model: a.model || '', engine: a.engine || null, continued: !!a.continued, status: a.status || null, error: a.error || null }));
 
   // Steps: stamped ones sort by their time; unstamped ones follow their attempt in order.
   const steps = Array.isArray(task.transcript) ? task.transcript : [];
@@ -70,37 +73,37 @@ export function workLogFor(run, taskId) {
     lastAt = Math.max(lastAt, at);
     const attempt = attemptOf;
     if (m.role === 'user') {
-      out.push({ kind: i === 0 ? 'prompt' : 'note', at, by: 'runner', attempt, text: str(m.content) });
+      out.push({ id: `step:${i}`, kind: i === 0 ? 'prompt' : 'note', at, by: 'runner', attempt, text: str(m.content) });
     } else if (m.role === 'assistant') {
-      if (isThought(m)) { out.push({ kind: 'thought', at, by, attempt, text: m.thought }); return; }
-      if (typeof m.content === 'string' && m.content.trim()) out.push({ kind: 'text', at, by, attempt, text: m.content });
+      if (isThought(m)) { out.push({ id: `step:${i}`, kind: 'thought', at, by, attempt, text: m.thought }); return; }
+      if (typeof m.content === 'string' && m.content.trim()) out.push({ id: `step:${i}`, kind: 'text', at, by, attempt, text: m.content });
       for (const c of Array.isArray(m.tool_calls) ? m.tool_calls : []) {
         const id = c.id || `c${i}`;
         calls.set(id, c);
-        out.push({ kind: 'call', at, by, attempt, callId: id, name: c.function?.name || 'tool', args: parseArgs(c.function?.arguments), text: describeCall(c) });
+        out.push({ id: `call:${id}`, kind: 'call', at, by, attempt, callId: id, name: c.function?.name || 'tool', args: parseArgs(c.function?.arguments), text: describeCall(c) });
       }
     } else if (m.role === 'tool') {
       const c = m.tool_call_id ? calls.get(m.tool_call_id) : null;
-      out.push({ kind: 'result', at, by: 'tool', attempt, callId: m.tool_call_id || null, name: c?.function?.name || m.name || 'tool', text: str(m.content), error: /^error[:\s]/i.test(str(m.content)) });
+      out.push({ id: `step:${i}`, kind: 'result', at, by: 'tool', attempt, callId: m.tool_call_id || null, name: c?.function?.name || m.name || 'tool', text: str(m.content), error: /^error[:\s]/i.test(str(m.content)) });
     }
   });
 
-  for (const h of Array.isArray(task.handoffs) ? task.handoffs : []) out.push({ kind: 'handoff', at: num(h.at, lastAt), by: h.by || 'person', from: h.from || '', to: h.to || '', text: h.reason || '' });
+  (Array.isArray(task.handoffs) ? task.handoffs : []).forEach((h, i) => out.push({ id: `handoff:${i}`, kind: 'handoff', at: num(h.at, lastAt), by: h.by || 'person', from: h.from || '', to: h.to || '', text: h.reason || '' }));
 
   // The thread's posts — a member's findings, a question, an answer, a decision, the runner's notes.
   const thread = (run?.threads?.threads || []).find((t) => t.taskId === taskId && t.kind === 'task');
-  if (thread) for (const p of (run.threads.posts || []).filter((x) => x.threadId === thread.id)) out.push({ kind: 'post', at: num(p.at, lastAt), by: p.by || '', post: p, text: p.text || '' });
+  if (thread) for (const p of (run.threads.posts || []).filter((x) => x.threadId === thread.id)) out.push({ id: `post:${p.id}`, kind: 'post', at: num(p.at, lastAt), by: p.by || '', post: p, text: p.text || '' });
 
   // What the member is saying right now — the attempt's text before it is a step.
   const lastText = [...out].reverse().find((e) => e.kind === 'text');
-  if (task.status === 'running' && task.text && task.text !== lastText?.text) out.push({ kind: 'text', at: num(run?.lastEventAt, lastAt + 1), by, attempt: attemptOf, text: task.text, live: true });
+  if (task.status === 'running' && task.text && task.text !== lastText?.text) out.push({ id: 'live', kind: 'text', at: num(run?.lastEventAt, lastAt + 1), by, attempt: attemptOf, text: task.text, live: true });
 
   if (task.endedAt || ['ok', 'failed', 'over-budget', 'stopped', 'waiting'].includes(task.status)) {
     // Findings: the task's count, or the finding posts in its thread — a member's board posts
     // count as its answer (team-run.js), and a record folded from an older run has only those.
     const findings = Math.max(num(task.findings, 0), out.filter((e) => e.kind === 'post' && e.post?.kind === 'finding').length);
     const tools = Math.max(num(task.tools, 0), out.filter((e) => e.kind === 'call').length);
-    out.push({ kind: 'end', at: num(task.endedAt, num(run?.lastEventAt, lastAt + 2)), by: 'runner', status: task.status, error: task.error || null, ms: num(task.ms, 0), findings, tools, text: endText({ ...task, findings, tools }, attempts) });
+    out.push({ id: 'end', kind: 'end', at: num(task.endedAt, num(run?.lastEventAt, lastAt + 2)), by: 'runner', status: task.status, error: task.error || null, ms: num(task.ms, 0), findings, tools, text: endText({ ...task, findings, tools }, attempts) });
   }
   return out.sort((a, b) => a.at - b.at || WORKLOG_KINDS.indexOf(a.kind) - WORKLOG_KINDS.indexOf(b.kind));
 }
