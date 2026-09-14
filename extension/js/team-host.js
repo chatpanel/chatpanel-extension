@@ -97,6 +97,8 @@ export function runStore(settings) {
     answer: (id, body) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/answer`, { method: 'POST', body: JSON.stringify({ ...body, by: 'person' }) }),
     decide: (id, body) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/decide`, { method: 'POST', body: JSON.stringify({ ...body, by: 'person' }) }),
     post: (id, body) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/post`, { method: 'POST', body: JSON.stringify({ ...body, by: 'person' }) }),
+    // A thread off the board (gateway 0.6.106+): it and its posts leave the record.
+    removeThread: (id, threadId) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/threads/${encodeURIComponent(threadId)}`, { method: 'DELETE' }),
     // A task's continuation (gateway 0.6.85+): hand a task to another model; the checkpoint to resume; claim it when resuming.
     handoff: (id, body) => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/handoff`, { method: 'POST', body: JSON.stringify({ ...body, by: 'person' }) }),
     checkpoint: (id) => withToken(() => gwFetch(`${base}/v1/teams/runs/${encodeURIComponent(id)}/checkpoint`)),

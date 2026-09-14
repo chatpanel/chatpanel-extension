@@ -107,7 +107,7 @@ export function foldRun(run, ev) {
       if (p.checkpoint) run.checkpoint = p.checkpoint;
       break;
     case 'run.stop-requested': run.stopRequested = at; break;
-    case 'board.thread': case 'board.post': case 'board.decision': case 'board.thread-status':
+    case 'board.thread': case 'board.post': case 'board.decision': case 'board.thread-status': case 'board.thread-removed':
       run.threads = foldBoard(run.threads || emptyBoardState(), ev);
       if (type === 'board.thread-status' && p.status !== 'waiting' && run.status === 'waiting' && !(run.threads.threads || []).some((t) => t.kind === 'ask' && t.status === 'waiting')) run.status = 'answered';
       break;

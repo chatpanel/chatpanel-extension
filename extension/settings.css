@@ -1420,6 +1420,9 @@ hr.sep { border: none; border-top: 1px solid var(--border); margin: 16px 0 14px;
 .brun-side { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .bthead { padding: 12px 16px 8px; border-bottom: 1px solid var(--border); }
 .bthead h3 { margin: 0 0 3px; font-size: 15px; }
+.bthead-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.bth-rm { flex: none; opacity: .7; }
+.bth-rm:hover { opacity: 1; color: var(--danger, #dc2626); }
 .bposts { padding: 6px 16px 12px; flex: 1; overflow-y: auto; max-height: 520px; display: flex; flex-direction: column; gap: 4px; }
 .bpost { display: grid; grid-template-columns: 28px 1fr; gap: 10px; padding: 10px 0; }
 .bpost.reply { padding: 8px 0 8px 12px; border-left: 2px solid var(--border); }

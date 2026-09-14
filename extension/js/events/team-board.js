@@ -112,6 +112,7 @@ export function foldBoard(state, ev) {
   if (type === 'board.thread' && p.thread?.id) {
     if (!s.threads.some((t) => t.id === p.thread.id)) s.threads.push({ ...p.thread });
   } else if (type === 'board.post' && p.post?.id) {
+    if (Array.isArray(s.removed) && s.removed.includes(p.post.threadId)) return s;
     if (!s.posts.some((x) => x.id === p.post.id)) s.posts.push({ ...p.post });
     const t = s.threads.find((x) => x.id === p.post.threadId);
     if (t) { t.lastAt = p.post.at; t.lastBy = p.post.by; t.posts = (t.posts || 0) + 1; }
@@ -121,6 +122,13 @@ export function foldBoard(state, ev) {
   } else if (type === 'board.thread-status' && p.threadId) {
     const t = s.threads.find((x) => x.id === p.threadId);
     if (t) { t.status = p.status; if (p.status !== 'waiting') t.waitingOn = null; if (p.holder) t.holder = p.holder; }
+  } else if (type === 'board.thread-removed' && p.threadId) {
+    // A person took the thread off the board: it and its posts go, and its id is kept so a
+    // post a member still makes in it (its runner did not see the removal) lands nowhere.
+    s.threads = s.threads.filter((x) => x.id !== p.threadId);
+    s.posts = s.posts.filter((x) => x.threadId !== p.threadId);
+    if (!Array.isArray(s.removed)) s.removed = [];
+    if (!s.removed.includes(p.threadId)) s.removed.push(p.threadId);
   }
   return s;
 }
@@ -131,7 +139,7 @@ export function foldBoard(state, ev) {
  * stays: a finding is a post of kind `finding` in its task's thread.
  */
 export function createBoard({ now = () => Date.now(), newId = null, state = null, onEvent = null } = {}) {
-  const st = state && Array.isArray(state.threads) ? { threads: state.threads.map((t) => ({ ...t })), posts: (state.posts || []).map((x) => ({ ...x })) } : emptyBoardState();
+  const st = state && Array.isArray(state.threads) ? { threads: state.threads.map((t) => ({ ...t })), posts: (state.posts || []).map((x) => ({ ...x })), ...(Array.isArray(state.removed) && state.removed.length ? { removed: [...state.removed] } : {}) } : emptyBoardState();
   const listeners = new Set();
   let seq = st.posts.length + st.threads.length;
   const mk = (prefix) => (newId ? newId(prefix) : `${prefix}_${(++seq).toString(36)}${Math.random().toString(36).slice(2, 6)}`);
@@ -190,6 +198,20 @@ export function createBoard({ now = () => Date.now(), newId = null, state = null
       return t;
     },
     /**
+     * A person takes a thread off the board (from either client — the store appends the
+     * event, the running client's tail applies it here). Its posts go with it; a member's
+     * later post in it lands nowhere. A waiting ask is not removed: answer it or stop the run.
+     */
+    removeThread(threadId, { by = PERSON } = {}) {
+      const t = threadOf(threadId);
+      if (!t || (t.kind === 'ask' && t.status === 'waiting')) return null;
+      st.threads = st.threads.filter((x) => x.id !== threadId);
+      st.posts = st.posts.filter((x) => x.threadId !== threadId);
+      (st.removed ||= []).push(threadId);
+      say('board.thread-removed', { threadId, by });
+      return t;
+    },
+    /**
      * A member is stuck: open an ask thread (status `waiting`) with the question as its
      * first post. The runner waits on it; a person answers from either client.
      */
@@ -216,7 +238,7 @@ export function createBoard({ now = () => Date.now(), newId = null, state = null
     /** Every ask still waiting — what a client pins at the top. */
     waiting: () => st.threads.filter((t) => t.kind === 'ask' && t.status === 'waiting').map((t) => ({ ...t })),
     /** The whole board, for the run record and for a resume. */
-    state: () => ({ threads: st.threads.map((t) => ({ ...t })), posts: st.posts.map((x) => ({ ...x })) }),
+    state: () => ({ threads: st.threads.map((t) => ({ ...t })), posts: st.posts.map((x) => ({ ...x })), ...(st.removed?.length ? { removed: [...st.removed] } : {}) }),
 
     // ── findings, as before: a finding is a post in its task's thread ──
     add(list, { by = null } = {}) {

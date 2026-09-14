@@ -226,7 +226,19 @@ export function renderBoard(root, { settings, license = null }) {
         } }) : null,
       ),
     ); }
-    right.append(el('div', { class: 'bthead' }, el('h3', { text: thread.title }), el('div', { class: 'muted tiny' }, chip(thread), ` ${thread.kind}${thread.parent ? ` · sub-task of ${run.tasks?.find((x) => x.id === thread.parent)?.title || thread.parent}` : ''}${thread.holder ? ` · held by ${thread.holder}` : ''}${thread.by && thread.by !== 'runner' ? ` · opened by ${thread.by}` : ''} · ${posts.length} post${posts.length === 1 ? '' : 's'}`)));
+    // A thread comes off the board on a person's say-so (gateway 0.6.106+) — its posts with
+    // it, for everyone. Not a waiting ask: the member behind it is blocked on an answer.
+    const removable = !(thread.kind === 'ask' && thread.status === 'waiting');
+    const removeBtn = removable ? el('button', { class: 'btn ghost bth-rm', type: 'button', text: 'Delete thread', title: live ? 'Takes this thread and its posts off the board for everyone. The run keeps going; what its member posts here later is dropped.' : 'Takes this thread and its posts off the board for everyone.', onclick: async () => {
+      const { confirmDelete } = await import('./confirm-modal.js');
+      if (!(await confirmDelete({ title: 'Delete thread?', body: `"${thread.title}" and its ${posts.length} post${posts.length === 1 ? '' : 's'} leave the board for everyone — this panel and the desktop alike. This cannot be undone.`, confirmLabel: 'Delete' }))) return;
+      state.touchedAt = 0;
+      const r = await store.removeThread(run.id, thread.id);
+      if (r.ok) { state.sel = null; state.reply = null; state.rows = { threadId: null, map: new Map() }; }
+      else state.err = `delete: ${r.error}`;
+      acted(r);
+    } }) : null;
+    right.append(el('div', { class: 'bthead' }, el('div', { class: 'bthead-row' }, el('h3', { text: thread.title }), removeBtn), el('div', { class: 'muted tiny' }, chip(thread), ` ${thread.kind}${thread.parent ? ` · sub-task of ${run.tasks?.find((x) => x.id === thread.parent)?.title || thread.parent}` : ''}${thread.holder ? ` · held by ${thread.holder}` : ''}${thread.by && thread.by !== 'runner' ? ` · opened by ${thread.by}` : ''} · ${posts.length} post${posts.length === 1 ? '' : 's'}`)));
     const list = el('div', { class: 'bposts' });
     const post = (p, depth) => {
       // A DRAFT (the proposal, a proposed agent) is decided; a FINDING is not — it is a member's
