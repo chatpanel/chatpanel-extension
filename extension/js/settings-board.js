@@ -26,7 +26,7 @@ import { runStore, answerAsk, handoffTask, resumeRunHere, rosterFor } from './te
 import { renderMarkdown } from './markdown.js';
 import { workLogFor } from './events/team-worklog.js';
 import { threadRows } from './events/team-subtask.js';
-import { spendOf, describeSpend } from './events/team-record.js';
+import { spendOf, describeSpend, runState, priorWorkFor } from './events/team-record.js';
 
 const POLL_MS = 4000;
 const LIVE = new Set(['planning', 'running', 'merging', 'waiting']);
@@ -49,6 +49,8 @@ function el(tag, attrs = {}, ...children) {
   for (const c of children) if (c != null) n.append(c);
   return n;
 }
+/** The run's chip says what it IS — a record that reads `running` with no events for minutes is STALLED. */
+const runChip = (run) => { const st = runState(run); return el('span', { class: `bchip ${st.tone === 'muted' ? '' : st.tone}`, title: st.detail, text: st.label }); };
 const chip = (t) => {
   const s = t.status;
   const cls = s === 'waiting' ? 'warn' : s === 'approved' || s === 'resolved' ? 'ok' : s === 'rejected' || s === 'failed' ? 'err' : 'on';
@@ -134,7 +136,7 @@ export function renderBoard(root, { settings, license = null }) {
     if (waiting.length) left.append(el('div', { class: 'bgrp', text: 'Waiting on you' }));
     for (const t of waiting) left.append(row(t, true));
     for (const g of groups) {
-      left.append(el('div', { class: 'bgrp brun' }, el('b', { text: g.run.team }), ` · ${when(g.run.createdAt)} · ${g.run.status}${g.run.client ? ` · ${g.run.client}` : ''}`));
+      left.append(el('div', { class: 'bgrp brun' }, el('b', { text: g.run.team }), ` · ${when(g.run.createdAt)} · `, runChip(g.run), `${g.run.client ? ` · ${g.run.client}` : ''}`));
       for (const t of g.threads) left.append(row(t, false));
     }
     if (!waiting.length && !groups.length) left.append(el('div', { class: 'muted tiny', style: 'padding:12px', text: state.err ? `The gateway did not answer: ${state.err} (the board needs gateway 0.6.81+).` : 'No boards yet. Run a team from any chat (/its-name) and its threads appear here as it works.' }));
@@ -152,7 +154,7 @@ export function renderBoard(root, { settings, license = null }) {
     // place (someone scrolled to the bottom to read before typing was thrown back to the
     // top every four seconds). When it must redraw, the scroll position is carried over,
     // pinned to the bottom for a reader who was there.
-    const key = run && thread ? `${run.id}:${thread.id}:${run.lastEventAt || 0}:${describeSpend(spendOf(run))}:${run.status}:${thread.status}:${run.threads.posts.length}:${(run.tasks || []).map((t) => `${t.status}${t.transcript?.length || 0}${(t.text || '').length}`).join(',')}` : 'none';
+    const key = run && thread ? `${run.id}:${thread.id}:${run.lastEventAt || 0}:${describeSpend(spendOf(run))}:${runState(run).key}:${run.status}:${thread.status}:${run.threads.posts.length}:${(run.tasks || []).map((t) => `${t.status}${t.transcript?.length || 0}${(t.text || '').length}`).join(',')}` : 'none';
     if (!opts.force && key === state.drawnKey) return;
     state.drawnKey = key;
     const prevList = right.querySelector('.bposts');
@@ -164,11 +166,12 @@ export function renderBoard(root, { settings, license = null }) {
     const roles = run.roles || [];
     const posts = run.threads.posts.filter((p) => p.threadId === thread.id);
     const live = LIVE.has(run.status);
+    const rs = runState(run);
     const spend = spendOf(run);
     // The run strip.
     right.append(el('div', { class: 'brun-strip' },
       el('div', {},
-        el('div', { class: 'brun-t' }, el('b', { text: run.team }), el('span', { class: 'muted tiny mono', text: ` ${run.id} · ${when(run.createdAt)} · ${run.client || '?'} ` }), chip({ status: run.status })),
+        el('div', { class: 'brun-t' }, el('b', { text: run.team }), el('span', { class: 'muted tiny mono', text: ` ${run.id} · ${when(run.createdAt)} · ${run.client || '?'} ` }), runChip(run), rs.detail ? el('span', { class: 'muted tiny', text: ` ${rs.detail}` }) : null),
         el('div', { class: 'muted tiny brun-req', text: run.request || '' }),
         el('div', { class: 'blanes' }, ...(run.tasks || []).map((t) => {
           const lane = el('span', { class: `blane${t.status === 'waiting' ? ' waiting' : ''}`, title: t.transcript?.length ? `${t.transcript.length} steps on the record` : '' }, el('i', { style: `background:${colour(t.role, roles)}` }), el('b', { text: t.role }), el('span', { class: 'muted tiny', text: ` ${t.status}${t.model ? ` · ${t.model}` : ''}${t.findings ? ` · ${t.findings} findings` : ''}` }));
@@ -197,7 +200,12 @@ export function renderBoard(root, { settings, license = null }) {
     right.append(el('div', { class: 'bthead' }, el('h3', { text: thread.title }), el('div', { class: 'muted tiny' }, chip(thread), ` ${thread.kind}${thread.parent ? ` · sub-task of ${run.tasks?.find((x) => x.id === thread.parent)?.title || thread.parent}` : ''}${thread.holder ? ` · held by ${thread.holder}` : ''}${thread.by && thread.by !== 'runner' ? ` · opened by ${thread.by}` : ''} · ${posts.length} post${posts.length === 1 ? '' : 's'}`)));
     const list = el('div', { class: 'bposts' });
     const post = (p, depth) => {
-      const decidable = (p.kind === 'draft' || p.kind === 'finding') && (p.status === 'proposed' || p.status === 'open') && !p.decidedBy;
+      // A DRAFT (the proposal, a proposed agent) is decided; a FINDING is not — it is a member's
+      // claim with its ref, on the record. A person can STRIKE a wrong one so the next wave and
+      // the merge drop it; thirty-seven Approve buttons under a researcher's findings read as
+      // thirty-seven decisions owed.
+      const decidable = p.kind === 'draft' && (p.status === 'proposed' || p.status === 'open') && !p.decidedBy;
+      const strikable = p.kind === 'finding' && p.status !== 'rejected' && !p.decidedBy;
       const body = el('div', { class: 'bpost-body' });
       body.append(el('div', { class: 'bwho' }, el('b', { text: p.by === 'person' ? 'you' : p.by }), el('span', { class: 'bkind', text: p.kind }), el('span', { text: ago(p.at) }), p.status === 'approved' ? el('span', { class: 'bchip ok', text: 'approved' }) : p.status === 'rejected' ? el('span', { class: 'bchip err', text: 'rejected' }) : p.status === 'proposed' ? el('span', { class: 'bchip on', text: 'proposed' }) : null));
       body.append(el('div', { class: 'btext md selectable', html: renderMarkdown(p.text || '') }));
@@ -216,6 +224,7 @@ export function renderBoard(root, { settings, license = null }) {
         acts.append(el('button', { class: 'btn ok', type: 'button', text: 'Approve', onclick: () => store.decide(run.id, { postId: p.id, status: 'approved' }).then(refresh) }));
         acts.append(el('button', { class: 'btn danger', type: 'button', text: 'Reject', onclick: () => store.decide(run.id, { postId: p.id, status: 'rejected' }).then(refresh) }));
       }
+      if (strikable) acts.append(el('button', { class: 'btn ghost', type: 'button', text: 'Strike', title: 'Wrong or stale: drop this finding from what the members and the merge read', onclick: () => store.decide(run.id, { postId: p.id, status: 'rejected' }).then(refresh) }));
       acts.append(el('button', { class: 'btn ghost', type: 'button', text: 'Reply', onclick: () => { state.reply = p; drawThread({ force: true }); } }));
       body.append(acts);
       list.append(el('div', { class: `bpost${depth ? ' reply' : ''}`, style: depth ? `margin-left:${38 + (depth - 1) * 14}px` : '' }, el('span', { class: `bav${depth ? ' sm' : ''}`, style: `background:${colour(p.by, roles)}`, text: initial(p.by) }), body));

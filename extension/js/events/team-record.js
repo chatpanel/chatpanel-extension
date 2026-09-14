@@ -140,9 +140,61 @@ export function spendOf(run, { now = Date.now() } = {}) {
   const cap = run?.usage?.cap || run?.budget || null;
   if (!cap || !Object.keys(cap).length) return null;
   const spent = { tokens: 0, calls: 0, usd: 0, ms: 0, ...(run?.usage?.spent || {}) };
-  if (LIVE_RUN_STATUSES.includes(run?.status) && run?.startedAt) spent.ms = Math.max(spent.ms || 0, now - run.startedAt);
+  // The clock runs while the client is writing, and STOPS where it stopped: a run whose
+  // record says `running` because its client died (or its end never landed) is not still
+  // spending — it read "18m13s / 5m00s" and counting for a member that had finished.
+  const st = runState(run, { now });
+  if (LIVE_RUN_STATUSES.includes(run?.status) && run?.startedAt) spent.ms = Math.max(spent.ms || 0, (st.key === 'stalled' ? Number(run.lastEventAt) || now : now) - run.startedAt);
   const pct = cap.tokens ? Math.min(100, Math.round(((spent.tokens || 0) / cap.tokens) * 100)) : cap.ms ? Math.min(100, Math.round(((spent.ms || 0) / cap.ms) * 100)) : null;
-  return { cap, spent, pct, exhausted: run?.usage?.exhausted || null };
+  const over = BUDGET_KEYS.filter((k) => cap[k] && (spent[k] || 0) >= cap[k]);
+  return { cap, spent, pct, exhausted: run?.usage?.exhausted || over[0] || null, over };
+}
+const BUDGET_KEYS = ['tokens', 'calls', 'usd', 'ms'];
+
+export const STALLED_AFTER_MS = 2 * 60_000;
+
+/**
+ * What a run IS right now, for a person: the record's status read against the clock. A
+ * record that says `running` with no event for minutes is STALLED — its client stopped
+ * writing (died, or its end never landed) — not running. `{ key, label, tone, detail }`;
+ * `tone` is the chip: on · warn · ok · err · muted.
+ */
+export function runState(run, { now = Date.now(), stalledAfterMs = STALLED_AFTER_MS } = {}) {
+  const s = String(run?.status || 'planning');
+  const quiet = Number.isFinite(run?.quietMs) ? run.quietMs : Math.max(0, now - (Number(run?.lastEventAt) || now));
+  const agoText = (ms) => { const sec = Math.round(ms / 1000); return sec < 60 ? `${sec} s` : sec < 3600 ? `${Math.round(sec / 60)} min` : `${Math.round(sec / 3600)} h`; };
+  if (s === 'waiting') return { key: 'waiting', label: 'waiting on you', tone: 'warn', detail: '' };
+  if (LIVE_RUN_STATUSES.includes(s)) {
+    if (run?.stale === true || quiet > stalledAfterMs) return { key: 'stalled', label: 'stalled', tone: 'err', detail: `no events for ${agoText(quiet)} — its client stopped writing; Resume here picks it up from the record` };
+    return { key: 'running', label: s === 'merging' ? 'merging' : s === 'planning' ? 'planning' : 'running', tone: 'on', detail: `last event ${agoText(quiet)} ago` };
+  }
+  if (s === 'completed') return { key: 'done', label: 'done', tone: 'ok', detail: '' };
+  if (s === 'partial') return { key: 'partial', label: 'done with failures', tone: 'warn', detail: 'a member failed; the rest merged' };
+  if (s === 'answered') return { key: 'answered', label: 'answered — resume to continue', tone: 'warn', detail: '' };
+  if (s === 'over-budget') return { key: 'over-budget', label: 'over budget', tone: 'err', detail: 'stopped with what it had' };
+  if (s === 'stopped') return { key: 'stopped', label: 'stopped', tone: 'muted', detail: '' };
+  if (s === 'failed') return { key: 'failed', label: 'failed', tone: 'err', detail: '' };
+  return { key: s, label: s, tone: 'muted', detail: '' };
+}
+
+/**
+ * Earlier runs whose work a new run should read before repeating it (§12.2.6, the librarian's
+ * first step): the same team (or any, when `team` is empty), a request that says the same
+ * thing (word overlap ≥ `minSimilarity`), findings on the record, not the run itself, newest
+ * first. `runs` is the store's list (`findings` is a count there). Returns
+ * `[{ id, at, similarity, findings }]`; the host fetches the record for the findings.
+ */
+export function priorWorkFor(runs, { team = '', request = '', excludeId = null, minSimilarity = 0.6, maxAgeMs = 7 * 24 * 3600_000, now = Date.now(), limit = 3 } = {}) {
+  const words = (t) => new Set(String(t || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter((w) => w.length > 2));
+  const want = words(request);
+  if (!want.size) return [];
+  const sim = (t) => { const have = words(t); if (!have.size) return 0; let hit = 0; for (const w of want) if (have.has(w)) hit += 1; return hit / Math.max(want.size, have.size); };
+  return (runs || [])
+    .filter((r) => r && r.id && r.id !== excludeId && (!team || r.team === team) && !LIVE_RUN_STATUSES.includes(r.status) && (Number(r.findings) || (Array.isArray(r.board) ? r.board.length : 0)) > 0 && now - (Number(r.createdAt) || 0) <= maxAgeMs)
+    .map((r) => ({ id: r.id, at: r.createdAt, similarity: Math.round(sim(r.request) * 100) / 100, findings: Number(r.findings) || (Array.isArray(r.board) ? r.board.length : 0), status: r.status }))
+    .filter((r) => r.similarity >= minSimilarity)
+    .sort((a, b) => b.similarity - a.similarity || b.at - a.at)
+    .slice(0, limit);
 }
 
 const secs = (ms) => { const s = Math.max(0, Math.round((Number(ms) || 0) / 1000)); return s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s` : `${s}s`; };
@@ -152,10 +204,11 @@ const num = (n) => (Number(n) || 0).toLocaleString('en-US');
 export function describeSpend(spend) {
   if (!spend?.cap) return '';
   const { cap, spent } = spend;
+  const over = (k) => ((spend.over || []).includes(k) ? ' (over)' : '');
   return [
-    cap.tokens ? `${num(spent.tokens)} / ${num(cap.tokens)} tokens` : '',
-    cap.calls ? `${num(spent.calls)} / ${num(cap.calls)} calls` : '',
-    cap.usd ? `$${(Number(spent.usd) || 0).toFixed(2)} / $${Number(cap.usd).toFixed(2)}` : '',
-    cap.ms ? `${secs(spent.ms)} / ${secs(cap.ms)}` : '',
+    cap.tokens ? `${num(spent.tokens)} / ${num(cap.tokens)} tokens${over('tokens')}` : '',
+    cap.calls ? `${num(spent.calls)} / ${num(cap.calls)} calls${over('calls')}` : '',
+    cap.usd ? `$${(Number(spent.usd) || 0).toFixed(2)} / $${Number(cap.usd).toFixed(2)}${over('usd')}` : '',
+    cap.ms ? `${secs(spent.ms)} / ${secs(cap.ms)}${over('ms')}` : '',
   ].filter(Boolean).join(' · ');
 }

@@ -135,6 +135,10 @@ export async function runTeam({
   // model from the board, on either client; the runner continues the task's transcript there.
   control = null,
   recruit = null, projectId = null,
+  // Earlier runs' findings for the same request (team-record.js priorWorkFor, fetched by the
+  // host): `[{ runId, at, request?, findings: [...] }]`. Posted as a "Prior work" thread every
+  // member reads before repeating a lookup — the librarian's first step (§12.2.6).
+  prior = null,
 } = {}) {
   if (typeof callModel !== 'function') throw new TeamRunError('BAD_RUN', 'callModel required');
   const t = normalizeTeam(team); // throws on a team without a budget — O1
@@ -205,6 +209,24 @@ export async function runTeam({
   say('plan.ready', { by: planBy, tasks: tasks.map((x) => ({ id: x.id, role: x.role, title: x.title, dependsOn: x.dependsOn, ...(x.parent ? { parent: x.parent, requestedBy: x.requestedBy || null } : {}), ...(x.grants ? { grants: x.grants, why: x.why || '' } : {}) })) });
   // A thread per task, before anything runs: a member's findings and replies have a home.
   for (const task of tasks) board.openThread({ taskId: task.id, kind: 'task', title: task.title || task.id, by: task.requestedBy || RUNNER, ...(task.parent ? { parent: task.parent } : {}), ...(task.role && task.parent ? { holder: task.role } : {}) });
+  // PRIOR WORK: what an earlier run already found for this request is on the board before
+  // anyone starts — a discussion thread per run, its findings as posts with their refs — so a
+  // second run of the same question reads instead of re-searching. Only findings a person did
+  // not reject; at most 40 per run.
+  if (!resume && Array.isArray(prior)) {
+    for (const pr of prior.filter((x) => x && Array.isArray(x.findings) && x.findings.length)) {
+      const age = Number.isFinite(pr.at) ? Math.max(0, Math.round((now() - pr.at) / 60000)) : null;
+      const th = board.openThread({ kind: 'discussion', title: `Prior work — run ${pr.runId}${age != null ? ` (${age < 60 ? `${age} min` : `${Math.round(age / 60)} h`} ago)` : ''}`, by: RUNNER });
+      board.post({ threadId: th.id, by: RUNNER, kind: 'note', text: `An earlier run answered ${pr.request ? `"${String(pr.request).slice(0, 200)}"` : 'the same request'}. Its findings follow — read them, verify what is stale, and do not repeat lookups already made.`, refs: [`run:${pr.runId}`] });
+      let n = 0;
+      for (const f of pr.findings) {
+        if (!f || !f.text || f.status === 'rejected' || n >= 40) continue;
+        board.post({ threadId: th.id, by: f.role || RUNNER, kind: 'finding', text: String(f.text).slice(0, 2000), refs: [...(Array.isArray(f.refs) ? f.refs : []), `run:${pr.runId}`].slice(0, 8), finding: { kind: f.kind || 'claim', confidence: f.confidence ?? null, prior: true } });
+        n += 1;
+      }
+      say('run.prior', { from: pr.runId, threadId: th.id, findings: n });
+    }
+  }
   // The planner's TOOL PROPOSAL (§15.2): which tools each task will need and why, as a
   // proposal thread a person reads — and what the nudge below holds the member to.
   if (!resume && tasks.some((x) => x.grants?.length)) {

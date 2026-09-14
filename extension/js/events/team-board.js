@@ -242,7 +242,7 @@ export function createBoard({ now = () => Date.now(), newId = null, state = null
 function asFinding(st) {
   return (p) => {
     const t = st.threads.find((x) => x.id === p.threadId);
-    return { id: p.id, kind: p.finding?.kind || 'claim', text: p.text, refs: p.refs || [], confidence: p.finding?.confidence ?? null, role: p.by, taskId: t?.taskId || null, at: p.at, status: p.status };
+    return { id: p.id, kind: p.finding?.kind || 'claim', text: p.text, refs: p.refs || [], confidence: p.finding?.confidence ?? null, role: p.by, taskId: t?.taskId || null, at: p.at, status: p.status, ...(p.finding?.prior ? { prior: true } : {}) };
   };
 }
 

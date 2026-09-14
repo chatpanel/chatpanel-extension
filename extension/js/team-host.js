@@ -17,6 +17,7 @@ import { createControl } from './events/team-task.js';
 import { grantAllows } from './events/team.js';
 import { resolveTeam } from './events/agent.js';
 import { recruitForRun, engineRows } from './events/recruit.js';
+import { priorWorkFor } from './events/team-record.js';
 import { appoint } from './events/cowriter-router.js';
 import { swarmCandidates } from './notes-swarm-router.js';
 import { canUseAgent } from './license.js';
@@ -257,6 +258,27 @@ export function foldScm(prev, e) {
   return out;
 }
 
+/**
+ * Earlier runs' findings for the same request, from the store: the newest run of this team
+ * that asked the same thing and has findings, its board read once. Nothing on a store that
+ * does not answer — a run never waits on its history.
+ */
+export async function priorWorkHere(store, { team, request, excludeId = null }) {
+  try {
+    const list = await store.list({ limit: 30 });
+    const runs = list.ok ? (list.data?.runs || []) : [];
+    const picks = priorWorkFor(runs, { team, request, excludeId, limit: 1 });
+    const out = [];
+    for (const pk of picks) {
+      const r = await store.get(pk.id);
+      const run = r.ok ? (r.data?.run || r.data) : null;
+      const findings = Array.isArray(run?.board) ? run.board : [];
+      if (findings.length) out.push({ runId: pk.id, at: pk.at, request: run.request || '', findings });
+    }
+    return out.length ? out : null;
+  } catch { return null; }
+}
+
 /** Events to the gateway as they happen — batched, ordered, flushed on the way out. */
 // The runs this panel is running right now: an answer from this panel's own UI reaches the
 // runner directly as well as through the gateway (which the desktop uses).
@@ -341,6 +363,8 @@ export async function runTeamHere({ team, request, settings, license, like = '',
   });
   await sync.start();
   liveRuns.set(id, { answers, control, stop: () => ac.abort(), team: team.name });
+  // What an earlier run already found for this request goes on the board first (the librarian's first step).
+  const prior = resume ? null : await priorWorkHere(gw, { team: team.name, request, excludeId: id });
   const appointRole = appointerFor(settings, license, { like });
   // Roles that stand for agents, filled from the pool now — the cards as they are at run time.
   const resolved = resolveTeamHere(team, settings, license, { like });
@@ -436,6 +460,7 @@ export async function runTeamHere({ team, request, settings, license, like = '',
       team: resolved, request, callModel, appoint: appointRole, runId: id, signal: ac.signal, answers, askTimeoutMs, resume, control,
       toolsFor: (role) => toolsFor(role),
       recruit: recruiterFor(settings, license, { like }),
+      prior,
       emit: (type, payload) => { sync.push(type, payload); emit(type, payload); },
     });
     return { ...result, synced: sync.synced };
