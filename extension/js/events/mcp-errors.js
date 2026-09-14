@@ -53,7 +53,7 @@ const RULES = [
     explain: () => ({
       summary: 'The ChatPanel Bridge is not running.',
       detail: 'Local MCP servers are launched by the bridge, so nothing can start without it.',
-      fix: 'Start it with `npx @chatpanel/bridge`, then try again.',
+      fix: 'Install ChatPanel — the gateway, which brings the bridge (`npm i -g @chatpanel/gateway && chatpanel-gateway --install`, or https://dl.chatpanel.net/install.sh) — or start a bridge with `npx @chatpanel/bridge`, then try again.',
       blame: 'setup',
     }),
   },

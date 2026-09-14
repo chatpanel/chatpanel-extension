@@ -59,7 +59,7 @@ async function call(conn, path, { method = 'GET', body } = {}) {
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
-    const err = new Error('The ChatPanel bridge isn’t running — start it, then try again.');
+    const err = new Error('The ChatPanel bridge isn’t running — install ChatPanel (the gateway brings the bridge) or start it, then try again.');
     err.code = 'no-bridge';
     throw err;
   }

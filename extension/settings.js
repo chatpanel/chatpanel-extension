@@ -3858,11 +3858,16 @@ async function testBridge() {
   status.className = 'status';
   bridgeState = await checkBridge(url);
   if (!bridgeState.ok) {
-    status.textContent = `✕ Not reachable (${bridgeState.reason || 'no response'}). Install or start the bridge — the commands are in “ChatPanel local” above.`;
+    // The bridge comes with the gateway (0.6.92+): what to install is the GATEWAY, and the
+    // commands for it live in the status card at the top of this tab — point AT them, since
+    // telling someone to look for instructions is the step this change exists to remove. A
+    // running gateway with no bridge is the one case that is not an install problem.
+    const gwUp = !!gatewayState?.ok;
+    status.textContent = gwUp
+      ? `✕ Not reachable (${bridgeState.reason || 'no response'}). The gateway is running but its bridge is not answering yet — press Recheck in “ChatPanel local” above; a gateway older than 0.6.92 does not carry a bridge, so update it.`
+      : `✕ Not reachable (${bridgeState.reason || 'no response'}). Install ChatPanel — the gateway, which brings the bridge — with the command in “ChatPanel local” above (npm: npm i -g @chatpanel/gateway && chatpanel-gateway --install).`;
     status.className = 'status err';
-    // The commands live in the status card at the top of this tab now, so point AT them —
-    // telling someone to look for instructions is the step this change exists to remove.
-    const help = $('bridge-install-help');
+    const help = $(gwUp ? 'bridge-install-help' : 'gateway-install-help');
     if (help) {
       help.open = true;
       help.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -4024,7 +4029,7 @@ function bridgeAgentCard(agent) {
       showCustomAvailability(agent, q);
     } else {
       const av = (bridgeState.agents || []).find((x) => x.id === q('.ba-kind').value);
-      if (!bridgeState.ok) setStatus(q('.ba-avail'), 'Bridge not running', '');
+      if (!bridgeState.ok) setStatus(q('.ba-avail'), 'Bridge not running — install the gateway (ChatPanel local, above); it brings the bridge', '');
       else setStatus(q('.ba-avail'), av?.available ? '✓ available' : `✕ ${av?.reason || 'unavailable'}`, av?.available ? 'ok' : 'err');
     }
   };
@@ -7261,7 +7266,7 @@ async function renderChannelsFix(st) {
   // the same place: run one of these, then press Re-check.
   say(reachable
     ? 'Update the bridge with the same command you installed it with:'
-    : 'Start or install the bridge, then re-check:');
+    : 'Install ChatPanel — the gateway, which brings the bridge — then re-check:');
   commands(bridgeInstallCommands());
   const again = document.createElement('button');
   again.className = 'btn';
