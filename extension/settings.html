@@ -868,8 +868,9 @@ curl -fsSL https://dl.chatpanel.net/install.sh | bash
 # Windows (PowerShell)
 irm https://dl.chatpanel.net/install.ps1 | iex
 
-# or via npm — any OS, needs Node
-npm i -g @chatpanel/gateway &amp;&amp; chatpanel-gateway --install</code></pre>
+# or via npm — any OS, needs Node (two commands; PowerShell has no &amp;&amp;)
+npm i -g @chatpanel/gateway
+chatpanel-gateway --install</code></pre>
             <p class="muted sm"><strong>2 · Add it as a model</strong> — open the <strong>API</strong> tab and create a
               custom OpenAI-compatible endpoint pointing at the gateway:</p>
             <pre class="gw-cmd"><code>Base URL : http://127.0.0.1:4320/v1

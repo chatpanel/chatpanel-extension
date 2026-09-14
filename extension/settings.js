@@ -1793,7 +1793,10 @@ const INSTALL_COMMANDS = {
   gateway: [
     { os: 'unix', label: 'macOS / Linux', cmd: 'curl -fsSL https://dl.chatpanel.net/install.sh | bash' },
     { os: 'windows', label: 'Windows · PowerShell', cmd: 'irm https://dl.chatpanel.net/install.ps1 | iex' },
-    { os: 'any', label: 'With Node — any OS', cmd: 'npm i -g @chatpanel/gateway && chatpanel-gateway --install' },
+    // Two commands, not one `&&` line: Windows PowerShell 5.1 has no `&&`, so the Windows variant
+    // joins with `;` and the unix one keeps `&&`; the host's OS sorts its variant first.
+    { os: 'windows', label: 'With Node · PowerShell', cmd: 'npm i -g @chatpanel/gateway; chatpanel-gateway --install' },
+    { os: 'unix', label: 'With Node · macOS / Linux', cmd: 'npm i -g @chatpanel/gateway && chatpanel-gateway --install' },
   ],
   bridge: [
     { os: 'unix', label: 'macOS / Linux — bridge only', cmd: 'curl -fsSL https://dl.chatpanel.net/bridge/install.sh | bash' },
@@ -3865,7 +3868,7 @@ async function testBridge() {
     const gwUp = !!gatewayState?.ok;
     status.textContent = gwUp
       ? `✕ Not reachable (${bridgeState.reason || 'no response'}). The gateway is running but its bridge is not answering yet — press Recheck in “ChatPanel local” above; a gateway older than 0.6.92 does not carry a bridge, so update it.`
-      : `✕ Not reachable (${bridgeState.reason || 'no response'}). Install ChatPanel — the gateway, which brings the bridge — with the command in “ChatPanel local” above (npm: npm i -g @chatpanel/gateway && chatpanel-gateway --install).`;
+      : `✕ Not reachable (${bridgeState.reason || 'no response'}). Install ChatPanel — the gateway, which brings the bridge — with the command in “ChatPanel local” above (npm: \`npm i -g @chatpanel/gateway\`, then \`chatpanel-gateway --install\`).`;
     status.className = 'status err';
     const help = $(gwUp ? 'bridge-install-help' : 'gateway-install-help');
     if (help) {

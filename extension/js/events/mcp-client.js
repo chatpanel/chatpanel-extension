@@ -119,7 +119,7 @@ export class McpClient {
           'Otherwise check that the command + args run in a terminal.',
         );
       }
-      throw new Error(`Can't reach the ChatPanel Bridge for local MCP (${e.message}). Install ChatPanel — the gateway brings the bridge (npm i -g @chatpanel/gateway && chatpanel-gateway --install) — or start one with \`npx @chatpanel/bridge\`.`);
+      throw new Error(`Can't reach the ChatPanel Bridge for local MCP (${e.message}). Install ChatPanel — the gateway brings the bridge (\`npm i -g @chatpanel/gateway\`, then \`chatpanel-gateway --install\`) — or start one with \`npx @chatpanel/bridge\`.`);
     }
     if (message.id == null) return null; // notification → 202, no body
     if (!res.ok) throw new Error(`Bridge MCP HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
