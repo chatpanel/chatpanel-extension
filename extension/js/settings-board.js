@@ -26,6 +26,7 @@ import { runStore, answerAsk, handoffTask, resumeRunHere, rosterFor } from './te
 import { renderMarkdown } from './markdown.js';
 import { workLogFor } from './events/team-worklog.js';
 import { threadRows } from './events/team-subtask.js';
+import { spendOf, describeSpend } from './events/team-record.js';
 
 const POLL_MS = 4000;
 const LIVE = new Set(['planning', 'running', 'merging', 'waiting']);
@@ -151,7 +152,7 @@ export function renderBoard(root, { settings, license = null }) {
     // place (someone scrolled to the bottom to read before typing was thrown back to the
     // top every four seconds). When it must redraw, the scroll position is carried over,
     // pinned to the bottom for a reader who was there.
-    const key = run && thread ? `${run.id}:${thread.id}:${run.lastEventAt || 0}:${run.status}:${thread.status}:${run.threads.posts.length}:${(run.tasks || []).map((t) => `${t.status}${t.transcript?.length || 0}${(t.text || '').length}`).join(',')}` : 'none';
+    const key = run && thread ? `${run.id}:${thread.id}:${run.lastEventAt || 0}:${describeSpend(spendOf(run))}:${run.status}:${thread.status}:${run.threads.posts.length}:${(run.tasks || []).map((t) => `${t.status}${t.transcript?.length || 0}${(t.text || '').length}`).join(',')}` : 'none';
     if (!opts.force && key === state.drawnKey) return;
     state.drawnKey = key;
     const prevList = right.querySelector('.bposts');
@@ -163,7 +164,7 @@ export function renderBoard(root, { settings, license = null }) {
     const roles = run.roles || [];
     const posts = run.threads.posts.filter((p) => p.threadId === thread.id);
     const live = LIVE.has(run.status);
-    const spent = run.usage?.spent; const cap = run.usage?.cap || run.budget;
+    const spend = spendOf(run);
     // The run strip.
     right.append(el('div', { class: 'brun-strip' },
       el('div', {},
@@ -183,7 +184,7 @@ export function renderBoard(root, { settings, license = null }) {
         })),
       ),
       el('div', { class: 'brun-side' },
-        cap ? el('div', { class: 'muted tiny', text: `Budget ${cap.tokens ? `${spent?.tokens || 0} / ${cap.tokens} tokens` : ''}${cap.ms ? ` · ${Math.round((spent?.ms || 0) / 1000)}s / ${Math.round(cap.ms / 1000)}s` : ''}` }) : null,
+        spend ? el('div', { class: 'muted tiny', text: `Budget ${describeSpend(spend)}${spend.exhausted ? ` — ${spend.exhausted} exhausted` : ''}` }) : null,
         live && !run.stale ? el('button', { class: 'btn danger', type: 'button', text: 'Stop run', onclick: () => store.stop(run.id).then(refresh) }) : null,
         // A run whose client went away, or that stopped, waited or failed, picks up from its record.
         (run.resumable || (live && (run.quietMs || 0) > 60_000)) ? el('button', { class: 'btn primary', type: 'button', text: run.resumable ? 'Resume here' : `Resume here (quiet ${Math.round((run.quietMs || 0) / 1000)} s)`, title: 'Continue this run in this browser from its record — nothing already done is redone', onclick: async () => {

@@ -205,7 +205,7 @@ export { fixedPlan, parsePlan, plannerPrompt, waves, breakCycles, TEAM_PLAN_SCHE
 export { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, FINDINGS_SCHEMA, FINDING_KINDS, THREAD_KINDS, THREAD_STATUSES, POST_KINDS, POST_STATUSES, ASK_TYPES, emptyBoardState, foldBoard, findingsOf } from './team-board.js';
 export { boardToolProvider, boardToolSpec, createAnswerBox, withBoardTool, BOARD_TOOL_NAME, DEFAULT_ASK_TIMEOUT_MS } from './board-tool.js';
 export { createRunCache, withRunCache } from './team-cache.js';
-export { emptyRun, foldRun, runFromEvents, checkpointFrom, isResumable, LIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES } from './team-record.js';
+export { emptyRun, foldRun, runFromEvents, checkpointFrom, isResumable, LIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES , spendOf, describeSpend } from './team-record.js';
 export { validateProject, normalizeProject, defineProject, canTransition as canProjectTransition, blankProject, projectFromForm, emptyProjectRecord, foldProject, projectProgress, ProjectError, PROJECT_STATUSES, PROJECT_ID_RE } from './project.js';
 // Job POSTINGS (F8 §12) — `jobs.js` is the scheduler and keeps `defineJob`; a posting is a JobPost here.
 export { validateJob as validateJobPost, normalizeJob as normalizeJobPost, defineJob as defineJobPost, canTransition as canJobPostTransition, applyAll, jobToRole, readyJobs, blankJob as blankJobPost, jobFromForm as jobPostFromForm, JobError as JobPostError, JOB_STATUSES as JOB_POST_STATUSES, JOB_ID_RE as JOB_POST_ID_RE } from './job.js';

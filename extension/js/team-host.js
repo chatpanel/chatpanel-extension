@@ -299,6 +299,10 @@ export function createRunSync({ store, runId, team, request, onStopRequested = n
     },
     push(type, payload) {
       if (dead) return;
+      // A task's streamed text: one delta per task per flush, the newest — each carries the
+      // whole text so far, so the earlier ones in the queue say nothing the last does not.
+      // Every chunk used to go, and the chunks alone filled a run's record on the store.
+      if (type === 'task.delta') { const i = queue.findIndex((q) => q.type === 'task.delta' && q.taskId === payload.taskId); if (i >= 0) { queue[i] = { type, ...payload }; if (!timer) timer = setTimeout(flush, FLUSH_EVERY_MS); return; } }
       queue.push({ type, ...payload });
       // What a person must see NOW goes at once: the end, and an ask (the thread before it
       // in the queue goes with it — an answer must not beat its own question to the store).
@@ -395,7 +399,9 @@ export async function runTeamHere({ team, request, settings, license, like = '',
         messages, settings, signal: taskSignal || ac.signal, tools,
         onDelta: (d) => { text += d; onDelta?.(d, text); },
         onEvent: (e) => {
-          if (e?.type === 'usage') usage = e;
+          // Usage ADDS UP across the turn's rounds: a member that searched for ten minutes
+          // charged only its last round to the team budget.
+          if (e?.type === 'usage') usage = usage ? { inputTokens: (Number(usage.inputTokens) || 0) + (Number(e.inputTokens) || 0), outputTokens: (Number(usage.outputTokens) || 0) + (Number(e.outputTokens) || 0), calls: (usage.calls || 1) + 1 } : { inputTokens: Number(e.inputTokens) || 0, outputTokens: Number(e.outputTokens) || 0, calls: 1 };
           if (e?.type === 'scm') scm = foldScm(scm, e);
           if (e?.type === 'reasoning' && e.text) thought += e.text;
           if (e?.type === 'tool' && e.phase === 'start') {
@@ -416,7 +422,7 @@ export async function runTeamHere({ team, request, settings, license, like = '',
       const full = typeof out === 'string' ? out : (out?.text ?? text);
       const final = full || text;
       const wire = [...sent, ...added, ...(final.trim() ? [{ role: 'assistant', content: final }] : [])];
-      return { ok: true, text: final, usage: usage ? { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens } : null, aborted: ac.signal.aborted || taskSignal?.aborted, transcript: wire, ...(scm ? { scm } : {}) };
+      return { ok: true, text: final, usage: usage ? { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens, calls: usage.calls || 1 } : null, aborted: ac.signal.aborted || taskSignal?.aborted, transcript: wire, ...(scm ? { scm } : {}) };
     } catch (e) {
       closeThought();
       const wire = [...sent, ...added, ...(text.trim() ? [{ role: 'assistant', content: text }] : [])];

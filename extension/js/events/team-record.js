@@ -130,3 +130,32 @@ export function isResumable(run) {
   if (RESUMABLE_RUN_STATUSES.includes(run.status)) return true;
   return !!run.stale && LIVE_RUN_STATUSES.includes(run.status); // its client went away mid-run
 }
+
+/**
+ * The run's spend against its cap, as a board shows it: the record's last `run.usage` (or
+ * nothing spent yet) with `ms` measured LIVE for a run still going — the stored figure is as
+ * of the last task's end, and a board read "0 s" through a ten-minute research task.
+ */
+export function spendOf(run, { now = Date.now() } = {}) {
+  const cap = run?.usage?.cap || run?.budget || null;
+  if (!cap || !Object.keys(cap).length) return null;
+  const spent = { tokens: 0, calls: 0, usd: 0, ms: 0, ...(run?.usage?.spent || {}) };
+  if (LIVE_RUN_STATUSES.includes(run?.status) && run?.startedAt) spent.ms = Math.max(spent.ms || 0, now - run.startedAt);
+  const pct = cap.tokens ? Math.min(100, Math.round(((spent.tokens || 0) / cap.tokens) * 100)) : cap.ms ? Math.min(100, Math.round(((spent.ms || 0) / cap.ms) * 100)) : null;
+  return { cap, spent, pct, exhausted: run?.usage?.exhausted || null };
+}
+
+const secs = (ms) => { const s = Math.max(0, Math.round((Number(ms) || 0) / 1000)); return s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s` : `${s}s`; };
+const num = (n) => (Number(n) || 0).toLocaleString('en-US');
+
+/** One line: `1,240 / 40,000 tokens · 3 / 20 calls · 2m10s / 15m00s`. Only the capped dimensions. */
+export function describeSpend(spend) {
+  if (!spend?.cap) return '';
+  const { cap, spent } = spend;
+  return [
+    cap.tokens ? `${num(spent.tokens)} / ${num(cap.tokens)} tokens` : '',
+    cap.calls ? `${num(spent.calls)} / ${num(cap.calls)} calls` : '',
+    cap.usd ? `$${(Number(spent.usd) || 0).toFixed(2)} / $${Number(cap.usd).toFixed(2)}` : '',
+    cap.ms ? `${secs(spent.ms)} / ${secs(cap.ms)}` : '',
+  ].filter(Boolean).join(' · ');
+}
