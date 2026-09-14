@@ -43,9 +43,10 @@ export async function updateBridgeAndWait(url, {
  *  same thing — a stale copy of an install command is worse than no copy. */
 export function bridgeInstallCommands({ npmCommand = '' } = {}) {
   if (npmCommand) return [{ label: 'Update the npm install', cmd: npmCommand }];
+  // The gateway carries the bridge (0.6.92+): installing ChatPanel is the gateway installer.
   return [
-    { label: 'macOS / Linux', cmd: 'curl -fsSL https://dl.chatpanel.net/bridge/install.sh | bash' },
-    { label: 'Windows (PowerShell)', cmd: 'irm https://dl.chatpanel.net/bridge/install.ps1 | iex' },
-    { label: 'With Node, no install', cmd: 'npx @chatpanel/bridge' },
+    { label: 'macOS / Linux', cmd: 'curl -fsSL https://dl.chatpanel.net/install.sh | bash' },
+    { label: 'Windows (PowerShell)', cmd: 'irm https://dl.chatpanel.net/install.ps1 | iex' },
+    { label: 'Bridge only, with Node', cmd: 'npx @chatpanel/bridge' },
   ];
 }

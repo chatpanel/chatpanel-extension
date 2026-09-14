@@ -23,9 +23,13 @@ assert.match(fn, /rt-bridge/, 'renders a bridge row');
 assert.match(fn, /rt-gateway/, 'renders a gateway row');
 
 // the framing: gateway-off is optional/complete, not an error
-assert.match(fn, /Optional/, 'a stopped gateway reads as Optional');
-assert.match(fn, /optional upgrade/i, 'and the copy says so');
-assert.match(fn, /You\\'re set for local agents/, 'bridge-up + gateway-off is a complete state');
+// Since gateway 0.6.92 the gateway CARRIES the bridge: it is the one thing to install, and
+// the bridge row says it comes with it. A stopped gateway is "not installed", never an error;
+// a bridge running on its own is a complete state (the light path), described, not warned.
+assert.match(fn, /Not installed/, 'a stopped gateway reads as not installed — the step to take');
+assert.match(fn, /Comes with the gateway/, 'a stopped bridge is not a second thing to install');
+assert.match(fn, /brings the bridge with it/, 'the summary says where the bridge comes from');
+assert.match(fn, /The bridge runs on its own here/, 'bridge-up + gateway-off is a complete state, described as the light path');
 assert.doesNotMatch(fn, /gateway.*not running.*error|✕ gateway/i, 'a stopped gateway is never an error');
 
 // wired to render on tab open and on recheck

@@ -17,15 +17,18 @@ const html = read('settings.html');
 const css = read('settings.css');
 
 // ── the commands are here, for both components, and only here ────────────────────
+// THE installer is the gateway's (it carries the bridge since 0.6.92): dl.chatpanel.net/install.sh.
+// The bridge-only commands stay for the light path.
 for (const [what, probe] of [
+  ['gateway', /dl\.chatpanel\.net\/install\.sh/],
+  ['gateway', /dl\.chatpanel\.net\/install\.ps1/],
   ['bridge', /dl\.chatpanel\.net\/bridge\/install\.sh/],
   ['bridge', /dl\.chatpanel\.net\/bridge\/install\.ps1/],
   ['bridge', /npx @chatpanel\/bridge/],
-  ['gateway', /dl\.chatpanel\.net\/gateway\/install\.sh/],
-  ['gateway', /dl\.chatpanel\.net\/gateway\/install\.ps1/],
 ]) {
   assert.match(js, probe, `the ${what} install command must be in the status card`);
 }
+assert.doesNotMatch(js, /dl\.chatpanel\.net\/gateway\/install/, 'the gateway installer is THE installer: /install.sh, not a per-component path');
 assert.doesNotMatch(
   html, /id="bridge-install-help"/,
   'the duplicated static install block must be gone — two copies of a command drift apart',
@@ -46,11 +49,12 @@ assert.match(
 assert.match(js, /install: 'bridge'/);
 assert.match(js, /install: 'gateway'/);
 
-// ── open when missing, collapsed when running ────────────────────────────────────
+// ── open when missing, collapsed when running — for the ONE thing to install ─────
 assert.match(
-  js, /wrap\.open = !running;/,
-  'the block must open itself exactly when the component is NOT installed',
+  js, /wrap\.open = which === 'gateway' && !running;/,
+  'the gateway block opens itself exactly when it is NOT installed; the bridge-only block never opens on its own',
 );
+assert.match(js, /Bridge only, without the gateway \(advanced\)/, 'the bridge-only path is labelled as the exception');
 
 // ── the host OS leads ────────────────────────────────────────────────────────────
 // The BODY, not the file: the prose above it names navigator.platform to explain why it is
@@ -74,12 +78,9 @@ assert.ok(
   'a refused clipboard must say so — never report a copy that did not happen',
 );
 
-// ── exactly ONE next step, and it is the one that unblocks the other ─────────────
-assert.match(js, /next: !bridgeOn,/, 'nothing local works without the bridge');
-assert.match(
-  js, /next: bridgeOn && !gwOn,/,
-  'the gateway becomes the next step only once the bridge is up — it needs the bridge running',
-);
+// ── exactly ONE next step: the gateway, which brings the bridge ──────────────────
+assert.match(js, /next: !gwOn, \/\/ the one step/, 'the gateway is the step until it is done');
+assert.match(js, /next: false,/, 'the bridge is never a step of its own — it comes with the gateway');
 
 // ── the highlight must read in BOTH themes ───────────────────────────────────────
 // Brace-matched rather than regex-sliced: the dark block nests a :root inside the media
@@ -143,12 +144,14 @@ console.log('local runtime install: ok');
 // block names the provider and where updates come from instead.
 const installBlockFn = /function installBlock\(which, \{ running, managedBy = '' \}\)\s*\{[\s\S]*?\n\}/.exec(js)?.[0] || '';
 assert.ok(installBlockFn, 'installBlock() must accept managedBy');
-const desktopBranch = /if \(managedBy === 'desktop'\) \{([\s\S]*?)\n  \}/.exec(installBlockFn)?.[1] || '';
-assert.ok(desktopBranch, 'installBlock() must have a desktop-provided branch');
+const desktopBranch = /if \(managedBy === 'desktop' \|\| managedBy === 'gateway'\) \{([\s\S]*?)\n  \}/.exec(installBlockFn)?.[1] || '';
+assert.ok(desktopBranch, 'installBlock() must have a provided-by branch (desktop, or the gateway for its bridge)');
 assert.match(desktopBranch, /Provided by ChatPanel Desktop/);
+assert.match(desktopBranch, /Provided by the gateway/, 'a bridge the gateway carries is named as such — no second bridge over it');
 assert.doesNotMatch(desktopBranch, /installFor\(|install-cmd/, 'no install commands for a runtime the desktop provides');
 assert.match(desktopBranch, /return wrap;/, 'the branch returns before the command list is built');
 assert.match(js, /managedBy: bridgeState\?\.managedBy \|\| ''/, 'the bridge row passes who provides it');
 assert.match(js, /managedBy: gatewayState\?\.managedBy \|\| ''/, 'the gateway row passes who provides it');
 assert.match(js, /via ChatPanel Desktop/, 'the status text says so too');
+assert.match(js, /via the gateway/, 'and for the bridge the gateway runs');
 console.log('ok  local-runtime-install: a desktop-provided runtime gets a name, not a curl line');

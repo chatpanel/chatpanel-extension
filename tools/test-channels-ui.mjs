@@ -90,7 +90,7 @@ assert.match(js, /Re-check/, 'after installing by hand, the user must be able to
 const upd = read('js/bridge-update.js');
 assert.match(upd, /export async function updateBridgeAndWait/, 'update+restart+wait is one capability');
 assert.match(upd, /export function bridgeInstallCommands/, 'one copy of the install commands, not one per screen');
-assert.match(upd, /dl\.chatpanel\.net\/bridge\/install\.sh/, 'the documented installer, not an invented one');
+assert.match(upd, /dl\.chatpanel\.net\/install\.sh/, 'the documented installer — the gateway carries the bridge — not an invented one');
 // The swap succeeding but the restart being slow is not a failure — reporting it as one
 // sends the user to reinstall something that is already updated.
 assert.match(upd, /slow: true/, 'a slow restart must not be reported as a failed update');

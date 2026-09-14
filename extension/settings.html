@@ -87,9 +87,9 @@
 
       <!-- AGENTS (local bridge / CLI) -->
       <section class="panel hidden" data-panel="agents">
-        <!-- One "ChatPanel local" picture: the bridge (agents + skills) and the gateway
-             (optional privacy/routing/voice upgrade). Bridge on + gateway off is the normal,
-             complete state — framed that way, never as a warning. -->
+        <!-- One "ChatPanel local" picture: the gateway — THE thing to install, which carries
+             the bridge (agents + skills) and starts it itself (0.6.92+) — and the bridge it
+             brings. Bridge alone is the light path, shown as such, never as broken. -->
         <div class="card local-runtime-card">
           <div class="card-head">
             <h2>ChatPanel local <span class="sub">— what's running on your machine</span></h2>
@@ -108,8 +108,8 @@
           <p class="muted">
             A harness is a coding agent already installed on your machine — one an agent of
             yours can be given as its engine, or that you chat with directly. Install &amp; start the
-            <strong>bridge</strong> in <strong>ChatPanel local</strong> above, then Test. They
-            run locally, and each one appears here once the bridge finds it;
+            <strong>gateway</strong> in <strong>ChatPanel local</strong> above (it brings the bridge
+            with it), then Test. They run locally, and each one appears here once the bridge finds it;
             <strong>Free includes one agent</strong> — your pick — and Pro unlocks Claude Code,
             Codex, Antigravity &amp; more together.
           </p>
@@ -860,13 +860,13 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
 
           <details class="gw-help">
             <summary>Install the Gateway &amp; use it as a model in ChatPanel</summary>
-            <p class="muted sm"><strong>1 · Install it</strong> — runs as a background process and starts at login
-              (needs the bridge running):</p>
+            <p class="muted sm"><strong>1 · Install it</strong> — one install: it runs as a background process, starts
+              at login, and brings the bridge (your local coding agents) with it:</p>
             <pre class="gw-cmd"><code># macOS / Linux
-curl -fsSL https://dl.chatpanel.net/gateway/install.sh | bash
+curl -fsSL https://dl.chatpanel.net/install.sh | bash
 
 # Windows (PowerShell)
-irm https://dl.chatpanel.net/gateway/install.ps1 | iex
+irm https://dl.chatpanel.net/install.ps1 | iex
 
 # or via npm — any OS, needs Node
 npm i -g @chatpanel/gateway &amp;&amp; chatpanel-gateway --install</code></pre>
