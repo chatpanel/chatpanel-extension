@@ -85,3 +85,52 @@ export function linkifyCitations(answer, sources, { heading = 'Sources' } = {}) 
     .join('\n');
   return `${linked.trimEnd()}\n\n**${heading}**\n${list}\n`;
 }
+
+// ---------------------------------------------------------------------------------------
+// The collector — what a turn was GIVEN, gathered as its tools return it, and put back
+// under the answer as links. Was the extension's `citationCollector`; the desktop had none,
+// so its answers cited `[1]` with nothing to click.
+// ---------------------------------------------------------------------------------------
+
+/** Tools whose job is to RETURN material rather than to act on something. */
+export const RETRIEVAL_TOOLS = Object.freeze(new Set(['find', 'source', 'history_search', 'web_search', 'search', 'fetch', 'read_page']));
+
+const retrievalName = (name) => String(name || '').replace(/^mcp[_-]/, '').split('__')[0];
+
+/**
+ * Wrap a toolset so every result is read for numbered sources.
+ *
+ * @param tools        `{ execute, … }`; returned as `.tools`, wrapped
+ * @param onRetrieved  `({ tool, count, chars, sources }) => void` — RETRIEVAL IS INPUT. Called
+ *                     per call that returned material, so the turn shows what it was given and
+ *                     by which tool. A retrieval tool that returned no LINKS still returned
+ *                     material (notes, past chats), and is reported with `count: 0` — silence
+ *                     there would under-report exactly the private sources this makes visible.
+ * @returns `{ tools, list(), apply(answer) }`
+ */
+export function createCitationCollector(tools, { onRetrieved = null } = {}) {
+  const sources = new Map();
+  const collect = (name, out) => {
+    const body = typeof out === 'string' ? out : (out?.text || '');
+    if (!body) return;
+    const found = sourcesFromToolText(body);
+    for (const s of found) if (!sources.has(s.rank)) sources.set(s.rank, s);
+    if (!onRetrieved) return;
+    try {
+      if (found.length) onRetrieved({ tool: name, count: found.length, chars: body.length, sources: found.slice(0, 20).map((x) => ({ rank: x.rank, title: x.title || '', url: x.url || '' })) });
+      else if (RETRIEVAL_TOOLS.has(retrievalName(name))) onRetrieved({ tool: name, count: 0, chars: body.length, sources: [] });
+    } catch { /* reporting never breaks a turn */ }
+  };
+  const wrapped = tools && typeof tools.execute === 'function'
+    ? { ...tools, execute: async (name, input, meta) => { const out = await tools.execute(name, input, meta); collect(name, out); return out; } }
+    : tools;
+  return {
+    tools: wrapped,
+    list: () => [...sources.values()],
+    /** The answer with its `[n]` citations linked and a Sources section — or the answer untouched when nothing was retrieved. */
+    apply(answer) {
+      if (!sources.size || !answer || typeof answer !== 'string') return answer;
+      try { return linkifyCitations(answer, [...sources.values()]); } catch { return answer; }
+    },
+  };
+}

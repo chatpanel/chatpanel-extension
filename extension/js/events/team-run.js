@@ -77,6 +77,9 @@ export function isModelUnavailable(error) {
   // fetch" (the extension reports it as "network error") — a local model killed mid-run
   // arrived as the latter and ended the task on its first attempt with Claude Code sitting
   // idle on the roster.
+  // The source gate's refusal (source-gate.js) is about THIS model's reach, not the task:
+  // the next appointment, within reach, can do it.
+  if (/^Not sent: /.test(m)) return true;
   return /model[_ ]not[_ ]found|not found|not deployed|inaccessible|does not exist|no such model|unknown model|unsupported model|not available|unavailable|no api key|not configured|"status":\s*(404|401|403|500|502|503)\b|\b(404|401|403|502|503)\b|exited \d+|returned no answer|did not answer|closed the connection|couldn't reach|could not reach|ECONNREFUSED|ECONNRESET|ENOTFOUND|EHOSTUNREACH|socket hang up|fetch failed|failed to fetch|load failed|network ?error|overloaded|capacity/i.test(m);
 }
 
@@ -422,7 +425,9 @@ export async function runTeam({
           // A model that is not there — not deployed, no key, gone — is not the task failing:
           // the next model on the roster is appointed and the task tried again, up to three
           // models. Anything else (a refusal, a timeout, a bad request) fails the task.
-          const exclude = new Set();
+          // A resumed task does not walk back into the models that were unavailable the last
+          // time it ran — that is how one task read `A → B → A → B → A → B` on the board.
+          const exclude = new Set((was?.attempts || []).filter((a) => a && a.model && a.status === 'error' && isModelUnavailable(a.error)).map((a) => a.model));
           let lastErr = '';
           // What the next attempt is told, when it continues rather than starts.
           let note = was ? continuationNote(was.status === 'waiting' ? { kind: 'answer', answer: 'see the board' } : { kind: 'resume', reason: was.error || was.status }) : null;
@@ -448,10 +453,12 @@ export async function runTeam({
             if (!m?.model) throw new Error(exclude.size ? `no model left for role "${role.id}" after ${[...exclude].join(', ')}` : `no model for role "${role.id}"`);
             if (attempt > 1 && lastErr) say('task.reappointed', { taskId: task.id, role: role.id, model: m.model, after: [...exclude], error: lastErr });
             // Who is doing this task, for a ledger that shows the lanes — said per attempt.
-            say('task.model', { taskId: task.id, role: role.id, model: m.model, attempt });
+            say('task.model', { taskId: task.id, role: role.id, model: m.model, label: m.label || null, attempt });
             routed = routeOf(m, role, { attempt, exclude, handoff: handoffNow });
             say('task.routed', { taskId: task.id, role: role.id, attempt, ...routed });
-            attempts.push({ model: m.model, engine: routed.engine, at: now(), continued: !!note });
+            // The label beside the id: a work log that reads `mqk41ucyhmz1au → mqqzh4970js34c` names
+            // nothing to the person reading it.
+            attempts.push({ model: m.model, label: m.label || routed.engine?.label || routed.engine?.model || null, engine: routed.engine, at: now(), continued: !!note });
             attemptNo = attempts.length;
             const sent = messagesFor({ transcript }, { prompt, note });
             // The record grows AS THE ATTEMPT GOES: a host that reports each wire message the
@@ -533,7 +540,7 @@ export async function runTeam({
       // the board sees "researcher failed: network error" where it happened, and what was tried.
       if (thread && status === 'ok') board.setThreadStatus(thread.id, 'resolved');
       else if (thread && status !== 'waiting') {
-        board.post({ threadId: thread.id, by: RUNNER, kind: 'note', text: `${role?.id || task.role} ${status === 'over-budget' ? 'stopped at the budget' : 'failed'}${error ? `: ${String(error).slice(0, 300)}` : ''}${attempts.length > 1 ? ` (after ${attempts.length} models: ${attempts.map((a) => a.model).join(', ')})` : ''}.` });
+        board.post({ threadId: thread.id, by: RUNNER, kind: 'note', text: `${role?.id || task.role} ${status === 'over-budget' ? 'stopped at the budget' : 'failed'}${error ? `: ${String(error).slice(0, 300)}` : ''}${attempts.length > 1 ? ` (after ${attempts.length} models: ${attempts.map((a) => a.label || a.model).join(', ')})` : ''}.` });
         board.setThreadStatus(thread.id, 'failed');
       }
       const row = { id: task.id, role: task.role, title: task.title, status, text, error, usage, ms: now() - t0, findings, transcript: clipTranscript(transcript), attempts, ...(task.parent ? { parent: task.parent } : {}), ...(routed ? { routed } : {}), ...(scm ? { scm } : {}), ...(askedAndWaiting ? { waitingOn: askedAndWaiting } : {}) };

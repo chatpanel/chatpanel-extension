@@ -56,12 +56,15 @@ function candidateModel(ag, settings) {
 export function swarmCandidates(deps, settings, license) {
   const out = [];
   for (const ep of settings.endpoints || []) {
-    if (ep?.model) out.push({ id: ep.id, name: ep.name || ep.model, kind: ep.kind || 'openai', model: ep.model, enabled: ep.enabled !== false, usable: deps.canUseAgent(license, settings, ep) });
+    // `baseUrl` travels so a roster can be narrowed by REACH (events/source-gate.js
+    // `withinReach`): a localhost endpoint is the device, everything else is a third party.
+    if (ep?.model) out.push({ id: ep.id, name: ep.name || ep.model, kind: ep.kind || 'openai', model: ep.model, baseUrl: ep.baseUrl || '', enabled: ep.enabled !== false, usable: deps.canUseAgent(license, settings, ep) });
   }
   for (const ag of settings.agents || []) {
     const model = candidateModel(ag, settings);
     if (!model) continue;
-    out.push({ id: ag.id, name: ag.name || ag.bridgeAgent || model, kind: ag.kind || 'bridge', bridgeAgent: ag.bridgeAgent, model, enabled: ag.enabled !== false, usable: deps.canUseAgent(license, settings, ag) });
+    const ep = ag.endpointId ? (settings.endpoints || []).find((e) => e.id === ag.endpointId) : null;
+    out.push({ id: ag.id, name: ag.name || ag.bridgeAgent || model, kind: ag.kind || (ep ? (ep.kind || 'openai') : 'bridge'), bridgeAgent: ag.bridgeAgent, model, baseUrl: ep?.baseUrl || '', enabled: ag.enabled !== false, usable: deps.canUseAgent(license, settings, ag) });
   }
   return out;
 }

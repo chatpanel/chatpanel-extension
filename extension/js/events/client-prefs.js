@@ -48,6 +48,10 @@ export const PREF_SECTIONS = Object.freeze([
   { id: 'watch', label: 'Watch', path: ['ui', 'watch'], kind: 'object' },
   { id: 'meetings', label: 'Meetings', path: null, kind: 'object', keys: ['meetingWindowMin', 'liveNotesIntervalMin', 'alertSound'] },
   { id: 'redaction', label: 'Redaction (client-side)', path: ['ui', 'piiRedaction'], kind: 'object' },
+  // Internal sites (source-gate.js): which hosts are internal and how far their content may
+  // travel. A rule the desktop enforces too, or a page internal in the panel is sent
+  // anywhere from the desk.
+  { id: 'internalSites', label: 'Internal sites', path: ['privacy'], kind: 'object' },
 ]);
 
 export const PREF_SECTION_IDS = Object.freeze(PREF_SECTIONS.map((s) => s.id));

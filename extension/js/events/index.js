@@ -127,12 +127,12 @@ export {
 } from './observability.js';
 export { routeGraph, projectChain } from './route-graph.js';
 export { defineAdapter, createAdapterRegistry, AdapterError } from './adapters.js';
-export { linkifyCitations, sourcesFromToolText } from './citations.js';
+export { linkifyCitations, sourcesFromToolText, createCitationCollector, RETRIEVAL_TOOLS } from './citations.js';
 export { buildTrajectory, phasesOf, lanesOf, filterEntries, displayName, ENTRY_KINDS, threadsOf, threadTitle, promptEntries, turnsOf, threadTree } from './trajectory.js';
 export { createTurnRunner, defineLoop, LOOP_KINDS, LoopError } from './loop.js';
 export { defineModel, defineMiddleware, defineRouteStrategy, createModelRouter, signalsFrom, requirementsFor, requirementsForStep, preferenceFor, failoverOrder, pinnedOrderOf, FAILOVER_CLASS_GAP, FAILOVER_CAPABILITY_GAP, sameModelKey, RouterError } from './router.js';
 export { makeSourceStore, manifestText, shortUrl, readSource, sourceId } from './sources-retrieval.js';
-export { classifySource, extractUrls, hostMatches, meetReach, sourcePolicyFor, DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './sources.js';
+export { classifySource, extractUrls, hostMatches, meetReach, sourcePolicyFor, sourceUrlsOf, DEFAULT_INTERNAL_PATTERNS, INTERNAL_PATTERN_CATALOG } from './sources.js';
 export { defineRule, createRuleEngine, SUPPRESSED, RuleError } from './rules.js';
 export {
   VAULT_VERSION, KDF_ITERATIONS, KDF_HASH, DEFAULT_LOCK_MS, VaultError,
@@ -190,6 +190,9 @@ export {
 // next model.
 export { classifyFailure, createModelHealth, COOLDOWN_MS, UNAVAILABLE_REASONS, normModelName } from './model-health.js';
 export { runWithFailover, failoverExhausted, FAILOVER_MAX_ATTEMPTS } from './failover.js';
+// The source ceiling as a gate, and the citation collector — the last two pieces of the turn
+// wrapper that were the extension's alone.
+export { sourcePolicySettings, sourceGuardFor, sourceGate, isSourceGateError, withinReach } from './source-gate.js';
 export {
   runTurnLoop, createCallRunner, roundCap, withToolSystem, describeCall as describeToolCall, stepResultText, addUsage, normalizeUsage,
   openAiTranscript, anthropicTranscript,

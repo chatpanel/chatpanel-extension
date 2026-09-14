@@ -14,6 +14,7 @@ import { normalizeProject } from './events/project.js';
 import { starterAgents } from './events/agent.js';
 import { runTeamHere, recruiterFor, appointerFor, gatewayBase, gwFetch } from './team-host.js';
 import { getTarget, resolveTarget } from './store.js';
+import { sourceGuardFor, sourcePolicySettings, sourceUrlsOf } from './events/source-gate.js';
 import { getGatewayToken, handshakeGatewayToken } from './gateway.js';
 
 const DEFAULT_BUDGET = { tokens: 200000, ms: 3600000 };
@@ -69,7 +70,10 @@ export async function runProjectHere({ goal, title = '', doneWhen = '', budget =
   const push = (ev) => { queue.push(ev); chain = chain.then(flush); };
 
   const executive = executiveFor(settings);
-  const appointRole = appointerFor(settings, license, { like });
+  // The goal's sources narrow the roster (events/source-gate.js), as a team run's request
+  // does: an internal address in the goal keeps the executive and every job within reach.
+  const guard = sourceGuardFor(sourcePolicySettings(settings?.privacy), sourceUrlsOf([{ role: 'user', content: String(goal || '') }]));
+  const appointRole = appointerFor(settings, license, { like, guard });
   // The executive's call: the shared structured layer on the roster's strongest model (its
   // card says best-quality), the card's prompt as the system. Returns the shaped value.
   const plan = async (prompt, schema) => {

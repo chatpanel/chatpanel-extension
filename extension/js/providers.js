@@ -26,7 +26,7 @@ import { makeSourceStore, manifestText, readSource, approxTokens } from './event
 // attachments in exactly this way.
 import { renderContent, toChatMessages, toMultimodalMessages, imageAttachmentsOf, deferAttachedSources, withSourceTool } from './events/context-attachments.js';
 export { deferAttachedSources, withSourceTool };
-import { extractUrls } from './events/sources.js';
+import { sourceUrlsOf } from './events/sources.js';
 import { detectEntities, normalizeEntities, EXTRACT_SYS, withTimeout } from './pii-detect.js';
 import { createVault, redactText, restoreText, redactionSummary } from './pii-redact.js';
 import { combineSystemPrompt, toolStatus } from './events/tool-hints.js';
@@ -1145,60 +1145,17 @@ export function turnSpecFor({ usage, tools, onDelta, agent } = {}) {
  *
  * Both come from the same place, so both are captured here.
  */
-function citationCollector(tools, turn = null) {
-  const sources = new Map();
-  const collect = (name, text) => {
-    const body = typeof text === 'string' ? text : (text?.text || '');
-    if (!body) return;
-    import('./events/citations.js')
-      .then((m) => {
-        const found = m.sourcesFromToolText(body);
-        for (const s of found) if (!sources.has(s.rank)) sources.set(s.rank, s);
-        // RETRIEVAL IS INPUT. Recorded per call, so the turn shows what it was given and by
-        // which tool — a tool that ran is not the same fact as a tool that returned material.
-        if (found.length && turn) {
-          turn.emit('context.retrieved', {
-            tool: name,
-            count: found.length,
-            chars: body.length,
-            sources: found.slice(0, 20).map((x) => ({ rank: x.rank, title: x.title || '', url: x.url || '' })),
-          });
-        } else if (turn && RETRIEVAL_TOOLS.has(String(name || '').replace(/^mcp[_-]/, '').split('__')[0])) {
-          // A retrieval tool that returned no LINKS still returned material — notes and past
-          // chats have no urls. Silence here would under-report exactly the private sources
-          // this is meant to make visible.
-          turn.emit('context.retrieved', { tool: name, count: 0, chars: body.length, sources: [] });
-        }
-      })
-      .catch(() => {});
-  };
-  const wrapped = tools && tools.execute
-    ? {
-      ...tools,
-      execute: async (name, input, meta) => {
-        const out = await tools.execute(name, input, meta);
-        collect(name, out);
-        return out;
-      },
-    }
-    : tools;
-  return {
-    tools: wrapped,
-    list: () => [...sources.values()],
-    async apply(answer) {
-      if (!sources.size || !answer) return answer;
-      try {
-        const { linkifyCitations } = await import('./events/citations.js');
-        return linkifyCitations(answer, [...sources.values()]);
-      } catch {
-        return answer;   // a citation pass must never cost the user their answer
-      }
-    },
-  };
+/**
+ * The citation collector — the shared one (events/citations.js), with the retrieval record
+ * on the turn: RETRIEVAL IS INPUT, recorded per call so the turn shows what it was given
+ * and by which tool.
+ */
+async function citationCollector(tools, turn = null) {
+  const { createCitationCollector } = await import('./events/citations.js');
+  return createCitationCollector(tools, {
+    onRetrieved: turn ? (r) => turn.emit('context.retrieved', r) : null,
+  });
 }
-
-/** Tools whose job is to RETURN material rather than to act on something. */
-const RETRIEVAL_TOOLS = new Set(['find', 'source', 'history_search', 'web_search', 'search', 'fetch', 'read_page']);
 
 async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEvent, tools, redaction, usage: usageCtx, timing, sources, context }, turn) {
   // Same answer the turn record uses — routing and recording must not disagree about whether
@@ -1376,14 +1333,14 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
     // closing, and how it would now escape without a transcript. Both belong on every
     // exit, not on the one that happened to be edited last.
     recordPrompt(turn, agent, messages, tools, context);
-    const cites = citationCollector(tools, turn);
+    const cites = await citationCollector(tools, turn);
     const full = await withFailover(
       agent, settings, tools, turn, onEvent, signal,
       (a) => dispatchStream({ agent: a, messages, settings, signal, onDelta, onEvent, tools: cites.tools }),
       messages,
     );
     if (typeof full === 'string' ? full.trim() : full) turn.produced();
-    const cited = typeof full === 'string' ? await cites.apply(full) : full;
+    const cited = typeof full === 'string' ? cites.apply(full) : full;
     recordAnswer(turn, cited, cites.list());
     return cited;
   }
@@ -1511,7 +1468,7 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   // No try/catch. The one that used to be here existed solely to close the turn on the
   // error path; the runner does that in its own `finally`, so an exception simply
   // propagates and the turn is still recorded as failed.
-  const cites = citationCollector(safeTools, turn);
+  const cites = await citationCollector(safeTools, turn);
   // FAILOVER APPLIES HERE TOO. This path called dispatchStream directly, so a declining model
   // killed the turn outright — and only for users who had redaction ON. Privacy and
   // reliability are not a trade: turning redaction on must not quietly remove the thing that
@@ -1536,7 +1493,7 @@ async function streamChatTurn({ agent, messages, settings, signal, onDelta, onEv
   if (typeof full === 'string' ? full.trim() : full) turn.produced();
   // Restore FIRST, then linkify: rewriting against redacted text would match placeholders
   // instead of the words the user will actually read.
-  const answer = await cites.apply(restore(typeof full === 'string' ? full : full ?? '', vault));
+  const answer = cites.apply(restore(typeof full === 'string' ? full : full ?? '', vault));
   recordAnswer(turn, answer, cites.list());
   return answer;
 }
@@ -1633,37 +1590,17 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call,
  * Returns `{ blocked, why, message }` or null. Dynamic-import so the model-router graph
  * stays off the first-paint path.
  */
-function sourceUrlsOf(messages, extraSources = []) {
-  const urls = [];
-  for (const m of messages || []) {
-    for (const a of m?.attachments || []) if (a?.url) urls.push(a.url);
-    // THE BODY IS EVIDENCE TOO. An internal link pasted into a message — or arriving in a
-    // tool result that got written back into the conversation — is internal material just as
-    // much as an attachment is. The address is what proves it, wherever it appears.
-    for (const u of extractUrls(m?.content)) urls.push(u);
-  }
-  for (const s of extraSources || []) if (s) urls.push(typeof s === 'string' ? s : (s.url || s.href || ''));
-  return urls.filter(Boolean);
-}
-
 export async function sourceGate(agent, settings, messages, extraSources = []) {
   try {
-    const { sourceGuardFor, reachOf } = await import('./model-router.js');
-    const guard = sourceGuardFor(settings, sourceUrlsOf(messages, extraSources));
-    if (!guard) return null;
-    const REACH = ['device', 'trusted', 'any'];
-    const allowed = REACH.indexOf(guard.reach);
-    const actual = REACH.indexOf(reachOf(agent || {}));
-    if (actual <= allowed) return null;
-    const where = guard.reach === 'device' ? 'stay on this device' : 'stay inside your workspace';
-    return {
-      blocked: true,
-      why: guard.why,
-      // Name the source, the model and the way out. A refusal a person cannot act on gets
-      // switched off wholesale, which would leave them worse protected than before.
-      message: `Not sent: ${guard.why}. "${modelLabelOf(agent) || 'this model'}" is outside that, and content from an internal source must ${where}. `
-        + 'Pick a local model (or run one), or remove this site under Settings → Privacy → Internal sites.',
-    };
+    // The gate is the shared one (events/source-gate.js); the policy is this client's
+    // settings, and the target's reach is read the way the router reads it.
+    const gate = await import('./events/source-gate.js');
+    return gate.sourceGate({
+      policy: gate.sourcePolicySettings(settings?.privacy),
+      messages, sources: extraSources,
+      target: agent || {},
+      label: modelLabelOf(agent),
+    });
   } catch {
     // A BROKEN GUARD MUST NOT BECOME AN OPEN GATE — but it must not block every turn either.
     // The compromise: fail open ONLY when the guard itself could not run, and say so, so a

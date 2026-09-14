@@ -57,7 +57,7 @@ export function workLogFor(run, taskId) {
   const out = [];
   const attempts = Array.isArray(task.attempts) ? task.attempts : [];
   const baseAt = num(task.startedAt, num(attempts[0]?.at, num(run?.startedAt, 0)));
-  attempts.forEach((a, i) => out.push({ id: `attempt:${i + 1}`, kind: 'attempt', at: num(a.at, baseAt + i), by: 'runner', attempt: i + 1, model: a.model || '', engine: a.engine || null, continued: !!a.continued, status: a.status || null, error: a.error || null }));
+  attempts.forEach((a, i) => out.push({ id: `attempt:${i + 1}`, kind: 'attempt', at: num(a.at, baseAt + i), by: 'runner', attempt: i + 1, model: a.label || a.engine?.label || a.engine?.model || a.model || '', modelId: a.model || '', engine: a.engine || null, continued: !!a.continued, status: a.status || null, error: a.error || null }));
 
   // Steps: stamped ones sort by their time; unstamped ones follow their attempt in order.
   const steps = Array.isArray(task.transcript) ? task.transcript : [];
@@ -109,7 +109,7 @@ export function workLogFor(run, taskId) {
 }
 
 function endText(task, attempts) {
-  const tried = attempts.length > 1 ? ` after ${attempts.length} models (${attempts.map((a) => a.model).join(' → ')})` : '';
+  const tried = attempts.length > 1 ? ` after ${attempts.length} models (${attempts.map((a) => a.label || a.engine?.label || a.engine?.model || a.model).join(' → ')})` : '';
   const s = task.status;
   if (s === 'ok') return `done${tried} · ${task.findings || 0} finding${task.findings === 1 ? '' : 's'} · ${task.tools || 0} tool call${task.tools === 1 ? '' : 's'}`;
   if (s === 'waiting') return 'waiting on a person';

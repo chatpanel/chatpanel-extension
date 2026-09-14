@@ -231,3 +231,27 @@ console.log('team-host: ok');
   const res = targets.find((t) => t.systemPrompt.includes('researcher'));
   assert.equal(res.run, undefined, 'a model role takes nothing to the bridge');
 }
+
+// 8. THE REQUEST'S SOURCES NARROW THE ROSTER. A run about an internal page appointed a cloud
+//    model, the gate refused it ("Not sent: localhost matches 'localhost'…"), the runner
+//    re-appointed the next cloud model, and the installed agent — in reach the whole time —
+//    was never asked. The work log then read `mqk41ucyhmz1au → mqqzh4970js34c → …`, ids
+//    that name nothing.
+{
+  const { sourceGuardFor, sourcePolicySettings, sourceUrlsOf } = await import('../extension/js/events/source-gate.js');
+  const request = 'Summarise http://localhost:3000/admin/report for the team';
+  const guard = sourceGuardFor(sourcePolicySettings({ internalCeiling: 'trusted' }), sourceUrlsOf([{ role: 'user', content: request }]));
+  assert.ok(guard, 'localhost is internal by default');
+  const within = appointerFor(settings, pro, { guard })({ id: 'r', prefer: 'strong' });
+  assert.equal(within.model, 'claude-code', 'the installed agent is the only candidate within reach');
+  assert.equal(within.label, 'claude', 'the label, not the id, is what the record shows');
+  const device = appointerFor(settings, pro, { guard: sourceGuardFor(sourcePolicySettings({}), sourceUrlsOf([{ role: 'user', content: request }])) })({ id: 'r', prefer: 'strong' });
+  assert.equal(device, null, 'a device ceiling with no local model appoints nobody — said plainly, not refused after the fact');
+  // A local endpoint IS the device.
+  const local = { ...settings, endpoints: [...settings.endpoints, { id: 'ollama', name: 'Ollama', kind: 'openai', baseUrl: 'http://localhost:11434/v1', model: 'gemma', enabled: true }] };
+  assert.equal(appointerFor(local, pro, { guard: sourceGuardFor(sourcePolicySettings({}), ['http://localhost:3000']) })({ id: 'r', prefer: 'strong' }).model, 'ollama');
+  // No internal address: the roster is what it was.
+  assert.equal(appointerFor(settings, pro, { guard: null })({ id: 'r', prefer: 'strong' }).model, 'ep-strong');
+}
+
+console.log('team host: the roster is narrowed by the request\'s reach; the record names models');

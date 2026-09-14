@@ -19,6 +19,7 @@ import { resolveTeam } from './events/agent.js';
 import { recruitForRun, engineRows } from './events/recruit.js';
 import { priorWorkFor } from './events/team-record.js';
 import { appoint } from './events/cowriter-router.js';
+import { withinReach, sourceGuardFor, sourcePolicySettings, sourceUrlsOf } from './events/source-gate.js';
 import { swarmCandidates } from './notes-swarm-router.js';
 import { canUseAgent } from './license.js';
 import { getTarget, resolveTarget, getSettings, saveSettings } from './store.js';
@@ -145,9 +146,15 @@ export function runStore(settings) {
  * target the person is chatting with first (`like`), then the rest as configured. Ties in
  * the appointer go to roster order, so this order is the preference.
  */
-export function rosterFor(settings, license, { like = '' } = {}) {
+export function rosterFor(settings, license, { like = '', guard = null } = {}) {
   const all = swarmCandidates({ canUseAgent }, settings, license).filter((c) => c.enabled !== false);
-  return [...all.filter((c) => c.id === like), ...all.filter((c) => c.id !== like)];
+  // THE REQUEST'S SOURCES NARROW THE ROSTER. A run about an internal page appointed a cloud
+  // model, the gate refused it ("Not sent: localhost matches 'localhost'…"), the runner
+  // re-appointed the next cloud model, and Codex — installed, in reach — was never asked.
+  // Narrowing here, before appointment, is what makes the gate a rule the team follows
+  // rather than a wall it walks into.
+  const reachable = guard ? withinReach(all, guard) : all;
+  return [...reachable.filter((c) => c.id === like), ...reachable.filter((c) => c.id !== like)];
 }
 
 /**
@@ -228,8 +235,8 @@ export function recruiterFor(settings, license, { like = '' } = {}) {
  * failed as unavailable this run). `engine`, `reasons` and `alternatives` go on the record
  * as `task.routed` — which engine, why, who else could have.
  */
-export function appointerFor(settings, license, { like = '' } = {}) {
-  const candidates = rosterFor(settings, license, { like });
+export function appointerFor(settings, license, { like = '', guard = null } = {}) {
+  const candidates = rosterFor(settings, license, { like, guard });
   const others = (chosen, n = 3) => candidates.filter((x) => x.usable && x.id !== chosen.id).slice(0, n).map(engineOfCandidate);
   return (role, { exclude = null } = {}) => {
     if (role.model && !exclude?.has?.(role.model)) {
@@ -365,7 +372,10 @@ export async function runTeamHere({ team, request, settings, license, like = '',
   liveRuns.set(id, { answers, control, stop: () => ac.abort(), team: team.name });
   // What an earlier run already found for this request goes on the board first (the librarian's first step).
   const prior = resume ? null : await priorWorkHere(gw, { team: team.name, request, excludeId: id });
-  const appointRole = appointerFor(settings, license, { like });
+  // Where the request's material may travel (events/source-gate.js): an internal address in
+  // the request keeps every appointment within reach, so the gate has nothing to refuse.
+  const guard = sourceGuardFor(sourcePolicySettings(settings?.privacy), sourceUrlsOf([{ role: 'user', content: String(request || '') }]));
+  const appointRole = appointerFor(settings, license, { like, guard });
   // Roles that stand for agents, filled from the pool now — the cards as they are at run time.
   const resolved = resolveTeamHere(team, settings, license, { like });
   const roleOf = (rid) => resolved.roles.find((r) => r.id === rid) || null;

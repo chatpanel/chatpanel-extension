@@ -78,7 +78,10 @@ export function foldRun(run, ev) {
       if (t) { t.status = 'running'; t.startedAt = at; t.error = null; }
       run.status = 'running'; break;
     }
-    case 'task.model': { const t = taskOf(run, p.taskId); if (t) { t.model = p.model; t.attempts = [...(t.attempts || []), { model: p.model, at, attempt: p.attempt }]; } break; }
+    case 'task.model': { const t = taskOf(run, p.taskId); if (t) { t.model = p.model; t.attempts = [...(t.attempts || []), { model: p.model, ...(p.label ? { label: p.label } : {}), at, attempt: p.attempt }]; } break; }
+    // Which engine the attempt runs on (pillars §13): kept on the attempt, so a record folded
+    // from events names the model the way the runner's own `attempts` do.
+    case 'task.routed': { const t = taskOf(run, p.taskId); const a = t?.attempts?.at?.(-1); if (a && p.engine && (a.attempt == null || a.attempt === p.attempt)) a.engine = p.engine; break; }
     case 'task.step': { const t = taskOf(run, p.taskId); if (t && Array.isArray(p.steps)) t.transcript = [...(t.transcript || []), ...p.steps]; break; }
     case 'task.handoff': { const t = taskOf(run, p.taskId); if (t) { t.model = p.to; t.handoffs = [...(t.handoffs || []), { from: p.from, to: p.to, by: p.by, reason: p.reason, at }]; } break; }
     case 'task.tool': { const t = taskOf(run, p.taskId); if (t) t.tools = (t.tools || 0) + 1; break; }

@@ -13,7 +13,7 @@
 
 import { createModelRouter } from './events/router.js';
 import { routeGraph } from './events/route-graph.js';
-import { sourcePolicyFor, DEFAULT_INTERNAL_PATTERNS } from './events/sources.js';
+import { sourcePolicySettings as sharedSourcePolicySettings, sourceGuardFor as sharedSourceGuardFor } from './events/source-gate.js';
 import { healthOf } from './model-health.js';
 
 // WHAT A MODEL IS and HOW ONE IS CHOSEN now live in @chatpanel/events (model-candidates.js,
@@ -169,29 +169,15 @@ export async function routeForTurn(settings, resolveTarget, { capabilities = [],
  * positives to apologise for. Anything beyond that (a company domain on public DNS) is the
  * user's own pattern, because from here it is indistinguishable from any other public host.
  */
+// The policy and the guard are the shared package's (events/source-gate.js); what is this
+// client's is where the policy lives — `settings.privacy`.
 export function sourcePolicySettings(settings = {}) {
-  const cfg = settings?.privacy || {};
-  // NEVER CONFIGURED and CONFIGURED TO NOTHING are different answers. Undefined means the
-  // user has not been here yet, so the built-ins apply; an array — even an empty one — is a
-  // list they edited, and prepending our own to it would make a default impossible to
-  // remove. Someone testing against localhost has a real reason to delete that line.
-  const saved = cfg.internalPatterns;
-  const list = Array.isArray(saved)
-    ? saved
-    : (saved == null ? DEFAULT_INTERNAL_PATTERNS : String(saved).split(/[\s,]+/));
-  return {
-    enabled: cfg.internalGuard !== false,
-    patterns: list.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean),
-    ceiling: cfg.internalCeiling === 'trusted' ? 'trusted' : 'device',
-  };
+  return sharedSourcePolicySettings(settings?.privacy);
 }
 
 /** What the sources of a turn allow. Returns null when the guard is off or nothing matched. */
 export function sourceGuardFor(settings, sources = []) {
-  const policy = sourcePolicySettings(settings);
-  if (!policy.enabled || !sources?.length) return null;
-  const p = sourcePolicyFor(sources, { patterns: policy.patterns, ceiling: policy.ceiling });
-  return p.internal ? p : null;
+  return sharedSourceGuardFor(sourcePolicySettings(settings), sources);
 }
 
 export function needForTurn(settings, { capabilities = [], request = null, structured = false, pageTools = false, force = false, sources = [], background = false } = {}) {

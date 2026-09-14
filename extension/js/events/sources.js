@@ -262,3 +262,20 @@ export function sourcePolicyFor(sources = [], { patterns, ceiling = 'device', ba
     why: `${hits[0].host || 'the source'} matches '${hits[0].matched}' — kept ${safeCeiling === 'device' ? 'on this device' : 'inside your workspace'}`,
   };
 }
+
+/**
+ * Every address a conversation carries: each attachment's `url`, every URL in a message
+ * body (an internal link pasted into a message — or arriving in a tool result written back
+ * into the conversation — is internal material just as much as an attachment is), plus
+ * anything the caller states outright. The WHOLE conversation, because an internal page
+ * attached three turns ago is still in the text being sent now.
+ */
+export function sourceUrlsOf(messages, extraSources = []) {
+  const urls = [];
+  for (const m of messages || []) {
+    for (const a of m?.attachments || []) if (a?.url) urls.push(a.url);
+    for (const u of extractUrls(typeof m?.content === 'string' ? m.content : '')) urls.push(u);
+  }
+  for (const s of extraSources || []) if (s) urls.push(typeof s === 'string' ? s : (s.url || s.href || ''));
+  return urls.filter(Boolean);
+}
