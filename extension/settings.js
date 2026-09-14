@@ -1864,7 +1864,7 @@ function installBlock(which, { running, managedBy = '' }) {
   // labelled so nobody installs a second bridge beside the one the gateway brings.
   wrap.open = which === 'gateway' && !running; // not installed → show me how; installed → stay out of the way
   const sum = document.createElement('summary');
-  sum.textContent = which === 'bridge' ? (running ? 'Reinstall or update the bridge on its own' : 'Bridge only, without the gateway (advanced)') : (running ? 'Reinstall or update' : 'Install ChatPanel (the gateway — it brings the bridge)');
+  sum.textContent = which === 'bridge' ? (running ? 'Reinstall or update the bridge on its own' : 'Bridge only, without the gateway (advanced)') : (running ? 'Reinstall or update by hand' : 'Install ChatPanel (the gateway — it brings the bridge)');
   wrap.appendChild(sum);
 
   for (const { label, cmd } of installFor(which)) {
@@ -1955,7 +1955,7 @@ async function renderLocalRuntime({ recheck = false } = {}) {
     detail: gwOn
       ? `ChatPanel on this machine: local coding agents and skills${bridgeIsGateways && counts ? ` (${counts})` : ''}, PII redaction, model routing, voice, projects and teams.`
       : 'One install for everything local: your coding agents (Claude Code, Codex, …) and skills through the bridge it carries, plus PII redaction, model routing, voice, projects and teams.',
-    cta: gwOn ? '' : '<a href="#gateway" class="runtime-link">What the gateway adds →</a>',
+    cta: gwOn ? '<div id="rt-gateway-update" class="status runtime-update hidden"></div>' : '<a href="#gateway" class="runtime-link">What the gateway adds →</a>',
     install: 'gateway',
     managedBy: gatewayState?.managedBy || '',
     next: !gwOn, // the one step; everything else follows from it
@@ -1972,6 +1972,10 @@ async function renderLocalRuntime({ recheck = false } = {}) {
       next: false,
     }));
   }
+
+  // The update control on the gateway row (gateway 0.6.107+ reports `update` on /status and
+  // updates itself on POST /update; the commands below it are the by-hand fallback).
+  paintGatewayUpdate($('rt-gateway-update'));
 
   // The honest summary line.
   const note = document.createElement('p');
@@ -3862,7 +3866,12 @@ function renderBridgeUpdate() {
 // lives in js/gateway-update.js. An older gateway has no `update` key: nothing is offered
 // beyond the version it already shows.
 function renderGatewayUpdate() {
-  const el = $('gw-update');
+  paintGatewayUpdate($('gw-update'));
+  paintGatewayUpdate($('rt-gateway-update'));
+}
+// One control, two places: under the Gateway tab's status line and on the Agents tab's
+// "ChatPanel local" card — the card that shows the version is the card that updates it.
+function paintGatewayUpdate(el) {
   if (!el) return;
   const u = gatewayState && gatewayState.ok ? gatewayState.update : null;
   if (!u || u.disabled) { el.classList.add('hidden'); el.innerHTML = ''; return; }
@@ -3882,6 +3891,7 @@ function renderGatewayUpdate() {
       const { checkGatewayUpdate } = await import('./js/gateway-update.js');
       const r = await checkGatewayUpdate($('gw-url').value);
       if (r.ok && r.update) { gatewayState = { ...gatewayState, update: r.update }; renderGatewayUpdate(); return; }
+      // (renderGatewayUpdate repaints every copy of this control, this one included)
       link.disabled = false; link.textContent = 'Check for updates';
       line.textContent = `Could not check: ${r.error || 'unknown'}. `;
     };
@@ -3913,7 +3923,7 @@ function renderGatewayUpdate() {
       el.className = 'status ok';
       el.textContent = r.manual ? `✓ ${r.detail}` : r.slow ? `✓ Gateway v${r.to || u.latest} is installed; it is still starting — check again in a moment.` : `✓ Gateway updated: v${r.from || u.current} → v${r.to}.`;
       // The page's picture of the gateway belongs to the process that just went away.
-      if (!r.slow && !r.manual) setTimeout(() => refreshGateway(), 1500);
+      if (!r.slow && !r.manual) setTimeout(() => { refreshGateway(); renderLocalRuntime({ recheck: true }); }, 1500);
     };
     el.appendChild(btn);
   } else {

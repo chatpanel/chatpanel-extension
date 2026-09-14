@@ -506,6 +506,8 @@ select {
   border-left: 3px solid var(--border-strong);
 }
 .runtime-row.on { border-left-color: var(--ok, #0f9d63); background: color-mix(in srgb, var(--ok, #0f9d63) 4%, var(--field)); }
+.runtime-update { margin: 6px 0 2px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.runtime-update .btn { margin: 0; }
 .runtime-row.rt-gateway.on { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 4%, var(--field)); }
 .runtime-head { display: flex; align-items: center; gap: 9px; }
 .runtime-head b { font-size: 14px; }
