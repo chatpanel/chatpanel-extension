@@ -3868,7 +3868,17 @@ function renderBridgeUpdate() {
 function renderGatewayUpdate() {
   paintGatewayUpdate($('gw-update'));
   paintGatewayUpdate($('rt-gateway-update'));
+  // Opening Settings is the moment someone wants the truth, not the gateway's 6-hour-old
+  // answer: ask the channel afresh once per page load, quietly, and repaint if it differs.
+  const u = gatewayState?.ok ? gatewayState.update : null;
+  if (u && !u.disabled && !renderGatewayUpdate.asked) {
+    renderGatewayUpdate.asked = true;
+    import('./js/gateway-update.js').then(({ checkGatewayUpdate }) => checkGatewayUpdate($('gw-url')?.value || settings.gatewayUrl)).then((r) => {
+      if (r?.ok && r.update && gatewayState?.ok) { gatewayState = { ...gatewayState, update: r.update }; paintGatewayUpdate($('gw-update')); paintGatewayUpdate($('rt-gateway-update')); }
+    }).catch(() => {});
+  }
 }
+const agoText = (t) => { const s = Math.max(0, (Date.now() - t) / 1000); return s < 90 ? 'just now' : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`; };
 // One control, two places: under the Gateway tab's status line and on the Agents tab's
 // "ChatPanel local" card — the card that shows the version is the card that updates it.
 function paintGatewayUpdate(el) {
@@ -3883,7 +3893,10 @@ function paintGatewayUpdate(el) {
     // release should not have to wait for it. "Check now" asks the channel afresh.
     const line = document.createElement('span');
     line.className = 'muted tiny';
-    line.textContent = u.stale ? `Could not check for updates${u.error ? ` (${u.error})` : ''}. ` : u.latest ? `Up to date (v${u.current}, ${u.channel === 'npm' ? 'npm' : 'release'} channel). ` : '';
+    // "Up to date" is only true AS OF the gateway's last check (throttled to 6 h): a version
+    // published since is invisible until "Check for updates" asks the channel afresh.
+    const asOf = u.checkedAt ? ` as of ${agoText(u.checkedAt)}` : '';
+    line.textContent = u.stale ? `Could not check for updates${u.error ? ` (${u.error})` : ''}. ` : u.checking ? 'Checking for updates… ' : u.latest ? `Up to date${asOf} (v${u.current}, ${u.channel === 'npm' ? 'npm' : 'release'} channel). ` : '';
     const link = document.createElement('button');
     link.type = 'button'; link.className = 'btn ghost'; link.textContent = 'Check for updates';
     link.onclick = async () => {
