@@ -20,6 +20,7 @@
 // the board. That is the whole scheduling model — the same one a tool round uses.
 
 import { defineSchema, describeSchema, coerce } from './structured.js';
+import { GRANT_RE } from './team.js';
 
 export const MAX_TASKS = 12;
 
@@ -36,6 +37,11 @@ export const TEAM_PLAN_SCHEMA = defineSchema({
         title: { type: 'string', required: true, max: 80 },
         prompt: { type: 'string', required: true, max: 1200, describe: 'the focused instruction for this task' },
         dependsOn: { type: 'string[]', maxItems: 6, describe: 'task ids whose findings this one needs' },
+        // The planner's TOOL PROPOSAL (§15.2): which of the role's tools this task will need,
+        // and why — posted on the board as a proposal a person reads; a task that then ends
+        // without touching a tool it was said to need is nudged once before it may finish.
+        grants: { type: 'string[]', maxItems: 6, describe: 'the tools this task needs, from the role\'s own: data, web, history, mcp, shell, fs:write, scm:read, scm:push, scm:pr — or none' },
+        why: { type: 'string', max: 160, describe: 'why those tools, in a few words' },
       },
     },
   },
@@ -51,7 +57,7 @@ export function plannerPrompt(team, request) {
     '',
     `Request: ${String(request || '').trim()}`,
     '',
-    'Prefer tasks that can run at the same time; use dependsOn only when a task truly needs another\'s findings. Do not assign a role a task it has no tools for.',
+    'Prefer tasks that can run at the same time; use dependsOn only when a task truly needs another\'s findings. Do not assign a role a task it has no tools for. For each task, say which of the role\'s tools it will need (grants) and why — do not miss a tool that would help.',
     '',
     describeSchema(TEAM_PLAN_SCHEMA),
   ].join('\n');
@@ -89,6 +95,7 @@ export function parsePlan(text, team) {
       title: String(t.title || t.prompt).slice(0, 80),
       prompt: String(t.prompt).trim(),
       dependsOn: Array.isArray(t.dependsOn) ? t.dependsOn.map(String) : [],
+      ...(Array.isArray(t.grants) && t.grants.length ? { grants: [...new Set(t.grants.map((g) => String(g).trim().toLowerCase()).filter((g) => GRANT_RE.test(g) && g !== 'none'))].slice(0, 6), ...(t.why ? { why: String(t.why).slice(0, 160) } : {}) } : {}),
     }))
     .slice(0, MAX_TASKS);
   const ids = new Set(tasks.map((t) => t.id));

@@ -102,3 +102,31 @@ export function toolNeedFor({ request = null, signals = null, attachments = [], 
 
   return { tools: false, why: 'a greeting — nothing to look up' };
 }
+
+// ── Which GRANTS a task's wording calls for (F8 §15.2) ──────────────────────────────────
+//
+// A team member holding `web` that answers a "latest price" question from memory has not
+// done the task. This is the deterministic half of the tool-choice guard: read the task's
+// text for the vocabulary that names a source — the web, the person's own history, attached
+// material — and return the grants that vocabulary fits. The runner nudges a member ONCE
+// when it ends with zero calls while holding one of these. Conservative by construction:
+// nothing here fires on a task that could plausibly be answered from what the model knows.
+const NEEDS = Object.freeze([
+  ['web', /\b(search|google|look ?up|latest|current|recent|today|this (week|month|year)|news|price|prices|pricing|cost of|quote|stock|market|website|url|online|web|docs?umentation|release notes|changelog|versions?)\b/i],
+  ['history', /\b(our (meeting|call|notes?|chats?|conversation)|what (did|was) (we|i)|we (decided|agreed|discussed|said)|in (my|our) (notes?|meetings?|history|chats?)|past (chats?|meetings?|notes?)|earlier (meeting|conversation|chat|note)|transcript|standup|retro)\b/i],
+  ['data', /\b(attached|attachment|this (page|document|file|pdf|spreadsheet|sheet)|the (document|file|pdf|spreadsheet) (above|provided|attached))\b/i],
+]);
+
+/**
+ * The grants a task's text calls for, in the order they fit: `['web']`, `['history', 'web']`,
+ * `[]`. `held` narrows to what the role actually has, so the caller gets what is BOTH needed
+ * and available — an empty list means no nudge.
+ */
+export function grantsNeededFor(text, { held = null } = {}) {
+  const t = String(text || '');
+  if (!t.trim()) return [];
+  const out = NEEDS.filter(([, re]) => re.test(t)).map(([g]) => g);
+  if (!held) return out;
+  const have = new Set((Array.isArray(held) ? held : []).map((g) => String(g).toLowerCase()));
+  return out.filter((g) => have.has(g) || (g === 'history' && have.has('data')));
+}

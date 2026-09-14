@@ -139,7 +139,7 @@ export function workLogText(entries, { resultChars = 200 } = {}) {
  * any opinion (a judge's, a peer's, a person's) is added beside it.
  */
 export function workLogEvidence(entries) {
-  const ev = { calls: 0, results: 0, resultErrors: 0, thoughts: 0, texts: 0, attempts: 0, handoffs: 0, posts: 0, findings: 0, decided: { approved: 0, rejected: 0 }, status: null, ms: 0 };
+  const ev = { calls: 0, results: 0, resultErrors: 0, thoughts: 0, texts: 0, attempts: 0, handoffs: 0, posts: 0, findings: 0, requests: 0, decided: { approved: 0, rejected: 0 }, status: null, ms: 0 };
   for (const e of entries || []) {
     if (e.kind === 'call') ev.calls++;
     else if (e.kind === 'result') { ev.results++; if (e.error) ev.resultErrors++; }
@@ -147,7 +147,7 @@ export function workLogEvidence(entries) {
     else if (e.kind === 'text') ev.texts++;
     else if (e.kind === 'attempt') ev.attempts++;
     else if (e.kind === 'handoff') ev.handoffs++;
-    else if (e.kind === 'post') { ev.posts++; if (e.post?.kind === 'finding') ev.findings++; if (e.post?.status === 'approved') ev.decided.approved++; if (e.post?.status === 'rejected') ev.decided.rejected++; }
+    else if (e.kind === 'post') { ev.posts++; if (e.post?.kind === 'finding') ev.findings++; if (e.post?.kind === 'request') ev.requests++; if (e.post?.status === 'approved') ev.decided.approved++; if (e.post?.status === 'rejected') ev.decided.rejected++; }
     else if (e.kind === 'end') { ev.status = e.status; ev.ms = e.ms; ev.findings = Math.max(ev.findings, e.findings || 0); }
   }
   return ev;

@@ -25,6 +25,7 @@
 import { runStore, answerAsk, handoffTask, resumeRunHere, rosterFor } from './team-host.js';
 import { renderMarkdown } from './markdown.js';
 import { workLogFor } from './events/team-worklog.js';
+import { threadRows } from './events/team-subtask.js';
 
 const POLL_MS = 4000;
 const LIVE = new Set(['planning', 'running', 'merging', 'waiting']);
@@ -108,15 +109,16 @@ export function renderBoard(root, { settings, license = null }) {
     const all = Object.values(state.runs).filter((run) => run?.threads?.threads);
     const tag = (run, t) => ({ ...t, runId: run.id, team: run.team });
     const waiting = all.flatMap((run) => run.threads.threads.filter((t) => t.kind === 'ask' && t.status === 'waiting').map((t) => tag(run, t))).sort((a, b) => (b.lastAt || b.at) - (a.lastAt || a.at));
-    const groups = all.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map((run) => ({ run, threads: run.threads.threads.filter((t) => !(t.kind === 'ask' && t.status === 'waiting')).map((t) => tag(run, t)).sort((a, b) => (b.lastAt || b.at) - (a.lastAt || a.at)) })).filter((g) => g.threads.length);
+    // A sub-task's thread follows its parent's, indented (threadRows): the plan is a tree.
+    const groups = all.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map((run) => ({ run, threads: threadRows(run.threads.threads.filter((t) => !(t.kind === 'ask' && t.status === 'waiting')).map((t) => tag(run, t)).sort((a, b) => (b.lastAt || b.at) - (a.lastAt || a.at))) })).filter((g) => g.threads.length);
     return { waiting, groups };
   };
 
   const row = (t, pinned) => {
     const on = state.sel?.threadId === t.id;
-    const b = el('button', { class: `bth${on ? ' on' : ''}${pinned ? ' pinned' : ''}`, type: 'button', onclick: () => { state.sel = { runId: t.runId, threadId: t.id }; state.reply = null; state.err = ''; draw({ force: true }); } },
-      el('span', { class: 'bth-k', text: ICON[t.kind] || '·' }),
-      el('span', {}, el('div', { class: 'bth-t', text: t.title }), el('div', { class: 'bth-m' }, chip(t), ` ${t.kind}${t.lastBy && t.lastBy !== 'runner' ? ` · last ${t.lastBy}` : ''} · ${ago(t.lastAt || t.at)}${t.posts ? ` · ${t.posts}` : ''}`)),
+    const b = el('button', { class: `bth${on ? ' on' : ''}${pinned ? ' pinned' : ''}`, type: 'button', style: t.depth ? `padding-left:${8 + t.depth * 14}px` : null, onclick: () => { state.sel = { runId: t.runId, threadId: t.id }; state.reply = null; state.err = ''; draw({ force: true }); } },
+      el('span', { class: 'bth-k', text: t.depth ? '↳' : (ICON[t.kind] || '·') }),
+      el('span', {}, el('div', { class: 'bth-t', text: t.title }), el('div', { class: 'bth-m' }, chip(t), ` ${t.depth ? 'sub-task' : t.kind}${t.holder ? ` · ${t.holder}` : ''}${t.lastBy && t.lastBy !== 'runner' ? ` · last ${t.lastBy}` : ''} · ${ago(t.lastAt || t.at)}${t.posts ? ` · ${t.posts}` : ''}`)),
     );
     return b;
   };
@@ -182,7 +184,7 @@ export function renderBoard(root, { settings, license = null }) {
         } }) : null,
       ),
     ));
-    right.append(el('div', { class: 'bthead' }, el('h3', { text: thread.title }), el('div', { class: 'muted tiny' }, chip(thread), ` ${thread.kind}${thread.by && thread.by !== 'runner' ? ` · opened by ${thread.by}` : ''} · ${posts.length} post${posts.length === 1 ? '' : 's'}`)));
+    right.append(el('div', { class: 'bthead' }, el('h3', { text: thread.title }), el('div', { class: 'muted tiny' }, chip(thread), ` ${thread.kind}${thread.parent ? ` · sub-task of ${run.tasks?.find((x) => x.id === thread.parent)?.title || thread.parent}` : ''}${thread.holder ? ` · held by ${thread.holder}` : ''}${thread.by && thread.by !== 'runner' ? ` · opened by ${thread.by}` : ''} · ${posts.length} post${posts.length === 1 ? '' : 's'}`)));
     const list = el('div', { class: 'bposts' });
     const post = (p, depth) => {
       const decidable = (p.kind === 'draft' || p.kind === 'finding') && (p.status === 'proposed' || p.status === 'open') && !p.decidedBy;

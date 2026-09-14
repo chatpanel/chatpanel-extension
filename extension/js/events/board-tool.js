@@ -14,10 +14,15 @@
 // person to answer it, from either client. Members do not chat freely: a post is typed, a
 // reply hangs off a post, and an ask pauses the member's own task, never the run.
 //
+// A fifth, `request`: a member hands a PIECE of its task to someone else — the runner turns
+// it into a sub-task with its own thread, offers it to the members that fit, posts it on the
+// job board when none does, and (by default) waits for it and returns its findings here.
+//
 // Bound per task: the member's role and task are fixed at bind time, so a member cannot post
 // as someone else, and its ask lands in its own task's context.
 
 import { boardText, POST_KINDS, ASK_TYPES } from './team-board.js';
+import { normalizeRequest } from './team-subtask.js';
 
 export const BOARD_TOOL_NAME = 'board';
 export const DEFAULT_ASK_TIMEOUT_MS = 10 * 60_000;
@@ -32,11 +37,12 @@ export function boardToolSpec() {
       + '{"action":"post","kind":"note|draft|question","text":"…","refs":["…"]} a post in your task\'s thread; '
       + '{"action":"reply","postId":"…","kind":"note","text":"…","refs":["…"]} a reply to another member\'s post — agree, dispute with a ref, extend; '
       + '{"action":"ask","type":"info|budget|permission|direction","text":"what you need and why","options":["…"]} asks the USER and waits for the answer (minutes). '
-      + 'Ask only when you are stuck — a fact you could not find, a choice only the user can make. Otherwise decide, say what you assumed, and go on.',
+      + '{"action":"request","title":"check the valuation","brief":"what to do and what done looks like","skills":["finance"],"grants":["web"],"wait":true} hands a piece of your task to another member (or, if none fits, to the job board): a sub-task with its own thread; with wait (default) you get its findings back here. '
+      + 'Ask only when you are stuck — a fact you could not find, a choice only the user can make. Otherwise decide, say what you assumed, and go on. Request only work you should not do yourself — another skill, a tool you lack, or a second pair of eyes.',
     parameters: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['read', 'post', 'reply', 'ask'] },
+        action: { type: 'string', enum: ['read', 'post', 'reply', 'ask', 'request'] },
         kind: { type: 'string', enum: POST_KINDS.filter((k) => k !== 'finding' && k !== 'answer' && k !== 'decision') },
         text: { type: 'string' },
         refs: { type: 'array', items: { type: 'string' } },
@@ -44,6 +50,11 @@ export function boardToolSpec() {
         threadId: { type: 'string', description: 'For post: another thread you may see (default: your task\'s).' },
         type: { type: 'string', enum: [...ASK_TYPES], description: 'For ask.' },
         options: { type: 'array', items: { type: 'string' }, description: 'For ask: choices to offer the user.' },
+        title: { type: 'string', description: 'For request: the sub-task in a few words.' },
+        brief: { type: 'string', description: 'For request: what to do and what done looks like.' },
+        skills: { type: 'array', items: { type: 'string' }, description: 'For request: skills it needs.' },
+        grants: { type: 'array', items: { type: 'string' }, description: 'For request: tools it needs — data, web, history, mcp, shell, fs:write, scm:read, scm:push, scm:pr.' },
+        wait: { type: 'boolean', description: 'For request: wait for it and get its findings back (default true); false queues it after your task.' },
       },
       required: ['action'],
     },
@@ -59,8 +70,10 @@ const json = (v) => JSON.stringify(v);
  * @param taskIds   the tasks this member may read (its dependencies, or null for all)
  * @param waitFor   `async (threadId, timeoutMs, signal) => { text, by } | null` — the runner's answer box
  * @param onAsk     `(thread, post) => void` — the runner marks the task waiting
+ * @param onRequest `async ({ title, brief, needs, wait }) => result` — the runner turns a request
+ *                  into a sub-task (team-subtask.js); absent, a member is told to do it itself
  */
-export function boardToolProvider({ board, role, taskId, taskIds = null, waitFor = null, onAsk = null, askTimeoutMs = DEFAULT_ASK_TIMEOUT_MS, signal = null } = {}) {
+export function boardToolProvider({ board, role, taskId, taskIds = null, waitFor = null, onAsk = null, onRequest = null, askTimeoutMs = DEFAULT_ASK_TIMEOUT_MS, signal = null } = {}) {
   const ownThread = () => board.threadForTask(taskId) || board.openThread({ taskId, kind: 'task', title: taskId, by: 'runner' });
   return {
     id: 'board',
@@ -98,7 +111,16 @@ export function boardToolProvider({ board, role, taskId, taskIds = null, waitFor
         if (!answer) return json({ answered: false, threadId: thread.id, hint: 'No answer arrived in time. Proceed on your best assumption, say what you assumed, and note that the user did not answer.' });
         return json({ answered: true, threadId: thread.id, answer: answer.text, by: answer.by });
       }
-      return json({ error: `Unknown action "${action}". Use read, post, reply or ask.` });
+      if (action === 'request') {
+        if (typeof onRequest !== 'function') return json({ error: 'This run cannot delegate. Do the work yourself with the tools you have, and say what you could not do.' });
+        const r = normalizeRequest(input);
+        if (!r.ok) return json({ error: r.error });
+        // The request is a post in the member's own thread — the record of who asked for what.
+        const post = board.post({ threadId: ownThread().id, by: role, kind: 'request', text: `${r.request.title}${r.request.brief && r.request.brief !== r.request.title ? ` — ${r.request.brief}` : ''}`, refs: [] });
+        const result = await onRequest({ ...r.request, postId: post.id });
+        return json(result || { error: 'the request was not taken' });
+      }
+      return json({ error: `Unknown action "${action}". Use read, post, reply, ask or request.` });
     },
   };
 }

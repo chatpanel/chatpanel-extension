@@ -16,10 +16,11 @@ import { createAnswerBox } from './events/board-tool.js';
 import { createControl } from './events/team-task.js';
 import { grantAllows } from './events/team.js';
 import { resolveTeam } from './events/agent.js';
+import { recruitForRun, engineRows } from './events/recruit.js';
 import { appoint } from './events/cowriter-router.js';
 import { swarmCandidates } from './notes-swarm-router.js';
 import { canUseAgent } from './license.js';
-import { getTarget, resolveTarget } from './store.js';
+import { getTarget, resolveTarget, getSettings, saveSettings } from './store.js';
 import { normalizeGatewayUrl, getGatewayToken, handshakeGatewayToken } from './gateway.js';
 
 const FLUSH_EVERY_MS = 400;
@@ -173,6 +174,12 @@ export function engineOfCandidate(c) {
  * agent the pool does not have — a team is not run with a hole in it.
  */
 export function resolveTeamHere(team, settings, license, { like = '' } = {}) {
+  const { chatModel, targetFor } = bindingFor(settings, license, { like });
+  return resolveTeam(team, Array.isArray(settings.agentPool) ? settings.agentPool : [], { chatModel, targetFor });
+}
+
+/** How an engine on a card becomes a target id this panel can run — shared by resolving a team and recruiting for one. */
+export function bindingFor(settings, license, { like = '' } = {}) {
   const candidates = rosterFor(settings, license, { like });
   const chat = candidates.find((c) => c.id === like) || null;
   const chatModel = chat ? (chat.kind === 'bridge' ? { kind: 'harness', harnessId: chat.bridgeAgent || chat.id, model: chat.model || undefined } : { kind: 'model', providerId: chat.id, model: chat.model || chat.id }) : null;
@@ -190,7 +197,28 @@ export function resolveTeamHere(team, settings, license, { like = '' } = {}) {
     }
     return null;
   };
-  return resolveTeam(team, Array.isArray(settings.agentPool) ? settings.agentPool : [], { chatModel, targetFor });
+  return { candidates, chatModel, targetFor };
+}
+
+/**
+ * The run's JOB BOARD (§15.2): a sub-task nobody in the run fits is posted as a job, the
+ * pool (`settings.agentPool`) applies at once, and the fit recruits an (agent, engine) pair
+ * over this panel's roster — `recruitForRun`, the same call the desktop makes. `create` is
+ * the agent card a person approved on the board: it joins the shared `agents` section
+ * first (nothing joins the pool without a decision), then applies like the rest.
+ */
+export function recruiterFor(settings, license, { like = '' } = {}) {
+  return async (job, { create = null } = {}) => {
+    const { candidates, chatModel, targetFor } = bindingFor(settings, license, { like });
+    const rows = engineRows(candidates.map((c) => ({ ...c, engine: engineOfCandidate(c), available: c.usable !== false })));
+    let pool = Array.isArray(settings.agentPool) ? settings.agentPool.filter((a) => a && a.id) : [];
+    if (create && create.id) {
+      pool = [...pool.filter((a) => a.id !== create.id), { ...create, createdAt: create.createdAt || Date.now() }];
+      settings.agentPool = pool;
+      try { await saveSettings({ ...(await getSettings()), agentPool: pool }); } catch { /* the run goes on with the card in memory */ }
+    }
+    return recruitForRun(job, pool, { rows, chatModel, targetFor, create });
+  };
 }
 
 /**
@@ -401,6 +429,7 @@ export async function runTeamHere({ team, request, settings, license, like = '',
     const result = await runTeam({
       team: resolved, request, callModel, appoint: appointRole, runId: id, signal: ac.signal, answers, askTimeoutMs, resume, control,
       toolsFor: (role) => toolsFor(role),
+      recruit: recruiterFor(settings, license, { like }),
       emit: (type, payload) => { sync.push(type, payload); emit(type, payload); },
     });
     return { ...result, synced: sync.synced };

@@ -85,7 +85,9 @@ export const THREAD_KINDS = Object.freeze(['task', 'ask', 'discussion', 'proposa
 // `failed`: the task behind the thread ended without an answer (every model on the roster
 // tried, or a hard error) — not `resolved`, which read as "done" on the board.
 export const THREAD_STATUSES = Object.freeze(['open', 'waiting', 'resolved', 'failed', 'approved', 'rejected']);
-export const POST_KINDS = Object.freeze(['finding', 'note', 'question', 'answer', 'draft', 'decision']);
+// `request`: a member asks for a piece of its task to be done by someone else — the runner
+// turns it into a sub-task with its own thread (team-subtask.js).
+export const POST_KINDS = Object.freeze(['finding', 'note', 'question', 'answer', 'draft', 'decision', 'request']);
 export const POST_STATUSES = Object.freeze(['open', 'proposed', 'approved', 'rejected']);
 export const ASK_TYPES = Object.freeze(['info', 'budget', 'permission', 'direction']);
 export const RUNNER = 'runner';
@@ -118,7 +120,7 @@ export function foldBoard(state, ev) {
     if (x) { x.status = p.status; x.decidedBy = p.by; x.decidedAt = p.at ?? ev?.at; }
   } else if (type === 'board.thread-status' && p.threadId) {
     const t = s.threads.find((x) => x.id === p.threadId);
-    if (t) { t.status = p.status; if (p.status !== 'waiting') t.waitingOn = null; }
+    if (t) { t.status = p.status; if (p.status !== 'waiting') t.waitingOn = null; if (p.holder) t.holder = p.holder; }
   }
   return s;
 }
@@ -140,22 +142,25 @@ export function createBoard({ now = () => Date.now(), newId = null, state = null
 
   const api = {
     /** Open a thread. A task's thread is opened once; asking for it again returns it. */
-    openThread({ id = null, taskId = null, kind = 'discussion', title = '', by = RUNNER, status = 'open', ask = null } = {}) {
+    openThread({ id = null, taskId = null, kind = 'discussion', title = '', by = RUNNER, status = 'open', ask = null, parent = null, holder = null } = {}) {
       if (kind === 'task' && taskId) { const had = threadForTask(taskId); if (had) return had; }
-      const thread = { id: id || mk('th'), kind: THREAD_KINDS.includes(kind) ? kind : 'discussion', taskId, title: clip(title, 200), by, status: THREAD_STATUSES.includes(status) ? status : 'open', at: now(), posts: 0, ...(ask ? { ask } : {}) };
+      // `parent`: the task this one was requested from (a sub-task's thread hangs under its
+      // parent's on the board); `holder`: the member that took it.
+      const thread = { id: id || mk('th'), kind: THREAD_KINDS.includes(kind) ? kind : 'discussion', taskId, title: clip(title, 200), by, status: THREAD_STATUSES.includes(status) ? status : 'open', at: now(), posts: 0, ...(ask ? { ask } : {}), ...(parent ? { parent } : {}), ...(holder ? { holder } : {}) };
       st.threads.push(thread);
       say('board.thread', { thread: { ...thread } });
       return thread;
     },
     /** A post in a thread; `replyTo` makes it a reply. */
-    post({ id = null, threadId, by, kind = 'note', text = '', refs = [], replyTo = null, status = 'open', finding = null, ask = null } = {}) {
+    /** `proposal` rides on a draft a person decides on — `{ kind: 'agent', agent, jobId }` (§15.2): the card the host creates when the post is approved. */
+    post({ id = null, threadId, by, kind = 'note', text = '', refs = [], replyTo = null, status = 'open', finding = null, ask = null, proposal = null } = {}) {
       const t = threadOf(threadId);
       if (!t) throw new Error(`no thread ${threadId}`);
       if (id && postOf(id)) return postOf(id);
       const post = {
         id: id || mk('p'), threadId, by: String(by || RUNNER), kind: POST_KINDS.includes(kind) ? kind : 'note',
         text: clip(text, MAX_POST_TEXT), refs: refsOf(refs), replyTo, status: POST_STATUSES.includes(status) ? status : 'open', at: now(),
-        ...(finding ? { finding } : {}), ...(ask ? { ask } : {}),
+        ...(finding ? { finding } : {}), ...(ask ? { ask } : {}), ...(proposal && typeof proposal === 'object' ? { proposal } : {}),
       };
       st.posts.push(post);
       t.lastAt = post.at; t.lastBy = post.by; t.posts = (t.posts || 0) + 1;
@@ -291,7 +296,7 @@ function threadedLines(state, { taskIds, role }) {
   for (const t of threads) {
     const own = posts.filter((x) => x.threadId === t.id && x.status !== 'rejected');
     if (!own.length) continue;
-    out.push(`## ${t.kind}${t.by && t.by !== RUNNER ? ` by ${t.by}` : ''}: ${t.title}${t.status === 'resolved' && t.kind === 'ask' ? ' (answered)' : ''}`);
+    out.push(`## ${t.kind}${t.by && t.by !== RUNNER ? ` by ${t.by}` : ''}: ${t.title}${t.holder ? ` (held by ${t.holder})` : ''}${t.status === 'resolved' && t.kind === 'ask' ? ' (answered)' : ''}`);
     const line = (x, depth) => {
       const tag = [x.kind === 'finding' ? (x.finding?.kind || 'claim') : x.kind, x.by, x.finding?.confidence != null ? `${Math.round(x.finding.confidence * 100)}%` : null, x.status === 'approved' ? 'APPROVED' : x.status === 'proposed' ? 'proposed' : null, x.kind === 'decision' || x.by === PERSON ? 'SETTLED' : null].filter(Boolean).join(' · ');
       out.push(`${'  '.repeat(depth)}- [${tag}] ${x.text}${x.refs?.length ? ` (refs: ${x.refs.join(', ')})` : ''}`);

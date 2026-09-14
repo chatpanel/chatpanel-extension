@@ -78,7 +78,7 @@ export {
   WEATHER_HOST, WEATHER_TIMEOUT_MS, WeatherError,
 } from './weather.js';
 export { defineToolGroup, createToolGroupRegistry, ToolGroupError } from './tool-groups.js';
-export { toolNeedFor } from './tool-need.js';
+export { toolNeedFor, grantsNeededFor } from './tool-need.js';
 export { parseFlowchart, layoutFlowchart, renderFlowchartSvg } from './flowchart.js';
 export { validateView, validateViewInvocation, viewResult } from './view.js';
 export { validateWidget, validateWidgetMessage, effectiveGrants, widgetIcon, WIDGET_SURFACES } from './widget.js';
@@ -215,13 +215,14 @@ export { ENGINE_KINDS as ENGINE_SPEC_KINDS, ROUTE_PREFERS, normalizePolicy, norm
 export { AGENT_ID_RE, APPLIES_TO, EGRESS_CLASSES, ASSISTANT_ID, AgentError, validateAgent, normalizeAgent, defineAgent, assistantAgent, engineOf, describeAgent, slugAgentId, resolveTeam, STARTER_AGENTS, starterAgents, blankAgent, agentFromForm, poolFor } from './agent.js';
 export { LEDGER_VERSION, LEDGER_ENTRY_KINDS, DECLINE_REASONS, WITHDRAW_AFTER, ledgerKey, normalizeCall, makeLedgerEntry, summarizeEngine } from './model-ledger.js';
 // Recruiting (F8 §12.2.4, pillars §13.4): the pool applies at once; an (agent, engine) pair is recruited; the evaluator is one optional structured call.
-export { RECRUIT_SCHEMA, MIN_FIT, engineRow, engineRows, needForJob, routeFor, engineWorth, applications as jobApplications, evaluatorPrompt, parseEvaluation, decide as decideRecruit, proposalFromNeeds, proposalToAgent, carveBudget, recruitEvents, recruitJob } from './recruit.js';
+export { RECRUIT_SCHEMA, MIN_FIT, engineRow, engineRows, needForJob, routeFor, engineWorth, applications as jobApplications, evaluatorPrompt, parseEvaluation, decide as decideRecruit, recruitForRun, proposalFromNeeds, proposalToAgent, carveBudget, recruitEvents, recruitJob } from './recruit.js';
 export { DEFAULT_MIN_CALLS, cardOverride, applyCard } from './model-candidates.js';
 export { SCM_KINDS, validateConnection, normalizeConnection, parseRemote, connectionFor, branchFor, worktreeDirFor, credentialEnv, describeConnection, blankConnection, connectionFromForm } from './scm-connection.js';
 export { messagesFor, mergeTranscript, clipTranscript, clipMessage, newSteps, continuationNote, createControl, STEP_MAX_CHARS, TASK_TRANSCRIPT_MAX_CHARS } from './team-task.js';
 export { runTeam, resumeTeam, dryRunTeam, isModelUnavailable, TeamRunError, RUN_STATUSES } from './team-run.js';
 export { teamToolProvider, teamToolSpec, teamToolTimeoutMs, describeTeamForApproval, TEAM_TOOL_NAME } from './team-tool.js';
 export { workLogFor, workLogText, workLogEvidence, describeCall, WORKLOG_KINDS } from './team-worklog.js';
+export { normalizeRequest, subtaskFromRequest, takeUp, takeUpLine, holdsGrants, jobFromSubtask, extendDependents, taskTree, threadRows, MAX_SUBTASKS, MAX_DEPTH, MIN_TAKEUP_FIT } from './team-subtask.js';
 export { teamLine, teamLanes } from './team-trail.js';
 export { mcpDispatchProvider, MCP_TOOL_NAME } from './mcp-dispatch.js';
 export { createManifest, ManifestError, SOURCES } from './manifest.js';

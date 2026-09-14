@@ -72,9 +72,11 @@ export function newSteps(prev, next) {
  *   handoff  — the previous attempt (another model / agent) stopped: an error, a person's choice
  *   resume   — the run itself was stopped or died and is being resumed from the record
  *   answer   — the task waited on a person and the answer is now on the board
+ *   nudge    — the attempt answered without touching a tool the task was said to need (§15.2)
  */
 export function continuationNote({ kind = 'handoff', from = '', to = '', reason = '', answer = '' } = {}) {
   const who = from ? ` by ${from}` : '';
+  if (kind === 'nudge') return `You answered without using ${reason || 'the tools you were given'}, which this task calls for. Use them now — look it up rather than answer from memory — then finish with your findings. If a tool is truly not needed, say why in one line and finish.`;
   if (kind === 'answer') return `The user has answered your question on the board (see the board, or: ${answer}). Continue the task from where you left off — do not repeat work already done above — and finish with your findings.`;
   if (kind === 'resume') return `This task was interrupted (${reason || 'the run was stopped'}) and is being resumed${to ? ` by ${to}` : ''}. Everything above is the work done so far — read it, do not redo it. Continue from where it stopped and finish with your findings.`;
   return `You are continuing this task. A previous attempt${who} stopped (${reason || 'it did not finish'}). Everything above is its work so far — read it, do not redo lookups already made. Continue from where it stopped and finish with your findings.`;

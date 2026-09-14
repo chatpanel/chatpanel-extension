@@ -38,8 +38,8 @@
 import { fit, engineKey, normalizeEngine } from './scorecard.js';
 import { cardOverride, DEFAULT_MIN_CALLS } from './model-ledger.js';
 import { normalizeEngineSpec, engineKeyOf, describeEngine } from './engine.js';
-import { engineOf, agentFromForm } from './agent.js';
-import { applyAll } from './job.js';
+import { engineOf, agentFromForm, normalizeAgent, resolveTeam } from './agent.js';
+import { applyAll, jobToRole } from './job.js';
 import { WORK_GRANTS } from './team.js';
 import { defineSchema, describeSchema, coerce } from './structured.js';
 import { normalizeBudget } from './budget.js';
@@ -429,4 +429,37 @@ export async function recruitJob(job, pool, { summaries = {}, rows = [], reach =
   }
   const decision = decide(job, apps, { evaluation, minFit });
   return { applications: apps, evaluation, decision, events: recruitEvents(job, apps, decision, { by: decision.by === 'evaluator' ? by : 'fit', at: now, record }), prompt };
+}
+
+// ── A run's job board (§15.2): the host's `recruit` hook, shared ─────────────────────────
+
+/**
+ * What a host hands the runner as `recruit`: one pass over the pool for a sub-task's job,
+ * the pick made into a ROLE the run can appoint (job.js `jobToRole`, resolved through the
+ * pool so it carries the agent's prompt, grants, skills and a model target — agent.js
+ * `resolveTeam`). Returns `{ role, agentId, engine, why, fit, applications, events }` or,
+ * when no one is recruited, `{ why, proposal, applications, events }` with `proposal` the
+ * agent card a person may approve (the runner posts it). `create` is that card once
+ * approved — the host has persisted it to its pool before calling — and it applies with
+ * the rest. `events` are the project-record events of the pass (recruit.js `recruitEvents`)
+ * for a host that has a project to land them on; the run's own record has its own.
+ */
+export async function recruitForRun(job, pool, { rows = [], summaries = {}, reach = 'any', chatModel = null, targetFor = null, ask = null, minFit = MIN_FIT, create = null, now = Date.now() } = {}) {
+  const list = (Array.isArray(pool) ? pool : []).filter((a) => a && a.id);
+  if (create && isRecord(create)) {
+    try { const made = normalizeAgent(create); if (!list.some((a) => a.id === made.id)) list.push(made); } catch { /* an unusable card applies as nothing */ }
+  }
+  const pass = await recruitJob(job, list, { summaries, rows, reach, chatModel, ask, minFit, now });
+  const d = pass.decision;
+  if (d.kind !== 'recruit') {
+    const card = proposalToAgent(d.proposal || proposalFromNeeds(job), job, { by: d.by || 'evaluator' });
+    return { why: d.why, proposal: card?.ok === false ? null : (card?.agent || card), applications: pass.applications, events: pass.events };
+  }
+  const agent = list.find((a) => a.id === d.agentId);
+  const base = jobToRole(job, agent);
+  let role = { ...base, agent: agent.id, engine: d.engine };
+  try {
+    role = resolveTeam({ name: 'recruit', roles: [role], budget: { tokens: 1 } }, list, { chatModel, targetFor }).roles[0];
+  } catch { /* unresolved: the runner's appointer decides from the engine */ }
+  return { role, agentId: d.agentId, engine: d.engine, why: d.why, fit: d.fit ?? null, applications: pass.applications, events: pass.events };
 }

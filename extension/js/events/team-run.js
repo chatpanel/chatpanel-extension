@@ -16,6 +16,10 @@
 //
 // Tasks run in WAVES (team-plan.js): everything with its dependencies met runs together
 // through the same pool a tool round uses; a dependent task waits and reads the board. A
+// member may REQUEST a piece of its task be done by someone else (board tool `request`,
+// team-subtask.js): the sub-task joins the plan with its own thread under the parent's, is
+// offered to the members that fit, then to the pool through the host's `recruit`, then
+// proposed as a new agent to the person — so the plan is a tree the board draws as one. A
 // task ends with findings; the merge turns the board into ONE proposal — agreed claims
 // (converge, W7), a judged answer, or the members' work side by side — and the proposal is
 // what a person sees. Nothing here lands anywhere.
@@ -27,8 +31,11 @@
 import { normalizeTeam } from './team.js';
 import { normalizeEngine, normalizeScm } from './scorecard.js';
 import { createBudget } from './budget.js';
-import { fixedPlan, plannerPrompt, parsePlan, waves } from './team-plan.js';
-import { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, RUNNER } from './team-board.js';
+import { fixedPlan, plannerPrompt, parsePlan } from './team-plan.js';
+import { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, RUNNER, PERSON } from './team-board.js';
+import { subtaskFromRequest, takeUp, takeUpLine, jobFromSubtask, extendDependents, MAX_SUBTASKS, MAX_DEPTH } from './team-subtask.js';
+import { proposalToAgent, proposalFromNeeds } from './recruit.js';
+import { grantsNeededFor } from './tool-need.js';
 import { boardToolProvider, createAnswerBox, withBoardTool, DEFAULT_ASK_TIMEOUT_MS } from './board-tool.js';
 import { createRunCache, withRunCache } from './team-cache.js';
 import { messagesFor, mergeTranscript, clipTranscript, clipMessage as clipTranscriptOne, newSteps, continuationNote, isThought } from './team-task.js';
@@ -102,6 +109,14 @@ export function dryRunTeam(team, request, { appoint = null } = {}) {
  *                   `reasons` and `alternatives` are why this one and who else could have —
  *                   said as `task.routed`, which every run records from here on (pillars §13)
  * @param runRecipe  `async (name, params) => result` for `mode: 'recipe'` roles (optional)
+ * @param recruit    `async (job, { runId, requestedBy, create? }) => { role, agentId?, engine?, why?, fit? }
+ *                   | { proposal? , why? } | null` — the host's job board (recruit.js over its
+ *                   pool): a sub-task nobody in the run fits is posted as `job`; the host
+ *                   answers with the role to add (job.js jobToRole, resolved to a model), or
+ *                   nothing, optionally with the agent it would propose. With `create` (the
+ *                   card a person approved on the board) the host adds it to the pool first.
+ *                   Absent, a sub-task nobody fits is recorded unassigned.
+ * @param projectId  the project a job posting belongs to, when the run has one (else the run id)
  * @param emit       `(type, payload)` — run.started · plan.ready · task.started · task.finding ·
  *                   task.done · task.failed · run.merging · run.done; the host forwards them to
  *                   its UI and to the gateway's run store
@@ -119,6 +134,7 @@ export async function runTeam({
   // The host's control channel (team-task.js createControl): a person hands a task to another
   // model from the board, on either client; the runner continues the task's transcript there.
   control = null,
+  recruit = null, projectId = null,
 } = {}) {
   if (typeof callModel !== 'function') throw new TeamRunError('BAD_RUN', 'callModel required');
   const t = normalizeTeam(team); // throws on a team without a budget — O1
@@ -186,9 +202,16 @@ export async function runTeam({
     }
   }
   if (!tasks) tasks = fixedPlan(t, request);
-  say('plan.ready', { by: planBy, tasks: tasks.map((x) => ({ id: x.id, role: x.role, title: x.title, dependsOn: x.dependsOn })) });
+  say('plan.ready', { by: planBy, tasks: tasks.map((x) => ({ id: x.id, role: x.role, title: x.title, dependsOn: x.dependsOn, ...(x.parent ? { parent: x.parent, requestedBy: x.requestedBy || null } : {}), ...(x.grants ? { grants: x.grants, why: x.why || '' } : {}) })) });
   // A thread per task, before anything runs: a member's findings and replies have a home.
-  for (const task of tasks) board.openThread({ taskId: task.id, kind: 'task', title: task.title || task.id, by: RUNNER });
+  for (const task of tasks) board.openThread({ taskId: task.id, kind: 'task', title: task.title || task.id, by: task.requestedBy || RUNNER, ...(task.parent ? { parent: task.parent } : {}), ...(task.role && task.parent ? { holder: task.role } : {}) });
+  // The planner's TOOL PROPOSAL (§15.2): which tools each task will need and why, as a
+  // proposal thread a person reads — and what the nudge below holds the member to.
+  if (!resume && tasks.some((x) => x.grants?.length)) {
+    const th = board.openThread({ kind: 'proposal', title: 'Tools per task', by: t.roles.find((r) => r.id === (tasks[0]?.role))?.id || RUNNER });
+    const lines = tasks.filter((x) => x.grants?.length).map((x) => { const held = t.roles.find((r) => r.id === x.role)?.grants || []; const missing = x.grants.filter((g) => !held.includes(g) && !(g.startsWith('mcp:') && held.includes('mcp'))); return `${x.role} (${x.id}): ${x.grants.join(', ')}${x.why ? ` — ${x.why}` : ''}${missing.length ? ` (not granted: ${missing.join(', ')})` : ''}`; });
+    board.post({ threadId: th.id, by: RUNNER, kind: 'draft', status: 'proposed', text: lines.join('\n') });
+  }
 
   const finish = (status, extra = {}) => {
     const usage = budget.snapshot();
@@ -213,17 +236,99 @@ export async function runTeam({
   };
   let waitingOnPerson = false; // a task that timed out on its ask — the run checkpoints
 
-  // ── fan out, in waves ─────────────────────────────────────────────────────────────────
+  // ── fan out: everything ready runs together; a sub-task requested mid-run joins the plan ──
   let overBudget = false;
   let budgetAsked = !!resume?.budgetAsked;
-  for (const wave of waves(tasks.filter((x) => !carried.has(x.id)))) {
-    if (stopped() || overBudget || waitingOnPerson) break;
-    await pool(wave, maxConcurrency, async (task) => {
-      if (stopped() || overBudget || waitingOnPerson) { tasksOut.push({ id: task.id, role: task.role, status: 'skipped', text: '', findings: [] }); return; }
+  const running = new Set();
+  const isDone = (tid) => carried.has(tid) || tasksOut.some((x) => x.id === tid);
+  // A sub-task with no holder cannot run; it is recorded `unassigned` at the end.
+  const ready = () => tasks.filter((x) => x.role && !isDone(x.id) && !running.has(x.id) && (x.dependsOn || []).every(isDone));
+  let subtasks = tasks.filter((x) => x.parent).length;
+
+  /**
+   * A member's REQUEST (board tool `request`): a sub-task with its own thread, offered to the
+   * run's members first, then to the pool through the host's `recruit`, then proposed as a
+   * new agent to the person. With `wait` the requester gets the findings back in its turn;
+   * without, the sub-task runs after it and whoever depended on the requester reads it too.
+   */
+  const onRequest = async (parentTask, role, req) => {
+    if (subtasks >= MAX_SUBTASKS) return { error: `This run has reached its limit of ${MAX_SUBTASKS} sub-tasks. Do this yourself, or say what you could not do.` };
+    if ((Number(parentTask.depth) || 0) >= MAX_DEPTH) return { error: 'A sub-task cannot delegate further. Do this yourself, or say what you could not do.' };
+    if (stopped() || overBudget) return { error: 'The run is stopping; do what you can and finish.' };
+    subtasks += 1;
+    const sub = subtaskFromRequest(req, parentTask, { id: `${parentTask.id}-s${subtasks}`, by: role.id, now: now() });
+    tasks.push(sub);
+    say('task.requested', { taskId: sub.id, parent: parentTask.id, by: role.id, title: sub.title, prompt: sub.prompt, needs: sub.needs, dependsOn: sub.dependsOn, depth: sub.depth, wait: sub.wait, postId: req.postId || null });
+    const thread = board.openThread({ taskId: sub.id, kind: 'task', title: sub.title, by: role.id, parent: parentTask.id });
+    // 1. The run's own members, by fit on skills and grants.
+    let pick = takeUp(sub, t.roles, { exclude: [role.id] });
+    let takenBy = null;
+    if (pick.roleId) {
+      takenBy = { by: 'fit', roleId: pick.roleId, fit: pick.fit, reasons: pick.reasons };
+    } else if (typeof recruit === 'function') {
+      // 2. The job board: the pool applies, the host recruits an (agent, engine) pair.
+      const job = jobFromSubtask(sub, { runId: id, projectId: projectId || null, by: role.id });
+      say('task.posted', { taskId: sub.id, job, why: pick.why });
+      board.post({ threadId: thread.id, by: RUNNER, kind: 'note', text: `Posted on the job board — ${pick.why}. Needs: ${describeNeeds(sub.needs)}.` });
+      let r = null;
+      try { r = await recruit(job, { runId: id, requestedBy: role.id }); } catch (e) { board.post({ threadId: thread.id, by: RUNNER, kind: 'note', text: `Recruiting failed: ${String(e?.message || e).slice(0, 200)}` }); }
+      if (r?.role) {
+        takenBy = { by: 'recruit', roleId: addRole(r.role, job), agentId: r.agentId || r.role.agent || null, engine: r.engine || null, why: r.why || '', fit: r.fit ?? null };
+      } else {
+        // 3. Nobody applies: propose the agent the job describes — a person decides; nothing
+        // is created here. With asks on, the person is asked now and the run goes on either way.
+        const card = r?.proposal || proposalToAgent(proposalFromNeeds(job), job, { by: 'runner' });
+        const agentCard = card?.ok === false ? null : (card?.agent || card);
+        const pth = board.openThread({ kind: 'proposal', title: `New agent for "${sub.title}"`, by: RUNNER, parent: parentTask.id });
+        const post = board.post({ threadId: pth.id, by: RUNNER, kind: 'draft', status: 'proposed', text: `No one in the pool fits "${sub.title}"${r?.why ? ` — ${r.why}` : ''}. Proposed: ${agentCard?.name || sub.title}${agentCard?.skills?.length ? ` — skills ${agentCard.skills.join(', ')}` : ''}${agentCard?.grants?.length ? `; grants ${agentCard.grants.join(', ')}` : ''}.`, refs: [`task:${sub.id}`], ...(agentCard ? { proposal: { kind: 'agent', agent: agentCard, jobId: job.id } } : {}) });
+        say('task.proposed', { taskId: sub.id, threadId: pth.id, postId: post.id, agent: agentCard, job, why: r?.why || pick.why });
+        const a = agentCard ? await askPerson({ type: 'permission', taskId: sub.id, text: `No one fits "${sub.title}". Create the agent "${agentCard.name}" (${describeNeeds({ skills: agentCard.skills, grants: agentCard.grants })}) and give it the job?`, options: ['Create it', 'Skip'] }) : null;
+        if (a && /create|yes|approve|allow|go/i.test(a.text)) {
+          board.decide(post.id, 'approved', a.by || PERSON);
+          let made = null;
+          try { made = await recruit(job, { runId: id, requestedBy: role.id, create: agentCard }); } catch (e) { board.post({ threadId: thread.id, by: RUNNER, kind: 'note', text: `Creating the agent failed: ${String(e?.message || e).slice(0, 200)}` }); }
+          if (made?.role) takenBy = { by: 'created', roleId: addRole(made.role, job), agentId: made.agentId || made.role.agent || null, engine: made.engine || null, why: made.why || 'created for this job', fit: null };
+        } else if (a) board.decide(post.id, 'rejected', a.by || PERSON);
+      }
+    }
+    if (!takenBy) {
+      const why = typeof recruit === 'function' ? 'nobody in the run fits and no agent was recruited' : `${pick.why}; this run has no pool to recruit from`;
+      board.post({ threadId: thread.id, by: RUNNER, kind: 'note', text: `Not taken: ${why}.` });
+      board.setThreadStatus(thread.id, 'failed');
+      say('task.unassigned', { taskId: sub.id, why });
+      return { taskId: sub.id, takenBy: null, why, hint: 'Nobody could take this. Do what you can yourself and say what is missing.' };
+    }
+    sub.role = takenBy.roleId;
+    board.setThreadStatus(thread.id, 'open', { holder: takenBy.roleId });
+    board.post({ threadId: thread.id, by: RUNNER, kind: 'decision', text: takenBy.by === 'fit' ? takeUpLine(sub, pick) : `${takenBy.roleId} ${takenBy.by === 'created' ? 'was created and' : 'was recruited from the pool and'} took: ${sub.title}${takenBy.why ? ` — ${takenBy.why}` : ''}` });
+    say('task.taken', { taskId: sub.id, role: takenBy.roleId, by: takenBy.by, fit: takenBy.fit ?? null, reasons: takenBy.reasons || [], agentId: takenBy.agentId || null, engine: takenBy.engine || null, why: takenBy.why || '' });
+    if (sub.wait) {
+      // Nested: the requester's turn holds while the sub-task runs; its findings come back here.
+      const row = await runTask(sub);
+      return { taskId: sub.id, takenBy: takenBy.roleId, status: row.status, ...(row.error ? { error: row.error } : {}), findings: (row.findings || []).map((f) => ({ kind: f.kind, text: f.text, refs: f.refs })), text: String(row.text || '').slice(0, 4000) };
+    }
+    const extended = extendDependents(tasks, parentTask.id, sub.id);
+    return { taskId: sub.id, takenBy: takenBy.roleId, queued: true, hint: `It runs after your task; ${extended.length ? `${extended.join(', ')} will read it too` : 'its findings will be on the board'}. Finish your task and say what depends on it.` };
+  };
+  /** A recruited agent joins the run as a role — the job's grants narrow it — and is appointed like any other. */
+  const addRole = (role, job) => {
+    const base = { ...role, id: String(role.id || job.id), grants: role.grants || job.needs?.grants || ['none'] };
+    const nt = normalizeTeam({ name: t.name, roles: [base], budget: t.budget });
+    const r = { ...nt.roles[0], ...(role.model ? { model: role.model } : {}), ...(role.engine ? { engine: role.engine } : {}), ...(role.skills ? { skills: role.skills } : {}), ...(role.workdir ? { workdir: role.workdir } : {}), recruited: true };
+    if (!t.roles.some((x) => x.id === r.id)) { t.roles.push(r); say('run.role-added', { role: { id: r.id, name: r.name, agent: r.agent || null, grants: r.grants, model: r.model || null, engine: r.engine || null }, jobId: job.id }); }
+    return r.id;
+  };
+
+  const runTask = async (task) => {
+    running.add(task.id);
+    try { return await runTaskInner(task); } finally { running.delete(task.id); }
+  };
+  const runTaskInner = async (task) => {
+      if (stopped() || overBudget || waitingOnPerson) { const row = { id: task.id, role: task.role, status: 'skipped', text: '', findings: [] }; tasksOut.push(row); return row; }
       const role = roleOf(task.role);
       const t0 = now();
       const was = interrupted.get(task.id) || null;
-      say('task.started', { taskId: task.id, role: task.role, title: task.title, ...(was ? { resumed: true, steps: was.transcript.length } : {}) });
+      say('task.started', { taskId: task.id, role: task.role, title: task.title, ...(task.parent ? { parent: task.parent } : {}), ...(was ? { resumed: true, steps: was.transcript.length } : {}) });
       let text = '';
       let usage = null;
       let status = 'ok';
@@ -255,7 +360,14 @@ export async function runTeam({
         const added = newSteps(before, after);
         if (added.length) say('task.step', { taskId: task.id, role: role.id, steps: added.map(stamp) });
       };
+      // The tool-choice guard (§15.2): what this task's wording — and the planner's proposal —
+      // say it needs among what the role holds. A model attempt that ends with zero calls
+      // while holding one of these is nudged once, then may finish.
+      const grantsHeld = role?.grants || [];
+      const mustUse = role?.mode === 'model' ? [...new Set([...grantsNeededFor(task.prompt, { held: grantsHeld }), ...(task.grants || []).filter((g) => grantsHeld.includes(g) || (g.startsWith('mcp:') && grantsHeld.includes('mcp')))])] : [];
+      let nudged = false;
       try {
+        if (!role) throw new Error(`no role "${task.role}" in the team`);
         if (role.mode === 'recipe') {
           if (typeof runRecipe !== 'function') throw new Error('this host cannot run recipes');
           const r = await runRecipe(role.recipe, { request: String(request || ''), task: task.prompt });
@@ -273,6 +385,7 @@ export async function runTeam({
           const boardTool = boardToolProvider({
             board, role: role.id, taskId: task.id, taskIds: task.dependsOn?.length ? task.dependsOn : null, askTimeoutMs: askMs, signal: taskAc.signal,
             onAsk: (thread) => { say('task.waiting', { taskId: task.id, role: role.id, threadId: thread.id, text: thread.title }); },
+            onRequest: (req) => onRequest(task, role, req),
             waitFor: askMs > 0 ? async (threadId, ms, sig) => {
               const a = await box.wait(threadId, ms, sig);
               if (!a && !stopped()) { askedAndWaiting = threadId; taskAc.abort(); }
@@ -301,6 +414,8 @@ export async function runTeam({
               note = continuationNote({ kind: 'handoff', from: lastModel, to: handoffTo.model, reason: `handed off by ${handoffTo.by}` });
               handoffTo = null;
               taskAc = new AbortController(); signal?.addEventListener?.('abort', onRunAbort, { once: true });
+            } else if (nudged && lastModel && !exclude.has(lastModel)) {
+              m = { model: lastModel, mode: role.mode }; // the nudge continues on the same model
             } else {
               m = modelFor(role, excluding(exclude));
             }
@@ -345,7 +460,20 @@ export async function runTeam({
             // died after its tool calls — is not a done task: three members "completed" empty
             // once, the run merged nothing, and the caller ran the team again. It is treated
             // like an unavailable model, so the next one on the roster gets the task.
-            if (res?.ok && String(res?.text || '').trim()) { text = String(res.text); break; }
+            if (res?.ok && String(res?.text || '').trim()) {
+              // Answered from memory while holding a tool the task calls for: one nudge, on
+              // the same model, continuing the transcript — then whatever it says stands.
+              const usedNone = !nudged && mustUse.length && routed?.engine?.kind !== 'harness' && !transcript.some((x) => x.role === 'assistant' && Array.isArray(x.tool_calls) && x.tool_calls.some((c) => c.function?.name && c.function.name !== 'board'));
+              if (usedNone && budget.canAfford({ tokens: 0 }) && !stopped()) {
+                nudged = true;
+                note = continuationNote({ kind: 'nudge', reason: mustUse.join(', ') });
+                const th = board.threadForTask(task.id);
+                if (th) board.post({ threadId: th.id, by: RUNNER, kind: 'note', text: `${role.id} answered without using ${mustUse.join(', ')}, which the task calls for — asked once to use it before finishing.` });
+                say('task.nudged', { taskId: task.id, role: role.id, grants: mustUse });
+                continue;
+              }
+              text = String(res.text); break;
+            }
             // A member that wrote on the board and then ran out of turn has still answered:
             // what it posted in its own thread during this attempt is its answer. A relayed
             // agent that posted its assessment and kept searching past the cap was being
@@ -371,45 +499,54 @@ export async function runTeam({
       } finally {
         unsubscribe?.();
       }
-      const findings = status === 'ok' ? parseFindings(text, { role: role.id, taskId: task.id }) : [];
-      if (findings.length) { board.add(findings); for (const f of findings) say('task.finding', { taskId: task.id, role: role.id, finding: f }); }
+      const findings = status === 'ok' ? parseFindings(text, { role: role?.id, taskId: task.id }) : [];
+      if (findings.length) { board.add(findings); for (const f of findings) say('task.finding', { taskId: task.id, role: role?.id, finding: f }); }
       const thread = board.threadForTask(task.id);
       // The thread says how the task ended. A failure is posted in it as well — a person reading
       // the board sees "researcher failed: network error" where it happened, and what was tried.
       if (thread && status === 'ok') board.setThreadStatus(thread.id, 'resolved');
       else if (thread && status !== 'waiting') {
-        board.post({ threadId: thread.id, by: RUNNER, kind: 'note', text: `${role.id} ${status === 'over-budget' ? 'stopped at the budget' : 'failed'}${error ? `: ${String(error).slice(0, 300)}` : ''}${attempts.length > 1 ? ` (after ${attempts.length} models: ${attempts.map((a) => a.model).join(', ')})` : ''}.` });
+        board.post({ threadId: thread.id, by: RUNNER, kind: 'note', text: `${role?.id || task.role} ${status === 'over-budget' ? 'stopped at the budget' : 'failed'}${error ? `: ${String(error).slice(0, 300)}` : ''}${attempts.length > 1 ? ` (after ${attempts.length} models: ${attempts.map((a) => a.model).join(', ')})` : ''}.` });
         board.setThreadStatus(thread.id, 'failed');
       }
-      const row = { id: task.id, role: task.role, title: task.title, status, text, error, usage, ms: now() - t0, findings, transcript: clipTranscript(transcript), attempts, ...(routed ? { routed } : {}), ...(scm ? { scm } : {}), ...(askedAndWaiting ? { waitingOn: askedAndWaiting } : {}) };
+      const row = { id: task.id, role: task.role, title: task.title, status, text, error, usage, ms: now() - t0, findings, transcript: clipTranscript(transcript), attempts, ...(task.parent ? { parent: task.parent } : {}), ...(routed ? { routed } : {}), ...(scm ? { scm } : {}), ...(askedAndWaiting ? { waitingOn: askedAndWaiting } : {}) };
       tasksOut.push(row);
       say(status === 'ok' ? 'task.done' : 'task.failed', { taskId: task.id, role: task.role, status, error, ms: row.ms, findings: findings.length, ...(askedAndWaiting ? { threadId: askedAndWaiting } : {}) });
       // The fact for the member's scorecard (scorecard.js): how big, with what, alongside whom,
       // in which role — produced here, attested by the store, never written by the agent.
-      if (status === 'ok' || status === 'failed') {
+      if (role && (status === 'ok' || status === 'failed')) {
         say('task.scored', {
           agentId: role.agent || role.id, taskId: task.id, role: role.id, model: lastModelOf(attempts), engine: routed?.engine || null, scm: scm || undefined, outcome: status === 'ok' ? 'task.done' : 'task.failed',
           size: { ms: row.ms, steps: (row.transcript || []).length, tools: (row.transcript || []).filter((m) => m.role === 'tool').length, findings: findings.length, tokens: usage ? Number(usage.input_tokens || usage.prompt_tokens || 0) + Number(usage.output_tokens || usage.completion_tokens || 0) : 0 },
           roleKind: 'ic', tools: toolNamesOf(row.transcript), with: t.roles.filter((r) => r.id !== role.id).map((r) => r.agent || r.id),
           refs: [`run:${id}`, ...(board.threadForTask(task.id) ? [`thread:${board.threadForTask(task.id).id}`] : [])], error: error || undefined,
+          ...(task.parent ? { parent: task.parent, requestedBy: task.requestedBy || null } : {}),
         });
       }
       // The spend so far, after every task — a ledger reads it live instead of at the end.
       say('run.usage', { usage: budget.snapshot() });
       if (budget.exhausted()) overBudget = true;
-    });
+      return row;
+  };
+
+  for (;;) {
+    if (stopped() || overBudget || waitingOnPerson) break;
+    const wave = ready();
+    if (!wave.length) break;
+    await pool(wave, maxConcurrency, runTask);
     // Over budget with work left: ask the person ONCE for more, on the board, before stopping.
     if (overBudget && !budgetAsked && !stopped()) {
       budgetAsked = true;
-      const left = tasks.filter((x) => !tasksOut.some((y) => y.id === x.id)).length;
+      const left = tasks.filter((x) => x.role && !tasksOut.some((y) => y.id === x.id)).length;
       const spent = budget.snapshot().spent;
       const what = left ? `${left} task${left === 1 ? '' : 's'} and the merge left` : 'only the merge left';
       const a = await askPerson({ type: 'budget', text: `The team has used its budget (${Object.entries(spent).filter(([k]) => budget.cap[k] !== undefined).map(([k, v]) => `${k} ${v} of ${budget.cap[k]}`).join(', ')}) with ${what}. Raise it by half, or stop here with what it has?`, options: ['Raise by half', 'Stop here'] });
       if (a && /raise|allow|yes|more|continue/i.test(a.text)) { budget.raise(1.5); overBudget = false; }
     }
   }
-  // Every planned task gets a row — what never ran is recorded as skipped, not forgotten.
-  for (const task of tasks) if (!tasksOut.some((x) => x.id === task.id)) tasksOut.push({ id: task.id, role: task.role, title: task.title, status: 'skipped', text: '', findings: [] });
+  // Every planned task gets a row — what never ran is recorded as skipped, not forgotten;
+  // a sub-task nobody took is `unassigned`, which is its own kind of undone.
+  for (const task of tasks) if (!tasksOut.some((x) => x.id === task.id)) tasksOut.push({ id: task.id, role: task.role, title: task.title, status: task.parent && !task.role ? 'unassigned' : 'skipped', text: '', findings: [], ...(task.parent ? { parent: task.parent } : {}) });
   if (stopped()) return finish('stopped');
   if (waitingOnPerson) return finish('waiting', { proposal: null, budgetAsked });
   // Over budget is a STOP only when it left work undone; a budget spent on the last task
@@ -493,6 +630,7 @@ export function resumeTeam({ checkpoint, ...deps } = {}) {
 }
 
 const lastModelOf = (attempts) => (attempts || []).at(-1)?.model || null;
+const describeNeeds = (n) => [n?.skills?.length ? `skills ${n.skills.join(', ')}` : '', n?.grants?.length ? `grants ${n.grants.join(', ')}` : '', n?.tools?.length ? `tools ${n.tools.join(', ')}` : ''].filter(Boolean).join('; ') || 'nothing in particular';
 const toolNamesOf = (transcript) => [...new Set((transcript || []).flatMap((m) => (m.role === 'assistant' && Array.isArray(m.tool_calls) ? m.tool_calls.map((c) => c.function?.name).filter(Boolean) : [])))];
 
 /** No model: the members' work side by side, findings first — always available. */
