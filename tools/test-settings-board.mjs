@@ -52,7 +52,8 @@ const fakeFetch = async (url, opts = {}) => {
   const json = (data) => ({ ok: true, status: 200, json: async () => data });
   if (/\/v1\/teams\/runs\?/.test(u)) return json({ ok: true, runs: [{ id: 'run_1', team: 'travel', status: 'running', waiting: 1, createdAt: 1 }] });
   if (/\/v1\/teams\/runs\/run_1$/.test(u)) return json({ ok: true, run });
-  if (/\/(answer|decide|post|stop)$/.test(u)) return json({ ok: true, run });
+  if (/\/decide$/.test(u)) { const b = JSON.parse(opts.body); const p = run.threads.posts.find((x) => x.id === b.postId); if (p) { p.status = b.status; p.decidedBy = 'person'; } run.lastEventAt = (run.lastEventAt || 0) + 1; return json({ ok: true, run }); }
+  if (/\/(answer|post|stop)$/.test(u)) return json({ ok: true, run });
   if (/admin\/token/.test(u)) return json({ token: 't' });
   return json({ ok: true });
 };
@@ -92,20 +93,29 @@ assert.ok(root.find((n) => n.className === 'muted tiny' && /find web_search quer
 assert.ok(root.find((n) => /^bpost blog err/.test(n.className)), 'a failed result reads as an error');
 propRow.click();
 await new Promise((r) => setTimeout(r, 5));
-btn(/^Approve$/).click();
-await new Promise((r) => setTimeout(r, 30));
-const decided = calls.find(([m, u]) => m === 'POST' && u.endsWith('/decide'));
-assert.deepEqual([decided[2].postId, decided[2].status], ['d1', 'approved']);
-
-// A DRAFT SURVIVES THE POLL. Half a reply typed, then the store refreshes (Approve above did
-// exactly that): the box the person is typing in is left alone — same element, same text.
+// A DRAFT SURVIVES THE POLL, AND A DECISION IS DRAWN AT ONCE. Half a reply typed, then Approve:
+// the decision lands on the gateway and the pane redraws to show it — the button the person
+// clicked holding focus is not a reason to hide their own decision (Approve "did nothing" for
+// exactly that reason) — and the half-typed draft comes back into the new box (focus went to
+// the button they clicked, as it does in a browser; the text is what must not be lost).
 const box = () => root.find((n) => n.tagName === 'TEXTAREA' && /Reply in this thread/.test(n.attrs.placeholder));
 const ta1 = box();
 ta1.focus(); ta1.type('half a sentence');
-btn(/^Reject$/).click();
+const approve = btn(/^Approve$/);
+document.activeElement = approve; // a clicked button keeps focus in a real browser
+approve.click();
 await new Promise((r) => setTimeout(r, 30));
-assert.equal(box(), ta1, 'a poll does not rebuild the pane while a draft has focus');
-assert.equal(ta1.value, 'half a sentence');
+const decided = calls.find(([m, u]) => m === 'POST' && u.endsWith('/decide'));
+assert.deepEqual([decided[2].postId, decided[2].status], ['d1', 'approved']);
+assert.ok(root.find((n) => n.className === 'bchip ok' && n.textContent === 'approved'), 'the decision is drawn without waiting for a poll');
+assert.ok(!btn(/^Approve$/), 'a decided draft offers no second decision');
+assert.equal(box().value, 'half a sentence', 'the draft survived the redraw');
+// A plain poll while a draft has focus still leaves the pane alone — same element, same text.
+const ta1b = box();
+ta1b.focus();
+await new Promise((r) => setTimeout(r, 30));
+assert.equal(box(), ta1b, 'a poll does not rebuild the pane while a draft has focus');
+assert.equal(ta1b.value, 'half a sentence');
 // A deliberate redraw (Reply to a post) rebuilds the pane — and the draft comes back into the
 // new box, focused.
 btn(/^Reply$/).click();

@@ -107,7 +107,7 @@ export function renderBoard(root, { settings, license = null }) {
     layout,
   );
 
-  const refresh = async () => {
+  const refresh = async (opts = {}) => {
     const r = await store.list({ limit: 30 });
     if (!alive) return;
     if (!r.ok) { state.err = `gateway not reachable: ${r.error}`; draw(); return; }
@@ -118,7 +118,18 @@ export function renderBoard(root, { settings, license = null }) {
     const got = await Promise.all(want.map((id) => store.get(id).then((x) => [id, x.ok ? x.data?.run : null])));
     if (!alive) return;
     for (const [id, run] of got) if (run) { state.runs[id] = run; state.loaded.add(id); }
-    draw();
+    draw(opts);
+  };
+  // A PERSON'S OWN ACTION REDRAWS, whatever the poll's guards say. Approve did nothing for a
+  // week: the button they clicked kept focus, `interacting()` read that as "leave the pane
+  // alone", and the decision — landed on the gateway — was never drawn. The record the store
+  // answers with is taken as is; a refusal is shown, not swallowed.
+  const acted = async (p) => {
+    const r = await p;
+    state.touchedAt = 0;
+    if (r && r.ok === false) state.err = r.error || 'the gateway refused';
+    else if (r?.data?.run?.id) { state.runs[r.data.run.id] = r.data.run; state.err = ''; }
+    return refresh({ force: true });
   };
 
   const threads = () => {
@@ -198,7 +209,7 @@ export function renderBoard(root, { settings, license = null }) {
             const sel = el('select', { class: 'blane-ho', title: 'Hand this task to another model — it continues from where it is' });
             sel.append(el('option', { value: '', text: 'hand off…' }));
             for (const c of roster.filter((x) => x.usable && x.id !== t.model)) sel.append(el('option', { value: c.id, text: c.kind === 'bridge' ? `${c.name} (agent)` : c.name }));
-            sel.addEventListener('change', async () => { const m = sel.value; if (!m) return; const r = await handoffTask(settings, { runId: run.id, taskId: t.id, model: m, reason: 'handed off from the board' }); if (!r.ok) state.err = `hand-off: ${r.error}`; refresh(); });
+            sel.addEventListener('change', async () => { const m = sel.value; if (!m) return; const r = await handoffTask(settings, { runId: run.id, taskId: t.id, model: m, reason: 'handed off from the board' }); if (!r.ok) state.err = `hand-off: ${r.error}`; acted(r); });
             lane.append(sel);
           }
           return lane;
@@ -206,12 +217,12 @@ export function renderBoard(root, { settings, license = null }) {
       ),
       el('div', { class: 'brun-side' },
         spend ? el('div', { class: 'muted tiny', text: `Budget ${describeSpend(spend)}${spend.exhausted ? ` — ${spend.exhausted} exhausted` : ''}` }) : null,
-        live && !run.stale ? el('button', { class: 'btn danger', type: 'button', text: 'Stop run', onclick: () => store.stop(run.id).then(refresh) }) : null,
+        live && !run.stale ? el('button', { class: 'btn danger', type: 'button', text: 'Stop run', onclick: () => acted(store.stop(run.id)) }) : null,
         // A run whose client went away, or that stopped, waited or failed, picks up from its record.
         (run.resumable || (live && (run.quietMs || 0) > 60_000)) ? el('button', { class: 'btn primary', type: 'button', text: run.resumable ? 'Resume here' : `Resume here (quiet ${Math.round((run.quietMs || 0) / 1000)} s)`, title: 'Continue this run in this browser from its record — nothing already done is redone', onclick: async () => {
           const [{ streamChat }, { buildTurnTools }] = await Promise.all([import('./providers.js'), import('./turn-tools.js')]);
           const r = await resumeRunHere(settings, license, { runId: run.id, streamChat, buildTurnTools, bridgeUrl: settings.bridgeUrl || '', bridgeAvailable: false });
-          if (!r.ok) state.err = `resume: ${r.error}`; refresh();
+          if (!r.ok) state.err = `resume: ${r.error}`; acted(r);
         } }) : null,
       ),
     ); }
@@ -231,7 +242,7 @@ export function renderBoard(root, { settings, license = null }) {
       if (p.kind === 'question' && thread.status === 'waiting' && p.ask) {
         const ask = el('div', { class: 'bask' });
         ask.append(el('div', {}, el('b', { text: 'What should it do? ' }), el('span', { class: 'muted tiny', text: 'The member waits up to 10 min, then the run checkpoints and resumes when you answer.' })));
-        const send = async (text) => { if (!text.trim()) return; const r = await answerAsk(settings, { runId: run.id, threadId: thread.id, text: text.trim() }); if (!r.ok) ask.append(el('div', { class: 'status err', text: r.error })); else refresh(); };
+        const send = async (text) => { if (!text.trim()) return; const r = await answerAsk(settings, { runId: run.id, threadId: thread.id, text: text.trim() }); if (!r.ok) ask.append(el('div', { class: 'status err', text: r.error })); else await acted(r); };
         ask.append(el('div', { class: 'bask-opts' }, ...(p.ask.options || []).map((o) => el('button', { class: 'btn', type: 'button', text: o, onclick: () => send(o) }))));
         const ta = draftBox(`ask:${p.id}`, { rows: '2', placeholder: 'Or type the answer' });
         ask.append(ta, el('div', { class: 'bacts' }, el('button', { class: 'btn primary', type: 'button', text: 'Answer', onclick: () => { delete state.drafts[ta._draftKey]; send(ta.value); } }), el('span', { class: 'muted tiny', text: 'Posts as you; the member resumes with it.' })));
@@ -239,10 +250,10 @@ export function renderBoard(root, { settings, license = null }) {
       }
       const acts = el('div', { class: 'bacts' });
       if (decidable) {
-        acts.append(el('button', { class: 'btn ok', type: 'button', text: 'Approve', onclick: () => store.decide(run.id, { postId: p.id, status: 'approved' }).then(refresh) }));
-        acts.append(el('button', { class: 'btn danger', type: 'button', text: 'Reject', onclick: () => store.decide(run.id, { postId: p.id, status: 'rejected' }).then(refresh) }));
+        acts.append(el('button', { class: 'btn ok', type: 'button', text: 'Approve', onclick: () => acted(store.decide(run.id, { postId: p.id, status: 'approved' })) }));
+        acts.append(el('button', { class: 'btn danger', type: 'button', text: 'Reject', onclick: () => acted(store.decide(run.id, { postId: p.id, status: 'rejected' })) }));
       }
-      if (strikable) acts.append(el('button', { class: 'btn ghost', type: 'button', text: 'Strike', title: 'Wrong or stale: drop this finding from what the members and the merge read', onclick: () => store.decide(run.id, { postId: p.id, status: 'rejected' }).then(refresh) }));
+      if (strikable) acts.append(el('button', { class: 'btn ghost', type: 'button', text: 'Strike', title: 'Wrong or stale: drop this finding from what the members and the merge read', onclick: () => acted(store.decide(run.id, { postId: p.id, status: 'rejected' })) }));
       acts.append(el('button', { class: 'btn ghost', type: 'button', text: 'Reply', onclick: () => { state.reply = p; drawThread({ force: true }); } }));
       body.append(acts);
       return el('div', { class: `bpost${depth ? ' reply' : ''}`, style: depth ? `margin-left:${38 + (depth - 1) * 14}px` : '' }, el('span', { class: `bav${depth ? ' sm' : ''}`, style: `background:${colour(p.by, roles)}`, text: initial(p.by) }), body);
@@ -314,7 +325,7 @@ export function renderBoard(root, { settings, license = null }) {
       const r = await store.post(run.id, { threadId: thread.id, text: text.replace(/^decide:\s*/i, ''), kind: decision ? 'decision' : 'note', replyTo: state.reply?.id || null });
       if (!r.ok) { compose.append(el('div', { class: 'status err', text: r.error })); return; }
       delete state.drafts[ta._draftKey];
-      state.reply = null; ta.value = ''; await refresh();
+      state.reply = null; ta.value = ''; await acted(r);
     };
     ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); });
     compose.append(ta, el('div', { class: 'bacts' }, el('button', { class: 'btn primary', type: 'button', text: 'Post', onclick: send }), el('span', { class: 'muted tiny', text: 'On the gateway\'s run store: the desktop shows the same threads, and a member\'s next wave reads what you post.' })));

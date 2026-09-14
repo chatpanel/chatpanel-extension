@@ -17,6 +17,7 @@ export function teamLine(ev) {
   switch (ev.type) {
     case 'run.started': return { type: 'status', text: `team ${ev.team}: ${(ev.roles || []).join(', ')}` };
     case 'plan.ready': return { type: 'status', text: `plan: ${(ev.tasks || []).length} task${(ev.tasks || []).length === 1 ? '' : 's'} (${ev.by})` };
+    case 'task.added': return { type: 'status', text: `${ev.kind === 'merge' ? 'the merge' : ev.title || ev.taskId} is ${role}'s${(ev.dependsOn || []).length ? ` — after ${ev.dependsOn.join(', ')}` : ''}` };
     case 'task.started': return { type: 'tool', name: role, text: `${role} · ${ev.title || ev.taskId}${ev.resumed ? ` (resumed, ${ev.steps} steps so far)` : ''}` };
     case 'task.waiting': return { type: 'status', text: `${role} is waiting on you — ${ev.text || 'a question on the board'}` };
     case 'run.waiting': return { type: 'status', text: `waiting on you — ${ev.text || ev.type || 'a question on the board'}` };
@@ -48,6 +49,7 @@ export function teamLanes(prev, ev) {
   switch (ev.type) {
     case 'run.started': lanes.team = ev.team; lanes.roles = ev.roles; break;
     case 'plan.ready': for (const t of ev.tasks || []) lanes.tasks[t.id] = { id: t.id, role: t.role, title: t.title, status: 'pending', findings: 0 }; break;
+    case 'task.added': lanes.tasks[ev.taskId] = { id: ev.taskId, role: ev.role, title: ev.title, status: 'pending', findings: 0, ...(ev.kind ? { kind: ev.kind } : {}) }; break;
     case 'task.started': lanes.tasks[ev.taskId] = { ...(lanes.tasks[ev.taskId] || { id: ev.taskId, role: ev.role, title: ev.title }), status: 'running' }; break;
     case 'task.delta': if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], text: ev.text }; break;
     case 'task.finding': lanes.findings += 1; if (lanes.tasks[ev.taskId]) lanes.tasks[ev.taskId] = { ...lanes.tasks[ev.taskId], findings: (lanes.tasks[ev.taskId].findings || 0) + 1 }; break;

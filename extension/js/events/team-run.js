@@ -264,7 +264,7 @@ export async function runTeam({
   const running = new Set();
   const isDone = (tid) => carried.has(tid) || tasksOut.some((x) => x.id === tid);
   // A sub-task with no holder cannot run; it is recorded `unassigned` at the end.
-  const ready = () => tasks.filter((x) => x.role && !isDone(x.id) && !running.has(x.id) && (x.dependsOn || []).every(isDone));
+  const ready = () => tasks.filter((x) => x.role && x.kind !== 'merge' && !isDone(x.id) && !running.has(x.id) && (x.dependsOn || []).every(isDone));
   let subtasks = tasks.filter((x) => x.parent).length;
 
   /**
@@ -386,7 +386,11 @@ export async function runTeam({
       // say it needs among what the role holds. A model attempt that ends with zero calls
       // while holding one of these is nudged once, then may finish.
       const grantsHeld = role?.grants || [];
-      const mustUse = role?.mode === 'model' ? [...new Set([...grantsNeededFor(task.prompt, { held: grantsHeld }), ...(task.grants || []).filter((g) => grantsHeld.includes(g) || (g.startsWith('mcp:') && grantsHeld.includes('mcp')))])] : [];
+      // THE MERGE IS A TASK LIKE THE OTHERS (its row, thread, transcript and work log), with
+      // three differences: it reads the whole board, it answers in prose rather than findings,
+      // and it is never nudged — "verify a figure with a tool" is its instruction, not a need.
+      const isMerge = task.kind === 'merge';
+      const mustUse = role?.mode === 'model' && !isMerge ? [...new Set([...grantsNeededFor(task.prompt, { held: grantsHeld }), ...(task.grants || []).filter((g) => grantsHeld.includes(g) || (g.startsWith('mcp:') && grantsHeld.includes('mcp')))])] : [];
       let nudged = false;
       try {
         if (!role) throw new Error(`no role "${task.role}" in the team`);
@@ -400,12 +404,12 @@ export async function runTeam({
           if (!budget.canAfford({ tokens: 0 })) { overBudget = true; throw new Error('over budget'); }
           // What this member reads: the threads of the tasks it depends on, answered asks (its
           // own — a resumed task finds the person's answer here), settled discussions.
-          const prior = boardText(board, { taskIds: task.dependsOn?.length ? task.dependsOn : null, role: role.id });
-          const prompt = [task.prompt, prior, findingsInstruction()].filter(Boolean).join('\n\n');
+          const prior = boardText(board, { taskIds: !isMerge && task.dependsOn?.length ? task.dependsOn : null, role: role.id });
+          const prompt = [task.prompt, prior, isMerge ? '' : findingsInstruction()].filter(Boolean).join('\n\n');
           // A host may build a toolset asynchronously (connecting MCP servers takes time).
           // The board tool rides on top of whatever the role was granted.
           const boardTool = boardToolProvider({
-            board, role: role.id, taskId: task.id, taskIds: task.dependsOn?.length ? task.dependsOn : null, askTimeoutMs: askMs, signal: taskAc.signal,
+            board, role: role.id, taskId: task.id, taskIds: !isMerge && task.dependsOn?.length ? task.dependsOn : null, askTimeoutMs: askMs, signal: taskAc.signal,
             onAsk: (thread) => { say('task.waiting', { taskId: task.id, role: role.id, threadId: thread.id, text: thread.title }); },
             onRequest: (req) => onRequest(task, role, req),
             waitFor: askMs > 0 ? async (threadId, ms, sig) => {
@@ -521,7 +525,8 @@ export async function runTeam({
       } finally {
         unsubscribe?.();
       }
-      const findings = status === 'ok' ? parseFindings(text, { role: role?.id, taskId: task.id }) : [];
+      // The merge's answer is the proposal, not a finding of its own (it would double every claim).
+      const findings = status === 'ok' && !isMerge ? parseFindings(text, { role: role?.id, taskId: task.id }) : [];
       if (findings.length) { board.add(findings); for (const f of findings) say('task.finding', { taskId: task.id, role: role?.id, finding: f }); }
       const thread = board.threadForTask(task.id);
       // The thread says how the task ended. A failure is posted in it as well — a person reading
@@ -540,7 +545,7 @@ export async function runTeam({
         say('task.scored', {
           agentId: role.agent || role.id, taskId: task.id, role: role.id, model: lastModelOf(attempts), engine: routed?.engine || null, scm: scm || undefined, outcome: status === 'ok' ? 'task.done' : 'task.failed',
           size: { ms: row.ms, steps: (row.transcript || []).length, tools: (row.transcript || []).filter((m) => m.role === 'tool').length, findings: findings.length, tokens: usage ? Number(usage.input_tokens || usage.prompt_tokens || 0) + Number(usage.output_tokens || usage.completion_tokens || 0) : 0 },
-          roleKind: 'ic', tools: toolNamesOf(row.transcript), with: t.roles.filter((r) => r.id !== role.id).map((r) => r.agent || r.id),
+          roleKind: isMerge ? 'orchestrator' : 'ic', tools: toolNamesOf(row.transcript), with: t.roles.filter((r) => r.id !== role.id).map((r) => r.agent || r.id),
           refs: [`run:${id}`, ...(board.threadForTask(task.id) ? [`thread:${board.threadForTask(task.id).id}`] : [])], error: error || undefined,
           ...(task.parent ? { parent: task.parent, requestedBy: task.requestedBy || null } : {}),
         });
@@ -559,7 +564,7 @@ export async function runTeam({
     // Over budget with work left: ask the person ONCE for more, on the board, before stopping.
     if (overBudget && !budgetAsked && !stopped()) {
       budgetAsked = true;
-      const left = tasks.filter((x) => x.role && !tasksOut.some((y) => y.id === x.id)).length;
+      const left = tasks.filter((x) => x.role && x.kind !== 'merge' && !tasksOut.some((y) => y.id === x.id)).length;
       const spent = budget.snapshot().spent;
       const what = left ? `${left} task${left === 1 ? '' : 's'} and the merge left` : 'only the merge left';
       const a = await askPerson({ type: 'budget', text: `The team has used its budget (${Object.entries(spent).filter(([k]) => budget.cap[k] !== undefined).map(([k, v]) => `${k} ${v} of ${budget.cap[k]}`).join(', ')}) with ${what}. Raise it by half, or stop here with what it has?`, options: ['Raise by half', 'Stop here'] });
@@ -568,7 +573,7 @@ export async function runTeam({
   }
   // Every planned task gets a row — what never ran is recorded as skipped, not forgotten;
   // a sub-task nobody took is `unassigned`, which is its own kind of undone.
-  for (const task of tasks) if (!tasksOut.some((x) => x.id === task.id)) tasksOut.push({ id: task.id, role: task.role, title: task.title, status: task.parent && !task.role ? 'unassigned' : 'skipped', text: '', findings: [], ...(task.parent ? { parent: task.parent } : {}) });
+  for (const task of tasks) if (task.kind !== 'merge' && !tasksOut.some((x) => x.id === task.id)) tasksOut.push({ id: task.id, role: task.role, title: task.title, status: task.parent && !task.role ? 'unassigned' : 'skipped', text: '', findings: [], ...(task.parent ? { parent: task.parent } : {}) });
   if (stopped()) return finish('stopped');
   if (waitingOnPerson) return finish('waiting', { proposal: null, budgetAsked });
   // Over budget is a STOP only when it left work undone; a budget spent on the last task
@@ -582,46 +587,32 @@ export async function runTeam({
   if (!okTasks.length) return finish('failed', { proposal: null });
   if (t.merge === 'judge') {
     const judge = roleOf(t.judge) || strongestRole(t);
-    const m = modelFor(judge);
-    if (m?.model && budget.canAfford({ tokens: 0 })) {
-      const prompt = [
-        `You are the ${judge.name || judge.id} of team "${t.name}". The members' work is on the board below (and in the board tool). Write the team's FINAL ANSWER to the request: complete, well organised, only what the findings support, with the refs they came from. Say plainly what was not found or assumed. Flag anything the members disagreed on. Do not research from scratch — verify a figure with a tool only where the board is silent or contradictory.`,
-        `Request: ${String(request || '').trim()}`,
-        boardText(board),
-      ].join('\n\n');
-      // The judge works with its own grants (it may verify a figure) and the board — and it
-      // is a run member like the others: a model that is not there rotates.
-      say('task.started', { taskId: 'merge', role: judge.id, title: `merge (${judge.name || judge.id})` });
-      const judgeTools = withBoardTool(withRunCache(await toolsFor(judge), runCache, { role: judge.id }), boardToolProvider({ board, role: judge.id, taskId: 'merge', taskIds: null }));
-      let res = null;
-      const excl = new Set();
-      let judgeErr = '';
-      let judgeModel = null; // the appointment that answered (or the last one tried)
-      let judgeRoute = null;
-      for (let attempt = 1; attempt <= MAX_APPOINTMENTS; attempt++) {
-        const mm = attempt === 1 ? (runExclude.has(m?.model) ? modelFor(judge, excluding(excl)) : m) : modelFor(judge, excluding(excl));
-        if (!mm?.model) break;
-        if (attempt > 1) say('task.reappointed', { taskId: 'merge', role: judge.id, model: mm.model, after: [...excl], error: judgeErr });
-        say('task.model', { taskId: 'merge', role: judge.id, model: mm.model, attempt });
-        judgeModel = mm; judgeRoute = routeOf(mm, judge, { attempt, exclude: excl });
-        say('task.routed', { taskId: 'merge', role: judge.id, attempt, ...judgeRoute });
-        res = await callModel({ runId: id, taskId: 'merge', role: judge.id, model: mm.model, mode: 'model', system: judge.prompt, prompt, tools: judgeTools, signal, onDelta: (delta, full) => say('task.delta', { taskId: 'merge', role: judge.id, delta, text: full }) });
-        if (res?.usage) budget.charge(res.usage);
-        if (res?.ok && String(res.text || '').trim()) break;
-        const err = res?.ok ? 'the model returned no answer' : (res?.error || 'the model did not answer');
-        if (stopped() || !isModelUnavailable(err)) break;
-        excl.add(mm.model); runExclude.add(mm.model); judgeErr = err;
-      }
-      const judged = res?.ok && String(res.text || '').trim();
-      say(judged ? 'task.done' : 'task.failed', { taskId: 'merge', role: judge.id, status: judged ? 'ok' : 'failed', error: judged ? null : (res?.error || 'the judge did not answer'), findings: 0 });
-      const judgeScm = normalizeScm(res?.scm);
-      if (judgeScm) say('task.scm', { taskId: 'merge', role: judge.id, ...judgeScm });
-      say('task.scored', { agentId: judge.id, taskId: 'merge', role: judge.id, model: judgeModel?.model || m?.model, engine: judgeRoute?.engine || null, scm: judgeScm || undefined, outcome: judged ? 'task.done' : 'task.failed', size: { ms: 0, steps: 1, tools: 0, findings: board.all().length, tokens: 0 }, roleKind: 'orchestrator', tools: [], with: t.roles.filter((r) => r.id !== judge.id).map((r) => r.agent || r.id), refs: [`run:${id}`] });
-      say('run.usage', { usage: budget.snapshot() });
-      proposal = judged ? { kind: 'answer', text: String(res.text || ''), by: judge.id } : mergeCheap(t, board.all(), tasksOut);
-    } else {
-      proposal = mergeCheap(t, board.all(), tasksOut);
+    // The judge's task IS the merge (team-plan.js fixedPlan) — and it is a TASK: a row on the
+    // record, a thread, a transcript, a work log, a scorecard entry with real evidence. Before
+    // this it was a bare model call whose task.started/task.done named a task the record did
+    // not have, so the fold dropped them and the writer of the final answer showed nowhere.
+    // A resumed run that died mid-merge finds the task on its plan and continues it.
+    let mergeTask = tasks.find((x) => x.kind === 'merge');
+    if (!mergeTask) {
+      mergeTask = {
+        id: 'merge', kind: 'merge', role: judge.id, title: `merge (${judge.name || judge.id})`,
+        prompt: [
+          `You are the ${judge.name || judge.id} of team "${t.name}". The members' work is on the board below (and in the board tool). Write the team's FINAL ANSWER to the request: complete, well organised, only what the findings support, with the refs they came from. Say plainly what was not found or assumed. Flag anything the members disagreed on. Do not research from scratch — verify a figure with a tool only where the board is silent or contradictory.`,
+          `Request: ${String(request || '').trim()}`,
+        ].join('\n\n'),
+        dependsOn: tasks.filter((x) => x.role && x.kind !== 'merge').map((x) => x.id),
+      };
+      tasks.push(mergeTask);
+      say('task.added', { taskId: mergeTask.id, kind: 'merge', role: mergeTask.role, title: mergeTask.title, dependsOn: mergeTask.dependsOn });
+      board.openThread({ taskId: mergeTask.id, kind: 'task', title: mergeTask.title, by: RUNNER, holder: judge.id });
     }
+    const done = tasksOut.find((x) => x.id === mergeTask.id && x.status === 'ok');
+    const row = done || (modelFor(judge)?.model && budget.canAfford({ tokens: 0 }) ? await runTask(mergeTask) : null);
+    // The merge is a task: stopped or waiting on a person mid-way, the run is too — and it
+    // resumes from the merge's transcript, like any other.
+    if (stopped()) return finish('stopped');
+    if (waitingOnPerson) return finish('waiting', { proposal: null, budgetAsked });
+    proposal = row?.status === 'ok' && String(row.text || '').trim() ? { kind: 'answer', text: String(row.text), by: judge.id, taskId: mergeTask.id } : mergeCheap(t, board.all(), tasksOut);
   } else if (t.merge === 'converge') {
     const drafts = okTasks.map((x) => ({ claims: toBriefClaims(x.findings) }));
     const { agreed, disputed } = converge(drafts, { minAgree: Math.min(2, drafts.length) });

@@ -43,7 +43,7 @@ export function foldRun(run, ev) {
     case 'plan.ready':
       run.plan = { by: p.by || 'fixed', tasks: Array.isArray(p.tasks) ? p.tasks : [] };
       // A resume replays the plan: keep what the tasks already hold (transcripts, attempts).
-      run.tasks = run.plan.tasks.map((t) => ({ ...(taskOf(run, t.id) || {}), id: t.id, role: t.role, title: t.title, status: taskOf(run, t.id)?.status === 'ok' ? 'ok' : (t.parent && !t.role ? 'unassigned' : 'pending'), findings: taskOf(run, t.id)?.findings || 0, ...(t.parent ? { parent: t.parent, requestedBy: t.requestedBy || null } : {}), ...(t.grants ? { grants: t.grants, why: t.why || '' } : {}) }));
+      run.tasks = run.plan.tasks.map((t) => ({ ...(taskOf(run, t.id) || {}), id: t.id, role: t.role, title: t.title, status: taskOf(run, t.id)?.status === 'ok' ? 'ok' : (t.parent && !t.role ? 'unassigned' : 'pending'), findings: taskOf(run, t.id)?.findings || 0, ...(t.parent ? { parent: t.parent, requestedBy: t.requestedBy || null } : {}), ...(t.grants ? { grants: t.grants, why: t.why || '' } : {}), ...(t.kind ? { kind: t.kind } : {}) }));
       run.status = 'running';
       break;
     // A SUB-TASK (§15.2): requested by a member mid-run, it joins the plan under its parent;
@@ -55,13 +55,29 @@ export function foldRun(run, ev) {
         run.tasks.push({ id: task.id, role: null, title: task.title, status: 'requested', findings: 0, parent: task.parent, requestedBy: task.requestedBy, needs: task.needs, requestedAt: at });
       }
       break;
+    // A TASK ADDED AFTER THE PLAN — the merge (the judge's task, opened when the members are
+    // done). It joins the plan so a resume carries it and the board draws its thread and log.
+    case 'task.added':
+      if (p.taskId && !taskOf(run, p.taskId)) {
+        const task = { id: p.taskId, role: p.role || null, title: p.title || p.taskId, dependsOn: Array.isArray(p.dependsOn) ? p.dependsOn : [], ...(p.kind ? { kind: p.kind } : {}) };
+        if (run.plan) run.plan.tasks = [...(run.plan.tasks || []), task];
+        run.tasks.push({ id: task.id, role: task.role, title: task.title, status: 'pending', findings: 0, ...(p.kind ? { kind: p.kind } : {}) });
+      }
+      break;
     case 'task.taken': { const t = taskOf(run, p.taskId); if (t) { t.role = p.role; t.status = 'pending'; t.takenBy = { by: p.by || 'fit', role: p.role, fit: p.fit ?? null, reasons: p.reasons || [], agentId: p.agentId || null, engine: p.engine || null, why: p.why || '', at }; } const pt = run.plan?.tasks?.find((x) => x.id === p.taskId); if (pt) pt.role = p.role; break; }
     case 'task.posted': { const t = taskOf(run, p.taskId); if (t) t.job = p.job || null; if (p.job && !run.jobs.some((j) => j.id === p.job.id)) run.jobs.push({ ...p.job, taskId: p.taskId, at }); break; }
     case 'task.proposed': { const t = taskOf(run, p.taskId); if (t) t.proposal = { agent: p.agent || null, threadId: p.threadId || null, postId: p.postId || null, why: p.why || '', at }; break; }
     case 'task.unassigned': { const t = taskOf(run, p.taskId); if (t) { t.status = 'unassigned'; t.error = p.why || null; t.endedAt = at; } const j = run.jobs.find((x) => x.taskId === p.taskId); if (j) j.status = 'failed'; break; }
     case 'task.nudged': { const t = taskOf(run, p.taskId); if (t) t.nudged = [...(t.nudged || []), { grants: p.grants || [], at }]; break; }
     case 'run.role-added': if (p.role?.id && !run.roles.includes(p.role.id)) { run.roles.push(p.role.id); run.recruited = [...(run.recruited || []), { ...p.role, jobId: p.jobId || null, at }]; const j = run.jobs.find((x) => x.id === p.jobId); if (j) { j.status = 'recruited'; j.recruited = { agentId: p.role.agent || p.role.id, engine: p.role.engine || null, at }; } } break;
-    case 'task.started': { const t = taskOf(run, p.taskId); if (t) { t.status = 'running'; t.startedAt = at; t.error = null; } run.status = 'running'; break; }
+    case 'task.started': {
+      // A start the plan never named (a record from a build whose merge was not a task) gets
+      // its row here rather than being dropped — the fold never loses a task that ran.
+      let t = taskOf(run, p.taskId);
+      if (!t && p.taskId) { t = { id: p.taskId, role: p.role || null, title: p.title || p.taskId, status: 'pending', findings: 0, ...(p.taskId === 'merge' ? { kind: 'merge' } : {}) }; run.tasks.push(t); }
+      if (t) { t.status = 'running'; t.startedAt = at; t.error = null; }
+      run.status = 'running'; break;
+    }
     case 'task.model': { const t = taskOf(run, p.taskId); if (t) { t.model = p.model; t.attempts = [...(t.attempts || []), { model: p.model, at, attempt: p.attempt }]; } break; }
     case 'task.step': { const t = taskOf(run, p.taskId); if (t && Array.isArray(p.steps)) t.transcript = [...(t.transcript || []), ...p.steps]; break; }
     case 'task.handoff': { const t = taskOf(run, p.taskId); if (t) { t.model = p.to; t.handoffs = [...(t.handoffs || []), { from: p.from, to: p.to, by: p.by, reason: p.reason, at }]; } break; }
