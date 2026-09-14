@@ -27,7 +27,8 @@ assert.match(fn, /rt-gateway/, 'renders a gateway row');
 // the bridge row says it comes with it. A stopped gateway is "not installed", never an error;
 // a bridge running on its own is a complete state (the light path), described, not warned.
 assert.match(fn, /Not installed/, 'a stopped gateway reads as not installed — the step to take');
-assert.match(fn, /Comes with the gateway/, 'a stopped bridge is not a second thing to install');
+assert.match(fn, /const showBridge = \(bridgeOn && !bridgeIsGateways\) \|\| \(gwOn && !bridgeOn\);/, 'a bridge the gateway runs gets no row of its own — one install, one row; the row appears only on the light path or when the gateway\'s bridge is missing');
+assert.match(fn, /bridgeIsGateways && counts/, 'the agents/skills count moves into the gateway row when the gateway runs the bridge');
 assert.match(fn, /brings the bridge with it/, 'the summary says where the bridge comes from');
 assert.match(fn, /The bridge runs on its own here/, 'bridge-up + gateway-off is a complete state, described as the light path');
 assert.doesNotMatch(fn, /gateway.*not running.*error|✕ gateway/i, 'a stopped gateway is never an error');

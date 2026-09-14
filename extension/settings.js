@@ -1935,40 +1935,43 @@ async function renderLocalRuntime({ recheck = false } = {}) {
 
   root.replaceChildren();
   const viaOf = (st) => (st?.managedBy === 'desktop' ? ' · via ChatPanel Desktop' : st?.managedBy === 'gateway' ? ' · via the gateway' : '');
+  const counts = `${Number.isFinite(agentCount) ? `${agentCount} agent${agentCount === 1 ? '' : 's'} ready` : ''}${Number.isFinite(skillCount) ? `${Number.isFinite(agentCount) ? ' · ' : ''}${skillCount} skill${skillCount === 1 ? '' : 's'} discoverable` : ''}`;
+  // The bridge is the gateway's when the gateway runs it — one row, not two. A Bridge row
+  // appears only when it is worth a look: it runs on its own (the light path), or the gateway
+  // is up and its bridge is not.
+  const bridgeIsGateways = bridgeOn && bridgeState.managedBy === 'gateway';
+  const showBridge = (bridgeOn && !bridgeIsGateways) || (gwOn && !bridgeOn);
   // Gateway — THE thing to install (0.6.92+ carries the bridge and starts it itself). One
-  // installer, one service; the bridge below comes with it.
+  // installer, one service, one row.
   root.appendChild(row({
     cls: 'rt-gateway', name: 'Gateway', on: gwOn,
     statusText: gwOn ? `Running · v${gatewayState.version}${viaOf(gatewayState)}` : 'Not installed',
     detail: gwOn
-      ? 'ChatPanel on this machine: local coding agents and skills (through the bridge it carries), PII redaction, model routing, voice, projects and teams.'
+      ? `ChatPanel on this machine: local coding agents and skills${bridgeIsGateways && counts ? ` (${counts})` : ''}, PII redaction, model routing, voice, projects and teams.`
       : 'One install for everything local: your coding agents (Claude Code, Codex, …) and skills through the bridge it carries, plus PII redaction, model routing, voice, projects and teams.',
     cta: gwOn ? '' : '<a href="#gateway" class="runtime-link">What the gateway adds →</a>',
     install: 'gateway',
     managedBy: gatewayState?.managedBy || '',
     next: !gwOn, // the one step; everything else follows from it
   }));
-  // Bridge — comes with the gateway; shown so a person can see it is there and who runs it.
-  root.appendChild(row({
-    cls: 'rt-bridge', name: 'Bridge', on: bridgeOn,
-    statusText: bridgeOn
-      ? `Running · v${bridgeState.version}${viaOf(bridgeState)}`
-      : gwOn ? 'Starting with the gateway…' : 'Comes with the gateway',
-    detail: bridgeOn
-      ? `Your local coding agents and skills.${Number.isFinite(agentCount) ? ` ${agentCount} agent${agentCount === 1 ? '' : 's'} ready` : ''}${Number.isFinite(skillCount) ? ` · ${skillCount} skill${skillCount === 1 ? '' : 's'} discoverable` : ''}.`
-      : gwOn
-        ? 'The gateway starts its bridge as it comes up. If this stays off, press Recheck; a gateway older than 0.6.92 does not carry one — update it.'
-        : 'Runs your local coding agents (Claude Code, Codex, …) and makes your skills discoverable. The gateway installs and starts it for you.',
-    install: 'bridge',
-    managedBy: bridgeState?.managedBy || '',
-    next: false,
-  }));
+  if (showBridge) {
+    root.appendChild(row({
+      cls: 'rt-bridge', name: 'Bridge', on: bridgeOn,
+      statusText: bridgeOn ? `Running · v${bridgeState.version}${viaOf(bridgeState)}` : 'Starting with the gateway…',
+      detail: bridgeOn
+        ? `Your local coding agents and skills${counts ? `. ${counts}` : ''}.`
+        : 'The gateway starts its bridge as it comes up. If this stays off, press Recheck; a gateway older than 0.6.92 does not carry one — update it.',
+      install: 'bridge',
+      managedBy: bridgeState?.managedBy || '',
+      next: false,
+    }));
+  }
 
   // The honest summary line.
   const note = document.createElement('p');
   note.className = 'muted tiny runtime-note';
   note.textContent = bridgeOn && gwOn
-    ? 'Both running — local traffic is routed through the gateway\'s privacy layer.'
+    ? (bridgeIsGateways ? 'Running — local traffic is routed through the gateway\'s privacy layer; the gateway runs the bridge for you.' : 'Both running — local traffic is routed through the gateway\'s privacy layer.')
     : gwOn
       ? 'The gateway is up; its bridge should follow in a moment.'
       : bridgeOn
