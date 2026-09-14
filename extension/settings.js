@@ -1795,7 +1795,10 @@ const INSTALL_COMMANDS = {
     { os: 'windows', label: 'Windows · PowerShell', cmd: 'irm https://dl.chatpanel.net/install.ps1 | iex' },
     // Two commands, not one `&&` line: Windows PowerShell 5.1 has no `&&`, so the Windows variant
     // joins with `;` and the unix one keeps `&&`; the host's OS sorts its variant first.
-    { os: 'windows', label: 'With Node · PowerShell', cmd: 'npm i -g @chatpanel/gateway; chatpanel-gateway --install' },
+    // …and by PATH-independent script path on Windows: a fresh npm global bin folder is often not on
+    // the current session's PATH (a shell opened before Node, nvm-windows, Volta), and the shim then
+    // reads "not recognized" right after a successful install.
+    { os: 'windows', label: 'With Node · PowerShell', cmd: 'npm i -g @chatpanel/gateway; node "$(npm root -g)/@chatpanel/gateway/bin/chatpanel-gateway.js" --install' },
     { os: 'unix', label: 'With Node · macOS / Linux', cmd: 'npm i -g @chatpanel/gateway && chatpanel-gateway --install' },
   ],
   bridge: [
