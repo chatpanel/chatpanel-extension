@@ -761,7 +761,7 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
       `Can't reach the ChatPanel Bridge at ${base}. Install ChatPanel (Settings → Harnesses → ChatPanel local) — the gateway brings the bridge — or start one with \`npx @chatpanel/bridge\`. (${e.message})`,
     );
   }
-  if (!res.ok) throw new Error(`Bridge: HTTP ${res.status} — ${await safeText(res)}`);
+  if (!res.ok) throw new Error(bridgeRefusal(res.status, await safeText(res)));
 
   // STOP IS AN INSTRUCTION, NOT A DROPPED SOCKET.
   //
@@ -860,7 +860,7 @@ export async function listBridgeModels(agent, settings) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent: bridgeAgent, options }),
   });
-  if (!res.ok) throw new Error(`Bridge: HTTP ${res.status} — ${await safeText(res)}`);
+  if (!res.ok) throw new Error(bridgeRefusal(res.status, await safeText(res)));
   const data = await res.json().catch(() => ({}));
   return Array.isArray(data.models) ? data.models : [];
 }
@@ -2414,9 +2414,19 @@ function openAiError(agent, base, status, body) {
   return `${agent.name}: HTTP ${status} — ${body}`;
 }
 
+/** A bridge refusal as the person should read it: its own sentence when it gave one, the status otherwise. */
+function bridgeRefusal(status, body) {
+  const b = String(body || '');
+  return /^[A-Z][^{}]{20,}$/s.test(b) && !/^HTTP|^\(no body\)/.test(b) ? b : `Bridge: HTTP ${status} — ${b}`;
+}
+
 async function safeText(res) {
   try {
     const t = await res.text();
+    // The bridge answers `{ error: { message } }`, and for the commonest first-run failure that
+    // message IS the help ("Claude Code isn't signed in … run `claude`, type `/login` …").
+    // Shown raw and cut at 300 it arrived as JSON debris with the instruction missing.
+    try { const j = JSON.parse(t); const m = String(j?.error?.message || j?.error || j?.message || '').trim(); if (m) return m.slice(0, 600); } catch { /* not JSON */ }
     return t.slice(0, 300);
   } catch {
     return '(no body)';
