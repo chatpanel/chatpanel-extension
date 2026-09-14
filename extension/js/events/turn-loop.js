@@ -420,7 +420,8 @@ export async function runTurnLoop({
     // Reconcile: an adapter that returned text without streaming it still gets it into `said`.
     const text = String(res?.text || '');
     if (text && !roundText) { if (said) said += ROUND_SEPARATOR; said += text; roundText = text; }
-    if (!res?.ok) { finish('error'); return result({ ok: false, error: res?.error || 'the model did not answer', aborted: !!res?.aborted, transcript: text.trim() ? [...convo, transcript.said(said)] : convo }); }
+    // `status` rides along when the adapter had one — a failover classifier reads it.
+    if (!res?.ok) { finish('error'); return result({ ok: false, error: res?.error || 'the model did not answer', ...(res?.status ? { status: res.status } : {}), aborted: !!res?.aborted, transcript: text.trim() ? [...convo, transcript.said(said)] : convo }); }
     if (res.aborted || signal?.aborted) { finish('aborted'); return closeWith(said, { aborted: true }); }
 
     const wanted = (Array.isArray(res.toolCalls) ? res.toolCalls : []).filter((c) => c && c.name).map((c) => ({ id: c.id, name: c.name, input: c.input ?? safeJson(c.arguments), arguments: c.arguments }));

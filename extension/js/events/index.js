@@ -186,6 +186,10 @@ export {
   createToolLoopGuard, roundSignature, stableToolCallKey, toolMadeProgress, isLoopableTool, blockedToolResult,
   OBSERVATION_TOOLS, INPUT_PROGRESS_TOOLS,
 } from './tool-loop-guard.js';
+// Failover — the attempt loop and the health ledger behind it; the host's router picks the
+// next model.
+export { classifyFailure, createModelHealth, COOLDOWN_MS, UNAVAILABLE_REASONS, normModelName } from './model-health.js';
+export { runWithFailover, failoverExhausted, FAILOVER_MAX_ATTEMPTS } from './failover.js';
 export {
   runTurnLoop, createCallRunner, roundCap, withToolSystem, describeCall as describeToolCall, stepResultText, addUsage, normalizeUsage,
   openAiTranscript, anthropicTranscript,

@@ -1564,48 +1564,16 @@ export function modelLabelOf(agent) {
  * different one would be worse than the error: they asked for that model for a reason.
  */
 async function withFailover(agent, settings, tools, turn, onEvent, signal, call, messages = []) {
-  const chose = agent?.routedVia || agent?.kind === 'router';
-  // KEEP TRYING, not once. The first replacement can decline too — a retired model is often
-  // retired at every provider, so one retry lands on the same wall and the turn dies anyway.
-  // Bounded, because a user waiting on an answer should not sit through eight failures.
-  // Enough to work through a realistic set of models rather than sampling it. A user with
-  // eight endpoints who watches five decline has been told nothing useful by stopping at
-  // four — but this is still bounded, because sitting through every failure is its own kind
-  // of broken.
-  const MAX_ATTEMPTS = 6;
-  const tried = [];
-  let current = agent;
-  let lastErr = null;
-
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    try {
-      const out = await call(current);
-      if (current?.id) (await import('./model-health.js')).markHealthy(current.id);
-      return out;
-    } catch (err) {
-      lastErr = err;
-      if (!chose || signal?.aborted) throw err;
-      const health = await import('./model-health.js');
-      // The model name goes with the report, so "this model fails everywhere" is learnable
-      // rather than rediscovered at each provider in turn.
-      const marked = health.markUnhealthy(current.id, err, current.model);
-      // A 400 or a bad key is OUR request being wrong, and every other model would refuse it
-      // too. Retrying would turn one clear error into four slow ones.
-      if (!marked) throw err;
-      tried.push(current.id);
-
-      // Do not ANNOUNCE a model we are not going to call. The loop used to pick and announce
-      // the next one and only then discover it was out of attempts, so the chain named a
-      // model that never ran and the error shown came from the hop before it — the two
-      // disagreed, and the one the user could see was the wrong one.
-      if (attempt === MAX_ATTEMPTS - 1) {
-        const e = new Error(
-          `${tried.length} models tried, none could answer. Last error — ${err.message}`,
-        );
-        e.cause = err;
-        throw e;
-      }
-
+  const [{ runWithFailover }, health] = await Promise.all([import('./events/failover.js'), import('./model-health.js')]);
+  return runWithFailover({
+    first: agent,
+    call,
+    chose: !!(agent?.routedVia || agent?.kind === 'router'),
+    health: health.modelHealth,
+    signal,
+    labelOf: (t) => t?.routedVia?.model || t?.name || t?.id,
+    // The host's router picks the replacement — like with like, excluding what failed.
+    next: async ({ current, tried, reason }) => {
       const [router, store] = await Promise.all([import('./model-router.js'), import('./store.js').catch(() => null)]);
       const next = await router.routeForTurn(settings, (t) => store?.resolveTarget?.(t, settings), {
         capabilities: (tools?.specs || []).length ? ['tools'] : [],
@@ -1614,8 +1582,7 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call,
         // THE SECOND HOP IS THE SAME TURN. Without this the re-route saw no request at all,
         // so every replacement was chosen as though the turn were a generic one: the axis the
         // first hop was routed on (speed for a greeting, quality for exact work) was
-        // recomputed from nothing and came back 'balanced'. A chain that forgets what it is
-        // answering will not degrade in the direction it started in.
+        // recomputed from nothing and came back 'balanced'.
         request: { messages },
         // Replace like with like — and pass WHY it failed, because "same model elsewhere" is
         // the best replacement for a provider saying no and the worst one for a model that
@@ -1624,34 +1591,15 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call,
           model: current.model,
           capabilities: current.routedVia?.capabilities || [],
           quality: current.routedVia?.quality,
-          reason: marked.reason,
+          reason,
           // How this model is REACHED, so a request is not handed from an API model to a CLI
           // agent that will go and do something else entirely.
           classUsed: current.routedVia?.classUsed || (current.kind === 'bridge' ? 'A' : 'C'),
         },
       });
-      if (!next?.target) {
-        // Genuinely out of options. Say that, rather than showing the last provider's error
-        // as though it were the whole story — "Groq says no" and "every model you have said
-        // no" are different problems with different fixes.
-        const e = new Error(
-          `${tried.length} model${tried.length === 1 ? '' : 's'} tried, none could answer. `
-          + `Last error — ${err.message}`,
-        );
-        e.cause = err;
-        throw e;
-      }
-
+      if (!next?.target) return null;
       const to = next.decision.model.label || next.decision.model.id;
-      turn.emit('automation.fired', {
-        ruleId: 'router:failover', classUsed: 'R',
-        from: current.routedVia?.model || current.name || current.id,
-        to, reason: marked.reason,
-      });
-      // Tell the panel, because an answer arriving from a different model than the byline
-      // promised is exactly the kind of silent substitution this codebase keeps removing.
-      onEvent?.({ type: 'routed', model: to, reasons: [`${current.name || current.id} declined (${marked.reason})`, ...next.decision.reasons] });
-      current = {
+      return {
         ...agent,
         ...next.target,
         routedVia: {
@@ -1664,9 +1612,14 @@ async function withFailover(agent, settings, tools, turn, onEvent, signal, call,
           quality: next.decision.model.quality,
         },
       };
-    }
-  }
-  throw lastErr;
+    },
+    onHop: ({ from, to, reason, reasons }) => {
+      turn.emit('automation.fired', { ruleId: 'router:failover', classUsed: 'R', from, to, reason });
+      // Tell the panel, because an answer arriving from a different model than the byline
+      // promised is exactly the kind of silent substitution this codebase keeps removing.
+      onEvent?.({ type: 'routed', model: to, reasons });
+    },
+  });
 }
 
 /**

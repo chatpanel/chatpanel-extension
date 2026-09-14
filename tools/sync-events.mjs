@@ -30,7 +30,7 @@ const FILES = [
   'observability.js', 'flowchart.js', 'memory.js', 'note-actions.js', 'note-mentions.js', 'note-links.js', 'note-graph.js', 'cowriter-router.js', 'cowriter-writer.js', 'web-search.js', 'note-research.js', 'note-plan.js', 'cowriter.js', 'attribution.js', 'voice-intents.js', 'entity.js', 'curate.js', 'knowledge.js', 'knowledge-derive.js', 'distance.js', 'redaction-tokens.js', 'subject-kinds.js', 'subject-name.js', 'synthesis.js', 'promotion.js', 'schedule.js', 'vault.js', 'view.js', 'widget.js', 'tags.js', 'titles.js', 'weather.js',
   // The tool round: what a tool does, how a round runs, what a result costs, how a tool
   // is found, and a workflow written down once.
-  'tool-traits.js', 'tool-round.js', 'tool-loop-guard.js', 'turn-loop.js', 'tool-result.js', 'tool-discovery.js', 'tool-schema.js', 'recipe.js',
+  'tool-traits.js', 'tool-round.js', 'tool-loop-guard.js', 'turn-loop.js', 'model-health.js', 'failover.js', 'tool-result.js', 'tool-discovery.js', 'tool-schema.js', 'recipe.js',
   // The registry, the one-tool-per-group dispatcher, and the two tools every client with a
   // loop offers — so the desktop's `find` and `web_search` are this `find` and `web_search`.
   'toolset.js', 'tool-dispatch.js', 'find-tool.js', 'web-search-tool.js', 'mcp-dispatch.js', 'recipe-tool.js',
