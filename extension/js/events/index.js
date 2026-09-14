@@ -214,6 +214,8 @@ export { canonical, sha256, makeEntry, verifyChain, attest, verifyAttested, summ
 export { ENGINE_KINDS as ENGINE_SPEC_KINDS, ROUTE_PREFERS, normalizePolicy, normalizeEngineSpec, validateEngineSpec, engineRef, engineKeyOf, describeEngine, tierOf } from './engine.js';
 export { AGENT_ID_RE, APPLIES_TO, EGRESS_CLASSES, ASSISTANT_ID, AgentError, validateAgent, normalizeAgent, defineAgent, assistantAgent, engineOf, describeAgent, slugAgentId, resolveTeam, STARTER_AGENTS, starterAgents, blankAgent, agentFromForm, poolFor } from './agent.js';
 export { LEDGER_VERSION, LEDGER_ENTRY_KINDS, DECLINE_REASONS, WITHDRAW_AFTER, ledgerKey, normalizeCall, makeLedgerEntry, summarizeEngine } from './model-ledger.js';
+// Recruiting (F8 §12.2.4, pillars §13.4): the pool applies at once; an (agent, engine) pair is recruited; the evaluator is one optional structured call.
+export { RECRUIT_SCHEMA, MIN_FIT, engineRow, engineRows, needForJob, routeFor, engineWorth, applications as jobApplications, evaluatorPrompt, parseEvaluation, decide as decideRecruit, proposalFromNeeds, proposalToAgent, carveBudget, recruitEvents, recruitJob } from './recruit.js';
 export { DEFAULT_MIN_CALLS, cardOverride, applyCard } from './model-candidates.js';
 export { SCM_KINDS, validateConnection, normalizeConnection, parseRemote, connectionFor, branchFor, worktreeDirFor, credentialEnv, describeConnection, blankConnection, connectionFromForm } from './scm-connection.js';
 export { messagesFor, mergeTranscript, clipTranscript, clipMessage, newSteps, continuationNote, createControl, STEP_MAX_CHARS, TASK_TRANSCRIPT_MAX_CHARS } from './team-task.js';

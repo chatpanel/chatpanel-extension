@@ -244,6 +244,7 @@ export function agentFromForm(form) {
     ...(f.workdir ? { workdir: f.workdir } : {}),
     createdBy: f.createdBy || 'person',
     enabled: f.enabled !== false,
+    ...(f.origin && isRecord(f.origin) ? { origin: f.origin } : {}),
     ...(f.createdAt ? { createdAt: f.createdAt } : {}),
   };
   const v = validateAgent(agent);

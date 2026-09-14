@@ -204,9 +204,33 @@ export function summarizeEngine(entries, { minCalls = DEFAULT_MIN_CALLS, now = D
   };
 }
 
-// `cardOverride` and `applyCard` — the card over the name-based guess — live in
-// model-candidates.js beside `applyOverride`, the seam they feed; this module stays
-// importable by a store that has no router (the gateway vendors it with scorecard.js only).
+/**
+ * The override a card yields for model-candidates.js `applyOverride` — only the fields it
+ * has enough history for. `quality` is the mean rating (for `jobKind` when the card has
+ * ratings for it, else overall); `latencyMs` the observed p50 to first token (total when no
+ * ttft was recorded); `costPer1k` from the price when one is known; `available: false`
+ * only while it is declining right now. Returns `{ override, observed }`.
+ *
+ * Lives here, beside the card it reads, so recruit.js and a store without a router can use
+ * it; `applyCard` (the override over the guess) stays in model-candidates.js beside
+ * `applyOverride`, the seam it feeds.
+ */
+export function cardOverride(card, { minCalls = DEFAULT_MIN_CALLS, jobKind = null } = {}) {
+  const override = {}; const observed = [];
+  if (!card) return { override, observed };
+  const q = (jobKind && card.quality?.byJobKind?.[jobKind]?.count >= minCalls) ? card.quality.byJobKind[jobKind] : card.quality?.overall;
+  if (q && q.count >= minCalls && q.avg != null) { override.quality = q.avg; observed.push('quality'); }
+  const lat = card.latency?.ttft?.n >= minCalls ? card.latency.ttft.p50 : card.latency?.total?.n >= minCalls ? card.latency.total.p50 : null;
+  if (lat != null) { override.latencyMs = lat; observed.push('latencyMs'); }
+  // Six places, not three: a per-1k price is often 0.0004, and rounding it to 0 made a paid model read as free.
+  if (card.cost?.per1kIn != null && card.cost?.per1kOut != null) { override.costPer1k = Math.round(((card.cost.per1kIn + card.cost.per1kOut) / 2) * 1e6) / 1e6; observed.push('costPer1k'); }
+  if (card.availability?.decliningNow) { override.available = false; observed.push('available'); }
+  return { override, observed };
+}
+
+// `applyCard` — the card over the name-based guess — lives in model-candidates.js beside
+// `applyOverride`, the seam it feeds; this module stays importable by a store that has no
+// router (the gateway vendors it with scorecard.js only).
 // Agent scores normalised by engine (§13.3) live beside the card they adjust: scorecard.js
 // `adjustSummary` and `fit(job, type, summary, { qualityOf })`.
 export { adjustSummary } from './scorecard.js';

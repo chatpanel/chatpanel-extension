@@ -104,12 +104,13 @@ export function defineJob(j) { return Object.freeze(normalizeJob(j)); }
 export function canTransition(from, to) { return (NEXT[from] || []).includes(to); }
 
 /** Applications are computed, not asked for: every eligible type in the pool applies at once. */
-export function applyAll(job, pool, fitFn, { cards = {} } = {}) {
-  const now = Date.now();
+export function applyAll(job, pool, fitFn, { cards = {}, now = Date.now() } = {}) {
+  // A fit function may also say which ENGINE the agent would run on (recruit.js does); an
+  // application without one is not recruitable right now and sorts after those that are.
   return (pool || [])
     .filter((a) => a && a.enabled !== false && (a.appliesTo || ['jobs']).includes('jobs'))
-    .map((a) => { const f = fitFn(job, a, cards[a.id] || null); return { agentId: a.id, fit: f.score, reasons: f.reasons, pitch: '', at: now }; })
-    .sort((x, y) => y.fit - x.fit)
+    .map((a) => { const f = fitFn(job, a, cards[a.id] || null); return { agentId: a.id, ...(f.engine ? { engine: f.engine } : {}), fit: f.score, reasons: f.reasons, pitch: '', at: now }; })
+    .sort((x, y) => (!!y.engine - !!x.engine) || (y.fit - x.fit))
     .slice(0, MAX_APPLICATIONS);
 }
 

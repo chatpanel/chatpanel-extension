@@ -270,28 +270,10 @@ export function applyOverride(inferred, override = {}) {
 
 // ── The engine card over the guess (model-ledger.js, architecture-pillars.md §13.2) ──────
 
-import { DEFAULT_MIN_CALLS } from './model-ledger.js';
+import { DEFAULT_MIN_CALLS, cardOverride } from './model-ledger.js';
 export { DEFAULT_MIN_CALLS };
-const r3 = (v) => (v == null ? null : Math.round(v * 1000) / 1000);
 
-/**
- * The override a card yields for model-candidates.js `applyOverride` — only the fields it
- * has enough history for. `quality` is the mean rating (for `jobKind` when the card has
- * ratings for it, else overall); `latencyMs` the observed p50 to first token (total when no
- * ttft was recorded); `costPer1k` from the price when one is known; `available: false`
- * only while it is declining right now. Returns `{ override, observed }`.
- */
-export function cardOverride(card, { minCalls = DEFAULT_MIN_CALLS, jobKind = null } = {}) {
-  const override = {}; const observed = [];
-  if (!card) return { override, observed };
-  const q = (jobKind && card.quality?.byJobKind?.[jobKind]?.count >= minCalls) ? card.quality.byJobKind[jobKind] : card.quality?.overall;
-  if (q && q.count >= minCalls && q.avg != null) { override.quality = q.avg; observed.push('quality'); }
-  const lat = card.latency?.ttft?.n >= minCalls ? card.latency.ttft.p50 : card.latency?.total?.n >= minCalls ? card.latency.total.p50 : null;
-  if (lat != null) { override.latencyMs = lat; observed.push('latencyMs'); }
-  if (card.cost?.per1kIn != null && card.cost?.per1kOut != null) { override.costPer1k = r3((card.cost.per1kIn + card.cost.per1kOut) / 2); observed.push('costPer1k'); }
-  if (card.availability?.decliningNow) { override.available = false; observed.push('available'); }
-  return { override, observed };
-}
+export { cardOverride } from './model-ledger.js';
 
 /**
  * A router model with its card applied: `applyOverride` with what the card observed, then
