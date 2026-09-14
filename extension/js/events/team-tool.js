@@ -34,10 +34,23 @@ function catalogue(teams) {
   return `Saved teams: ${list.map((t) => `${t.name} (${(t.roles || []).map((r) => r.id).join(', ')})${t.description ? ` — ${t.description}` : ''}`).join('; ')}.`;
 }
 
+/**
+ * How long one call of the tool may take: the longest budget among the teams plus the merge,
+ * never under two minutes. A relay between a CLI agent and this tool (the bridge's MCP
+ * server) times a call by this; without it a 300 s team hit the relay's 120 s default,
+ * Claude Code was told "tool call timed out" and ran the team AGAIN while the first run was
+ * still working.
+ */
+export function teamToolTimeoutMs(teams) {
+  const longest = Math.max(0, ...(teams || []).map((t) => Number(t?.budget?.ms) || 0));
+  return Math.max(120_000, (longest || 10 * 60_000) + 60_000);
+}
+
 export function teamToolSpec(teams) {
   return {
     name: TEAM_TOOL_NAME,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    timeoutMs: teamToolTimeoutMs(teams),
     description:
       `Saved agent teams — several roles working a request in parallel, merged into one answer. ${catalogue(teams)} `
       + 'Actions: {"action":"run","name":"<team>","request":"<what to do>"} runs one (streams; may take a while); '

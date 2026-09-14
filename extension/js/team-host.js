@@ -24,6 +24,7 @@ import { normalizeGatewayUrl, getGatewayToken, handshakeGatewayToken } from './g
 
 const FLUSH_EVERY_MS = 400;
 const TIMEOUT_MS = 8000;
+const SYNC_GIVE_UP_AFTER = 8; // consecutive failed appends before the record is left behind
 
 function gatewayBase(settings) {
   return normalizeGatewayUrl(settings?.gatewayUrl || 'http://127.0.0.1:4320');
@@ -238,12 +239,25 @@ export function createRunSync({ store, runId, team, request, onStopRequested = n
   let timer = null;
   let dead = false;
   let stopTail = null;
-  const flush = async () => {
+  let failures = 0;
+  let inflight = Promise.resolve();
+  // One append at a time, in order — the immediate flush of a run.done used to race the
+  // timer's flush and could land before the events it followed. A failed append (the gateway's
+  // 8 s timeout, a restart) puts the batch back at the FRONT and tries again on the next
+  // flush; only a run of failures gives the record up. One miss used to end the sync for the
+  // rest of the run, and the store showed "running" forever for a run that had finished.
+  const flush = () => {
     timer = null;
-    if (dead || !queue.length) return;
-    const batch = queue; queue = [];
-    const res = await store.append(runId, batch);
-    if (!res.ok) dead = true;
+    inflight = inflight.then(async () => {
+      if (dead || !queue.length) return;
+      const batch = queue; queue = [];
+      const res = await store.append(runId, batch);
+      if (res.ok) { failures = 0; return; }
+      queue = [...batch, ...queue];
+      if (++failures >= SYNC_GIVE_UP_AFTER) { dead = true; return; }
+      if (!timer) timer = setTimeout(flush, Math.min(FLUSH_EVERY_MS * 2 ** failures, 10_000));
+    });
+    return inflight;
   };
   return {
     async start() {
@@ -262,7 +276,11 @@ export function createRunSync({ store, runId, team, request, onStopRequested = n
       if (type === 'run.done' || type === 'task.waiting' || type === 'run.waiting') { flush(); return; }
       if (!timer) timer = setTimeout(flush, FLUSH_EVERY_MS);
     },
-    async end() { if (timer) clearTimeout(timer); await flush(); stopTail?.(); },
+    async end() {
+      // The way out: whatever is queued (the run's end, above all) gets its retries now.
+      for (let i = 0; i < 3 && !dead; i++) { if (timer) clearTimeout(timer); await flush(); if (!queue.length) break; }
+      stopTail?.();
+    },
     get synced() { return !dead; },
   };
 }

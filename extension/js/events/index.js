@@ -220,7 +220,7 @@ export { DEFAULT_MIN_CALLS, cardOverride, applyCard } from './model-candidates.j
 export { SCM_KINDS, validateConnection, normalizeConnection, parseRemote, connectionFor, branchFor, worktreeDirFor, credentialEnv, describeConnection, blankConnection, connectionFromForm } from './scm-connection.js';
 export { messagesFor, mergeTranscript, clipTranscript, clipMessage, newSteps, continuationNote, createControl, STEP_MAX_CHARS, TASK_TRANSCRIPT_MAX_CHARS } from './team-task.js';
 export { runTeam, resumeTeam, dryRunTeam, isModelUnavailable, TeamRunError, RUN_STATUSES } from './team-run.js';
-export { teamToolProvider, teamToolSpec, describeTeamForApproval, TEAM_TOOL_NAME } from './team-tool.js';
+export { teamToolProvider, teamToolSpec, teamToolTimeoutMs, describeTeamForApproval, TEAM_TOOL_NAME } from './team-tool.js';
 export { teamLine, teamLanes } from './team-trail.js';
 export { mcpDispatchProvider, MCP_TOOL_NAME } from './mcp-dispatch.js';
 export { createManifest, ManifestError, SOURCES } from './manifest.js';

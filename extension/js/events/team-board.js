@@ -82,7 +82,9 @@ export function parseFindings(text, { role, taskId } = {}) {
 // ── threads, posts, asks ────────────────────────────────────────────────────────────────
 
 export const THREAD_KINDS = Object.freeze(['task', 'ask', 'discussion', 'proposal']);
-export const THREAD_STATUSES = Object.freeze(['open', 'waiting', 'resolved', 'approved', 'rejected']);
+// `failed`: the task behind the thread ended without an answer (every model on the roster
+// tried, or a hard error) — not `resolved`, which read as "done" on the board.
+export const THREAD_STATUSES = Object.freeze(['open', 'waiting', 'resolved', 'failed', 'approved', 'rejected']);
 export const POST_KINDS = Object.freeze(['finding', 'note', 'question', 'answer', 'draft', 'decision']);
 export const POST_STATUSES = Object.freeze(['open', 'proposed', 'approved', 'rejected']);
 export const ASK_TYPES = Object.freeze(['info', 'budget', 'permission', 'direction']);

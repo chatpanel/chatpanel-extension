@@ -163,6 +163,36 @@ function fakeStore() {
   assert.equal(sync.synced, false);
 }
 
+// createRunSync: ONE failed append does not end the record. The batch goes back in front,
+// the next flush retries it, and the run's end lands — in order — once the store answers
+// again. (A run that had finished sat "running" on the board because of a single miss.)
+{
+  const got = [];
+  let fail = 2;
+  const flaky = { create: async () => ({ ok: true }), append: async (_id, batch) => { if (fail-- > 0) return { ok: false, error: 'timeout' }; got.push(...batch.map((e) => e.type)); return { ok: true }; }, tail: () => () => {} };
+  const sync = createRunSync({ store: flaky, runId: 'r', team: 't', request: 'q' });
+  assert.equal(await sync.start(), true);
+  sync.push('run.started', {});
+  sync.push('task.started', {});
+  sync.push('run.done', {}); // flushes at once — fails (1)
+  await new Promise((r) => setTimeout(r, 30));
+  sync.push('after', {});
+  await sync.end(); // retries: fails (2), then lands everything, in order
+  assert.deepEqual(got, ['run.started', 'task.started', 'run.done', 'after'], 'every event, in order, after two misses');
+  assert.equal(sync.synced, true);
+}
+// …but a store that never answers is given up on, not retried forever.
+{
+  let tries = 0;
+  const down = { create: async () => ({ ok: true }), append: async () => { tries++; return { ok: false, error: 'down' }; }, tail: () => () => {} };
+  const sync = createRunSync({ store: down, runId: 'r', team: 't', request: 'q' });
+  await sync.start();
+  sync.push('run.done', {});
+  await sync.end();
+  assert.ok(tries >= 3, 'retried on the way out');
+  assert.ok(tries < 20, 'and stopped');
+}
+
 console.log('team-host: ok');
 
 // A1: a role that stands for an agent is filled from the pool on the way to a run — the

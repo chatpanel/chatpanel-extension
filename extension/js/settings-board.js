@@ -9,6 +9,12 @@
 //
 // Deferred from settings.js (its first paint is at ceiling); polls while on screen and
 // disposes its poll on re-render, the way settings-teams.js does.
+//
+// The poll redraws the thread pane from scratch, and a redraw used to take the reply box
+// with it — half a sentence typed, gone at the next tick. So a draft lives in state, keyed
+// by the box it belongs to, and comes back into the rebuilt box with its caret; and while a
+// box in this pane holds focus with text in it, the poll leaves the pane alone (the thread
+// list on the left still moves) and the next tick after the person leaves it catches up.
 
 import { runStore, answerAsk, handoffTask, resumeRunHere, rosterFor } from './team-host.js';
 import { renderMarkdown } from './markdown.js';
@@ -36,7 +42,7 @@ function el(tag, attrs = {}, ...children) {
 }
 const chip = (t) => {
   const s = t.status;
-  const cls = s === 'waiting' ? 'warn' : s === 'approved' || s === 'resolved' ? 'ok' : s === 'rejected' ? 'err' : 'on';
+  const cls = s === 'waiting' ? 'warn' : s === 'approved' || s === 'resolved' ? 'ok' : s === 'rejected' || s === 'failed' ? 'err' : 'on';
   return el('span', { class: `bchip ${cls}`, text: s === 'open' && t.kind === 'proposal' ? 'proposed' : s });
 };
 
@@ -46,7 +52,25 @@ export function renderBoard(root, { settings, license = null }) {
   root.innerHTML = '';
   const store = runStore(settings);
   const roster = rosterFor(settings, license, { like: settings.activeAgentId || '' });
-  const state = { runs: {}, sel: null, reply: null, loaded: new Set(), err: '' };
+  const state = { runs: {}, sel: null, reply: null, loaded: new Set(), err: '', drafts: {} };
+
+  // A box the person may be typing in: its text survives a redraw, and so does its focus.
+  let boxes = []; // the draft boxes of the current thread pane
+  const draftBox = (key, attrs) => {
+    const ta = el('textarea', attrs);
+    ta._draftKey = key;
+    ta.value = state.drafts[key] || '';
+    ta.addEventListener('input', () => { state.drafts[key] = ta.value; });
+    boxes.push(ta);
+    return ta;
+  };
+  const focusedBox = () => { const a = document.activeElement; return a && a._draftKey ? a : null; };
+  const restoreFocus = (was) => {
+    const again = was && boxes.find((t) => t._draftKey === was._draftKey);
+    if (!again) return;
+    again.focus?.();
+    try { again.setSelectionRange?.(was.selectionStart ?? again.value.length, was.selectionEnd ?? again.value.length); } catch { /* not focusable here */ }
+  };
   let alive = true;
 
   const layout = el('div', { class: 'board' });
@@ -62,8 +86,8 @@ export function renderBoard(root, { settings, license = null }) {
   const refresh = async () => {
     const r = await store.list({ limit: 30 });
     if (!alive) return;
-    if (!r.ok) { state.err = r.error; draw(); return; }
-    state.err = '';
+    if (!r.ok) { state.err = `gateway not reachable: ${r.error}`; draw(); return; }
+    if (/^gateway not reachable/.test(state.err)) state.err = '';
     const list = r.data?.runs || [];
     const want = list.filter((x) => LIVE.has(x.status) || x.waiting > 0 || !state.loaded.has(x.id)).map((x) => x.id);
     if (state.sel?.runId && !want.includes(state.sel.runId)) want.push(state.sel.runId);
@@ -83,17 +107,18 @@ export function renderBoard(root, { settings, license = null }) {
 
   const row = (t, pinned) => {
     const on = state.sel?.threadId === t.id;
-    const b = el('button', { class: `bth${on ? ' on' : ''}${pinned ? ' pinned' : ''}`, type: 'button', onclick: () => { state.sel = { runId: t.runId, threadId: t.id }; state.reply = null; draw(); } },
+    const b = el('button', { class: `bth${on ? ' on' : ''}${pinned ? ' pinned' : ''}`, type: 'button', onclick: () => { state.sel = { runId: t.runId, threadId: t.id }; state.reply = null; state.err = ''; draw({ force: true }); } },
       el('span', { class: 'bth-k', text: ICON[t.kind] || '·' }),
       el('span', {}, el('div', { class: 'bth-t', text: t.title }), el('div', { class: 'bth-m' }, chip(t), ` ${t.kind}${t.lastBy && t.lastBy !== 'runner' ? ` · last ${t.lastBy}` : ''} · ${ago(t.lastAt || t.at)}${t.posts ? ` · ${t.posts}` : ''}`)),
     );
     return b;
   };
 
-  const draw = () => {
+  const draw = (opts = {}) => {
     const { waiting, groups } = threads();
     const sub = root.querySelector('#board-sub');
-    if (sub) sub.textContent = state.err ? '— gateway not reachable' : waiting.length ? `${waiting.length} waiting on you` : `${groups.length} run${groups.length === 1 ? '' : 's'}`;
+    // An error is said as it is — a resume that found no checkpoint is not "gateway not reachable".
+    if (sub) sub.textContent = state.err ? `— ${state.err}` : waiting.length ? `${waiting.length} waiting on you` : `${groups.length} run${groups.length === 1 ? '' : 's'}`;
     left.innerHTML = '';
     if (!state.sel && (waiting[0] || groups[0]?.threads[0])) { const t = waiting[0] || groups[0].threads[0]; state.sel = { runId: t.runId, threadId: t.id }; }
     if (waiting.length) left.append(el('div', { class: 'bgrp', text: 'Waiting on you' }));
@@ -103,10 +128,16 @@ export function renderBoard(root, { settings, license = null }) {
       for (const t of g.threads) left.append(row(t, false));
     }
     if (!waiting.length && !groups.length) left.append(el('div', { class: 'muted tiny', style: 'padding:12px', text: state.err ? `The gateway did not answer: ${state.err} (the board needs gateway 0.6.81+).` : 'No boards yet. Run a team from any chat (/its-name) and its threads appear here as it works.' }));
+    // Mid-draft in this thread: the poll leaves the pane alone. (A deliberate redraw — Reply,
+    // cancel, a post — calls drawThread itself and restores the draft into the new box.)
+    const typing = focusedBox();
+    if (typing && typing.value && !opts.force) return;
     drawThread();
   };
 
   const drawThread = () => {
+    const was = focusedBox();
+    boxes = [];
     right.innerHTML = '';
     const run = state.sel ? state.runs[state.sel.runId] : null;
     const thread = run?.threads?.threads.find((t) => t.id === state.sel.threadId);
@@ -127,7 +158,7 @@ export function renderBoard(root, { settings, license = null }) {
             const sel = el('select', { class: 'blane-ho', title: 'Hand this task to another model — it continues from where it is' });
             sel.append(el('option', { value: '', text: 'hand off…' }));
             for (const c of roster.filter((x) => x.usable && x.id !== t.model)) sel.append(el('option', { value: c.id, text: c.kind === 'bridge' ? `${c.name} (agent)` : c.name }));
-            sel.addEventListener('change', async () => { const m = sel.value; if (!m) return; const r = await handoffTask(settings, { runId: run.id, taskId: t.id, model: m, reason: 'handed off from the board' }); if (!r.ok) state.err = r.error; refresh(); });
+            sel.addEventListener('change', async () => { const m = sel.value; if (!m) return; const r = await handoffTask(settings, { runId: run.id, taskId: t.id, model: m, reason: 'handed off from the board' }); if (!r.ok) state.err = `hand-off: ${r.error}`; refresh(); });
             lane.append(sel);
           }
           return lane;
@@ -140,7 +171,7 @@ export function renderBoard(root, { settings, license = null }) {
         (run.resumable || (live && (run.quietMs || 0) > 60_000)) ? el('button', { class: 'btn primary', type: 'button', text: run.resumable ? 'Resume here' : `Resume here (quiet ${Math.round((run.quietMs || 0) / 1000)} s)`, title: 'Continue this run in this browser from its record — nothing already done is redone', onclick: async () => {
           const [{ streamChat }, { buildTurnTools }] = await Promise.all([import('./providers.js'), import('./turn-tools.js')]);
           const r = await resumeRunHere(settings, license, { runId: run.id, streamChat, buildTurnTools, bridgeUrl: settings.bridgeUrl || '', bridgeAvailable: false });
-          if (!r.ok) state.err = r.error; refresh();
+          if (!r.ok) state.err = `resume: ${r.error}`; refresh();
         } }) : null,
       ),
     ));
@@ -157,8 +188,8 @@ export function renderBoard(root, { settings, license = null }) {
         ask.append(el('div', {}, el('b', { text: 'What should it do? ' }), el('span', { class: 'muted tiny', text: 'The member waits up to 10 min, then the run checkpoints and resumes when you answer.' })));
         const send = async (text) => { if (!text.trim()) return; const r = await answerAsk(settings, { runId: run.id, threadId: thread.id, text: text.trim() }); if (!r.ok) ask.append(el('div', { class: 'status err', text: r.error })); else refresh(); };
         ask.append(el('div', { class: 'bask-opts' }, ...(p.ask.options || []).map((o) => el('button', { class: 'btn', type: 'button', text: o, onclick: () => send(o) }))));
-        const ta = el('textarea', { rows: '2', placeholder: 'Or type the answer' });
-        ask.append(ta, el('div', { class: 'bacts' }, el('button', { class: 'btn primary', type: 'button', text: 'Answer', onclick: () => send(ta.value) }), el('span', { class: 'muted tiny', text: 'Posts as you; the member resumes with it.' })));
+        const ta = draftBox(`ask:${p.id}`, { rows: '2', placeholder: 'Or type the answer' });
+        ask.append(ta, el('div', { class: 'bacts' }, el('button', { class: 'btn primary', type: 'button', text: 'Answer', onclick: () => { delete state.drafts[ta._draftKey]; send(ta.value); } }), el('span', { class: 'muted tiny', text: 'Posts as you; the member resumes with it.' })));
         body.append(ask);
       }
       const acts = el('div', { class: 'bacts' });
@@ -176,17 +207,19 @@ export function renderBoard(root, { settings, license = null }) {
     right.append(list);
     const compose = el('div', { class: 'bcompose' });
     if (state.reply) compose.append(el('div', { class: 'muted tiny' }, 'Replying to ', el('b', { text: state.reply.by }), ' · ', el('button', { class: 'btn ghost', type: 'button', text: 'cancel', onclick: () => { state.reply = null; drawThread(); } })));
-    const ta = el('textarea', { rows: '2', placeholder: 'Reply in this thread — as a member. “decide: …” settles it.' });
+    const ta = draftBox(`reply:${thread.id}`, { rows: '2', placeholder: 'Reply in this thread — as a member. “decide: …” settles it.' });
     const send = async () => {
       const text = ta.value.trim(); if (!text) return;
       const decision = /^decide:\s*/i.test(text);
       const r = await store.post(run.id, { threadId: thread.id, text: text.replace(/^decide:\s*/i, ''), kind: decision ? 'decision' : 'note', replyTo: state.reply?.id || null });
       if (!r.ok) { compose.append(el('div', { class: 'status err', text: r.error })); return; }
-      state.reply = null; await refresh();
+      delete state.drafts[ta._draftKey];
+      state.reply = null; ta.value = ''; await refresh();
     };
     ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); });
     compose.append(ta, el('div', { class: 'bacts' }, el('button', { class: 'btn primary', type: 'button', text: 'Post', onclick: send }), el('span', { class: 'muted tiny', text: 'On the gateway\'s run store: the desktop shows the same threads, and a member\'s next wave reads what you post.' })));
     right.append(compose);
+    restoreFocus(was);
   };
 
   refresh();

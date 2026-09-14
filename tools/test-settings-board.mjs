@@ -8,13 +8,15 @@ class El {
   append(...kids) { for (const k of kids) if (k != null) this.children.push(typeof k === 'string' ? { text: k } : k); }
   addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn); }
   click() { for (const fn of this.listeners.click || []) fn({}); }
+  focus() { document.activeElement = this; }
+  type(text) { this.value = text; for (const fn of this.listeners.input || []) fn({}); }
   *walk() { yield this; for (const c of this.children) if (c instanceof El) yield* c.walk(); }
   find(pred) { for (const n of this.walk()) if (pred(n)) return n; return null; }
   all(pred) { return [...this.walk()].filter(pred); }
   querySelector(sel) { return this.find((n) => (sel.startsWith('#') ? n.id === sel.slice(1) : n.className.split(/\s+/).includes(sel.slice(1)))); }
 }
 Object.defineProperty(El.prototype, 'innerHTML', { get() { return this._html || ''; }, set(v) { this._html = v; if (v === '') this.children = []; } });
-globalThis.document = { createElement: (t) => new El(t) };
+globalThis.document = { createElement: (t) => new El(t), activeElement: null };
 globalThis.chrome = { storage: { onChanged: { addListener() {} }, local: { get: async () => ({}), set: async () => {} } } };
 
 // The gateway, as the board reads it.
@@ -75,5 +77,29 @@ btn(/^Approve$/).click();
 await new Promise((r) => setTimeout(r, 30));
 const decided = calls.find(([m, u]) => m === 'POST' && u.endsWith('/decide'));
 assert.deepEqual([decided[2].postId, decided[2].status], ['d1', 'approved']);
+
+// A DRAFT SURVIVES THE POLL. Half a reply typed, then the store refreshes (Approve above did
+// exactly that): the box the person is typing in is left alone — same element, same text.
+const box = () => root.find((n) => n.tagName === 'TEXTAREA' && /Reply in this thread/.test(n.attrs.placeholder));
+const ta1 = box();
+ta1.focus(); ta1.type('half a sentence');
+btn(/^Reject$/).click();
+await new Promise((r) => setTimeout(r, 30));
+assert.equal(box(), ta1, 'a poll does not rebuild the pane while a draft has focus');
+assert.equal(ta1.value, 'half a sentence');
+// A deliberate redraw (Reply to a post) rebuilds the pane — and the draft comes back into the
+// new box, focused.
+btn(/^Reply$/).click();
+const ta2 = box();
+assert.notEqual(ta2, ta1, 'Reply redraws the pane');
+assert.equal(ta2.value, 'half a sentence', 'the draft is restored into the new box');
+assert.equal(document.activeElement, ta2, 'and keeps focus');
+// Posting clears it.
+btn(/^Post$/).click();
+await new Promise((r) => setTimeout(r, 30));
+const posted = calls.find(([m, u]) => m === 'POST' && u.endsWith('/post'));
+assert.equal(posted[2].text, 'half a sentence');
+assert.equal(posted[2].replyTo, 'd1');
+assert.equal(box().value, '', 'posted: the box is empty again');
 dispose();
 console.log('settings-board: ok');

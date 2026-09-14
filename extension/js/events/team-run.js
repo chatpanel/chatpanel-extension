@@ -66,7 +66,11 @@ export function isModelUnavailable(error) {
   // Also: a relayed agent that exited, a provider that closed the stream, and a turn that
   // came back with nothing — the model did not answer, and the next one might. A refusal,
   // a timeout the caller set, a bad request or a budget stop are not this.
-  return /model[_ ]not[_ ]found|not found|not deployed|inaccessible|does not exist|no such model|unknown model|unsupported model|not available|unavailable|no api key|not configured|"status":\s*(404|401|403|500|502|503)\b|\b(404|401|403|502|503)\b|exited \d+|returned no answer|did not answer|closed the connection|couldn't reach|could not reach|ECONNREFUSED|overloaded|capacity/i.test(m);
+  // A server that is not there: Node says ECONNREFUSED, a browser says only "Failed to
+  // fetch" (the extension reports it as "network error") — a local model killed mid-run
+  // arrived as the latter and ended the task on its first attempt with Claude Code sitting
+  // idle on the roster.
+  return /model[_ ]not[_ ]found|not found|not deployed|inaccessible|does not exist|no such model|unknown model|unsupported model|not available|unavailable|no api key|not configured|"status":\s*(404|401|403|500|502|503)\b|\b(404|401|403|502|503)\b|exited \d+|returned no answer|did not answer|closed the connection|couldn't reach|could not reach|ECONNREFUSED|ECONNRESET|ENOTFOUND|EHOSTUNREACH|socket hang up|fetch failed|failed to fetch|load failed|network ?error|overloaded|capacity/i.test(m);
 }
 
 export function dryRunTeam(team, request, { appoint = null } = {}) {
@@ -363,7 +367,13 @@ export async function runTeam({
       const findings = status === 'ok' ? parseFindings(text, { role: role.id, taskId: task.id }) : [];
       if (findings.length) { board.add(findings); for (const f of findings) say('task.finding', { taskId: task.id, role: role.id, finding: f }); }
       const thread = board.threadForTask(task.id);
-      if (thread && status !== 'waiting') board.setThreadStatus(thread.id, 'resolved');
+      // The thread says how the task ended. A failure is posted in it as well — a person reading
+      // the board sees "researcher failed: network error" where it happened, and what was tried.
+      if (thread && status === 'ok') board.setThreadStatus(thread.id, 'resolved');
+      else if (thread && status !== 'waiting') {
+        board.post({ threadId: thread.id, by: RUNNER, kind: 'note', text: `${role.id} ${status === 'over-budget' ? 'stopped at the budget' : 'failed'}${error ? `: ${String(error).slice(0, 300)}` : ''}${attempts.length > 1 ? ` (after ${attempts.length} models: ${attempts.map((a) => a.model).join(', ')})` : ''}.` });
+        board.setThreadStatus(thread.id, 'failed');
+      }
       const row = { id: task.id, role: task.role, title: task.title, status, text, error, usage, ms: now() - t0, findings, transcript: clipTranscript(transcript), attempts, ...(routed ? { routed } : {}), ...(scm ? { scm } : {}), ...(askedAndWaiting ? { waitingOn: askedAndWaiting } : {}) };
       tasksOut.push(row);
       say(status === 'ok' ? 'task.done' : 'task.failed', { taskId: task.id, role: task.role, status, error, ms: row.ms, findings: findings.length, ...(askedAndWaiting ? { threadId: askedAndWaiting } : {}) });
