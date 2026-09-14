@@ -235,7 +235,8 @@ export function renderBoard(root, { settings, license = null }) {
       state.touchedAt = 0;
       const r = await store.removeThread(run.id, thread.id);
       if (r.ok) { state.sel = null; state.reply = null; state.rows = { threadId: null, map: new Map() }; }
-      else state.err = `delete: ${r.error}`;
+      // A 404 here is an older gateway, not a missing thread — the list it just drew came from the same run.
+      else state.err = /404/.test(String(r.error || '')) ? 'delete: the gateway needs 0.6.106+ to remove a thread — update it' : `delete: ${r.error}`;
       acted(r);
     } }) : null;
     right.append(el('div', { class: 'bthead' }, el('div', { class: 'bthead-row' }, el('h3', { text: thread.title }), removeBtn), el('div', { class: 'muted tiny' }, chip(thread), ` ${thread.kind}${thread.parent ? ` · sub-task of ${run.tasks?.find((x) => x.id === thread.parent)?.title || thread.parent}` : ''}${thread.holder ? ` · held by ${thread.holder}` : ''}${thread.by && thread.by !== 'runner' ? ` · opened by ${thread.by}` : ''} · ${posts.length} post${posts.length === 1 ? '' : 's'}`)));
