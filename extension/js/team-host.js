@@ -57,6 +57,7 @@ export function flattenForWire(messages) {
   const flush = () => { if (acc) { out.push({ role: 'assistant', content: acc.join('\n') }); acc = null; } };
   for (const m of messages || []) {
     if (!m || !m.role || m.role === 'system') continue;
+    if (m.role === 'assistant' && typeof m.thought === 'string' && m.content == null && !m.tool_calls?.length) continue; // a thought: recorded, not replayed
     if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
       acc = acc || [];
       if (m.content) acc.push(String(m.content));
@@ -356,6 +357,10 @@ export async function runTeamHere({ team, request, settings, license, like = '',
     // What this attempt adds to the transcript, rebuilt from the loop's tool events.
     const added = [];
     const open = new Map();
+    // The member's reasoning, when the provider streams it: one thought step per stretch,
+    // closed by the next call or the end — on the record for the board, never on the wire.
+    let thought = '';
+    const closeThought = () => { if (!thought.trim()) return; const step = { role: 'assistant', content: null, thought: thought.trim(), at: Date.now() }; thought = ''; added.push(step); onStep?.(step); };
     try {
       const out = await streamChat({
         agent: { ...target, systemPrompt: [target.systemPrompt, system].filter(Boolean).join('\n\n'), ...(run ? { run } : {}) },
@@ -364,7 +369,9 @@ export async function runTeamHere({ team, request, settings, license, like = '',
         onEvent: (e) => {
           if (e?.type === 'usage') usage = e;
           if (e?.type === 'scm') scm = foldScm(scm, e);
+          if (e?.type === 'reasoning' && e.text) thought += e.text;
           if (e?.type === 'tool' && e.phase === 'start') {
+            closeThought();
             emit('task.tool', { runId: id, at: Date.now(), taskId, role, name: e.name, text: e.input?.action || '' });
             const call = { id: e.callId || `c${added.length}`, type: 'function', function: { name: e.name, arguments: JSON.stringify(e.input ?? {}) } };
             open.set(call.id, call);
@@ -377,11 +384,13 @@ export async function runTeamHere({ team, request, settings, license, like = '',
         },
         usage: { surface: 'team', sourceId: id },
       });
+      closeThought();
       const full = typeof out === 'string' ? out : (out?.text ?? text);
       const final = full || text;
       const wire = [...sent, ...added, ...(final.trim() ? [{ role: 'assistant', content: final }] : [])];
       return { ok: true, text: final, usage: usage ? { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens } : null, aborted: ac.signal.aborted || taskSignal?.aborted, transcript: wire, ...(scm ? { scm } : {}) };
     } catch (e) {
+      closeThought();
       const wire = [...sent, ...added, ...(text.trim() ? [{ role: 'assistant', content: text }] : [])];
       if (ac.signal.aborted || taskSignal?.aborted) return { ok: true, text, aborted: true, usage: null, transcript: wire };
       return { ok: false, error: e?.message || String(e), text, transcript: wire };

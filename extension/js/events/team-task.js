@@ -34,7 +34,18 @@ export function clipMessage(m) {
   if (m.tool_calls) out.tool_calls = m.tool_calls.map((c) => ({ id: c.id, type: c.type || 'function', function: { name: c.function?.name, arguments: clipStr(String(c.function?.arguments ?? ''), STEP_MAX_CHARS) } }));
   if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
   if (m.name) out.name = m.name;
+  // The member's reasoning, when the model streams it: on the record for the board and the
+  // scorecard, never sent back on the wire (messagesFor drops it).
+  if (typeof m.thought === 'string') out.thought = clipStr(m.thought, STEP_MAX_CHARS);
+  // When the step happened and under which attempt — the work log orders by these.
+  if (Number.isFinite(m.at)) out.at = m.at;
+  if (Number.isFinite(m.attempt)) out.attempt = m.attempt;
   return out;
+}
+
+/** A step that is the member thinking aloud — no content, no call — recorded, not replayed. */
+export function isThought(m) {
+  return !!m && m.role === 'assistant' && typeof m.thought === 'string' && m.content == null && !(Array.isArray(m.tool_calls) && m.tool_calls.length);
 }
 
 /** The record's copy of a transcript: clipped per message and bounded as a whole (oldest tool traffic goes first). */
@@ -75,7 +86,7 @@ export function continuationNote({ kind = 'handoff', from = '', to = '', reason 
  * it first) so a transcript never carries a role prompt that a later role might not share.
  */
 export function messagesFor(task, { prompt, note = null } = {}) {
-  const transcript = Array.isArray(task?.transcript) ? task.transcript : [];
+  const transcript = (Array.isArray(task?.transcript) ? task.transcript : []).filter((m) => !isThought(m));
   if (!transcript.length) return [{ role: 'user', content: String(prompt || '') }];
   const last = transcript[transcript.length - 1];
   // A transcript that ends in an unanswered tool call cannot be continued as-is: close it.

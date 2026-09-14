@@ -1436,6 +1436,18 @@ hr.sep { border: none; border-top: 1px solid var(--border); margin: 16px 0 14px;
 .bacts { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
 .bask { margin-top: 8px; padding: 10px 12px; border: 1px solid #b45309; background: rgba(180,83,9,.10); border-radius: 9px; font-size: 12.8px; }
 .bask-opts { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+/* The work log's rows: lighter than a post, the icon in the avatar slot, long bodies folded. */
+.bpost.blog { padding: 5px 0; }
+.bpost.blog .blog-i { background: var(--elev); color: var(--muted); border: 1px solid var(--border); font-weight: 600; }
+.bpost.blog.err .blog-i { color: #dc2626; border-color: #dc262666; }
+.bpost.blog.ok .blog-i { color: #15a34a; border-color: #15a34a66; }
+.bpost.blog.wait .blog-i { color: #b7791f; border-color: #b7791f66; }
+.bpost.blog.call .blog-i, .bpost.blog.result .blog-i { color: #0b84ff; border-color: #0b84ff55; }
+.bpost.blog.thought .bpost-body { opacity: 0.78; font-style: italic; }
+.blog-t { margin-top: 2px; font-size: 12.8px; max-width: 72ch; white-space: pre-wrap; word-break: break-word; }
+.blog-d { margin-top: 2px; font-size: 12.8px; max-width: 72ch; }
+.blog-d summary { cursor: pointer; color: var(--muted); }
+.blog-pre { margin: 4px 0 0; padding: 8px 10px; background: var(--elev); border: 1px solid var(--border); border-radius: 6px; font-size: 11.8px; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; }
 .bcompose { border-top: 1px solid var(--border); padding: 10px 16px 14px; background: var(--elev); display: flex; flex-direction: column; gap: 6px; }
 .btn.ok { color: var(--ok); border-color: var(--ok); }
 @media (max-width: 860px) { .board { grid-template-columns: 1fr; } .board-threads { border-right: 0; border-bottom: 1px solid var(--border); max-height: 260px; } }

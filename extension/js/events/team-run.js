@@ -31,7 +31,7 @@ import { fixedPlan, plannerPrompt, parsePlan, waves } from './team-plan.js';
 import { createBoard, parseFindings, boardText, findingsInstruction, toBriefClaims, RUNNER } from './team-board.js';
 import { boardToolProvider, createAnswerBox, withBoardTool, DEFAULT_ASK_TIMEOUT_MS } from './board-tool.js';
 import { createRunCache, withRunCache } from './team-cache.js';
-import { messagesFor, mergeTranscript, clipTranscript, clipMessage as clipTranscriptOne, newSteps, continuationNote } from './team-task.js';
+import { messagesFor, mergeTranscript, clipTranscript, clipMessage as clipTranscriptOne, newSteps, continuationNote, isThought } from './team-task.js';
 import { converge } from './promotion.js';
 
 export const RUN_STATUSES = Object.freeze(['planning', 'running', 'merging', 'waiting', 'completed', 'partial', 'over-budget', 'stopped', 'failed']);
@@ -247,9 +247,13 @@ export async function runTeam({
         if (req.type !== 'handoff' || req.taskId !== task.id) return false;
         handoffTo = req; taskAc.abort(); return true;
       }) || null;
+      // Every recorded step says when and under which attempt — the board's work log and the
+      // scorecard read the task by these, so a step reported after the fact is stamped now.
+      let attemptNo = 0;
+      const stamp = (m) => clipTranscriptOne({ ...m, at: Number.isFinite(m?.at) ? m.at : now(), attempt: Number.isFinite(m?.attempt) ? m.attempt : attemptNo });
       const recordSteps = (before, after) => {
         const added = newSteps(before, after);
-        if (added.length) say('task.step', { taskId: task.id, role: role.id, steps: added.map((m) => clipTranscriptOne(m)) });
+        if (added.length) say('task.step', { taskId: task.id, role: role.id, steps: added.map(stamp) });
       };
       try {
         if (role.mode === 'recipe') {
@@ -307,13 +311,16 @@ export async function runTeam({
             routed = routeOf(m, role, { attempt, exclude, handoff: handoffNow });
             say('task.routed', { taskId: task.id, role: role.id, attempt, ...routed });
             attempts.push({ model: m.model, engine: routed.engine, at: now(), continued: !!note });
+            attemptNo = attempts.length;
             const sent = messagesFor({ transcript }, { prompt, note });
             // The record grows AS THE ATTEMPT GOES: a host that reports each wire message the
             // moment it exists (a tool call, its result) puts it on the record then, so a
             // process that dies mid-attempt leaves the work so far behind it, not nothing.
             let live = sent;
-            if (sent.length > transcript.length) recordSteps(transcript, sent);
-            const onStep = (message) => { if (message && message.role) { live = [...live, message]; say('task.step', { taskId: task.id, role: role.id, steps: [clipTranscriptOne(message)] }); } };
+            // (thoughts are on the record but not on the wire, so compare against the wire's view)
+            const wireBefore = transcript.filter((m) => !isThought(m));
+            if (sent.length > wireBefore.length) recordSteps(wireBefore, sent);
+            const onStep = (message) => { if (message && message.role) { live = [...live, message]; say('task.step', { taskId: task.id, role: role.id, steps: [stamp(message)] }); } };
             const res = await callModel({
               runId: id, taskId: task.id, role: role.id, model: m.model, mode: m.mode || role.mode,
               system: role.prompt, prompt, messages: sent, tools, signal: taskAc.signal,

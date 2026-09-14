@@ -221,6 +221,7 @@ export { SCM_KINDS, validateConnection, normalizeConnection, parseRemote, connec
 export { messagesFor, mergeTranscript, clipTranscript, clipMessage, newSteps, continuationNote, createControl, STEP_MAX_CHARS, TASK_TRANSCRIPT_MAX_CHARS } from './team-task.js';
 export { runTeam, resumeTeam, dryRunTeam, isModelUnavailable, TeamRunError, RUN_STATUSES } from './team-run.js';
 export { teamToolProvider, teamToolSpec, teamToolTimeoutMs, describeTeamForApproval, TEAM_TOOL_NAME } from './team-tool.js';
+export { workLogFor, workLogText, workLogEvidence, describeCall, WORKLOG_KINDS } from './team-worklog.js';
 export { teamLine, teamLanes } from './team-trail.js';
 export { mcpDispatchProvider, MCP_TOOL_NAME } from './mcp-dispatch.js';
 export { createManifest, ManifestError, SOURCES } from './manifest.js';

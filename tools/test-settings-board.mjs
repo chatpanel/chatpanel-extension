@@ -22,7 +22,15 @@ globalThis.chrome = { storage: { onChanged: { addListener() {} }, local: { get: 
 // The gateway, as the board reads it.
 const run = {
   id: 'run_1', team: 'travel', status: 'running', client: 'desktop', createdAt: 1, request: 'a trip', roles: ['researcher', 'planner'],
-  tasks: [{ id: 't1', role: 'researcher', status: 'waiting', findings: 1, model: 'claude/opus' }],
+  tasks: [{ id: 't1', role: 'researcher', status: 'waiting', findings: 1, model: 'claude/opus', startedAt: 1,
+    attempts: [{ model: 'local-llm', at: 1, status: 'error', error: 'network error' }, { model: 'claude/opus', at: 5, continued: true }],
+    transcript: [
+      { role: 'user', content: 'Find facts about the trip.', at: 1, attempt: 1 },
+      { role: 'assistant', content: null, thought: 'Search first.', at: 2, attempt: 1 },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'find', arguments: '{"action":"web_search","args":{"query":"rooms"}}' } }], at: 3, attempt: 1 },
+      { role: 'tool', tool_call_id: 'c1', content: 'error: network error', at: 4, attempt: 1 },
+      { role: 'user', content: 'Continue from where local-llm stopped.', at: 6, attempt: 2 },
+    ] }],
   usage: { cap: { tokens: 30000 }, spent: { tokens: 1200 } },
   threads: {
     threads: [
@@ -31,7 +39,7 @@ const run = {
       { id: 'prop', kind: 'proposal', title: 'Proposal', by: 'planner', status: 'open', at: 3, posts: 1 },
     ],
     posts: [
-      { id: 'p1', threadId: 'th1', by: 'researcher', kind: 'finding', text: 'Rooms **$260**', refs: ['web:x'], replyTo: null, status: 'open', at: 1, finding: { kind: 'claim' } },
+      { id: 'p1', threadId: 'th1', by: 'researcher', kind: 'finding', text: 'Rooms **$260**', refs: ['web:x'], replyTo: null, status: 'open', at: 7, finding: { kind: 'claim' } },
       { id: 'q1', threadId: 'ask1', by: 'researcher', kind: 'question', text: 'Which week?', refs: [], replyTo: null, status: 'open', at: 2, ask: { type: 'info', options: ['Feb 13-17'] } },
       { id: 'd1', threadId: 'prop', by: 'planner', kind: 'draft', text: '# Plan\n\nDay 1', refs: [], replyTo: null, status: 'proposed', at: 3 },
     ],
@@ -73,6 +81,17 @@ propRow.click();
 await new Promise((r) => setTimeout(r, 5));
 const md = root.find((n) => n.className.includes('btext'));
 assert.match(md.innerHTML, /<h1[^>]*>Plan<\/h1>/, 'a post renders as markdown');
+// THE TASK THREAD IS ITS WORK LOG. Open "Find facts": the prompt, the thought, the call, the
+// failed result, the second attempt and the finding post are all there, in order.
+root.find((n) => n.className.includes('bth') && n.find((x) => x.textContent === 'Find facts')).click();
+await new Promise((r) => setTimeout(r, 5));
+const rows = root.all((n) => /^bpost( |$)/.test(n.className) && !n.className.includes('reply'));
+const kinds = rows.map((n) => n.find((x) => x.className === 'bkind')?.textContent);
+assert.deepEqual(kinds, ['attempt 1', 'task', 'thinking', 'called', 'failed', 'attempt 2', 'runner', 'finding', 'waiting'], 'the timeline, oldest first, with the post kept as a post');
+assert.ok(root.find((n) => n.className === 'muted tiny' && /find web_search query="rooms"/.test(n.textContent)), 'a call says what it asked');
+assert.ok(root.find((n) => /^bpost blog err/.test(n.className)), 'a failed result reads as an error');
+propRow.click();
+await new Promise((r) => setTimeout(r, 5));
 btn(/^Approve$/).click();
 await new Promise((r) => setTimeout(r, 30));
 const decided = calls.find(([m, u]) => m === 'POST' && u.endsWith('/decide'));

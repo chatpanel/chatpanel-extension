@@ -7,6 +7,12 @@
 // is a member: an answer resumes the member that asked (in whichever client runs it), a
 // decision settles a post for everyone, a reply is read by the next wave.
 //
+// A TASK'S THREAD IS ITS WORK LOG (team-worklog.js): the prompt, the member's text and its
+// reasoning, every tool call and what came back, the attempts and hand-offs, the runner's
+// notes, the posts, and how it ended — one timeline, oldest first, the posts keeping their
+// Approve / Reject / Reply. A task that failed before its first post used to show "Nothing
+// posted here yet."; now it shows what it did and where it stopped.
+//
 // Deferred from settings.js (its first paint is at ceiling); polls while on screen and
 // disposes its poll on re-render, the way settings-teams.js does.
 //
@@ -18,6 +24,7 @@
 
 import { runStore, answerAsk, handoffTask, resumeRunHere, rosterFor } from './team-host.js';
 import { renderMarkdown } from './markdown.js';
+import { workLogFor } from './events/team-worklog.js';
 
 const POLL_MS = 4000;
 const LIVE = new Set(['planning', 'running', 'merging', 'waiting']);
@@ -202,8 +209,43 @@ export function renderBoard(root, { settings, license = null }) {
       list.append(el('div', { class: `bpost${depth ? ' reply' : ''}`, style: depth ? `margin-left:${38 + (depth - 1) * 14}px` : '' }, el('span', { class: `bav${depth ? ' sm' : ''}`, style: `background:${colour(p.by, roles)}`, text: initial(p.by) }), body));
       for (const r of posts.filter((x) => x.replyTo === p.id)) post(r, depth + 1);
     };
-    for (const p of posts.filter((x) => !x.replyTo)) post(p, 0);
-    if (!posts.length) list.append(el('div', { class: 'muted tiny', text: 'Nothing posted here yet.' }));
+    // A timeline row that is not a post: who · what · when, the body folded when it is long.
+    const fold = (text, open = false) => {
+      const t = String(text || '');
+      if (t.length <= 240 && !t.includes('\n')) return el('div', { class: 'blog-t selectable', text: t });
+      const d = el('details', { class: 'blog-d' }, el('summary', { text: `${t.slice(0, 160).replace(/\s+/g, ' ')}…` }), el('pre', { class: 'blog-pre selectable', text: t }));
+      if (open) d.setAttribute('open', '');
+      return d;
+    };
+    const rowFor = (e) => {
+      const who = e.by === 'tool' ? '' : e.by;
+      const meta = (label, extra = '') => el('div', { class: 'bwho' }, who ? el('b', { text: who === 'person' ? 'you' : who }) : null, el('span', { class: 'bkind', text: label }), extra ? el('span', { class: 'muted tiny', text: extra }) : null, el('span', { text: ago(e.at) }));
+      const body = el('div', { class: 'bpost-body' });
+      let icon = '·'; let cls = '';
+      switch (e.kind) {
+        case 'attempt': icon = '▸'; cls = 'runner'; body.append(meta(`attempt ${e.attempt}`, `${e.model}${e.continued ? ' · continues the transcript' : ''}${e.status && e.status !== 'ok' ? ` · ${e.status}` : ''}`)); break;
+        case 'prompt': icon = '⌗'; cls = 'runner'; body.append(meta('task'), fold(e.text)); break;
+        case 'note': icon = '▸'; cls = 'runner'; body.append(meta('runner'), fold(e.text)); break;
+        case 'thought': icon = '…'; cls = 'thought'; body.append(meta('thinking'), fold(e.text)); break;
+        case 'text': icon = e.live ? '◌' : '¶'; body.append(meta(e.live ? 'saying' : 'said'), el('div', { class: 'btext md selectable', html: renderMarkdown(e.text || '') })); break;
+        case 'call': icon = '→'; cls = 'call'; body.append(meta('called', e.text)); if (e.args && Object.keys(e.args).length) body.append(fold(JSON.stringify(e.args, null, 1))); break;
+        case 'result': icon = e.error ? '✗' : '←'; cls = e.error ? 'err' : 'result'; body.append(meta(e.error ? 'failed' : 'returned', e.name), fold(e.text, e.error)); break;
+        case 'handoff': icon = '⇄'; cls = 'runner'; body.append(meta('handed off', `${e.from} → ${e.to} by ${e.by}${e.text ? ` — ${e.text}` : ''}`)); break;
+        case 'end': icon = e.status === 'ok' ? '✓' : e.status === 'waiting' ? '?' : '✗'; cls = e.status === 'ok' ? 'ok' : e.status === 'waiting' ? 'wait' : 'err'; body.append(meta(e.status, e.text)); break;
+        default: return null;
+      }
+      return el('div', { class: `bpost blog ${cls}` }, el('span', { class: 'bav sm blog-i', text: icon }), body);
+    };
+    const log = thread.kind === 'task' && thread.taskId ? workLogFor(run, thread.taskId) : [];
+    if (log.length) {
+      for (const e of log) {
+        if (e.kind === 'post') { if (!e.post.replyTo) post(e.post, 0); continue; }
+        const r = rowFor(e); if (r) list.append(r);
+      }
+    } else {
+      for (const p of posts.filter((x) => !x.replyTo)) post(p, 0);
+      if (!posts.length) list.append(el('div', { class: 'muted tiny', text: 'Nothing posted here yet.' }));
+    }
     right.append(list);
     const compose = el('div', { class: 'bcompose' });
     if (state.reply) compose.append(el('div', { class: 'muted tiny' }, 'Replying to ', el('b', { text: state.reply.by }), ' · ', el('button', { class: 'btn ghost', type: 'button', text: 'cancel', onclick: () => { state.reply = null; drawThread(); } })));
