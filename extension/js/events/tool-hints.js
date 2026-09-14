@@ -32,7 +32,13 @@ export function sourceCitationSystem({ compact = false } = {}) {
 
 export function toolStatus(result) {
   const o = resultObject(result);
-  if (!o) return '';
+  if (!o) {
+    // A plain-text result (a search's prose, a relayed agent's line): an error when it says
+    // so the way the shared tools do — `error: …`, `web_search failed: …` — else fine.
+    const s = typeof result === 'string' ? result : (result && typeof result === 'object' && typeof result.text === 'string' ? result.text : '');
+    if (!s.trim()) return '';
+    return /^(error:|\w+ failed\b)/i.test(s) ? `error: ${s.slice(0, 80)}` : 'ok';
+  }
   if (o.error) {
     const detail = errorDetail(o);
     if (o.blocked) return `blocked: ${detail}`.slice(0, 90);

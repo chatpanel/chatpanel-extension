@@ -33,41 +33,16 @@ import { combineSystemPrompt, toolStatus } from './events/tool-hints.js';
 import { getTarget, resolveTarget } from './store.js';
 import { authHeadersForEndpoint } from './oauth.js';
 import { mergeExtraBody, sanitizeExtraHeaders } from './request-options.js';
-// Safety cap on the agent tool-use loop: a turn may call tools at most this many
-// times before we stop, so a confused model can't loop forever. Generous enough
-// for real multi-step tasks (filling a table, a multi-field booking, drawing a
-// shape) — each click/type/Enter is a step, so these add up fast.
-const MAX_TOOL_STEPS = Number(globalThis.CHATPANEL_MAX_TOOL_STEPS) || 60;
-
-// Per-endpoint cap on model calls within ONE tool-using turn — a throttle for
-// rate-limited providers (e.g. a 429). 0/unset → unlimited (the MAX_TOOL_STEPS
-// backstop). On the final allowed call we withhold tools so the model must answer
-// with the information it has already gathered ("work with available information")
-// instead of emitting another tool call that can't run.
-function toolStepCap(agent, tools) {
-  if (!tools) return 1;
-  const n = Number(agent?.maxRequestsPerTurn) || 0;
-  return n > 0 ? Math.min(MAX_TOOL_STEPS, n) : MAX_TOOL_STEPS;
+// The tool loop — its cap, its guard, its rounds, its closing request — is the shared
+// one now (`events/turn-loop.js`, `events/tool-loop-guard.js`), the same the desktop runs.
+// This file supplies what is the extension's: one request per provider (auth, body, SSE
+// decoding, the vision retry) and the bridge's one-call-at-a-time relay. The loop is
+// `await import()`ed at the call site: providers.js sits on settings' first paint through
+// the redaction test harness, and a loop only exists once a model has asked for tools.
+let turnLoopPromise = null;
+function loadTurnLoop() {
+  return (turnLoopPromise ||= import('./events/turn-loop.js'));
 }
-const MAX_IDENTICAL_TOOL_CALLS = Number(globalThis.CHATPANEL_MAX_IDENTICAL_TOOL_CALLS) || 3;
-// GLOBAL stall breaker: the per-tool guard above blocks a SINGLE repeated call, but
-// a weak model can keep cycling blocked calls across several tools (history_search,
-// discover_tools, …) with the same garbage input, never making progress. After this
-// many consecutive rounds where EVERY tool call was blocked, we stop offering tools
-// so the model is forced to answer with what it has, instead of looping to the step
-// limit. Strong models rarely hit this; weak ones are capped early.
-const MAX_STALLED_ROUNDS = Number(globalThis.CHATPANEL_MAX_STALLED_ROUNDS) || 2;
-
-// Observation/read tools are MEANT to be repeated (read → act → read again, with
-// the SAME empty input) — re-reading after an action is correct, not a loop. They
-// don't count toward the loop guard at all.
-const OBSERVATION_TOOLS = new Set(['inspect_page', 'read_canvas', 'screenshot', 'marked_screenshot']);
-
-// Which repeats may be ANSWERED from the first result rather than refused used to be a
-// hand-kept list of seven names here. It is now the tool's own traits (events/tool-traits.js:
-// annotations first, the name second) — a pure read asked twice has one answer, and a write
-// never replays, because replaying a click would be a lie about something that changed the
-// world. The round runner (turn-round.js) tells `remember` what it knows.
 
 // A DISPATCHER tool carries the real action in its arguments — `page` with
 // {action:'screenshot'} rather than a tool literally named `screenshot`. Every
@@ -89,164 +64,6 @@ function safeJson(s) {
   } catch {
     return {};
   }
-}
-
-function stableStringify(value) {
-  if (value == null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  return `{${Object.keys(value)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
-    .join(',')}}`;
-}
-
-export function stableToolCallKey(name, input) {
-  return `${String(name || '')}\n${stableStringify(input ?? {})}`;
-}
-
-function blockedToolResult(name, message, extra = {}) {
-  return JSON.stringify({
-    ok: false,
-    blocked: true,
-    error: 'tool_loop_blocked',
-    tool: name || 'tool',
-    message,
-    retry_hint: 'Answer using the already available conversation context and tool results. Do not call more tools unless the user asks you to continue.',
-    ...extra,
-  });
-}
-
-// Tools whose whole job is to deliver ONE discrete physical input — a keystroke,
-// a click, a stroke. Pressing Enter/Tab to commit a cell and then again for the
-// next one, or clicking the same spot twice, is NORMAL use, not a stuck loop: the
-// input is identical by nature. So a SUCCESSFUL application counts as progress and
-// clears the repeat count, leaving MAX_TOOL_STEPS as the overall backstop. A
-// FAILING call (ok:false — unknown key, nothing at point, …) does NOT reset, so a
-// genuinely stuck call still trips the guard.
-const INPUT_PROGRESS_TOOLS = new Set([
-  'press_key', 'type_text', 'click_at', 'move_mouse', 'click_mark', 'draw_path', 'input_sequence',
-  'click_element', 'click_by_text',
-]);
-
-// A tool whose repetition signals a LOOP (search/query/fetch tools), vs one that's
-// meant to repeat (observations, scrolling, typing). Only loopable tools form the
-// round signature, so a legit re-read/scroll never looks like a stalled loop.
-function isLoopableTool(name) {
-  return !OBSERVATION_TOOLS.has(name) && !INPUT_PROGRESS_TOOLS.has(name) && name !== 'scroll';
-}
-
-// Same question, asked of a call rather than a bare name — use this wherever the
-// arguments are in hand, so a dispatched action is judged on what it actually is.
-export function isMutatingCall(name, input) {
-  return isMutatingTool(effectiveToolName(name, input));
-}
-
-// Some tools are meant to be called repeatedly. Treat such a call as progress —
-// clearing its repeat count — as long as it isn't a no-op. For scroll, "more page
-// below" (atBottom === false) is progress; once atBottom is true the repeat guard
-// is allowed to bite again. For discrete-input tools, any successful application
-// (ok === true) is progress (see INPUT_PROGRESS_TOOLS above).
-export function toolMadeProgress(name, result) {
-  if (name === 'scroll') {
-    try {
-      return JSON.parse(resultText(result))?.atBottom === false;
-    } catch {
-      return false;
-    }
-  }
-  if (INPUT_PROGRESS_TOOLS.has(name)) {
-    try {
-      return JSON.parse(resultText(result))?.ok === true;
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
-export function createToolLoopGuard({
-  maxIdenticalCalls = MAX_IDENTICAL_TOOL_CALLS,
-  maxStalledRounds = MAX_STALLED_ROUNDS,
-} = {}) {
-  const counts = new Map();
-  const lastResult = new Map();   // key -> what that identical call returned the first time
-  let stalledRounds = 0;
-  let lastSignature = null;
-
-  return {
-    // No nuclear per-turn kill switch — one looping tool must not disable the rest.
-    // The MAX_TOOL_STEPS budget is the overall backstop.
-    get disabled() {
-      return false;
-    },
-    // After each tool round, note progress. A round makes NO progress when either
-    // every call was blocked OR the round's call-set is byte-identical to the
-    // previous round's (the model re-firing the exact same tools+args — a loop, even
-    // before the per-tool block threshold trips). Enough no-progress rounds in a row
-    // → `stalled`, and the caller stops offering tools so the model must answer.
-    noteRound(blockedCount, total, signature = '') {
-      const allBlocked = total > 0 && blockedCount >= total;
-      const repeatRound = !!signature && signature === lastSignature;
-      lastSignature = signature;
-      // An EXACT-repeat round (same loopable tools+args as last round) is a
-      // definitive loop — bail fast (2 strikes at once → stalls on the 2nd identical
-      // round). All-blocked-but-varying is softer (needs maxStalledRounds rounds).
-      if (repeatRound) stalledRounds += 2;
-      else if (allBlocked) stalledRounds += 1;
-      else stalledRounds = 0;
-    },
-    get stalled() {
-      return stalledRounds >= maxStalledRounds;
-    },
-    // Clear a call's repeat count when it actually made progress — lets an
-    // inherently-repetitive tool (scroll-to-bottom) keep going, while a genuinely
-    // stuck loop still trips the cap.
-    reset(key) {
-      if (key) counts.delete(key);
-    },
-    /**
-     * Remember what an identical call returned, so a repeat can be ANSWERED instead of
-     * refused. A pure read asked twice has one true answer; replying "you already asked
-     * that" is both unhelpful and, for a small model, the start of a worse loop — it varies
-     * the query, gets a different and emptier result, and concludes the tool is broken.
-     * That is exactly what a user saw: a repeated `web_search` refused, the retry reworded
-     * into a query with no results, and the model announcing it had no access to weather.
-     */
-    remember(key, name, input, result, { readOnly = false } = {}) {
-      if (!key || !result || !readOnly) return;
-      lastResult.set(key, result);
-    },
-
-    check(name, input) {
-      // Reads are idempotent observations — re-reading after an action is correct,
-      // so they never count toward the loop guard.
-      if (OBSERVATION_TOOLS.has(effectiveToolName(name, input))) return { blocked: false };
-
-      const key = stableToolCallKey(name, input);
-      const count = (counts.get(key) || 0) + 1;
-      counts.set(key, count);
-      if (count > maxIdenticalCalls && lastResult.has(key)) {
-        // Serve the answer it already earned. Still counted, so a genuinely stuck loop is
-        // still visible in the log — but the model gets the truth rather than a scolding.
-        return { blocked: false, replayed: true, count, key, result: lastResult.get(key) };
-      }
-      if (count > maxIdenticalCalls) {
-        // Block only THIS exact repeated call — every other tool stays available.
-        return {
-          blocked: true,
-          count,
-          key,
-          result: blockedToolResult(
-            name,
-            `Skipped a repeated identical ${name || 'tool'} call (${count}× with the same input). Vary the input or try a different action — your other tools still work.`,
-            { repeated: true, identicalCallCount: count, maxIdenticalCalls },
-          ),
-        };
-      }
-
-      return { blocked: false, count, key };
-    },
-  };
 }
 
 // --------------------------------------------------------------------------
@@ -326,50 +143,34 @@ function emitUsage(onEvent, provider, model, acc, sentMessages, fullText) {
   onEvent({ type: 'usage', provider, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, estimated });
 }
 
-async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }) {
+async function streamOpenAI(agent, messages, { settings, signal, onDelta, onEvent, tools }) {
   const base = (agent.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
-  const system = combineSystemPrompt(agent.systemPrompt, tools?.system);
-  const sys = system ? [{ role: 'system', content: system }] : [];
   const headers = { ...sanitizeExtraHeaders(agent.headers), 'Content-Type': 'application/json' };
   Object.assign(headers, openRouterIdentityHeaders(agent, base));
   Object.assign(headers, await authHeadersForEndpoint(agent));
   if (!headers.Authorization && agent.apiKey) headers['Authorization'] = `Bearer ${agent.apiKey}`;
-  const toolSpecs = tools?.specs?.map((s) => ({
-    type: 'function',
-    function: { name: s.name, description: s.description, parameters: s.parameters },
-  }));
-  const loopGuard = createToolLoopGuard();
-  const adaptivePolicy = createAdaptiveToolPolicy();
-
-  // Native OpenAI message list — appended to across tool-use steps. Multimodal
-  // so pasted/attached images ride along to vision models.
-  const msgs = [...sys, ...toMultimodalMessages(messages, 'openai')];
-  let full = '';
+  const model = agent.model || 'gpt-4o-mini';
   let noVision = false; // set once the model rejects images, then we go text-only
-  // Token accounting — accumulate across tool-use steps (each step is its own
-  // completion with its own usage) and emit ONE total when the turn returns.
-  const usageAcc = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reported: false };
-  const finishUsage = () => emitUsage(onEvent, 'openai', agent.model || 'gpt-4o-mini', usageAcc, msgs, full);
 
-  // One model turn = one streamed completion. Loops only when the model asks to
-  // call tools; without tools it runs exactly once (unchanged single-shot path).
-  const stepCap = toolStepCap(agent, tools);
-  for (let step = 0; step < stepCap; step++) {
-    const lastCall = step === stepCap - 1; // withhold tools → force a final answer
-    const activeToolSpecs = (loopGuard.disabled || loopGuard.stalled || lastCall) ? undefined : adaptivePolicy.filterOpenAITools(toolSpecs);
+  // ONE request. Tools arrive canonical from the loop and are shaped here; the loop owns
+  // the transcript, so the vision retry strips images from the message objects in place.
+  const request = async ({ messages: msgs, tools: specs, signal: sig, onDelta: delta }) => {
+    const toolSpecs = specs?.length
+      ? specs.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }))
+      : null;
     const doFetch = () => {
       const body = mergeExtraBody({
-        model: agent.model || 'gpt-4o-mini',
+        model,
         messages: msgs,
         stream: true,
         // Ask for token usage in the final SSE chunk. Ignored by servers that
-        // don't support it (we then fall back to an estimate at finishUsage).
+        // don't support it (the loop then estimates).
         stream_options: { include_usage: true },
-        ...(activeToolSpecs?.length ? { tools: activeToolSpecs } : {}),
+        ...(toolSpecs ? { tools: toolSpecs } : {}),
         ...(agent.temperature != null ? { temperature: agent.temperature } : {}),
         ...(agent.maxTokens ? { max_tokens: agent.maxTokens } : {}),
       }, agent.extraBody);
-      return reachableFetch(`${base}/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body), signal }, agent, base);
+      return reachableFetch(`${base}/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body), signal: sig }, agent, base);
     };
     let res = await doFetch();
     if (!res.ok) {
@@ -388,9 +189,10 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
       }
     }
 
-    let stepText = '';
+    let text = '';
     const calls = {}; // index → { id, name, args } accumulated across deltas
     let finish = '';
+    let usage = null;
     for await (const data of sseLines(res)) {
       if (data === '[DONE]') break;
       let json;
@@ -404,19 +206,20 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
       // turn that ended with nothing to say; a team member 'completed' empty that way.
       if (json.error && !json.choices) throw new Error(typeof json.error === 'string' ? json.error : (json.error.message || JSON.stringify(json.error)));
       // Usage rides in a trailing chunk (choices often empty) when
-      // stream_options.include_usage is honored. Accumulate across steps.
+      // stream_options.include_usage is honored.
       if (json.usage) {
-        usageAcc.reported = true;
-        usageAcc.inputTokens += Number(json.usage.prompt_tokens || 0);
-        usageAcc.outputTokens += Number(json.usage.completion_tokens || 0);
-        usageAcc.cacheReadTokens += Number(json.usage.prompt_tokens_details?.cached_tokens || 0);
+        usage = {
+          inputTokens: Number(json.usage.prompt_tokens || 0),
+          outputTokens: Number(json.usage.completion_tokens || 0),
+          cacheReadTokens: Number(json.usage.prompt_tokens_details?.cached_tokens || 0),
+          cacheWriteTokens: 0,
+        };
       }
       const choice = json.choices?.[0];
-      const delta = choice?.delta?.content;
-      if (delta) {
-        stepText += delta;
-        full += delta;
-        onDelta?.(delta);
+      const piece = choice?.delta?.content;
+      if (piece) {
+        text += piece;
+        delta?.(piece);
       }
       const reasoning = choice?.delta?.reasoning ?? choice?.delta?.reasoning_content;
       if (reasoning) onEvent?.({ type: 'reasoning', text: reasoning });
@@ -428,56 +231,56 @@ async function streamOpenAI(agent, messages, { signal, onDelta, onEvent, tools }
       }
       if (choice?.finish_reason) finish = choice.finish_reason;
     }
+    const wanted = Object.keys(calls).sort((x, y) => x - y).map((k) => calls[k]);
+    const toolCalls = toolSpecs && finish === 'tool_calls' ? wanted.map((c) => ({ id: c.id, name: c.name, arguments: c.args })) : [];
+    return { ok: true, text, toolCalls, usage, finish: finish || 'stop', noVision };
+  };
 
-    const wanted = Object.keys(calls)
-      .sort((a, b) => a - b)
-      .map((k) => calls[k]);
-    if (!tools || !activeToolSpecs?.length || finish !== 'tool_calls' || wanted.length === 0) {
-      onEvent?.({ type: 'finish', reason: finish || 'stop' });
-      finishUsage();
-      return full;
-    }
-    // Execute the requested tools and feed results back for the next step.
-    msgs.push({
-      role: 'assistant',
-      content: stepText || null,
-      tool_calls: wanted.map((c) => ({
-        id: c.id,
-        type: 'function',
-        function: { name: c.name, arguments: c.args },
-      })),
-    });
-    const { runRound } = await import('./turn-round.js'); // reads overlapped, writes in order
-    const round = await runRound(wanted, { tools, agent, loopGuard, adaptivePolicy, onEvent, argsOf: (c) => safeJson(c.args) });
-    const { blockedThisRound } = round;
-    for (let i = 0; i < round.calls.length; i += 1) {
-      const c = round.calls[i];
-      const result = round.results[i];
-      const text = typeof result === 'string' ? result : (result?.text ?? '');
-      msgs.push({ role: 'tool', tool_call_id: c.id, content: text });
-      // OpenAI tool messages can't carry images — feed any screenshot back as a
-      // follow-up user message so the (vision) model can see the page. Skip once the
-      // model has told us it has no vision (noVision) — send a text note instead.
-      if (result && typeof result === 'object' && result.image) {
-        msgs.push(
-          noVision
-            ? { role: 'user', content: `(Screenshot from ${c.name} omitted — this model has no vision. Rely on read_canvas / inspect_page / tool results.)` }
-            : { role: 'user', content: [{ type: 'text', text: `(Screenshot from ${c.name})` }, { type: 'image_url', image_url: { url: result.image } }] },
-        );
-      }
-    }
-    const sig = wanted.filter((c) => isLoopableTool(c.name)).map((c) => stableToolCallKey(c.name, safeJson(c.args))).sort().join('|');
-    loopGuard.noteRound(blockedThisRound, wanted.length, sig);
+  // Native OpenAI message list — the loop appends to it across tool-use rounds. Multimodal
+  // so pasted/attached images ride along to vision models.
+  const sys = combineSystemPrompt(agent.systemPrompt, tools?.system);
+  const wire = [...(sys ? [{ role: 'system', content: sys }] : []), ...toMultimodalMessages(messages, 'openai')];
+  return runSharedLoop({ agent, settings, tools, wire, request, signal, onDelta, onEvent, provider: 'openai', model, transcript: 'openAiTranscript' });
+}
+
+/**
+ * The extension's binding of the shared turn loop, for the two API providers. Returns the
+ * text, as every caller of dispatchStream expects; the loop's richer result is folded into
+ * the events the side panel already reads (tool steps, finish, usage).
+ */
+async function runSharedLoop({ agent, settings, tools, wire, request, signal, onDelta, onEvent, provider, model, transcript }) {
+  const loop = await loadTurnLoop();
+  const armed = !!tools?.specs?.length;
+  const res = await loop.runTurnLoop({
+    model,
+    messages: wire,
+    tools: armed ? tools : null,
+    signal,
+    stream: request,
+    transcript: loop[transcript],
+    maxRounds: loop.roundCap({ tools: armed ? tools : null, agent, settings }),
+    modelLabel: () => modelLabelOf(agent),
+    usageLabel: { provider, model },
+    onDelta: (delta) => onDelta?.(delta),
+    onEvent,
+  });
+  // Stopped between two requests (the signal fired while a tool ran): the same exception a
+  // fetch aborted mid-stream throws, so the side panel says "(stopped)" either way.
+  if (res.aborted) throw new DOMException('The user aborted a request.', 'AbortError');
+  let text = String(res.text || '');
+  if (res.exhausted) {
+    // The cap ended the turn. Said as a delta too — the side panel renders what it streamed.
+    const note = (text ? loop.ROUND_SEPARATOR : '') + loop.EXHAUSTED_NOTE;
+    text += note;
+    onDelta?.(note);
   }
-  onEvent?.({ type: 'finish', reason: 'tool-step-limit' });
-  finishUsage();
-  return full + (full ? '\n\n' : '') + '_(Reached the action limit for one turn — say "continue" to keep going.)_';
+  return text;
 }
 
 // --------------------------------------------------------------------------
 // Anthropic Messages API (direct from the browser)
 // --------------------------------------------------------------------------
-async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tools }) {
+async function streamAnthropic(agent, messages, { settings, signal, onDelta, onEvent, tools }) {
   const base = (agent.baseUrl || 'https://api.anthropic.com').replace(/\/$/, '');
   const system = combineSystemPrompt(agent.systemPrompt, tools?.system);
   const headers = {
@@ -488,49 +291,31 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
   };
   Object.assign(headers, await authHeadersForEndpoint(agent));
   if (!headers.Authorization) headers['x-api-key'] = agent.apiKey || '';
-  const toolSpecs = tools?.specs?.map((s) => ({
-    name: s.name,
-    description: s.description,
-    input_schema: s.parameters,
-  }));
-  const loopGuard = createToolLoopGuard();
-  const adaptivePolicy = createAdaptiveToolPolicy();
+  const model = agent.model || 'claude-opus-4-8';
 
-  // Native Anthropic message list — appended to across tool-use steps. Multimodal
-  // so pasted/attached images ride along as image blocks.
-  const msgs = toMultimodalMessages(messages, 'anthropic');
-  let full = '';
-  // Token accounting — Anthropic splits input across message_start (input +
-  // cache_creation + cache_read) and output across message_delta. Accumulate
-  // across tool-use steps; emit one total per turn.
-  const usageAcc = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reported: false };
-  const finishUsage = () => emitUsage(onEvent, 'anthropic', agent.model || 'claude-opus-4-8', usageAcc, msgs, full);
-
-  const stepCap = toolStepCap(agent, tools);
-  for (let step = 0; step < stepCap; step++) {
-    const lastCall = step === stepCap - 1; // withhold tools → force a final answer
-    const activeToolSpecs = (loopGuard.disabled || loopGuard.stalled || lastCall) ? undefined : adaptivePolicy.filterAnthropicTools(toolSpecs);
+  // ONE request. The assistant's content blocks come back whole (`blocks`) so the shared
+  // Anthropic transcript can echo them in order on the next request.
+  const request = async ({ messages: msgs, tools: specs, signal: sig, onDelta: delta }) => {
+    const toolSpecs = specs?.length ? specs.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })) : null;
     const body = mergeExtraBody({
-      model: agent.model || 'claude-opus-4-8',
+      model,
       max_tokens: agent.maxTokens || 4096,
       stream: true,
       ...(system ? { system } : {}),
       ...(agent.temperature != null ? { temperature: agent.temperature } : {}),
-      ...(activeToolSpecs?.length ? { tools: activeToolSpecs } : {}),
+      ...(toolSpecs ? { tools: toolSpecs } : {}),
       messages: msgs,
     }, agent.extraBody);
-    const res = await fetch(`${base}/v1/messages`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal,
-    });
+    const res = await fetch(`${base}/v1/messages`, { method: 'POST', headers, body: JSON.stringify(body), signal: sig });
     if (!res.ok) throw new Error(`${agent.name}: HTTP ${res.status} — ${await safeText(res)}`);
 
     // Reassemble the assistant's content blocks so we can both stream text and
     // collect tool_use calls. `blocks` is indexed by content_block index.
     const blocks = [];
+    let text = '';
     let stopReason = '';
+    const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    let reported = false;
     for await (const data of sseLines(res)) {
       let json;
       try {
@@ -540,16 +325,13 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
       }
       if (json.type === 'content_block_start') {
         const b = json.content_block;
-        blocks[json.index] =
-          b?.type === 'tool_use'
-            ? { type: 'tool_use', id: b.id, name: b.name, json: '' }
-            : { type: 'text', text: '' };
+        blocks[json.index] = b?.type === 'tool_use' ? { type: 'tool_use', id: b.id, name: b.name, json: '' } : { type: 'text', text: '' };
       } else if (json.type === 'content_block_delta') {
         const b = blocks[json.index];
         if (json.delta?.type === 'text_delta') {
-          full += json.delta.text;
+          text += json.delta.text;
           if (b) b.text += json.delta.text;
-          onDelta?.(json.delta.text);
+          delta?.(json.delta.text);
         } else if (json.delta?.type === 'input_json_delta') {
           if (b) b.json += json.delta.partial_json || '';
         } else if (json.delta?.type === 'thinking_delta') {
@@ -558,68 +340,30 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
       } else if (json.type === 'message_start') {
         const u = json.message?.usage;
         if (u) {
-          usageAcc.reported = true;
-          usageAcc.inputTokens += Number(u.input_tokens || 0);
-          usageAcc.cacheWriteTokens += Number(u.cache_creation_input_tokens || 0);
-          usageAcc.cacheReadTokens += Number(u.cache_read_input_tokens || 0);
+          reported = true;
+          usage.inputTokens += Number(u.input_tokens || 0);
+          usage.cacheWriteTokens += Number(u.cache_creation_input_tokens || 0);
+          usage.cacheReadTokens += Number(u.cache_read_input_tokens || 0);
         }
       } else if (json.type === 'message_delta') {
         if (json.delta?.stop_reason) stopReason = json.delta.stop_reason;
         if (json.usage?.output_tokens != null) {
-          usageAcc.reported = true;
-          usageAcc.outputTokens += Number(json.usage.output_tokens || 0);
+          reported = true;
+          usage.outputTokens += Number(json.usage.output_tokens || 0);
         }
-      } else if (json.type === 'message_stop') {
-        // handled after the loop via stopReason
       } else if (json.type === 'error') {
         throw new Error(json.error?.message || 'Anthropic stream error');
       }
     }
-
     const toolUses = blocks.filter((b) => b?.type === 'tool_use');
-    if (!tools || !activeToolSpecs?.length || stopReason !== 'tool_use' || toolUses.length === 0) {
-      onEvent?.({ type: 'finish', reason: stopReason || 'stop' });
-      finishUsage();
-      return full;
-    }
-    // Echo the assistant's blocks back, then a user turn carrying tool_results.
-    msgs.push({
-      role: 'assistant',
-      content: blocks
-        // Drop empty text blocks — the API rejects zero-length text content.
-        .filter((b) => b.type === 'tool_use' || b.text)
-        .map((b) =>
-          b.type === 'tool_use'
-            ? { type: 'tool_use', id: b.id, name: b.name, input: safeJson(b.json) }
-            : { type: 'text', text: b.text },
-        ),
-    });
-    const results = [];
-    const { runRound } = await import('./turn-round.js'); // reads overlapped, writes in order
-    const round = await runRound(toolUses, { tools, agent, loopGuard, adaptivePolicy, onEvent, argsOf: (b) => safeJson(b.json) });
-    const { blockedThisRound } = round;
-    for (let i = 0; i < round.calls.length; i += 1) {
-      const b = round.calls[i];
-      const result = round.results[i];
-      const text = typeof result === 'string' ? result : (result?.text ?? '');
-      // Anthropic tool_result content may be a string OR blocks — attach the
-      // screenshot as an image block so the model can see the page directly.
-      let content = text;
-      if (result && typeof result === 'object' && result.image) {
-        const im = /^data:([^;]+);base64,(.+)$/s.exec(result.image);
-        content = [];
-        if (im) content.push({ type: 'image', source: { type: 'base64', media_type: im[1], data: im[2] } });
-        content.push({ type: 'text', text });
-      }
-      results.push({ type: 'tool_result', tool_use_id: b.id, content });
-    }
-    const sig = toolUses.filter((b) => isLoopableTool(b.name)).map((b) => stableToolCallKey(b.name, safeJson(b.json))).sort().join('|');
-    loopGuard.noteRound(blockedThisRound, toolUses.length, sig);
-    msgs.push({ role: 'user', content: results });
-  }
-  onEvent?.({ type: 'finish', reason: 'tool-step-limit' });
-  finishUsage();
-  return full + (full ? '\n\n' : '') + '_(Reached the action limit for one turn — say "continue" to keep going.)_';
+    const toolCalls = toolSpecs && stopReason === 'tool_use' ? toolUses.map((b) => ({ id: b.id, name: b.name, input: safeJson(b.json) })) : [];
+    return { ok: true, text, toolCalls, blocks: blocks.filter(Boolean), usage: reported ? usage : null, finish: stopReason || 'stop' };
+  };
+
+  // Native Anthropic message list — the loop appends to it across tool-use rounds.
+  // Multimodal so pasted/attached images ride along as image blocks.
+  const wire = toMultimodalMessages(messages, 'anthropic');
+  return runSharedLoop({ agent, settings, tools, wire, request, signal, onDelta, onEvent, provider: 'anthropic', model, transcript: 'anthropicTranscript' });
 }
 
 // --------------------------------------------------------------------------
@@ -628,34 +372,26 @@ async function streamAnthropic(agent, messages, { signal, onDelta, onEvent, tool
 // Relay one CLI-agent tool call back to the extension's executor and POST the
 // result to the bridge. Fire-and-forget so the SSE loop keeps reading; the
 // bridge is blocked awaiting /tool-result, so there's nothing to read until then.
-export async function relayBridgeTool(base, ev, tools, onEvent, loopGuard = createToolLoopGuard(), label = '') {
+//
+// `runner` is the shared call runner (events/turn-loop.js `createCallRunner`): the same
+// guard, replay, adaptive policy, progress and step events an API model's round gets —
+// and the same cap, so a CLI agent that keeps asking past it is told the budget is spent.
+export async function relayBridgeTool(base, ev, tools, onEvent, runner = null, label = '') {
   // The bridge is BLOCKED on /tool-result until we answer, so every exit from
   // this function must POST one — including a crash in our own bookkeeping.
   // Without that guarantee a throw here strands the CLI agent forever (the tool
   // shows `running` for minutes after the work is actually done).
   let result;
   try {
-    onEvent?.({ type: 'tool', name: ev.name, phase: 'start', callId: ev.id, input: ev.input, model: label });
-    const guard = loopGuard.check(ev.name, ev.input);
-    result = guard.blocked
-      ? guard.result
-      : tools
-        ? await tools.execute(ev.name, ev.input, { callId: ev.id, session: ev.session })
-        : JSON.stringify({ error: 'no tools armed' });
-    if (!guard.blocked && toolMadeProgress(ev.name, result)) loopGuard.reset(guard.key);
-    // The CLI agent asks one call at a time, so there is no round here; the trait is read
-    // the same way the round reads it (the dispatcher's index, else the name).
-    const { toolTraits } = await import('./events/tool-traits.js');
-    const eff = effectiveToolName(ev.name, ev.input);
-    const traits = tools?.traits?.get(eff) || tools?.traits?.get(ev.name) || toolTraits({ name: eff });
-    loopGuard.remember(guard.key, ev.name, ev.input, result, { readOnly: !!traits.readOnly });
+    const r = runner || (await loadTurnLoop()).createCallRunner({
+      tools: tools || { specs: [], execute: null },
+      modelLabel: () => label || null,
+      onStep: (step) => { try { onEvent?.({ type: 'tool', ...step }); } catch { /* a reporting failure must not strand the agent */ } },
+    });
+    result = tools ? await r.one(ev, { session: ev.session }) : JSON.stringify({ error: 'no tools armed' });
   } catch (e) {
     result = JSON.stringify({ error: String(e?.message || e) });
   } finally {
-    const image = result && typeof result === 'object' ? result.image : undefined;
-    try {
-      onEvent?.({ type: 'tool', name: ev.name, phase: 'done', callId: ev.id, image, status: toolStatus(result), result: stepResultText(result) });
-    } catch { /* a reporting failure must not strand the agent */ }
     await fetch(`${base}/tool-result`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -791,7 +527,16 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
   // so we estimate from the produced text at the end. `costUsd` (when the CLI
   // reports it) is authoritative and bypasses our rate table.
   let usage = null;
-  const loopGuard = createToolLoopGuard();
+  // One call runner for the whole session: the CLI agent asks one call at a time, and the
+  // runner keeps the guard, the policy and the cap across them (the extension's "max
+  // requests per turn" — here, tool calls, since the agent's own requests are not ours).
+  const loop = await loadTurnLoop();
+  const runner = loop.createCallRunner({
+    tools: turnTools || { specs: [], execute: null },
+    modelLabel: () => modelLabelOf(agent),
+    maxCalls: turnTools ? loop.roundCap({ tools: turnTools, agent, settings }) : 0,
+    onStep: (step) => { try { onEvent?.({ type: 'tool', ...step }); } catch { /* a reporting failure must not strand the agent */ } },
+  });
   for await (const data of sseLines(res)) {
     let ev;
     try {
@@ -827,7 +572,7 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
       // The CLI agent called one of our turn tools (via the bridge's MCP
       // server) — run it here and POST the result back. Don't await: the bridge
       // is blocked on /tool-result, so no further SSE arrives until we answer.
-      relayBridgeTool(base, ev, tools, onEvent, loopGuard, modelLabelOf(agent));
+      relayBridgeTool(base, ev, turnTools, onEvent, runner, modelLabelOf(agent));
     } else {
       // tool use / status / reasoning — surface for the activity strip.
       onEvent?.(ev);

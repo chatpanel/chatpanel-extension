@@ -3,9 +3,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { runRound, parallelEligible } from '../extension/js/turn-round.js';
-import { createToolLoopGuard } from '../extension/js/providers.js';
-import { createAdaptiveToolPolicy } from '../extension/js/events/adaptive-tool-policy.js';
+import { createCallRunner } from '../extension/js/events/turn-loop.js';
+import { parallelEligible } from '../extension/js/events/tool-traits.js';
+import { createToolLoopGuard } from '../extension/js/events/tool-loop-guard.js';
 import { buildToolset } from '../extension/js/toolset.js';
 import { mcpDispatchProvider, MCP_TOOL_NAME } from '../extension/js/events/mcp-dispatch.js';
 import { narrowToolset } from '../extension/js/tool-select.js';
@@ -41,10 +41,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     { id: '5', name: 'mcp', args: { action: 'mcp_jira__search', args: { q: 'a' } } }, // identical to 1 → coalesced
   ];
   const events = [];
-  const round = await runRound(wanted, {
-    tools, agent: { name: 'm' }, loopGuard: createToolLoopGuard(), adaptivePolicy: createAdaptiveToolPolicy(),
-    onEvent: (e) => events.push(`${e.phase}:${e.callId}`), argsOf: (c) => c.args,
-  });
+  const round = await createCallRunner({ tools, onStep: (e) => events.push(`${e.phase}:${e.callId}`) })
+    .round(wanted.map((c) => ({ id: c.id, name: c.name, input: c.args })));
   assert.equal(round.calls.length, 5);
   assert.equal(round.results.length, 5);
   assert.equal(peak, 2, 'the two data reads overlapped; nothing else did');
@@ -52,7 +50,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert.deepEqual(round.results[4], round.results[0], 'the coalesced call got the same answer');
   assert.ok(events.includes('start:5') && events.includes('done:5'), 'the coalesced call is still in the activity log');
   assert.equal(events.filter((e) => e.startsWith('start:')).length, 5);
-  assert.equal(round.blockedThisRound, 0);
+  assert.equal(round.blocked, 0);
 }
 
 // ── 1b. the turn that showed the gap: two `find → weather` calls through the REAL data
@@ -68,10 +66,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const find = dataDispatchProvider(inner);
   assert.equal(find.traits.get('weather').readOnly, true, 'the dispatcher carries that trait');
   const tools = buildToolset([find]);
-  const round = await runRound([
-    { id: 'w1', name: DATA_TOOL_NAME, args: { action: 'weather', args: { location: 'Issaquah, WA' } } },
-    { id: 'w2', name: DATA_TOOL_NAME, args: { action: 'weather', args: { location: 'Snoqualmie, WA' } } },
-  ], { tools, agent: {}, loopGuard: createToolLoopGuard(), adaptivePolicy: createAdaptiveToolPolicy(), onEvent: () => {}, argsOf: (c) => c.args });
+  const round = await createCallRunner({ tools }).round([
+    { id: 'w1', name: DATA_TOOL_NAME, input: { action: 'weather', args: { location: 'Issaquah, WA' } } },
+    { id: 'w2', name: DATA_TOOL_NAME, input: { action: 'weather', args: { location: 'Snoqualmie, WA' } } },
+  ]);
   assert.equal(peak, 2, 'two weather lookups for two towns ran together');
   assert.ok(round.results.every((r) => /Weather for/.test(r?.text || r)), JSON.stringify(round.results));
 }
@@ -92,10 +90,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 {
   const guard = createToolLoopGuard({ maxIdenticalCalls: 1 });
   const tools = { remoteTools: new Set(), serialTools: new Set(), async execute() { return 'ok'; } };
-  const one = [{ id: 'a', name: 'note_write', args: { x: 1 } }];
-  await runRound(one, { tools, agent: {}, loopGuard: guard, adaptivePolicy: createAdaptiveToolPolicy(), onEvent: () => {}, argsOf: (c) => c.args });
-  const again = await runRound([{ id: 'b', name: 'note_write', args: { x: 1 } }], { tools, agent: {}, loopGuard: guard, adaptivePolicy: createAdaptiveToolPolicy(), onEvent: () => {}, argsOf: (c) => c.args });
-  assert.equal(again.blockedThisRound, 1, 'the second identical write is blocked by the guard, not executed');
+  const runner = createCallRunner({ tools, guard });
+  await runner.round([{ id: 'a', name: 'note_write', input: { x: 1 } }]);
+  const again = await runner.round([{ id: 'b', name: 'note_write', input: { x: 1 } }]);
+  assert.equal(again.blocked, 1, 'the second identical write is blocked by the guard, not executed');
 }
 
 // ── 4. the MCP dispatcher: a narrowed menu, the full set reachable via find ───────────
@@ -205,12 +203,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert.deepEqual(calls, ['tools/call']);
 }
 
-// ── 7. the loops go through the round, not a for-await ───────────────────────────────
+// ── 7. the loops ARE the shared loop — one request per provider, the rest in events ──
 {
   const providersJs = readFileSync(new URL('../extension/js/providers.js', import.meta.url), 'utf8');
-  assert.match(providersJs, /function streamOpenAI[\s\S]*await import\('\.\/turn-round\.js'\)[\s\S]*function streamAnthropic[\s\S]*await import\('\.\/turn-round\.js'\)/, 'both loops run their rounds through turn-round.js');
-  assert.doesNotMatch(providersJs, /for \(const c of wanted\) \{\s*const input = safeJson/, 'the OpenAI loop no longer walks calls one at a time');
-  assert.doesNotMatch(providersJs, /for \(const b of toolUses\) \{\s*const input = safeJson/, 'the Anthropic loop no longer walks calls one at a time');
+  assert.match(providersJs, /import\('\.\/events\/turn-loop\.js'\)/, 'the loop is loaded on demand from the shared package');
+  assert.match(providersJs, /function streamOpenAI[\s\S]*return runSharedLoop\([\s\S]*transcript: 'openAiTranscript'/, 'the OpenAI provider is one request plus the shared loop');
+  assert.match(providersJs, /function streamAnthropic[\s\S]*return runSharedLoop\([\s\S]*transcript: 'anthropicTranscript'/, 'the Anthropic provider is one request plus the shared loop');
+  assert.doesNotMatch(providersJs, /for \(let step = 0; step < stepCap/, 'no provider walks rounds itself any more');
+  assert.doesNotMatch(providersJs, /function createToolLoopGuard/, 'the guard lives in the shared package');
   assert.match(providersJs, /shieldToolset\(tools, \{ settings \}\)/, 'the no-redaction path shields');
   assert.match(providersJs, /safeTools = shieldToolset\(\{/, 'the redaction path shields OUTSIDE the harness');
 }

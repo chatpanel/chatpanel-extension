@@ -270,10 +270,11 @@ const OFF_LIMITS = {
   // Pinned off ALL entry points so a future static import fails here rather than
   // quietly costing every panel open ~460 KB of ONNX-adjacent plumbing.
   'js/speech.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
-  // The tool round: a round only exists once a model has asked for tools, and a result is
+  // The turn loop: a loop only exists once a model has asked for tools, and a result is
   // only shielded once a tool has returned one. Both are reached from providers.js by
-  // `await import()`; a static import here would put ~40 KB on every page that can chat.
-  'js/turn-round.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  // `await import()`; a static import here would put ~60 KB on every page that can chat.
+  'js/events/turn-loop.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
+  'js/events/tool-loop-guard.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/tool-result-shield.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/events/tool-round.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],
   'js/events/tool-result.js': ['sidepanel.js', 'background.js', 'notes.js', 'settings.js'],

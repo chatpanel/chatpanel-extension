@@ -1660,6 +1660,11 @@ Model    : codex            (or claude / opencode / pi, or one of your API model
                   sent. 0 = no limit.</span></label>
                 <input type="number" id="pref-max-tools" min="0" max="200" placeholder="24" style="max-width:120px" />
               </div>
+              <div class="row"><label>Max model requests per turn <span class="sub">— how many times one message may go
+                  back to the model while it uses tools, before it is asked to answer with what it has. Up to 60. An
+                  endpoint's own limit wins when set.</span></label>
+                <input type="number" id="pref-max-rounds" min="1" max="60" placeholder="60" style="max-width:120px" />
+              </div>
               <div class="pref-item">
                 <label class="check">
                   <input type="checkbox" id="pref-topic-extract" />

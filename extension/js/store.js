@@ -332,6 +332,7 @@ export function defaultSettings() {
       // Local page/history tools are always kept; remote MCP tools beyond the cap are
       // dropped by lexical relevance to the message. 0 = no limit.
       maxToolsPerTurn: 24,
+      maxToolRoundsPerTurn: 60,
       // Reversible PII redaction (Privacy tab). Strips sensitive values out of
       // everything sent to a model and reconstructs them when rendering the reply.
       // Off by default (opt-in). mode: 'off' | 'deterministic' | 'model'

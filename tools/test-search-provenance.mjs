@@ -17,7 +17,9 @@ assert.equal(toolStatus(histResult), 'ChatPanel · browser + gateway', 'the badg
 assert.match(toolStatus({ error: 'boom', note: 'ChatPanel · brave' }), /^error: /);
 
 // A plain string result (every other tool) is unchanged.
-assert.equal(toolStatus('just text'), '');
+assert.equal(toolStatus('just text'), 'ok', 'a plain-text result is fine unless it says otherwise');
+assert.match(toolStatus('web_search failed: blocked'), /^error: /, 'and the shared tools say so in prose');
+assert.equal(toolStatus(''), '');
 assert.equal(resultText('just text'), 'just text');
 
 console.log('ok — steps report which engine/tier answered, without changing what the model reads');

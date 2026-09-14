@@ -5580,6 +5580,7 @@ function renderPrefs() {
   $('pref-enter').checked = settings.ui.sendOnEnter !== false;
   $('pref-stream').checked = settings.ui.streamResponses !== false;
   $('pref-max-tools').value = String(settings.ui.maxToolsPerTurn ?? 24);
+  $('pref-max-rounds').value = String(settings.ui.maxToolRoundsPerTurn || 60);
   const ws = settings.ui.webSearch || {};
   $('pref-websearch-enabled').checked = ws.enabled !== false;
   $('pref-websearch-per').value = String(ws.perEngine ?? 5);
@@ -6205,6 +6206,7 @@ async function savePrefs() {
   settings.ui.sendOnEnter = $('pref-enter').checked;
   settings.ui.streamResponses = $('pref-stream').checked;
   settings.ui.maxToolsPerTurn = Math.max(0, Number($('pref-max-tools').value) || 0);
+  settings.ui.maxToolRoundsPerTurn = Math.min(60, Math.max(1, Number($('pref-max-rounds').value) || 60));
   const clampN = (v, d) => Math.min(10, Math.max(1, Number(v) || d));
   const engines = collectWebSearchEngines();
   settings.ui.webSearch = {

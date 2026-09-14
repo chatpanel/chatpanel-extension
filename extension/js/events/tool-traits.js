@@ -158,9 +158,33 @@ export function withDestructiveGate(toolset, { confirm = null, only = () => true
   };
 }
 
-// A dispatcher carries the real action in `input.action`; the gate must see through it or
-// `mcp {action:"mcp_x__delete_repo"}` is judged by the name "mcp".
-function defaultEffectiveName(name, input) {
+// A dispatcher carries the real action in `input.action`; every name-based policy must
+// see through it or `mcp {action:"mcp_x__delete_repo"}` is judged by the name "mcp" — and
+// `page {action:'screenshot'}` taken four times looks like a stuck loop instead of a look.
+// One definition: the extension, the desktop and the gate each had their own copy.
+export function effectiveToolName(name, input) {
   const action = input && typeof input === 'object' ? input.action : null;
   return typeof action === 'string' && action ? action : name;
+}
+const defaultEffectiveName = effectiveToolName;
+
+// Local tools whose reads may overlap in one round: they touch the user's own data or the
+// network, never the one tab a page tool is driving. Everything not remote and not here
+// runs one at a time, whatever its name says — a wrong "parallel" races the world, a wrong
+// "serial" only costs latency. The `find` dispatcher is here as a whole: everything behind
+// it is a read of the user's data or the web (its writes are separate tools by design).
+//
+// ONE list. The extension and the desktop each kept their own and they drifted within
+// weeks — the desktop serialised `recall` and `skill_open` that the extension overlapped.
+export const PARALLEL_LOCAL_RE = /^(find$|history_|web_search$|weather$|get_result$|skill_open$|skill_file$|recall$|memory_recall$|meeting_live_transcript$)/;
+
+/**
+ * May this call share a batch with its neighbours? Read-only by its traits, not pinned
+ * serial by the toolset, and either remote (its own server) or on the local overlap list.
+ */
+export function parallelEligible(tools, call, traits) {
+  if (!traits?.readOnly) return false;
+  if (tools?.serialTools?.has(call.name)) return false;
+  const eff = effectiveToolName(call.name, call.input);
+  return !!tools?.remoteTools?.has(call.name) || PARALLEL_LOCAL_RE.test(eff) || PARALLEL_LOCAL_RE.test(call.name);
 }

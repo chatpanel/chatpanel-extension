@@ -6,7 +6,7 @@
 // was trying to fix. That single regression turned a two-step task into forty-four.
 
 import assert from 'node:assert/strict';
-import { createToolLoopGuard } from '../extension/js/providers.js';
+import { createToolLoopGuard } from '../extension/js/events/tool-loop-guard.js';
 
 const guard = createToolLoopGuard ? createToolLoopGuard() : null;
 if (!guard) {

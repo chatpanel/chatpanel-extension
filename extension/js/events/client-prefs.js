@@ -41,7 +41,7 @@ export const PREF_SECTIONS = Object.freeze([
   // fold on the gateway's project record, not here.
   { id: 'projects', label: 'Projects', path: ['projects'], kind: 'array' },
   { id: 'webSearch', label: 'Web search', path: ['ui', 'webSearch'], kind: 'object' },
-  { id: 'tools', label: 'Tools', path: null, kind: 'object', keys: ['mcpToolsMode', 'maxToolsPerTurn', 'historyTools', 'historyContextMode', 'dataDispatch', 'toolResultMaxChars'] },
+  { id: 'tools', label: 'Tools', path: null, kind: 'object', keys: ['mcpToolsMode', 'maxToolsPerTurn', 'maxToolRoundsPerTurn', 'historyTools', 'historyContextMode', 'dataDispatch', 'toolResultMaxChars'] },
   { id: 'suggestions', label: 'Smart suggestions', path: ['ui', 'suggestions'], kind: 'object' },
   { id: 'topics', label: 'Topic extraction', path: ['ui', 'topicExtraction'], kind: 'object' },
   { id: 'voice', label: 'Voice', path: ['ui', 'voice'], kind: 'object' },

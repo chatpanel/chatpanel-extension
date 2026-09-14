@@ -178,8 +178,19 @@ export {
 export { explainMcpError, packageFromArgs, isStaleMcpSession } from './mcp-errors.js';
 // The tool round — what a tool does, how a round runs, what a result costs, how a tool is
 // found, and a workflow written down once (see docs/ROADMAP "the tool round" in chatpanel).
-export { toolTraits, bareToolName, canRunConcurrently, isCacheable, needsConfirmation, traitsIndex } from './tool-traits.js';
+export { toolTraits, bareToolName, canRunConcurrently, isCacheable, needsConfirmation, traitsIndex, effectiveToolName, parallelEligible, PARALLEL_LOCAL_RE } from './tool-traits.js';
 export { planToolRound, runToolRound } from './tool-round.js';
+// The turn loop — the one loop every client runs (rounds, guard, cap, exhaustion, usage),
+// with the provider call, the tools and the transcript shape injected.
+export {
+  createToolLoopGuard, roundSignature, stableToolCallKey, toolMadeProgress, isLoopableTool, blockedToolResult,
+  OBSERVATION_TOOLS, INPUT_PROGRESS_TOOLS,
+} from './tool-loop-guard.js';
+export {
+  runTurnLoop, createCallRunner, roundCap, withToolSystem, describeCall as describeToolCall, stepResultText, addUsage, normalizeUsage,
+  openAiTranscript, anthropicTranscript,
+  DEFAULT_MAX_ROUNDS, DEFAULT_MAX_FINISH_TRIES, FINISH_NUDGES, LOOPING_NUDGE, EXHAUSTED_NOTE, ROUND_SEPARATOR,
+} from './turn-loop.js';
 export {
   createResultStore, shieldToolResult, runResultQuery, withResultShield, describeShape, compactValue,
   resultToolSpec, RESULT_TOOL_NAME, DEFAULT_SHIELD, DEFAULT_STORE,
