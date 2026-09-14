@@ -151,7 +151,7 @@ export function needForJob(job, { reach = 'any' } = {}) {
   const capabilities = [];
   const why = [];
   if (tools.length || grants.length) { capabilities.push('tools'); why.push('the job uses tools'); }
-  if (harness) why.push(`a work grant (${grants.filter((g) => WORK_GRANTS.includes(g)).join(', ')}) needs a harness`);
+  if (harness) why.push(`a work grant (${grants.filter((g) => WORK_GRANTS.includes(g)).join(', ')}) needs an agent tool`);
   const r = REACH_RANK[reach] != null ? reach : 'any';
   if (r !== 'any') why.push(`reach ≤ ${r} (the project's privacy setting)`);
   return { capabilities, harness, reach: r, why };
@@ -163,7 +163,7 @@ const meets = (row, need, policy) => {
   const why = [];
   if (row.available === false) why.push('unavailable right now');
   if (REACH_RANK[row.reach] > REACH_RANK[need.reach]) why.push(`reach ${row.reach} exceeds ${need.reach}`);
-  if (need.harness && row.engine.kind !== 'harness') why.push('not a harness');
+  if (need.harness && row.engine.kind !== 'harness') why.push('not an agent tool');
   const missing = need.capabilities.filter((c) => !row.capabilities.includes(c));
   // A harness brings its own tools; the capability list of a bridge agent is the host's guess.
   if (missing.length && !(row.engine.kind === 'harness' && missing.every((c) => c === 'tools'))) why.push(`lacks ${missing.join(', ')}`);
@@ -230,7 +230,7 @@ export function routeFor(agent, job, { rows = [], summary = null, need = null, r
   const policy = spec.policy || {};
   const rejected = [];
   const cleared = list.filter((r) => { const why = meets(r, n, policy); if (why.length) rejected.push(`${r.key}: ${why.join('; ')}`); return !why.length; });
-  if (!cleared.length) return none([`no engine clears ${n.harness ? 'a harness with ' : ''}${n.capabilities.join(', ') || 'the requirements'}${n.reach !== 'any' ? ` within reach ${n.reach}` : ''}${policy.prefer ? ` under ${policy.prefer}` : ''}`, ...rejected.slice(0, 4)]);
+  if (!cleared.length) return none([`no engine clears ${n.harness ? 'an agent tool with ' : ''}${n.capabilities.join(', ') || 'the requirements'}${n.reach !== 'any' ? ` within reach ${n.reach}` : ''}${policy.prefer ? ` under ${policy.prefer}` : ''}`, ...rejected.slice(0, 4)]);
   const ordered = orderByPolicy(cleared, policy.prefer || 'balanced', summary);
   let pick = ordered[0];
   let exploration = false;

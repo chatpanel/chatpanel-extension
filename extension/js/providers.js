@@ -494,7 +494,7 @@ async function streamBridge(agent, messages, { settings, signal, onDelta, onEven
     });
   } catch (e) {
     throw new Error(
-      `Can't reach the ChatPanel Bridge at ${base}. Install ChatPanel (Settings → Harnesses → ChatPanel local) — the gateway brings the bridge — or start one with \`npx @chatpanel/bridge\`. (${e.message})`,
+      `Can't reach the ChatPanel Bridge at ${base}. Install ChatPanel (Settings → Agent Tools → ChatPanel local) — the gateway brings the bridge — or start one with \`npx @chatpanel/bridge\`. (${e.message})`,
     );
   }
   if (!res.ok) throw new Error(bridgeRefusal(res.status, await safeText(res)));

@@ -1805,7 +1805,7 @@ function renderAgentMenu() {
     endpoints.forEach((e) => addItem(e));
   }
   if (bridge.length) {
-    menu.appendChild(sectionLabel('Harnesses'));
+    menu.appendChild(sectionLabel('Agent Tools'));
     bridge.forEach((a) => addItem(a, 'local'));
   }
   const manage = document.createElement('button');

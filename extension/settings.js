@@ -345,7 +345,7 @@ const K_SETTINGS_TAB = 'chatpanel:settingsTab';
 // they name, so each alias resolves to a tab plus the section to open inside it.
 const TAB_ALIAS = {
   models: { tab: 'api' },        // naming phase 1: "API" reads as Models; the panel id is code
-  harnesses: { tab: 'agents' },  // "Agents" (the CLIs) reads as Harnesses; #directory is the agents you define
+  harnesses: { tab: 'agents' }, 'agent-tools': { tab: 'agents' },  // "Agents" (the CLIs) reads as Agent Tools; #directory is the agents you define
   connections: { tab: 'agents', section: 'connections' }, // Settings → Connections: the SCM hubs the bridge holds tokens for
   notes: { tab: 'workspace', section: 'ws-notes' },
   meetings: { tab: 'workspace', section: 'ws-meetings' },
@@ -2114,7 +2114,7 @@ function renderDestinations() {
   }
 
   // Agents (via the bridge / your login)
-  head('Harnesses (via the bridge · your login):');
+  head('Agent Tools (via the bridge · your login):');
   const agentIds = (bridgeState && bridgeState.agents && bridgeState.agents.length)
     ? bridgeState.agents.map((a) => a.id)
     : ['codex', 'claude', 'opencode', 'pi'];
@@ -2395,6 +2395,7 @@ async function refreshGateway() {
   }
   status.textContent = 'Checking…'; status.className = 'status';
   gatewayState = await checkGateway(url);
+  renderGatewayUpdate();
   if (!gatewayState.ok) {
     status.textContent = `✕ Not running yet — install it below to enable local dictation, PII detection & routing.`;
     status.className = 'status err';
@@ -3855,6 +3856,74 @@ function renderBridgeUpdate() {
   }
 }
 
+// The gateway's update offer, under its status line — the bridge's twin (renderBridgeUpdate).
+// The gateway (0.6.107+) reports `update` on /status and updates ITSELF on POST /update, on
+// both of its channels (the npm install and the binary); the install-swap-restart-wait dance
+// lives in js/gateway-update.js. An older gateway has no `update` key: nothing is offered
+// beyond the version it already shows.
+function renderGatewayUpdate() {
+  const el = $('gw-update');
+  if (!el) return;
+  const u = gatewayState && gatewayState.ok ? gatewayState.update : null;
+  if (!u || u.disabled) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  el.classList.remove('hidden');
+  el.className = 'status';
+  el.innerHTML = '';
+  if (!u.updateAvailable) {
+    // The gateway's own check is throttled to one per 6 h; a person who just read about a
+    // release should not have to wait for it. "Check now" asks the channel afresh.
+    const line = document.createElement('span');
+    line.className = 'muted tiny';
+    line.textContent = u.stale ? `Could not check for updates${u.error ? ` (${u.error})` : ''}. ` : u.latest ? `Up to date (v${u.current}, ${u.channel === 'npm' ? 'npm' : 'release'} channel). ` : '';
+    const link = document.createElement('button');
+    link.type = 'button'; link.className = 'btn ghost'; link.textContent = 'Check for updates';
+    link.onclick = async () => {
+      link.disabled = true; link.textContent = 'Checking…';
+      const { checkGatewayUpdate } = await import('./js/gateway-update.js');
+      const r = await checkGatewayUpdate($('gw-url').value);
+      if (r.ok && r.update) { gatewayState = { ...gatewayState, update: r.update }; renderGatewayUpdate(); return; }
+      link.disabled = false; link.textContent = 'Check for updates';
+      line.textContent = `Could not check: ${r.error || 'unknown'}. `;
+    };
+    el.append(line, link);
+    return;
+  }
+  const note = document.createElement('span');
+  note.textContent = `↑ Gateway v${u.latest} available (you have v${u.current}${u.mode === 'npm' ? ', npm install' : ''}). `;
+  el.appendChild(note);
+  if (u.canSelfUpdate) {
+    const btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.textContent = 'Update gateway';
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = 'Updating…';
+      const { updateGatewayAndWait } = await import('./js/gateway-update.js');
+      const r = await updateGatewayAndWait($('gw-url').value, {
+        onStatus: (phase, detail) => {
+          note.textContent = phase === 'installing' ? `Installing gateway v${u.latest}${u.mode === 'npm' ? ' with npm' : ''} — this can take a few minutes… `
+            : phase === 'restarting' ? 'Installed; the gateway is restarting… ' : `Waiting for the new gateway to answer${detail ? ` (${detail})` : ''}… `;
+        },
+      });
+      if (!r.ok) {
+        el.className = 'status err';
+        el.textContent = `✕ Gateway update failed: ${r.error || 'unknown'}`;
+        return;
+      }
+      el.className = 'status ok';
+      el.textContent = r.manual ? `✓ ${r.detail}` : r.slow ? `✓ Gateway v${r.to || u.latest} is installed; it is still starting — check again in a moment.` : `✓ Gateway updated: v${r.from || u.current} → v${r.to}.`;
+      // The page's picture of the gateway belongs to the process that just went away.
+      if (!r.slow && !r.manual) setTimeout(() => refreshGateway(), 1500);
+    };
+    el.appendChild(btn);
+  } else {
+    const cmd = document.createElement('code');
+    cmd.textContent = u.npmCommand || 'curl -fsSL https://dl.chatpanel.net/install.sh | bash';
+    el.append('Update with: ', cmd);
+    if (u.mode === 'npm' && !u.service) el.append(' — this gateway is not run by a login service, so it cannot restart itself; `chatpanel-gateway --install` registers one.');
+  }
+}
+
 async function testBridge() {
   const url = $('bridge-url').value.trim();
   settings.bridgeUrl = url;
@@ -4683,7 +4752,7 @@ function renderTeams() {
     .catch((e) => console.warn('[chatpanel] teams:', e));
 }
 
-// The agent pool (Settings → Agents) and the SCM connections (Settings → Harnesses → Source
+// The agent pool (Settings → Agents) and the SCM connections (Settings → Agent Tools → Source
 // control) — deferred like the teams; both read the gateway/bridge only while rendered.
 function renderAgentPool() {
   const root = $('directory');

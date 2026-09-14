@@ -1,5 +1,5 @@
 // Settings → Agents: the pool — the agents you define, each with a name, a specialty, a
-// prompt, skills, grants and an ENGINE (a model from Models, a coding agent from Harnesses,
+// prompt, skills, grants and an ENGINE (a model from Models, a coding agent from Agent Tools,
 // auto by policy, or the chat's own model for the built-in Assistant), and the scorecard
 // of what it has actually done, read from the gateway.
 //
@@ -36,14 +36,14 @@ function engineEditor(f, roster, render) {
   const models = roster.filter((c) => c.kind !== 'bridge');
   const harnesses = roster.filter((c) => c.kind === 'bridge');
   const box = el('span', { style: 'display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap' });
-  box.append(sel([['auto', 'auto · the recruiter picks'], ['model', 'a model'], ['harness', 'a coding agent (harness)'], ['assistant', 'the chat’s model']], e.kind || 'auto', (v) => { f.engine = v === 'auto' ? { kind: 'auto', prefer: e.prefer || 'balanced' } : { kind: v }; render(); }));
+  box.append(sel([['auto', 'auto · the recruiter picks'], ['model', 'a model'], ['harness', 'an agent tool (Claude Code, Codex…)'], ['assistant', 'the chat’s model']], e.kind || 'auto', (v) => { f.engine = v === 'auto' ? { kind: 'auto', prefer: e.prefer || 'balanced' } : { kind: v }; render(); }));
   if (e.kind === 'auto') box.append(sel(ROUTE_PREFERS.map((p) => [p, p.replace(/-/g, ' ')]), e.prefer || e.policy?.prefer || 'balanced', (v) => { e.prefer = v; }));
   if (e.kind === 'model') {
     const cur = e.providerId ? `${e.providerId}|${e.model || ''}` : (e.model || '');
     box.append(sel([['', 'pick a model…'], ...models.map((c) => [`${c.id}|${c.model || ''}`, `${c.name}${c.model && c.model !== c.name ? ` · ${c.model}` : ''}${c.usable ? '' : ' — not usable'}`]), ...(cur && !models.some((c) => `${c.id}|${c.model || ''}` === cur) ? [[cur, `${e.model} (not configured now)`]] : [])], cur, (v) => { const [providerId, model] = v.split('|'); e.providerId = providerId || undefined; e.model = model || providerId || ''; }));
   }
   if (e.kind === 'harness') {
-    box.append(sel([['', 'pick a harness…'], ...harnesses.map((c) => [c.bridgeAgent || c.id, `${c.name}${c.usable ? '' : ' — not usable'}`]), ...(e.harnessId && !harnesses.some((c) => (c.bridgeAgent || c.id) === e.harnessId) ? [[e.harnessId, `${e.harnessId} (not installed now)`]] : [])], e.harnessId || '', (v) => { e.harnessId = v; }));
+    box.append(sel([['', 'pick an agent tool…'], ...harnesses.map((c) => [c.bridgeAgent || c.id, `${c.name}${c.usable ? '' : ' — not usable'}`]), ...(e.harnessId && !harnesses.some((c) => (c.bridgeAgent || c.id) === e.harnessId) ? [[e.harnessId, `${e.harnessId} (not installed now)`]] : [])], e.harnessId || '', (v) => { e.harnessId = v; }));
     box.append(inp({ placeholder: 'model (optional)', style: 'width:130px' }, e.model || '', (v) => { e.model = v || undefined; }));
   }
   return box;
@@ -69,7 +69,7 @@ function agentEditor({ initial, roster, servers, existingIds, onSave, onCancel }
     root.append(el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin:6px 0' },
       inp({ placeholder: `grants: ${grantHint}`, title: `Tools this agent may hold: ${grantHint}`, style: 'flex:1;min-width:220px' }, f.grants, (v) => { f.grants = v; }),
       inp({ placeholder: 'skills: names, comma-separated', style: 'flex:1;min-width:180px' }, f.skills, (v) => { f.skills = v; }),
-      inp({ placeholder: 'working directory (a repository, for a harness engine)', style: 'flex:1;min-width:220px' }, f.workdir || '', (v) => { f.workdir = v; }),
+      inp({ placeholder: 'working directory (a repository, for an agent-tool engine)', style: 'flex:1;min-width:220px' }, f.workdir || '', (v) => { f.workdir = v; }),
     ));
     const ta = el('textarea', { rows: '5', placeholder: 'The prompt: what this agent does, how it works, what it must not do.', style: 'width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px' });
     ta.value = f.prompt || '';
@@ -146,7 +146,7 @@ export function renderAgents(root, { settings, onChange, editing = null, license
     actions,
   ));
   root.append(el('p', { class: 'muted' },
-    'An agent is yours: a name, a specialty, a prompt, the skills and grants it carries, and an engine — a model from Models, a coding agent from Harnesses, or auto, where the recruiter picks by policy. '
+    'An agent is yours: a name, a specialty, a prompt, the skills and grants it carries, and an engine — a model from Models, a coding agent from Agent Tools, or auto, where the recruiter picks by policy. '
     + 'A team role can stand for an agent (Teams → a role → Agent), so one agent serves many teams and an edit lands everywhere. '
     + 'Each keeps a scorecard of the work it has actually done — written by the runner, attested by the gateway, never by the agent. Shared with the desktop app.'));
   if (editing) {

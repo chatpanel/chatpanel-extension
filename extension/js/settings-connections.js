@@ -1,4 +1,4 @@
-// Settings → Harnesses → Source control: the SCM connections the bridge holds — GitHub
+// Settings → Agent Tools → Source control: the SCM connections the bridge holds — GitHub
 // first; GitHub Enterprise, GitLab, Bitbucket, Gitea, Azure DevOps and plain git by kind.
 //
 // The RECORD (kind, host, reach) is shared with the desktop through the `connections`
@@ -93,7 +93,7 @@ export function renderConnections(root, { settings, bridge, onChange, editing = 
     el('h2', {}, 'Source control ', el('span', { class: 'sub', text: '— where an Implementer pushes its branch and opens its pull request' })),
     el('div', { class: 'card-actions' }, el('button', { class: 'btn primary', type: 'button', text: '+ Connection', ...(editing ? { disabled: '' } : {}), onclick: () => renderConnections(root, { settings, bridge, onChange, editing: { index: -1, connection: blankConnection() } }) })),
   ));
-  root.append(el('p', { class: 'muted', text: 'The repository is the source of truth for a project that is code: an agent with a harness engine works in a worktree of it, on a branch of its own, and what it did is the branch, the commits and the pull request — under a connection here. ChatPanel is not a git host: it brings the credential, the worktree, the branch name and the record.' }));
+  root.append(el('p', { class: 'muted', text: 'The repository is the source of truth for a project that is code: an agent with an agent-tool engine works in a worktree of it, on a branch of its own, and what it did is the branch, the commits and the pull request — under a connection here. ChatPanel is not a git host: it brings the credential, the worktree, the branch name and the record.' }));
   const status = el('div', { class: 'muted tiny' });
   root.append(status);
   if (editing) {

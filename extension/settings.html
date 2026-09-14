@@ -26,7 +26,7 @@
       <div class="shell">
         <aside class="sidenav" id="tabs">
           <button class="tab active" data-tab="api"><span class="tab-ico" data-icon="plug"></span> Models</button>
-          <button class="tab" data-tab="agents"><span class="tab-ico" data-icon="bot"></span> Harnesses</button>
+          <button class="tab" data-tab="agents"><span class="tab-ico" data-icon="bot"></span> Agent Tools</button>
           <button class="tab" data-tab="directory"><span class="tab-ico" data-icon="bot"></span> Agents</button>
           <button class="tab" data-tab="teams"><span class="tab-ico" data-icon="people"></span> Teams</button>
           <button class="tab" data-tab="skills"><span class="tab-ico" data-icon="skills"></span> Skills</button>
@@ -99,7 +99,7 @@
         </div>
         <div class="card">
           <div class="card-head">
-            <h2>Harnesses <span class="sub">— Claude Code, Codex, Antigravity and the other coding agents on this machine</span></h2>
+            <h2>Agent Tools <span class="sub">— Claude Code, Codex, Antigravity and the other coding agents on this machine</span></h2>
             <div class="card-actions">
               <button id="toggle-agents" class="btn ghost" type="button">Expand all</button>
               <button id="add-agent" class="btn primary">+ Add agent</button>
@@ -833,6 +833,7 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
             <button type="button" id="gw-check" class="btn">Check</button>
           </div>
           <p class="status" id="gw-status">Not connected.</p>
+          <div id="gw-update" class="status hidden"></div>
           <!-- Manual admin-token fallback. Normally hidden: the extension auto-handshakes the
                token on connect (v0.6.31+). Revealed only when an older gateway rejects the
                admin API, so the user can paste the token from ~/.chatpanel/gateway-token. -->
