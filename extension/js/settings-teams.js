@@ -11,9 +11,9 @@
 
 import { getSettings, saveSettings } from './store.js';
 import { starterTeams, blankTeam, teamFromForm, MERGE_POLICIES, PLAN_MODES, ROLE_PREFERS } from './events/team.js';
-import { promoteRoles, starterTeam, teamHealth, teamShape, describeTeamShape, missingStarters, upsertAgents } from './events/team-org.js';
+import { promoteRoles, teamHealth, teamShape, describeTeamShape, missingStarters, upsertAgents, builtinOrg } from './events/team-org.js';
 import { runStore, rosterFor, appointerFor, answerAsk, resolveTeamHere } from './team-host.js';
-import { agentAvatar } from './settings-agents.js';
+import { agentAvatar, grantPicker } from './settings-agents.js';
 
 
 const budgetText = (b = {}) => Object.entries(b).map(([k, v]) => `${k} ${v}`).join(' · ') || 'none';
@@ -70,7 +70,6 @@ function teamEditor({ initial, servers, roster, pool = [], existingNames, onSave
   const f = toForm(initial);
   const root = el('div', { class: 'entity s-entity' });
   const errors = el('ul', { style: 'margin:4px 0;padding-left:18px;font-size:12.4px;color:var(--danger)' });
-  const grantHint = `none · data · web · history · mcp${servers.length ? ` · ${servers.map((x) => `mcp:${x.id}`).join(' · ')}` : ''}`;
   const render = () => {
     root.innerHTML = '';
     const head = el('div', { class: 'entity-head', style: 'gap:8px' },
@@ -97,9 +96,10 @@ function teamEditor({ initial, servers, roster, pool = [], existingNames, onSave
         sel([['', 'no agent · a role of its own'], ...pool.map((a) => [a.id, `agent: ${a.name || a.id}`]), ...(r.agent && !pool.some((a) => a.id === r.agent) ? [[r.agent, `agent: ${r.agent} (not in the pool)`]] : [])], r.agent || '', (v) => { r.agent = v || undefined; render(); }),
         r.agent ? null : sel(ROLE_PREFERS.map((m) => [m, m]), r.prefer || 'balanced', (v) => { r.prefer = v; }),
         r.agent ? null : sel([['', 'auto · by tier'], ...roster.map((c) => [c.id, `${c.name}${c.kind === 'bridge' ? ' (agent)' : ''}${c.usable ? '' : ' — not usable'}`]), ...(r.model && !roster.some((c) => c.id === r.model) ? [[r.model, `${r.model} (not available now)`]] : [])], r.model || '', (v) => { r.model = v || undefined; }),
-        inp({ placeholder: r.agent ? 'grants: blank = the agent’s; list some to narrow' : grantHint, title: `Tools this role may hold: ${grantHint}`, style: 'flex:1' }, r.grants, (v) => { r.grants = v; }),
         el('button', { class: 'btn', type: 'button', text: 'Remove', onclick: () => { f.roles.splice(i, 1); render(); }, ...(f.roles.length === 1 ? { disabled: '' } : {}) }),
       ));
+      // Grants as choices (team-org.js grantChoices); on a role that stands for an agent, checking some narrows what the agent already holds.
+      card.append(grantPicker(String(r.grants || '').split(/[,\s]+/).filter(Boolean), { servers, narrowing: !!r.agent, onChange: (g) => { r.grants = g.includes('none') && r.agent ? '' : g.join(', '); } }));
       const ta = el('textarea', { rows: r.agent ? '2' : '3', placeholder: r.agent ? 'Optional — what this role adds in this team; the agent’s own prompt is used.' : 'What this role does.', style: 'width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px' });
       ta.value = r.prompt || '';
       ta.addEventListener('input', () => { r.prompt = ta.value; });
@@ -128,59 +128,73 @@ function teamEditor({ initial, servers, roster, pool = [], existingNames, onSave
 export function renderTeams(root, { settings, onChange, editing = null, license = null }) {
   root._teamsDispose?.(); // a re-render (New team, Edit, Cancel) must not leave the last poll running
   root.innerHTML = '';
-  const list = (Array.isArray(settings.teams) ? settings.teams : []).filter((t) => t && t.name);
+  // The saved section holds what a person made, edited or switched off; the list is the
+  // built-in org over it (team-org.js builtinOrg): every starter present without a click.
+  const saved = (Array.isArray(settings.teams) ? settings.teams : []).filter((t) => t && t.name);
   const roster = rosterFor(settings, license, { like: settings.activeAgentId || '' });
   const appointRole = appointerFor(settings, license, { like: settings.activeAgentId || '' });
   const servers = (Array.isArray(settings.mcpServers) ? settings.mcpServers : []).filter((x) => x && x.id);
-  const poolAll = (Array.isArray(settings.agentPool) ? settings.agentPool : []).filter((a) => a && a.id);
+  const savedPool = (Array.isArray(settings.agentPool) ? settings.agentPool : []).filter((a) => a && a.id);
+  const org = builtinOrg(saved, savedPool);
+  const list = org.teams;
+  const poolAll = org.pool;
   const pool = poolAll.filter((a) => a.enabled !== false);
+  const shippedNames = new Set(starterTeams().map((t) => t.name));
   // A team is saved WITH its cards (F8 §17.1): every inline role becomes a pool agent, a
   // starter brings the agents it stands on — so both sections move together, in one write.
+  // `next` is the SAVED section (never a built-in as such); a built-in that is edited or
+  // switched off is saved as a copy of ours, which then replaces it.
   const persist = async (next, cards = []) => {
-    const nextPool = cards.length ? upsertAgents(poolAll, cards) : poolAll;
+    const nextPool = cards.length ? upsertAgents(savedPool, cards.filter((c) => !c.builtin)) : savedPool;
     await saveSettings({ ...(await getSettings()), teams: next, ...(cards.length ? { agentPool: nextPool } : {}) });
     onChange?.(next, cards.length ? nextPool : undefined);
   };
-  const starters = starterTeams().filter((t) => !list.some((x) => x.name === t.name));
+  const copyOf = (t) => { const { builtin, ...rest } = t; return rest; };
+  const upsertTeam = (t) => (saved.some((x) => x.name === t.name) ? saved.map((x) => (x.name === t.name ? t : x)) : [...saved, t]);
   const actions = el('div', { class: 'card-actions' },
-    ...starters.map((t) => el('button', { class: 'btn', type: 'button', text: `+ ${t.name} starter`, title: 'Adds the team and every agent it stands on', onclick: () => { const s = starterTeam(t.name, poolAll); persist([...list, { ...s.team, createdAt: Date.now() }], s.agents.map((a) => ({ ...a, createdAt: Date.now() }))); } })),
     el('button', { class: 'btn primary', type: 'button', text: '+ New team', ...(editing ? { disabled: '' } : {}), onclick: () => renderTeams(root, { settings, onChange, license, editing: { index: -1, team: blankTeam() } }) }),
   );
   root.append(el('div', { class: 'card-head' },
-    el('h2', {}, 'Teams ', el('span', { class: 'sub' }, `${list.length ? `${list.length} saved` : 'none yet'}`)),
+    el('h2', {}, 'Teams ', el('span', { class: 'sub' }, `${list.length} · ${list.filter((t) => t.builtin).length} built in`)),
     actions,
   ));
   root.append(el('p', { class: 'muted' },
     'A team is several roles working one request in parallel, each with the tools you granted it and a shared budget, merged into one answer. '
-    + 'Make one here, add a starter, or ask the assistant to propose one after a task that needed several kinds of work. '
-    + 'Run it by typing /its-name in any chat, or by asking. Teams and their runs are shared with the desktop app.'));
+    + 'The built-in teams ship with the product and run as they are; edit one and your copy replaces it, switch it off and it is gone from the menu. '
+    + 'Run any by typing /its-name in any chat, or by asking. Teams and their runs are shared with the desktop app.'));
   if (editing) {
     root.append(teamEditor({
       initial: editing.team, servers, roster, pool,
-      existingNames: new Set(list.filter((_, j) => j !== editing.index).map((t) => t.name)),
+      existingNames: new Set(list.map((t) => t.name).filter((n) => n !== editing.team.name)),
       onCancel: () => renderTeams(root, { settings, onChange, license }),
-      onSave: (saved) => {
-        const { team, agents } = promoteRoles(saved, poolAll);
+      onSave: (form) => {
+        const { team, agents } = promoteRoles(form, poolAll);
         const stamped = { ...team, createdAt: editing.team.createdAt || Date.now() };
-        persist(editing.index < 0 ? [...list, stamped] : list.map((x, j) => (j === editing.index ? stamped : x)), agents);
+        persist(upsertTeam(stamped), agents);
       },
     }));
   }
   list.forEach((t, i) => {
-    const card = el('div', { class: `entity s-entity${t.enabled === false ? ' is-off' : ''}` });
+    const card = el('div', { class: `entity s-entity${t.enabled === false ? ' is-off' : ''}`, 'data-team': t.name, ...(t.builtin ? { 'data-builtin': '' } : {}) });
     const toggle = el('input', { type: 'checkbox', title: 'Enabled' });
     toggle.checked = t.enabled !== false;
-    toggle.addEventListener('change', () => persist(list.map((x, j) => (j === i ? { ...x, enabled: toggle.checked } : x))));
+    toggle.addEventListener('change', () => persist(upsertTeam({ ...copyOf(t), enabled: toggle.checked, createdAt: t.createdAt || Date.now() })));
+    const isShipped = shippedNames.has(t.name);
+    const isSaved = saved.some((x) => x.name === t.name);
     card.append(el('div', { class: 'entity-head' },
       el('strong', { text: `/${t.name}` }),
+      t.builtin ? el('span', { class: 'org-chip on', text: 'built-in' }) : null,
       el('span', { class: 'muted', text: t.description || '' }),
       el('span', { class: 'muted tiny', text: `${t.plan || 'fixed'} · merge ${t.merge || 'concat'}${t.judge ? ` (${t.judge})` : ''} · budget ${budgetText(t.budget)}` }),
       el('label', { class: 'muted tiny', style: 'margin-left:auto;display:flex;gap:6px;align-items:center' }, toggle, 'Enabled'),
-      el('button', { class: 'btn', type: 'button', text: 'Edit', ...(editing ? { disabled: '' } : {}), onclick: () => renderTeams(root, { settings, onChange, license, editing: { index: i, team: t } }) }),
-      el('button', { class: 'btn danger', type: 'button', text: 'Delete', onclick: async () => {
+      el('button', { class: 'btn', type: 'button', text: 'Edit', ...(editing ? { disabled: '' } : {}), onclick: () => renderTeams(root, { settings, onChange, license, editing: { index: i, team: copyOf(t) } }) }),
+      // A built-in is the product's: switched off or edited (your copy replaces it), never
+      // deleted; an edited one can go back to what shipped.
+      isShipped && isSaved ? el('button', { class: 'btn', type: 'button', text: 'Reset to built-in', title: 'Drop your copy; what ships comes back', onclick: () => persist(saved.filter((x) => x.name !== t.name)) }) : null,
+      isShipped ? null : el('button', { class: 'btn danger', type: 'button', text: 'Delete', onclick: async () => {
         const { confirmDelete } = await import('./confirm-modal.js');
         if (!(await confirmDelete({ title: 'Delete team?', body: `/${t.name} will be removed from every client. Its past runs stay on the gateway.`, confirmLabel: 'Delete' }))) return;
-        await persist(list.filter((_, j) => j !== i));
+        await persist(saved.filter((x) => x.name !== t.name));
       } }),
     ));
     // The team AS ITS SHAPE (team-org.js): columns by dependency — a column runs in parallel,
@@ -217,7 +231,7 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
       const fixable = missingStarters(t, poolAll);
       card.append(el('div', { class: 'org-row', 'data-health': 'hole' },
         el('span', { class: 'org-chip risk', text: health.reason }),
-        ...(fixable.length ? [el('button', { class: 'btn primary', type: 'button', text: `Add the built-in ${fixable.map((a) => a.name).join(', ')}`, onclick: () => persist(list, fixable.map((a) => ({ ...a, createdAt: Date.now() }))) })] : []),
+        ...(fixable.length ? [el('button', { class: 'btn primary', type: 'button', text: `Add the built-in ${fixable.map((a) => a.name).join(', ')}`, onclick: () => persist(saved, fixable.map((a) => ({ ...a, createdAt: Date.now() }))) })] : []),
         ...(health.holes.some((h) => h.fix === 'pick') ? [el('span', { class: 'muted tiny', text: 'or pick another agent for the role with Edit' })] : []),
       ));
     } else card.append(el('div', { class: 'org-row', 'data-health': 'ready' }, el('span', { class: 'org-chip good', text: 'ready' }), el('span', { class: 'muted tiny', text: `run it with /${t.name} in any chat` })));
@@ -226,7 +240,7 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
     if (health.inline.length) {
       card.append(el('div', { class: 'org-row', 'data-health': 'inline' },
         el('span', { class: 'org-chip warn', text: `${health.inline.length} role${health.inline.length === 1 ? ' is' : 's are'} not on the Agents tab yet` }),
-        el('button', { class: 'btn', type: 'button', text: `Make ${health.inline.length === 1 ? 'it' : 'them'} cards`, onclick: () => { const { team, agents } = promoteRoles(t, poolAll); persist(list.map((x, j) => (j === i ? { ...team, createdAt: x.createdAt } : x)), agents); } }),
+        el('button', { class: 'btn', type: 'button', text: `Make ${health.inline.length === 1 ? 'it' : 'them'} cards`, onclick: () => { const { team, agents } = promoteRoles(t, poolAll); persist(upsertTeam({ ...copyOf(team), createdAt: t.createdAt || Date.now() }), agents); } }),
       ));
     }
     root.append(card);

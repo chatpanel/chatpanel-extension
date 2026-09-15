@@ -21,8 +21,8 @@
 // Nothing here renders. A client maps `columns` to boxes and arrows, `hue` to a colour, and
 // `kind` to a word; the SVG is its own.
 
-import { normalizeTeam, validateTeam, starterTeams, TeamError } from './team.js';
-import { normalizeAgent, engineOf, starterAgents, STARTER_AGENTS, ASSISTANT_ID } from './agent.js';
+import { normalizeTeam, validateTeam, starterTeams, TeamError, GRANT_RE } from './team.js';
+import { normalizeAgent, engineOf, starterAgents, assistantAgent, STARTER_AGENTS, ASSISTANT_ID } from './agent.js';
 
 const isRecord = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const poolList = (pool) => (Array.isArray(pool) ? pool : []).filter((a) => a && a.id);
@@ -328,7 +328,7 @@ export function upsertAgents(pool, cards) {
 export const SOLO_BUDGET = Object.freeze({ tokens: 40000, ms: 300000 });
 export function soloTeam(agent, { budget = SOLO_BUDGET } = {}) {
   const a = agent && agent.id ? agent : null;
-  if (!a || a.id === ASSISTANT_ID || a.enabled === false) return null;
+  if (!a || a.enabled === false) return null;
   return normalizeTeam({
     name: String(a.id).toLowerCase(),
     description: `Just ${a.name || a.id}${a.purpose ? ` — ${a.purpose}` : ''}`,
@@ -339,18 +339,112 @@ export function soloTeam(agent, { budget = SOLO_BUDGET } = {}) {
   });
 }
 
+
 /**
  * The teams a chat can run: the saved ones, then a solo team per enabled pool agent whose
  * id no saved team already claims. What the slash menu, the `team` tool and "run …" all read.
  */
 export function teamsWithSolos(teams = [], pool = [], opts = {}) {
-  const saved = (Array.isArray(teams) ? teams : []).filter((t) => t && t.name);
+  const org = builtinOrg(teams, pool);
+  const saved = org.teams;
   const taken = new Set(saved.map((t) => String(t.name).toLowerCase()));
   const solos = [];
-  for (const a of poolList(pool)) {
+  for (const a of org.pool) {
     if (taken.has(String(a.id).toLowerCase()) || !(Array.isArray(a.appliesTo) ? a.appliesTo : ['jobs']).includes('jobs')) continue;
     const t = soloTeam(a, opts);
     if (t) { solos.push(t); taken.add(t.name); }
   }
+  // The Assistant too: `/assistant <request>` runs the chat's own model as a one-role team —
+  // on the board, on a scorecard — where a plain turn is neither.
+  if (!taken.has(ASSISTANT_ID)) { const t = soloTeam(assistantAgent(), opts); if (t) solos.push({ ...t, builtin: true }); }
   return [...saved, ...solos];
+}
+
+/**
+ * THE BUILT-IN ORG — the standing agents and the starter teams ship with the product, present
+ * and runnable without a click (the mock's "built-in" chips), and DERIVED, never stored: the
+ * `agents` and `teams` sections hold only what a person made, edited or switched off. A saved
+ * record with a built-in's id or name REPLACES it (an edit, or `enabled: false`), so the
+ * sections stay small and a product update reaches every unedited built-in.
+ *
+ *   • every starter team a person has not saved is here, promoted (its roles as cards) and
+ *     marked `builtin`, with the cards it stands on;
+ *   • every starter agent not in the pool is here, marked `builtin`;
+ *   • the Assistant stays the fixed card it is (agent.js assistantAgent).
+ * Returns `{ teams, pool }` — what every list, the slash menu and the runner read.
+ */
+export function builtinOrg(teams = [], pool = []) {
+  const savedTeams = (Array.isArray(teams) ? teams : []).filter((t) => t && t.name);
+  const savedNames = new Set(savedTeams.map((t) => String(t.name).toLowerCase()));
+  const outPool = [...poolList(pool)];
+  const have = () => new Set(outPool.map((a) => String(a.id)));
+  const outTeams = [...savedTeams];
+  for (const st of starterTeams()) {
+    if (savedNames.has(st.name)) continue;
+    const { team, agents } = starterTeam(st.name, outPool, { now: () => 0 });
+    outTeams.push({ ...team, builtin: true });
+    const ids = have();
+    for (const a of agents) if (!ids.has(a.id)) { const { createdAt, ...card } = a; outPool.push({ ...card, builtin: true }); }
+  }
+  const ids = have();
+  for (const a of starterAgents()) if (!ids.has(a.id)) outPool.push({ ...a, builtin: true });
+  return { teams: outTeams, pool: outPool };
+}
+
+/** Is this record the product's, not a person's — drawn with the built-in chip, toggled rather than deleted. */
+export const isBuiltin = (rec) => !!rec?.builtin;
+
+/**
+ * The GRANTS a person can give, as choices — not a free field of ids nobody has seen. Grouped
+ * the way they read: what the agent may reach, which connected servers, what work it may do
+ * (only an agent-tool engine can use those). `servers` are the connected MCP servers
+ * (`{ id, name? }`), each its own `mcp:<id>` choice under the umbrella `mcp`.
+ */
+export const GRANT_INFO = Object.freeze({
+  data: ['Your data', 'notes, meetings and past chats — search and read'],
+  web: ['Web', 'search the web and fetch pages'],
+  history: ['Chat history', 'search past chats only'],
+  mcp: ['Every connected server', 'all MCP servers you connected; pick servers below to narrow'],
+  shell: ['Run commands', 'a shell in its working directory'],
+  'fs:write': ['Write files', 'edit files in its working directory'],
+  'scm:read': ['Read the repository', 'the checkout and its hub'],
+  'scm:push': ['Push its branch', 'its own cp/<project>/<job> branch, never main'],
+  'scm:pr': ['Open a pull request', ''],
+  'scm:merge': ['Merge', 'only where the org\'s gate allows it'],
+});
+export function grantChoices({ servers = [] } = {}) {
+  const item = (id) => ({ id, label: GRANT_INFO[id]?.[0] || id, hint: GRANT_INFO[id]?.[1] || '' });
+  const groups = [
+    { id: 'reach', label: 'May reach', items: ['data', 'web', 'history', 'mcp'].map(item) },
+  ];
+  const srv = (Array.isArray(servers) ? servers : []).filter((s) => s && s.id);
+  if (srv.length) groups.push({ id: 'servers', label: 'Connected servers', items: srv.map((s) => ({ id: `mcp:${s.id}`, label: s.name || s.id, hint: 'this server only' })) });
+  groups.push({ id: 'work', label: 'May do (agent-tool engines only)', items: ['shell', 'fs:write', 'scm:read', 'scm:push', 'scm:pr', 'scm:merge'].map(item) });
+  return groups;
+}
+
+/** Grants from checked ids: nothing checked is `none`; `mcp` swallows the per-server picks. */
+export function grantsFromChoices(checked = []) {
+  const set = new Set((Array.isArray(checked) ? checked : []).filter((g) => g && g !== 'none' && GRANT_RE.test(String(g))));
+  if (set.has('mcp')) for (const g of [...set]) if (g.startsWith('mcp:')) set.delete(g);
+  return set.size ? [...set] : ['none'];
+}
+
+/**
+ * The SKILLS a person can attach, from the skills they have: the shared `skills` section
+ * (written or installed, `{ command, name?, description?, enabled? }`) and any names an
+ * agent already carries that are not there (kept, marked `missing`, so a card never loses a
+ * skill the list forgot). A skill's id is its command — what `skill_open` and `fit` match on.
+ */
+export function skillChoices(skills = [], { current = [] } = {}) {
+  const out = [];
+  const seen = new Set();
+  for (const s of Array.isArray(skills) ? skills : []) {
+    const id = String(s?.command || s?.name || '').trim();
+    if (!id || seen.has(id) || s?.enabled === false) continue;
+    seen.add(id);
+    out.push({ id, label: s.name && s.name !== id ? `${s.name} (/${id})` : `/${id}`, hint: String(s.description || '').slice(0, 120) });
+  }
+  for (const id of Array.isArray(current) ? current : []) if (id && !seen.has(id)) { seen.add(id); out.push({ id, label: id, hint: 'not among your skills now', missing: true }); }
+  return out;
 }

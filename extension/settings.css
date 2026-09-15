@@ -1522,3 +1522,10 @@ button.org-chip { cursor: pointer; }
 .org-spend .bar { border-radius: 4px; background: var(--field); overflow: hidden; }
 .org-spend .bar i { display: block; height: 100%; background: var(--accent); }
 .org-spend .v { text-align: right; font-family: var(--mono); font-size: 11.5px; }
+/* Grants and skills as choices (team-org.js grantChoices / skillChoices). */
+.org-picker { display: grid; gap: 6px; margin: 6px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--field); }
+.org-picker-group { display: flex; gap: 4px 12px; flex-wrap: wrap; align-items: center; font-size: 12.5px; }
+.org-picker-lb { font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); min-width: 120px; }
+.org-check { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; white-space: nowrap; }
+.org-check input { margin: 0; }
+.org-check.missing span { color: var(--danger); }

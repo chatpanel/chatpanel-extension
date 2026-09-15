@@ -12,7 +12,7 @@
 import { runProject as runProjectLoop } from './events/project-run.js';
 import { normalizeProject } from './events/project.js';
 import { starterAgents } from './events/agent.js';
-import { runTeamHere, recruiterFor, appointerFor, gatewayBase, gwFetch } from './team-host.js';
+import { runTeamHere, recruiterFor, appointerFor, gatewayBase, gwFetch, poolOf } from './team-host.js';
 import { getTarget, resolveTarget } from './store.js';
 import { sourceGuardFor, sourcePolicySettings, sourceUrlsOf } from './events/source-gate.js';
 import { getGatewayToken, handshakeGatewayToken } from './gateway.js';
@@ -36,7 +36,7 @@ export function projectStore(settings) {
 
 /** The executive's card: the pool's own when a person edited it, else the starter. */
 export function executiveFor(settings) {
-  const pool = Array.isArray(settings?.agentPool) ? settings.agentPool : [];
+  const pool = poolOf(settings);
   return pool.find((a) => a && a.id === 'executive' && a.enabled !== false) || starterAgents().find((a) => a.id === 'executive');
 }
 
@@ -87,7 +87,7 @@ export async function runProjectHere({ goal, title = '', doneWhen = '', budget =
   const runJobs = ({ team, request }) => runTeamHere({ team, request, settings, license, like, bridgeUrl, bridgeAvailable, streamChat, buildTurnTools, signal, emit });
 
   const result = await runProjectLoop({
-    project, pool: Array.isArray(settings.agentPool) ? settings.agentPool : [], executive: executive?.id || 'executive',
+    project, pool: poolOf(settings), executive: executive?.id || 'executive',
     gate: settings.gate || null,
     plan, recruit: recruiterFor(settings, license, { like }), runJobs, ask, signal,
     emit: (type, ev) => { const { projectId: _p, ...flat } = ev; push({ type, ...flat }); emit(type, ev); },

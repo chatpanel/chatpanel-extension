@@ -11,9 +11,8 @@
 import { getSettings, saveSettings } from './store.js';
 import { starterAgents, blankAgent, agentFromForm, assistantAgent, APPLIES_TO } from './events/agent.js';
 import { describeEngine, ROUTE_PREFERS } from './events/engine.js';
-import { GRANTABLE } from './events/team.js';
 import { rosterFor, runStore } from './team-host.js';
-import { rosterRows, agentColor, agentInitials, cardNumbers, missingStarters } from './events/team-org.js';
+import { rosterRows, agentColor, agentInitials, cardNumbers, missingStarters, builtinOrg, grantChoices, grantsFromChoices, skillChoices } from './events/team-org.js';
 
 function el(tag, attrs = {}, ...children) {
   const n = document.createElement(tag);
@@ -49,12 +48,11 @@ function engineEditor(f, roster, render) {
   return box;
 }
 
-function agentEditor({ initial, roster, servers, existingIds, onSave, onCancel }) {
-  const f = { ...initial, skills: (initial.skills || []).join(', '), grants: (initial.grants || ['none']).join(', '), appliesTo: [...(initial.appliesTo || ['jobs'])] };
+function agentEditor({ initial, roster, servers, skills = [], existingIds, onSave, onCancel }) {
+  const f = { ...initial, skills: [...(initial.skills || [])], grants: [...(initial.grants || ['none'])], appliesTo: [...(initial.appliesTo || ['jobs'])], builtin: undefined };
   if (f.engine?.kind === 'auto') f.engine = { kind: 'auto', prefer: f.engine.policy?.prefer || f.engine.prefer || 'balanced' };
   const root = el('div', { class: 'entity s-entity' });
   const errors = el('ul', { style: 'margin:4px 0;padding-left:18px;font-size:12.4px;color:var(--danger)' });
-  const grantHint = `${GRANTABLE.join(' · ')}${servers.length ? ` · ${servers.map((x) => `mcp:${x.id}`).join(' · ')}` : ''}`;
   const render = () => {
     root.innerHTML = '';
     root.append(el('div', { class: 'entity-head', style: 'gap:8px' },
@@ -66,9 +64,9 @@ function agentEditor({ initial, roster, servers, existingIds, onSave, onCancel }
       el('label', {}, 'Engine ', engineEditor(f, roster, render)),
       el('label', {}, 'Applies to ', ...APPLIES_TO.map((a) => { const cb = el('input', { type: 'checkbox' }); cb.checked = f.appliesTo.includes(a); cb.addEventListener('change', () => { f.appliesTo = cb.checked ? [...new Set([...f.appliesTo, a])] : f.appliesTo.filter((x) => x !== a); }); return el('span', { style: 'margin-right:6px' }, cb, ` ${a}`); })),
     ));
+    root.append(grantPicker(f.grants, { servers, onChange: (g) => { f.grants = g; } }));
+    root.append(skillPicker(f.skills, { skills, onChange: (k) => { f.skills = k; } }));
     root.append(el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin:6px 0' },
-      inp({ placeholder: `grants: ${grantHint}`, title: `Tools this agent may hold: ${grantHint}`, style: 'flex:1;min-width:220px' }, f.grants, (v) => { f.grants = v; }),
-      inp({ placeholder: 'skills: names, comma-separated', style: 'flex:1;min-width:180px' }, f.skills, (v) => { f.skills = v; }),
       inp({ placeholder: 'working directory (a repository, for an agent-tool engine)', style: 'flex:1;min-width:220px' }, f.workdir || '', (v) => { f.workdir = v; }),
     ));
     const ta = el('textarea', { rows: '5', placeholder: 'The prompt: what this agent does, how it works, what it must not do.', style: 'width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px' });
@@ -91,6 +89,44 @@ function agentEditor({ initial, roster, servers, existingIds, onSave, onCancel }
   return root;
 }
 
+/**
+ * GRANTS as choices (team-org.js grantChoices): grouped checkboxes with a one-line meaning,
+ * the connected servers by name — never a free field of ids. Nothing checked is `none`.
+ */
+export function grantPicker(selected, { servers = [], onChange, narrowing = false }) {
+  const set = new Set((Array.isArray(selected) ? selected : []).filter((g) => g !== 'none'));
+  const box = el('div', { class: 'org-picker', 'data-picker': 'grants' });
+  for (const g of grantChoices({ servers })) {
+    const row = el('div', { class: 'org-picker-group' }, el('span', { class: 'org-picker-lb', text: g.label }));
+    for (const it of g.items) {
+      const cb = el('input', { type: 'checkbox', value: it.id, id: `g-${it.id.replace(/[^a-z0-9]/gi, '_')}-${Math.random().toString(36).slice(2, 6)}` });
+      cb.checked = set.has(it.id);
+      cb.addEventListener('change', () => { if (cb.checked) set.add(it.id); else set.delete(it.id); onChange(grantsFromChoices([...set])); });
+      row.append(el('label', { class: 'org-check', title: it.hint || '' }, cb, el('span', { text: it.label })));
+    }
+    box.append(row);
+  }
+  if (narrowing) box.append(el('div', { class: 'muted tiny', text: 'Nothing checked: the agent\'s own grants. Checking some lends less, never more.' }));
+  return box;
+}
+
+/** SKILLS as choices from the skills you have (team-org.js skillChoices); a name the list lost is kept and said. */
+export function skillPicker(selected, { skills = [], onChange }) {
+  const set = new Set(Array.isArray(selected) ? selected : []);
+  const box = el('div', { class: 'org-picker', 'data-picker': 'skills' });
+  const choices = skillChoices(skills, { current: [...set] });
+  if (!choices.length) { box.append(el('span', { class: 'muted tiny', text: 'No skills yet — write one under Skills and it is offered here.' })); return box; }
+  const row = el('div', { class: 'org-picker-group' }, el('span', { class: 'org-picker-lb', text: 'Skills' }));
+  for (const it of choices) {
+    const cb = el('input', { type: 'checkbox', value: it.id });
+    cb.checked = set.has(it.id);
+    cb.addEventListener('change', () => { if (cb.checked) set.add(it.id); else set.delete(it.id); onChange([...set]); });
+    row.append(el('label', { class: `org-check${it.missing ? ' missing' : ''}`, title: it.hint || '' }, cb, el('span', { text: it.label })));
+  }
+  box.append(row);
+  return box;
+}
+
 const isDark = () => { try { return globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches === true; } catch { return false; } };
 /** The avatar: two letters on the agent's own colour — the same colour on every tab and every client (team-org.js). */
 export function agentAvatar(agentOrId, { small = false } = {}) {
@@ -104,7 +140,7 @@ const KIND_LABEL = { builtin: 'built-in', mine: 'yours', 'team-role': 'a team\'s
  * numbers of its record (the gateway's scorecard, attested) — or a PROPOSED card awaiting
  * Create / Skip, or a MISSING agent a team names, with the fix.
  */
-function agentCard(row, { roster, store, editing, onEdit, onDelete, onToggle, onAddBuiltin, fixed = false }) {
+function agentCard(row, { roster, store, editing, onEdit, onDelete, onToggle, onReset, onAddBuiltin, fixed = false }) {
   const a = row.agent;
   const kind = row.kind;
   const card = el('div', { class: `entity s-entity${a.enabled === false ? ' is-off' : ''}${kind === 'proposed' ? ' is-proposed' : ''}${kind === 'missing' ? ' is-hole' : ''}`, 'data-agent': a.id, 'data-kind': kind });
@@ -136,7 +172,10 @@ function agentCard(row, { roster, store, editing, onEdit, onDelete, onToggle, on
     head.append(
       el('label', { class: 'muted tiny', style: 'margin-left:auto;display:flex;gap:6px;align-items:center' }, toggle, 'Enabled'),
       el('button', { class: 'btn', type: 'button', text: 'Edit', ...(editing ? { disabled: '' } : {}), onclick: onEdit }),
-      el('button', { class: 'btn danger', type: 'button', text: 'Delete', onclick: onDelete }),
+      // A built-in is the product's: switched off or edited (a copy of yours replaces it),
+      // never deleted; an edited one can go back to what shipped.
+      row.saved && row.shipped ? el('button', { class: 'btn', type: 'button', text: 'Reset to built-in', title: 'Drop your copy; what ships comes back', onclick: onReset }) : null,
+      row.shipped ? null : el('button', { class: 'btn danger', type: 'button', text: 'Delete', onclick: onDelete }),
     );
   } else head.append(el('span', { class: 'muted tiny', style: 'margin-left:auto', text: 'built in' }));
   card.append(head);
@@ -169,8 +208,12 @@ function agentCard(row, { roster, store, editing, onEdit, onDelete, onToggle, on
 
 export function renderAgents(root, { settings, onChange, editing = null, license = null, filter = 'all' }) {
   root.innerHTML = '';
+  // The saved section holds only what a person made, edited or switched off; the roster is
+  // the built-in org over it (team-org.js builtinOrg) — starters present without a click.
   const list = (Array.isArray(settings.agentPool) ? settings.agentPool : []).filter((a) => a && a.id);
-  const teams = (Array.isArray(settings.teams) ? settings.teams : []).filter((t) => t && t.name);
+  const org = builtinOrg(settings.teams, list);
+  const teams = org.teams;
+  const shippedIds = new Set(starterAgents().map((a) => a.id));
   const roster = rosterFor(settings, license, { like: settings.activeAgentId || '' });
   const servers = (Array.isArray(settings.mcpServers) ? settings.mcpServers : []).filter((x) => x && x.id);
   const store = runStore(settings);
@@ -179,10 +222,10 @@ export function renderAgents(root, { settings, onChange, editing = null, license
     onChange?.(next);
   };
   const again = (patch) => renderAgents(root, { settings, onChange, license, filter, ...patch });
-  const { rows, counts } = rosterRows(list, { teams });
-  const starters = starterAgents().filter((a) => !list.some((x) => x.id === a.id));
+  const { rows, counts } = rosterRows(org.pool, { teams });
+  for (const r of rows) { r.shipped = shippedIds.has(r.agent.id) || String(r.agent.createdBy || '').startsWith('team:') && org.teams.some((t) => t.builtin && t.roles.some((x) => x.agent === r.agent.id)); r.saved = list.some((a) => a.id === r.agent.id); }
+  const skills = (Array.isArray(settings.skills) ? settings.skills : []).filter((x) => x && (x.command || x.name));
   const actions = el('div', { class: 'card-actions' });
-  if (starters.length) actions.append(el('button', { class: 'btn', type: 'button', text: `+ ${starters.length === starterAgents().length ? 'the engineering org' : `${starters.length} starter${starters.length > 1 ? 's' : ''}`}`, title: starters.map((a) => a.name).join(', '), onclick: () => persist([...list, ...starters.map((a) => ({ ...a, createdAt: Date.now() }))]) }));
   actions.append(el('button', { class: 'btn primary', type: 'button', text: '+ New agent', ...(editing ? { disabled: '' } : {}), onclick: () => again({ editing: { index: -1, agent: blankAgent() } }) }));
   root.append(el('div', { class: 'card-head' },
     el('h2', {}, 'Agents ', el('span', { class: 'sub', text: `— the roster${rows.length ? ` · ${rows.length}` : ''}` })),
@@ -198,12 +241,13 @@ export function renderAgents(root, { settings, onChange, editing = null, license
   ));
   if (editing) {
     root.append(agentEditor({
-      initial: editing.agent, roster, servers,
-      existingIds: new Set(list.filter((_, j) => j !== editing.index).map((a) => a.id)),
+      initial: editing.agent, roster, servers, skills,
+      existingIds: new Set([...org.pool.map((a) => a.id)].filter((id) => id !== editing.agent.id)),
       onCancel: () => again({ editing: null }),
       onSave: (agent) => {
+        // A saved card replaces the built-in of the same id (a copy of yours), or itself.
         const stamped = { ...agent, createdAt: editing.agent.createdAt || Date.now() };
-        persist(editing.index < 0 ? [...list, stamped] : list.map((x, j) => (j === editing.index ? stamped : x)));
+        persist(list.some((x) => x.id === stamped.id) ? list.map((x) => (x.id === stamped.id ? stamped : x)) : [...list, stamped]);
       },
     }));
   }
@@ -211,10 +255,12 @@ export function renderAgents(root, { settings, onChange, editing = null, license
   if (filter === 'all' || filter === 'builtin') root.append(agentCard({ kind: 'builtin', agent: assistantAgent(), where: { teams: [], jobs: [] } }, { roster, store, editing, fixed: true }));
   for (const row of shown) {
     const i = list.findIndex((x) => x.id === row.agent.id);
+    const { builtin, ...copy } = row.agent; // what a save or a switch-off writes: a copy of the built-in, ours
     root.append(agentCard(row, {
       roster, store, editing,
-      onEdit: () => again({ editing: { index: i, agent: list[i] } }),
-      onToggle: (on) => persist(list.map((x, j) => (j === i ? { ...x, enabled: on } : x))),
+      onEdit: () => again({ editing: { index: i, agent: copy } }),
+      onToggle: (on) => persist(i >= 0 ? list.map((x, j) => (j === i ? { ...x, enabled: on } : x)) : [...list, { ...copy, enabled: on, createdAt: Date.now() }]),
+      onReset: () => persist(list.filter((x) => x.id !== row.agent.id)),
       onAddBuiltin: (id) => persist([...list, ...missingStarters({ roles: [{ id, agent: id }] }, list).map((a) => ({ ...a, createdAt: Date.now() }))]),
       onDelete: async () => {
         const { confirmDelete } = await import('./confirm-modal.js');
@@ -224,5 +270,5 @@ export function renderAgents(root, { settings, onChange, editing = null, license
       },
     }));
   }
-  if (!list.length && !editing) root.append(el('p', { class: 'muted tiny', text: 'Nothing defined yet. Add the engineering org to start — Executive, Architect, Implementer, Reviewer, Tester, Librarian, Scribe, Release — or make your own; adding a starter team under Teams brings its agents here too.' }));
+  if (!shown.length && !editing) root.append(el('p', { class: 'muted tiny', text: 'Nothing here for this filter.' }));
 }

@@ -246,7 +246,7 @@ export { workLogFor, workLogText, workLogEvidence, describeCall, WORKLOG_KINDS }
 export { normalizeRequest, subtaskFromRequest, takeUp, takeUpLine, holdsGrants, jobFromSubtask, extendDependents, taskTree, threadRows, MAX_SUBTASKS, MAX_DEPTH, MIN_TAKEUP_FIT } from './team-subtask.js';
 export { teamLine, teamLanes } from './team-trail.js';
 // The org, derived (F8 §17): roles as cards, starters whole, a team's health and shape, the roster, one colour per agent.
-export { promoteRoles, starterTeam, missingStarters, teamHealth, teamShape, describeTeamShape, whereItWorks, rosterRows, agentKind, agentHue, agentColor, agentInitials, roleCardId, cardNumbers, upsertAgents, soloTeam, teamsWithSolos, SOLO_BUDGET, TEAM_SHAPES, ROSTER_KINDS } from './team-org.js';
+export { promoteRoles, starterTeam, missingStarters, teamHealth, teamShape, describeTeamShape, whereItWorks, rosterRows, agentKind, agentHue, agentColor, agentInitials, roleCardId, cardNumbers, upsertAgents, soloTeam, teamsWithSolos, builtinOrg, isBuiltin, grantChoices, grantsFromChoices, skillChoices, GRANT_INFO, SOLO_BUDGET, TEAM_SHAPES, ROSTER_KINDS } from './team-org.js';
 export { observeInbox, observeStrip, runLanes, spendRows, engineStrip } from './team-observe.js';
 export { mcpDispatchProvider, MCP_TOOL_NAME } from './mcp-dispatch.js';
 export { createManifest, ManifestError, SOURCES } from './manifest.js';

@@ -23,7 +23,10 @@ import { withinReach, sourceGuardFor, sourcePolicySettings, sourceUrlsOf } from 
 import { swarmCandidates } from './notes-swarm-router.js';
 import { canUseAgent } from './license.js';
 import { getTarget, resolveTarget, getSettings, saveSettings } from './store.js';
-import { promoteRoles, upsertAgents, teamsWithSolos } from './events/team-org.js';
+import { promoteRoles, upsertAgents, teamsWithSolos, builtinOrg } from './events/team-org.js';
+
+/** The pool a run resolves and recruits from: the saved cards with the built-in org over them (team-org.js). */
+export const poolOf = (settings) => builtinOrg(settings?.teams, settings?.agentPool).pool;
 
 /** What a chat can run: the saved teams, then every pool agent on its own (a one-role team named after the card). */
 export const runnableTeams = (settings) => teamsWithSolos(settings?.teams, settings?.agentPool).filter((t) => t.enabled !== false);
@@ -203,7 +206,7 @@ export function engineOfCandidate(c) {
  */
 export function resolveTeamHere(team, settings, license, { like = '' } = {}) {
   const { chatModel, targetFor } = bindingFor(settings, license, { like });
-  return resolveTeam(team, Array.isArray(settings.agentPool) ? settings.agentPool : [], { chatModel, targetFor });
+  return resolveTeam(team, poolOf(settings), { chatModel, targetFor });
 }
 
 /** How an engine on a card becomes a target id this panel can run — shared by resolving a team and recruiting for one. */
@@ -239,11 +242,12 @@ export function recruiterFor(settings, license, { like = '' } = {}) {
   return async (job, { create = null } = {}) => {
     const { candidates, chatModel, targetFor } = bindingFor(settings, license, { like });
     const rows = engineRows(candidates.map((c) => ({ ...c, engine: engineOfCandidate(c), available: c.usable !== false })));
-    let pool = Array.isArray(settings.agentPool) ? settings.agentPool.filter((a) => a && a.id) : [];
+    let pool = poolOf(settings);
     if (create && create.id) {
-      pool = [...pool.filter((a) => a.id !== create.id), { ...create, createdAt: create.createdAt || Date.now() }];
-      settings.agentPool = pool;
-      try { await saveSettings({ ...(await getSettings()), agentPool: pool }); } catch { /* the run goes on with the card in memory */ }
+      const saved = (Array.isArray(settings.agentPool) ? settings.agentPool : []).filter((a) => a && a.id && a.id !== create.id);
+      settings.agentPool = [...saved, { ...create, createdAt: create.createdAt || Date.now() }];
+      pool = poolOf(settings);
+      try { await saveSettings({ ...(await getSettings()), agentPool: settings.agentPool }); } catch { /* the run goes on with the card in memory */ }
     }
     return recruitForRun(job, pool, { rows, chatModel, targetFor, create });
   };

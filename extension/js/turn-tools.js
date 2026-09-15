@@ -180,9 +180,10 @@ export async function buildTurnTools({
   let teamProvider = null;
   // The saved teams and every pool agent on its own (team-host.js runnableTeams) — so "ask
   // the reviewer to…" and /reviewer run without a team being made first.
-  const hasPool = (Array.isArray(settings?.agentPool) ? settings.agentPool : []).some((a) => a && a.id && a.enabled !== false);
-  let savedTeams = (Array.isArray(settings?.teams) ? settings.teams : []).filter((t) => t && t.enabled !== false);
-  if (savedTeams.length || hasPool || (confirmTeamSave && saveTeam) || askProject) {
+  // The built-in org ships with the product (team-org.js builtinOrg), so there is always
+  // something to run: the tool is armed on every turn.
+  let savedTeams = [];
+  {
     const [{ teamToolProvider }, host] = await Promise.all([import('./events/team-tool.js'), import('./team-host.js')]);
     savedTeams = host.runnableTeams(settings);
     teamProvider = teamToolProvider({
