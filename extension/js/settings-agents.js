@@ -154,6 +154,9 @@ function agentCard(row, { roster, store, editing, onEdit, onDelete, onToggle, on
     ));
   }
   if (kind === 'proposed') return card;
+  // How to use it: on its own (a one-role team named after the card — team-org.js soloTeam)
+  // or through a team. The Assistant is the chat itself.
+  if (!fixed) card.append(el('div', { class: 'org-row', 'data-invoke': a.id }, el('span', { class: 'tiny faint', text: 'Invoke' }), el('code', { class: 'org-chip k', text: `/${String(a.id).toLowerCase()} <request>` }), el('span', { class: 'muted tiny', text: 'in any chat, or ask for it by name — it runs as a one-role team under the default budget; put it on a team to work with others.' })));
   // The record — the four numbers every client shows (team-org.js cardNumbers), from the
   // gateway; "—" is "nothing yet", never a zero that reads as a bad score.
   const nums = el('div', { class: 'org-nums' });

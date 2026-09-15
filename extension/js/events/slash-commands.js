@@ -48,7 +48,9 @@ function recipeItem(recipe) {
 // A saved TEAM answers to a slash the same way: `/research <request>` is a request to run
 // it, and the `team` tool does the rest.
 function teamItem(team) {
-  return { type: 'team', command: team.name || '', icon: '🧑‍🤝‍🧑', description: team.description || 'Agent team', team };
+  // A solo team (team-org.js soloTeam) IS an agent, invokable on its own: drawn as one.
+  const solo = !!team.origin?.agent;
+  return { type: 'team', command: team.name || '', icon: solo ? '🧑‍💻' : '🧑‍🤝‍🧑', description: team.description || (solo ? 'Agent' : 'Agent team'), team, ...(solo ? { agent: team.origin.agent } : {}) };
 }
 
 /** Skills that are switched on. Absence of the flag means enabled (older records have none). */
@@ -127,6 +129,7 @@ export function matchSlashTeam(text, teams = []) {
 /** What the model receives for a team command: a request to run it, never a prompt expansion. */
 export function teamInvocationText(team, args = '') {
   const a = String(args || '').trim();
+  if (team.origin?.agent) return `Run the agent "${team.name}" (a one-role team of that name)${a ? ` on this request: ${a}` : ''}. Use the team tool; if the request is unclear, ask first.`;
   return `Run the saved team "${team.name}"${a ? ` on this request: ${a}` : ''}. Use the team tool; if the request is unclear, ask first.`;
 }
 

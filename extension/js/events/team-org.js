@@ -317,3 +317,40 @@ export function upsertAgents(pool, cards) {
   const add = (Array.isArray(cards) ? cards : []).filter((c) => c && c.id);
   return [...list.map((a) => add.find((c) => c.id === a.id) || a), ...add.filter((c) => !list.some((a) => a.id === c.id))];
 }
+
+/**
+ * An agent, INVOKABLE on its own: a one-role team named after it (`/researcher`, "ask the
+ * researcher to…"), the role standing for the card, the answer the role's own (`merge:
+ * first`), under a default budget since a team without one does not run (O1). `origin.agent`
+ * marks it so a client can draw it as an agent, not a team. Never stored — derived from the
+ * pool every time, so a card edit lands at once and a deleted card takes its command with it.
+ */
+export const SOLO_BUDGET = Object.freeze({ tokens: 40000, ms: 300000 });
+export function soloTeam(agent, { budget = SOLO_BUDGET } = {}) {
+  const a = agent && agent.id ? agent : null;
+  if (!a || a.id === ASSISTANT_ID || a.enabled === false) return null;
+  return normalizeTeam({
+    name: String(a.id).toLowerCase(),
+    description: `Just ${a.name || a.id}${a.purpose ? ` — ${a.purpose}` : ''}`,
+    plan: 'fixed', merge: 'first',
+    roles: [{ id: String(a.id).toLowerCase().slice(0, 32), agent: a.id }],
+    budget: { ...budget },
+    origin: { agent: a.id },
+  });
+}
+
+/**
+ * The teams a chat can run: the saved ones, then a solo team per enabled pool agent whose
+ * id no saved team already claims. What the slash menu, the `team` tool and "run …" all read.
+ */
+export function teamsWithSolos(teams = [], pool = [], opts = {}) {
+  const saved = (Array.isArray(teams) ? teams : []).filter((t) => t && t.name);
+  const taken = new Set(saved.map((t) => String(t.name).toLowerCase()));
+  const solos = [];
+  for (const a of poolList(pool)) {
+    if (taken.has(String(a.id).toLowerCase()) || !(Array.isArray(a.appliesTo) ? a.appliesTo : ['jobs']).includes('jobs')) continue;
+    const t = soloTeam(a, opts);
+    if (t) { solos.push(t); taken.add(t.name); }
+  }
+  return [...saved, ...solos];
+}

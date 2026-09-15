@@ -178,9 +178,13 @@ export async function buildTurnTools({
   // client's model turn and toolset, narrowed to its grants; every event goes to the trail
   // and to the gateway's run store, where the desktop reads the board and can stop it.
   let teamProvider = null;
-  const savedTeams = (Array.isArray(settings?.teams) ? settings.teams : []).filter((t) => t && t.enabled !== false);
-  if (savedTeams.length || (confirmTeamSave && saveTeam) || askProject) {
+  // The saved teams and every pool agent on its own (team-host.js runnableTeams) — so "ask
+  // the reviewer to…" and /reviewer run without a team being made first.
+  const hasPool = (Array.isArray(settings?.agentPool) ? settings.agentPool : []).some((a) => a && a.id && a.enabled !== false);
+  let savedTeams = (Array.isArray(settings?.teams) ? settings.teams : []).filter((t) => t && t.enabled !== false);
+  if (savedTeams.length || hasPool || (confirmTeamSave && saveTeam) || askProject) {
     const [{ teamToolProvider }, host] = await Promise.all([import('./events/team-tool.js'), import('./team-host.js')]);
+    savedTeams = host.runnableTeams(settings);
     teamProvider = teamToolProvider({
       teams: savedTeams,
       appoint: host.appointerFor(settings, license, { like: resolvedAgent?.id || '' }),

@@ -63,3 +63,13 @@ const root2 = new El('div');
 mod.renderAgents(root2, { settings, onChange: () => {}, filter: 'mine' });
 assert.deepEqual(root2.all((n) => n.attrs['data-agent']).map((n) => n.attrs['data-agent']), ['my-analyst']);
 console.log('settings-agents: ok');
+
+// Every card says how to invoke it — as its own /command (team-org.js soloTeam), which the
+// side panel's slash menu and the team tool both offer.
+const root3 = new El('div');
+mod.renderAgents(root3, { settings, onChange: () => {} });
+const inv = root3.find((n) => n.attrs['data-invoke'] === 'architect');
+assert.ok(inv && inv.find((n) => n.textContent === '/architect <request>'), 'the card names its command');
+const { teamsWithSolos } = await import('../extension/js/events/team-org.js');
+assert.ok(teamsWithSolos(settings.teams, settings.agentPool).some((t) => t.name === 'architect' && t.origin?.agent === 'architect'), 'and the chat can run it');
+console.log('settings-agents: invoke ok');

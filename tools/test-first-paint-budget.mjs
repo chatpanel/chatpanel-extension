@@ -95,7 +95,9 @@ const BUDGET = {
   // budget and the host binding (js/team-host.js, js/events/team-*.js) are `await import()`ed
   // and pinned OFF below; the mid-turn ask card moved OUT of js/confirm-modal.js into
   // js/ask-modal.js for the same reason, which is why this is +2 and not +6.
-  'sidepanel.js': 849,
+  // +1 (0.39.1, F8 §17): the slash menu offers every pool agent as a command — the list is
+  // computed in js/team-host.js (deferred) and only the cache + the await landed here.
+  'sidepanel.js': 850,
   // 1162 → 1161. Settings genuinely loads the model layer (Test, Load models, prompt-assist)
   // and its own OAuth screens, so it keeps most of what the panel shed. The remaining fat
   // here is providers.js (122 KB) and the toolset preview behind it — a real target, but one

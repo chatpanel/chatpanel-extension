@@ -23,7 +23,10 @@ import { withinReach, sourceGuardFor, sourcePolicySettings, sourceUrlsOf } from 
 import { swarmCandidates } from './notes-swarm-router.js';
 import { canUseAgent } from './license.js';
 import { getTarget, resolveTarget, getSettings, saveSettings } from './store.js';
-import { promoteRoles, upsertAgents } from './events/team-org.js';
+import { promoteRoles, upsertAgents, teamsWithSolos } from './events/team-org.js';
+
+/** What a chat can run: the saved teams, then every pool agent on its own (a one-role team named after the card). */
+export const runnableTeams = (settings) => teamsWithSolos(settings?.teams, settings?.agentPool).filter((t) => t.enabled !== false);
 
 /**
  * A team is saved WITH its cards (F8 §17.1): every inline role becomes a pool agent

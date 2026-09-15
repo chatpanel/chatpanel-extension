@@ -121,3 +121,22 @@ assert.match(
 );
 
 console.log('slash command tests passed');
+
+// F8 §17: a pool agent answers to its own /command — a one-role team named after the card
+// (team-org.js soloTeam), drawn as an agent in the menu and phrased as one for the model.
+{
+  const { teamsWithSolos } = await import('../extension/js/events/team-org.js');
+  const { matchSlashTeam, teamInvocationText } = await import('../extension/js/slash-commands.js');
+  const { starterAgents } = await import('../extension/js/events/agent.js');
+  const teams = teamsWithSolos([{ name: 'research', roles: [{ id: 'r', prompt: 'p', grants: ['none'] }], budget: { ms: 1 } }], starterAgents());
+  const items = slashCommandItems({ teams, prefix: 'rev' });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].command, 'reviewer');
+  assert.equal(items[0].agent, 'reviewer', 'the item knows it is an agent');
+  assert.equal(items[0].icon, '🧑‍💻');
+  const m = matchSlashTeam('/reviewer read the diff on main', teams);
+  assert.equal(m.team.name, 'reviewer');
+  assert.match(teamInvocationText(m.team, m.args), /^Run the agent "reviewer" .* read the diff on main/);
+  assert.equal(slashCommandItems({ teams, prefix: 'res' })[0].icon, '🧑‍🤝‍🧑', 'a saved team is still a team');
+  console.log('slash-commands: agents as commands ok');
+}

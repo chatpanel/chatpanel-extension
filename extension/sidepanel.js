@@ -2639,7 +2639,7 @@ async function send({ steer = false } = {}) {
     const rc = sk || historyCommand || searchCommand ? null : matchSlashRecipe(raw, state.settings.recipes);
     if (rc) text = recipeInvocationText(rc.recipe, rc.args);
     // A saved team's /command runs the team (the `team` tool, armed the same way).
-    const tm = sk || rc || historyCommand || searchCommand ? null : matchSlashTeam(raw, state.settings.teams);
+    const tm = sk || rc || historyCommand || searchCommand ? null : matchSlashTeam(raw, await runnableTeams());
     if (tm) text = teamInvocationText(tm.team, tm.args);
     if (sk && !skillsAllowed()) {
       upsell('customSkills');
@@ -8623,15 +8623,20 @@ let slashItems = [];
 let slashActive = -1;
 function slashMenuOpen() { return slashItems.length > 0; }
 
+// Saved teams + every pool agent on its own (team-host.js, deferred): cached for the menu.
+let runnable = [];
+const runnableTeams = () => import('./js/team-host.js').then((m) => (runnable = m.runnableTeams(state.settings)));
 function renderSlashMenu() {
   const box = $('skill-suggest');
   const m = /^\/([a-z0-9_-]*(?:\s+[a-z0-9_-]*)?)$/i.exec($('input').value); // slash + partial command, optional subcommand
   if (!m) { hideSlashMenu(); return false; }
   const prefix = m[1].toLowerCase();
+  const n = runnable.length;
+  runnableTeams().then((l) => { if (l.length !== n) renderSlashMenu(); }).catch(() => {});
   const matches = slashCommandItems({
     skills: enabledSkills(state.settings.skills),
     recipes: state.settings.recipes,
-    teams: state.settings.teams,
+    teams: runnable.length ? runnable : state.settings.teams,
     prefix,
     skillsAllowed: skillsAllowed(),
     canMeetings: can(state.license, 'liveMeetings'),
