@@ -192,7 +192,16 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
 
   // Runs — every client's, from the gateway. An older gateway (or none) says so; it is not an error.
   const store = runStore(settings);
-  const runsHead = el('div', { class: 'card-head', style: 'margin-top:16px' }, el('h2', {}, 'Runs ', el('span', { class: 'sub', text: '' })));
+  // Every finished run off the record at once; a live one is left for its Stop / Delete.
+  let lastRuns = [];
+  const clearBtn = el('button', { class: 'btn ghost', type: 'button', text: 'Clear finished', style: 'margin-left:auto', hidden: '', onclick: async () => {
+    const done = lastRuns.filter((r) => !LIVE.has(r.status) || r.stale);
+    const { confirmDelete } = await import('./confirm-modal.js');
+    if (!(await confirmDelete({ title: `Delete ${done.length} finished run${done.length === 1 ? '' : 's'}?`, body: 'Their boards, threads and spend leave the record for everyone — this panel and the desktop alike. Runs still going are kept. This cannot be undone.', confirmLabel: 'Delete' }))) return;
+    await Promise.all(done.map((r) => store.remove(r.id)));
+    refresh();
+  } });
+  const runsHead = el('div', { class: 'card-head', style: 'margin-top:16px' }, el('h2', {}, 'Runs ', el('span', { class: 'sub', text: '' })), clearBtn);
   const runsNote = el('p', { class: 'muted', text: 'Every run from any client — this panel or the desktop app — with its board and what it spent. Stop reaches the client running it; an ask waiting on you can be answered here, and the member resumes with it.' });
   const runsBox = el('div');
   root.append(runsHead, runsNote, runsBox);
@@ -204,6 +213,8 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
     const sub = runsHead.querySelector('.sub');
     if (!res.ok) { sub.textContent = '— gateway not reachable'; runsNote.textContent = `The gateway did not answer: ${res.error} (runs need gateway 0.6.78+).`; runsBox.innerHTML = ''; return; }
     const runs = res.data?.runs || [];
+    lastRuns = runs;
+    clearBtn.hidden = !runs.some((r) => !LIVE.has(r.status) || r.stale);
     sub.textContent = runs.length ? `${runs.length} recent` : 'none yet';
     runsBox.innerHTML = '';
     for (const r of runs) {
@@ -215,7 +226,16 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
         el('span', { class: `chip ${r.stale ? 'warn' : r.status === 'completed' || live ? 'good' : 'warn'}`, text: r.stale ? 'stale' : r.waiting ? `waiting on you (${r.waiting})` : r.status }),
         el('span', { class: 'muted tiny', text: `${when(r.createdAt)} · ${r.client || '?'} · ${r.findings || 0} findings${r.usage?.spent?.tokens ? ` · ${r.usage.spent.tokens} tokens` : ''}` }),
         live ? el('button', { class: 'btn', type: 'button', text: 'Stop', style: 'margin-left:auto', onclick: () => store.stop(r.id).then(refresh) }) : null,
-        el('button', { class: 'btn', type: 'button', text: open?.id === r.id ? 'Hide' : 'Board', style: live ? '' : 'margin-left:auto', onclick: async () => {
+        // Off the record for every client, board and all (a live one is stopped first, gateway 0.6.110).
+        el('button', { class: 'btn ghost', type: 'button', text: 'Delete', style: live ? '' : 'margin-left:auto', onclick: async () => {
+          const { confirmDelete } = await import('./confirm-modal.js');
+          if (!(await confirmDelete({ title: 'Delete run?', body: `${live ? 'This run is still going: it is stopped first. ' : ''}Its board, threads and spend leave the record for everyone — this panel and the desktop alike. This cannot be undone.`, confirmLabel: 'Delete' }))) return;
+          const x = await store.remove(r.id);
+          if (!x.ok) runsNote.textContent = `delete: ${x.error}`;
+          if (open?.id === r.id) open = null;
+          refresh();
+        } }),
+        el('button', { class: 'btn', type: 'button', text: open?.id === r.id ? 'Hide' : 'Board', onclick: async () => {
           if (open?.id === r.id) { open = null; return refresh(); }
           const x = await store.get(r.id);
           if (x.ok) { open = { id: r.id, run: x.data?.run || {} }; refresh(); }

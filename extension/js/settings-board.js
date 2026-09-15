@@ -118,6 +118,11 @@ export function renderBoard(root, { settings, license = null }) {
     const got = await Promise.all(want.map((id) => store.get(id).then((x) => [id, x.ok ? x.data?.run : null])));
     if (!alive) return;
     for (const [id, run] of got) if (run) { state.runs[id] = run; state.loaded.add(id); }
+    // A run the gateway no longer lists — deleted from the Runs list here or on the desktop — leaves
+    // this board too, with its selection. The two are one record; a board that outlived its run
+    // is what made "I deleted the board, why is it still in recent?" a reasonable question.
+    const listed = new Set(list.map((x) => x.id));
+    for (const id of Object.keys(state.runs)) if (!listed.has(id)) { delete state.runs[id]; state.loaded.delete(id); if (state.sel?.runId === id) { state.sel = null; state.reply = null; } }
     draw(opts);
   };
   // A PERSON'S OWN ACTION REDRAWS, whatever the poll's guards say. Approve did nothing for a
@@ -218,6 +223,14 @@ export function renderBoard(root, { settings, license = null }) {
       el('div', { class: 'brun-side' },
         spend ? el('div', { class: 'muted tiny', text: `Budget ${describeSpend(spend)}${spend.exhausted ? ` — ${spend.exhausted} exhausted` : ''}` }) : null,
         live && !run.stale ? el('button', { class: 'btn danger', type: 'button', text: 'Stop run', onclick: () => acted(store.stop(run.id)) }) : null,
+        // The run and its board go together (gateway DELETE /v1/teams/runs/:id; 0.6.110 stops a live one first).
+        el('button', { class: 'btn ghost', type: 'button', text: 'Delete run', title: live ? 'Stops this run and removes it, with its board and threads, from every client.' : 'Removes this run, with its board and threads, from every client.', onclick: async () => {
+          const { confirmDelete } = await import('./confirm-modal.js');
+          if (!(await confirmDelete({ title: 'Delete run?', body: `${live ? 'This run is still going: it is stopped first. ' : ''}Its board, threads and spend leave the record for everyone — this panel and the desktop alike. This cannot be undone.`, confirmLabel: 'Delete' }))) return;
+          const r = await store.remove(run.id);
+          if (r.ok) { delete state.runs[run.id]; state.loaded.delete(run.id); state.sel = null; state.reply = null; }
+          acted(r);
+        } }),
         // A run whose client went away, or that stopped, waited or failed, picks up from its record.
         (run.resumable || (live && (run.quietMs || 0) > 60_000)) ? el('button', { class: 'btn primary', type: 'button', text: run.resumable ? 'Resume here' : `Resume here (quiet ${Math.round((run.quietMs || 0) / 1000)} s)`, title: 'Continue this run in this browser from its record — nothing already done is redone', onclick: async () => {
           const [{ streamChat }, { buildTurnTools }] = await Promise.all([import('./providers.js'), import('./turn-tools.js')]);
