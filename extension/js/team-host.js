@@ -119,6 +119,9 @@ export function runStore(settings) {
     // The records (gateway 0.6.87+ / 0.6.89+): an agent's attested scorecard; every engine's card.
     scorecard: (agentId) => withToken(() => gwFetch(`${base}/v1/agents/${encodeURIComponent(agentId)}/scorecard`)),
     engines: () => withToken(() => gwFetch(`${base}/v1/engines`)),
+    // The project records (gateway 0.6.90+): the list, one record, the open job board.
+    projects: (opts = {}) => withToken(() => gwFetch(`${base}/v1/projects?limit=${Number(opts.limit) || 50}`)),
+    project: (id) => withToken(() => gwFetch(`${base}/v1/projects/${encodeURIComponent(id)}`)),
     /** Tail a run's events (SSE). Returns a stop function. */
     tail(id, onEvent, { after = -1 } = {}) {
       const ctrl = new AbortController();

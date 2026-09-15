@@ -12,15 +12,20 @@ const js = readFileSync(new URL('../extension/settings.js', import.meta.url), 'u
 const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
 
 const tabs = [...html.matchAll(/<button class="tab[^"]*" data-tab="([^"]+)">(?:<span[^>]*><\/span>)?\s*([^<]+)<\/button>/g)].map((m) => [m[1], m[2].trim()]);
-assert.deepEqual(tabs.slice(0, 6), [
-  ['api', 'Models'], ['agents', 'Agent Tools'], ['directory', 'Agents'], ['teams', 'Teams'], ['skills', 'Skills'], ['mcp', 'Tools'],
-], `the first six tabs, in pillar order: ${JSON.stringify(tabs.slice(0, 6))}`);
+// F8 §17: the org is ONE tab — Agent Teams — with the roster, the teams, the projects, the
+// board and Observe as its sub-tabs, the desktop's Agent Teams lens in the same order.
+assert.deepEqual(tabs.slice(0, 5), [
+  ['api', 'Models'], ['agents', 'Agent Tools'], ['teams', 'Agent Teams'], ['skills', 'Skills'], ['mcp', 'Tools'],
+], `the first five tabs, in pillar order: ${JSON.stringify(tabs.slice(0, 5))}`);
+const sub = /teams: \{ bar: 'tm-subtabs', groups: \[([\s\S]*?)\n  \] \}/.exec(js)?.[1] || '';
+assert.deepEqual([...sub.matchAll(/label: '([^']+)'/g)].map((m) => m[1]), ['Agents', 'Teams', 'Projects', 'Board', 'Observe'], 'the sub-tabs, in the desktop\'s order');
+assert.match(js, /directory: \{ tab: 'teams', section: 'directory' \}/, '#directory still lands on the roster');
 assert.ok(tabs.every(([, label]) => label !== 'API'), 'nothing is called "API" any more');
 
 // Every tab has its panel; the directory panel is the Agents card (settings-agents.js), and
 // the Agent Tools panel carries the SCM connections card (settings-connections.js).
 for (const [id] of tabs) assert.ok(html.includes(`data-panel="${id}"`), `panel for ${id}`);
-assert.match(html, /data-panel="directory">\s*<div class="card" id="directory"><\/div>/, 'the directory is rendered by settings-agents.js');
+assert.match(html, /data-panel="teams">[\s\S]*?<div class="card" id="directory"><\/div>/, 'the directory card is inside Agent Teams, rendered by settings-agents.js');
 assert.match(html, /<div class="card" id="connections"><\/div>/, 'connections live with the harnesses');
 assert.match(js, /connections: \{ tab: 'agents', section: 'connections' \}/, '#connections lands there');
 const agentsJs = readFileSync(new URL('../extension/js/settings-agents.js', import.meta.url), 'utf8');

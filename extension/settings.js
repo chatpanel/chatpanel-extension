@@ -276,7 +276,7 @@ function wireTabs() {
     // never mounts one.
     if (name === 'widgets') renderWidgetsGallery();
     // The board polls the gateway while shown and stops when the tab is left.
-    if (name === 'teams') renderBoard(); else boardDispose?.();
+    if (name === 'teams') { renderBoard(); renderProjects(); renderObserve(); } else { boardDispose?.(); projectsDispose?.(); observeDispose?.(); }
     if (name === 'channels') renderChannels();
   };
   const exists = (name) => !!document.querySelector(`.tab[data-tab="${name}"]`);
@@ -346,6 +346,8 @@ const K_SETTINGS_TAB = 'chatpanel:settingsTab';
 const TAB_ALIAS = {
   models: { tab: 'api' },        // naming phase 1: "API" reads as Models; the panel id is code
   harnesses: { tab: 'agents' }, 'agent-tools': { tab: 'agents' },  // "Agents" (the CLIs) reads as Agent Tools; #directory is the agents you define
+  directory: { tab: 'teams', section: 'directory' }, // the roster is a sub-tab of Agent Teams (F8 §17)
+  board: { tab: 'teams', section: 'board' }, projects: { tab: 'teams', section: 'projects' }, observe: { tab: 'teams', section: 'observe' },
   connections: { tab: 'agents', section: 'connections' }, // Settings → Connections: the SCM hubs the bridge holds tokens for
   notes: { tab: 'workspace', section: 'ws-notes' },
   meetings: { tab: 'workspace', section: 'ws-meetings' },
@@ -385,9 +387,13 @@ const PANEL_SUBTABS = {
     { id: 'recipes', label: 'Recipes', target: 'recipes' },
     { id: 'sources', label: 'On this machine', target: 'skill-sources-card', requires: 'skill-sources-card' },
   ] },
+  // One surface (F8 §17), the desktop's tab order: define on the left, watch on the right.
   teams: { bar: 'tm-subtabs', groups: [
-    { id: 'board', label: 'Board', target: 'board' },
+    { id: 'agents', label: 'Agents', target: 'directory' },
     { id: 'teams', label: 'Teams', target: 'teams' },
+    { id: 'projects', label: 'Projects', target: 'projects' },
+    { id: 'board', label: 'Board', target: 'board' },
+    { id: 'observe', label: 'Observe', target: 'observe' },
   ] },
   workspace: { bar: 'ws-subtabs', groups: [
     { id: 'memory', label: 'Memory', target: 'ws-memory' },
@@ -4759,6 +4765,24 @@ function renderBoard() {
   import('./js/settings-board.js')
     .then((m) => { boardDispose?.(); boardDispose = m.renderBoard(root, { settings, license }); })
     .catch((e) => console.warn('[chatpanel] board:', e));
+}
+
+// Projects and Observe (F8 §17.2) — deferred and polling only while the tab is shown, like the board.
+let projectsDispose = null;
+function renderProjects() {
+  const root = $('projects');
+  if (!root) return;
+  import('./js/settings-projects.js')
+    .then((m) => { projectsDispose?.(); projectsDispose = m.renderProjects(root, { settings, license }); })
+    .catch((e) => console.warn('[chatpanel] projects:', e));
+}
+let observeDispose = null;
+function renderObserve() {
+  const root = $('observe');
+  if (!root) return;
+  import('./js/settings-observe.js')
+    .then((m) => { observeDispose?.(); observeDispose = m.renderObserve(root, { settings, license, openBoard: () => jumpToSection('board') }); })
+    .catch((e) => console.warn('[chatpanel] observe:', e));
 }
 
 // Saved teams and their runs — deferred for the same reason; the runs list polls the gateway

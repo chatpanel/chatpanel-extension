@@ -27,8 +27,7 @@
         <aside class="sidenav" id="tabs">
           <button class="tab active" data-tab="api"><span class="tab-ico" data-icon="plug"></span> Models</button>
           <button class="tab" data-tab="agents"><span class="tab-ico" data-icon="bot"></span> Agent Tools</button>
-          <button class="tab" data-tab="directory"><span class="tab-ico" data-icon="bot"></span> Agents</button>
-          <button class="tab" data-tab="teams"><span class="tab-ico" data-icon="people"></span> Teams</button>
+          <button class="tab" data-tab="teams"><span class="tab-ico" data-icon="people"></span> Agent Teams</button>
           <button class="tab" data-tab="skills"><span class="tab-ico" data-icon="skills"></span> Skills</button>
           <button class="tab" data-tab="mcp"><span class="tab-ico" data-icon="tools"></span> Tools</button>
           <button class="tab" data-tab="workspace"><span class="tab-ico" data-icon="folder"></span> Workspace</button>
@@ -310,15 +309,16 @@ Get-Content "$HOME\.chatpanel\bridge-token"</code></pre>
       </section>
 
       <!-- MEETINGS (live scribe preferences) -->
-      <!-- TEAMS: agent teams and their boards (F8). The board is the desktop's Agents → Board,
-           over the same gateway run store; a person answers, decides and replies here too. -->
-      <section class="panel hidden" data-panel="directory">
-        <div class="card" id="directory"></div>
-      </section>
+      <!-- AGENT TEAMS (F8 §17): ONE surface for the org — the roster, the teams as their shapes,
+           the projects, the board and what is happening — the desktop's Agent Teams lens over the
+           same sections and the same gateway records. #directory keeps its id (deep links). -->
       <section class="panel hidden" data-panel="teams">
-        <nav id="tm-subtabs" class="subtabs" data-subtab-keep aria-label="Teams sections"></nav>
-        <div class="card" id="board"></div>
+        <nav id="tm-subtabs" class="subtabs" data-subtab-keep aria-label="Agent Teams sections"></nav>
+        <div class="card" id="directory"></div>
         <div class="card" id="teams"></div>
+        <div class="card" id="projects"></div>
+        <div class="card" id="board"></div>
+        <div class="card" id="observe"></div>
       </section>
 
       <section class="panel hidden" data-panel="workspace">

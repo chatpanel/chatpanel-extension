@@ -1492,3 +1492,33 @@ button.org-chip { cursor: pointer; }
 .org-node.hole { border-style: dashed; border-color: var(--danger); background: var(--danger-weak); }
 .org-node.hole .n { color: var(--danger); }
 .org-node.person { border-color: #7c4dff; }
+/* Observe (F8 §17.2): the strip, the inbox, engines, a run's timeline, spend. */
+.org-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.org-stat { background: var(--field); border-radius: var(--radius-sm); padding: 9px 11px; display: grid; gap: 2px; }
+.org-stat b { font: 500 20px/1.15 var(--mono); font-variant-numeric: tabular-nums; }
+.org-stat span { font-size: 10.5px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
+.org-stat i { font-style: normal; font-size: 11.5px; color: var(--muted); }
+.org-two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+@media (max-width: 760px) { .org-two { grid-template-columns: 1fr; } }
+.org-panel { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; display: grid; gap: 6px; align-content: start; margin-bottom: 12px; }
+.org-panel h3 { margin: 0; font-size: 13px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+.org-panel h3 select { font-size: 12px; }
+.org-ask { border-left: 3px solid var(--accent); padding: 6px 10px; background: var(--accent-weak); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; font-size: 12.5px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.org-ask.stalled { border-color: #b45309; background: rgba(180,83,9,.12); }
+.org-lane { display: grid; grid-template-columns: 140px 1fr 110px; gap: 8px; align-items: center; font-size: 12px; }
+.org-lane .nm { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.org-lane .nm span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.org-lane .nm.mono { font-family: var(--mono); font-size: 11.5px; }
+.org-lane .tl { position: relative; height: 16px; background: var(--field); border-radius: 4px; }
+.org-lane .tl i { position: absolute; top: 3px; height: 10px; border-radius: 3px; background: var(--ok); }
+.org-lane .tl i.a { background: var(--accent); } .org-lane .tl i.r { background: var(--danger); }
+.org-lane .num { text-align: right; font-variant-numeric: tabular-nums; } .org-lane .num.risk { color: var(--danger); }
+.org-axis { display: grid; grid-template-columns: 140px 1fr 110px; font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.org-axis div:nth-child(2) { display: flex; justify-content: space-between; }
+.org-avail { display: flex; gap: 1px; height: 14px; }
+.org-avail i { flex: 1; background: var(--ok); opacity: .55; border-radius: 1px; }
+.org-avail i.d { background: var(--danger); opacity: .8; } .org-avail i.n { background: var(--field); opacity: 1; }
+.org-spend { display: grid; grid-template-columns: 140px 1fr 110px; gap: 8px; align-items: center; font-size: 12.5px; }
+.org-spend .bar { border-radius: 4px; background: var(--field); overflow: hidden; }
+.org-spend .bar i { display: block; height: 100%; background: var(--accent); }
+.org-spend .v { text-align: right; font-family: var(--mono); font-size: 11.5px; }
