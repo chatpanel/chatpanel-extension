@@ -10,8 +10,11 @@
 // ceiling.
 
 import { getSettings, saveSettings } from './store.js';
-import { describeRole, starterTeams, blankTeam, teamFromForm, MERGE_POLICIES, PLAN_MODES, ROLE_PREFERS } from './events/team.js';
+import { starterTeams, blankTeam, teamFromForm, MERGE_POLICIES, PLAN_MODES, ROLE_PREFERS } from './events/team.js';
+import { promoteRoles, starterTeam, teamHealth, teamShape, describeTeamShape, missingStarters, upsertAgents } from './events/team-org.js';
 import { runStore, rosterFor, appointerFor, answerAsk, resolveTeamHere } from './team-host.js';
+import { agentAvatar } from './settings-agents.js';
+
 
 const budgetText = (b = {}) => Object.entries(b).map(([k, v]) => `${k} ${v}`).join(' · ') || 'none';
 const when = (t) => (t ? new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
@@ -129,14 +132,18 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
   const roster = rosterFor(settings, license, { like: settings.activeAgentId || '' });
   const appointRole = appointerFor(settings, license, { like: settings.activeAgentId || '' });
   const servers = (Array.isArray(settings.mcpServers) ? settings.mcpServers : []).filter((x) => x && x.id);
-  const pool = (Array.isArray(settings.agentPool) ? settings.agentPool : []).filter((a) => a && a.id && a.enabled !== false);
-  const persist = async (next) => {
-    await saveSettings({ ...(await getSettings()), teams: next });
-    onChange?.(next);
+  const poolAll = (Array.isArray(settings.agentPool) ? settings.agentPool : []).filter((a) => a && a.id);
+  const pool = poolAll.filter((a) => a.enabled !== false);
+  // A team is saved WITH its cards (F8 §17.1): every inline role becomes a pool agent, a
+  // starter brings the agents it stands on — so both sections move together, in one write.
+  const persist = async (next, cards = []) => {
+    const nextPool = cards.length ? upsertAgents(poolAll, cards) : poolAll;
+    await saveSettings({ ...(await getSettings()), teams: next, ...(cards.length ? { agentPool: nextPool } : {}) });
+    onChange?.(next, cards.length ? nextPool : undefined);
   };
   const starters = starterTeams().filter((t) => !list.some((x) => x.name === t.name));
   const actions = el('div', { class: 'card-actions' },
-    ...starters.map((t) => el('button', { class: 'btn', type: 'button', text: `+ ${t.name} starter`, onclick: () => persist([...list, { ...t, createdAt: Date.now() }]) })),
+    ...starters.map((t) => el('button', { class: 'btn', type: 'button', text: `+ ${t.name} starter`, title: 'Adds the team and every agent it stands on', onclick: () => { const s = starterTeam(t.name, poolAll); persist([...list, { ...s.team, createdAt: Date.now() }], s.agents.map((a) => ({ ...a, createdAt: Date.now() }))); } })),
     el('button', { class: 'btn primary', type: 'button', text: '+ New team', ...(editing ? { disabled: '' } : {}), onclick: () => renderTeams(root, { settings, onChange, license, editing: { index: -1, team: blankTeam() } }) }),
   );
   root.append(el('div', { class: 'card-head' },
@@ -152,9 +159,10 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
       initial: editing.team, servers, roster, pool,
       existingNames: new Set(list.filter((_, j) => j !== editing.index).map((t) => t.name)),
       onCancel: () => renderTeams(root, { settings, onChange, license }),
-      onSave: (team) => {
+      onSave: (saved) => {
+        const { team, agents } = promoteRoles(saved, poolAll);
         const stamped = { ...team, createdAt: editing.team.createdAt || Date.now() };
-        persist(editing.index < 0 ? [...list, stamped] : list.map((x, j) => (j === editing.index ? stamped : x)));
+        persist(editing.index < 0 ? [...list, stamped] : list.map((x, j) => (j === editing.index ? stamped : x)), agents);
       },
     }));
   }
@@ -175,18 +183,52 @@ export function renderTeams(root, { settings, onChange, editing = null, license 
         await persist(list.filter((_, j) => j !== i));
       } }),
     ));
-    const roles = el('ul', { class: 'muted', style: 'margin:0;padding-left:20px;font-size:12px' });
-    // Who the role would get on this panel's roster right now — seen here, not reported by a
-    // run — with roles that stand for agents filled from the pool as a run would fill them.
-    let shown = t.roles || [];
-    try { shown = resolveTeamHere(t, settings, license, { like: settings.activeAgentId || '' }).roles; } catch (e) { card.append(el('div', { class: 'chip warn', text: e?.message || String(e) })); }
-    for (const r of shown) {
-      const got = r.mode === 'recipe' ? null : appointRole(r);
-      const li = el('li', { text: `${describeRole({ ...r, model: r.model || undefined })} ` });
-      li.append(r.mode === 'recipe' ? '' : got ? el('span', { class: 'muted tiny', text: `→ ${got.label || got.model}` }) : el('span', { class: 'chip warn', text: 'no model available' }));
-      roles.append(li);
+    // The team AS ITS SHAPE (team-org.js): columns by dependency — a column runs in parallel,
+    // the next waits — the judge last on its own, and you at the end, since nothing lands
+    // without a person. Under each node, who the role would get on this panel right now.
+    const health = teamHealth(t, poolAll);
+    const shape = teamShape(t);
+    let appointed = new Map();
+    try { for (const r of resolveTeamHere(t, settings, license, { like: settings.activeAgentId || '' }).roles) appointed.set(r.id, r); } catch { /* a hole: drawn below, not thrown */ }
+    const engineLine = (r) => {
+      const res = appointed.get(r.id);
+      if (!res) return r.agent ? `agent: ${r.agent}` : r.mode === 'recipe' ? `recipe ${r.recipe || ''}` : '';
+      const got = res.mode === 'recipe' ? null : appointRole(res);
+      return got ? `→ ${got.label || got.model}` : 'no model available';
+    };
+    const node = (r, cls = '') => {
+      const hole = health.holes.find((h) => h.role === r.id);
+      const a = r.agent ? poolAll.find((x) => x.id === r.agent) : null;
+      const n = el('div', { class: `org-node${cls ? ` ${cls}` : ''}${hole ? ' hole' : ''}`, 'data-role': r.id },
+        agentAvatar(hole ? { id: r.agent, name: '?' } : (a || { id: `${t.name}-${r.id}`, name: r.name || r.id }), { small: true }),
+        el('div', {}, el('div', { class: 'n', text: hole ? `${r.id} — not in the pool` : (a?.name || r.name || r.id) }), el('div', { class: 'e', text: hole ? `agent: ${r.agent}` : engineLine(r) })));
+      return n;
+    };
+    const drawing = el('div', { class: 'org-shape' });
+    shape.columns.forEach((c, k) => {
+      if (k) drawing.append(el('div', { class: 'org-arrow' }));
+      drawing.append(el('div', { class: 'org-col' }, el('div', { class: 'org-col-lb', text: shape.columns.length > 1 ? `${k + 1}${c.parallel ? ' · parallel' : ''}` : (c.parallel ? 'parallel' : '') }), ...c.roles.map((r) => node(t.roles.find((x) => x.id === r.id) || r))));
+    });
+    if (shape.judge) { drawing.append(el('div', { class: 'org-arrow' })); drawing.append(el('div', { class: 'org-col' }, el('div', { class: 'org-col-lb', text: 'judge' }), node(t.roles.find((x) => x.id === shape.judge.id) || shape.judge, 'judge'))); }
+    drawing.append(el('div', { class: 'org-arrow' }));
+    drawing.append(el('div', { class: 'org-col' }, el('div', { class: 'org-col-lb', text: 'lands' }), el('div', { class: 'org-node person' }, el('span', { class: 'org-av sm', style: 'background:#7c4dff', text: 'Yo' }), el('div', {}, el('div', { class: 'n', text: 'You' }), el('div', { class: 'e', text: 'approve · reject · hand off' })))));
+    card.append(el('div', { class: 'muted tiny', style: 'margin-top:4px', text: `${shape.kind} · ${describeTeamShape(shape)}` }), drawing);
+    if (!health.ready) {
+      const fixable = missingStarters(t, poolAll);
+      card.append(el('div', { class: 'org-row', 'data-health': 'hole' },
+        el('span', { class: 'org-chip risk', text: health.reason }),
+        ...(fixable.length ? [el('button', { class: 'btn primary', type: 'button', text: `Add the built-in ${fixable.map((a) => a.name).join(', ')}`, onclick: () => persist(list, fixable.map((a) => ({ ...a, createdAt: Date.now() }))) })] : []),
+        ...(health.holes.some((h) => h.fix === 'pick') ? [el('span', { class: 'muted tiny', text: 'or pick another agent for the role with Edit' })] : []),
+      ));
+    } else card.append(el('div', { class: 'org-row', 'data-health': 'ready' }, el('span', { class: 'org-chip good', text: 'ready' }), el('span', { class: 'muted tiny', text: `run it with /${t.name} in any chat` })));
+    // A team saved before roles were cards: its roles run and are scored, but the Agents tab
+    // cannot see them. One click promotes them — the same save the form makes.
+    if (health.inline.length) {
+      card.append(el('div', { class: 'org-row', 'data-health': 'inline' },
+        el('span', { class: 'org-chip warn', text: `${health.inline.length} role${health.inline.length === 1 ? ' is' : 's are'} not on the Agents tab yet` }),
+        el('button', { class: 'btn', type: 'button', text: `Make ${health.inline.length === 1 ? 'it' : 'them'} cards`, onclick: () => { const { team, agents } = promoteRoles(t, poolAll); persist(list.map((x, j) => (j === i ? { ...team, createdAt: x.createdAt } : x)), agents); } }),
+      ));
     }
-    card.append(roles);
     root.append(card);
   });
 

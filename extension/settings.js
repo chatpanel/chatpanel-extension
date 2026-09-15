@@ -4770,7 +4770,7 @@ function renderTeams() {
   import('./js/settings-teams.js')
     .then((m) => {
       teamsDispose?.();
-      teamsDispose = m.renderTeams(root, { settings, license, onChange: (teams) => { settings.teams = teams; renderTeams(); } });
+      teamsDispose = m.renderTeams(root, { settings, license, onChange: (teams, pool) => { settings.teams = teams; if (pool) settings.agentPool = pool; renderTeams(); if (pool) renderAgentPool(); } });
     })
     .catch((e) => console.warn('[chatpanel] teams:', e));
 }

@@ -9,10 +9,11 @@
 // filled from here at run time. Deferred from settings.js, which is at its first-paint ceiling.
 
 import { getSettings, saveSettings } from './store.js';
-import { starterAgents, blankAgent, agentFromForm, assistantAgent, describeAgent, APPLIES_TO } from './events/agent.js';
+import { starterAgents, blankAgent, agentFromForm, assistantAgent, APPLIES_TO } from './events/agent.js';
 import { describeEngine, ROUTE_PREFERS } from './events/engine.js';
 import { GRANTABLE } from './events/team.js';
 import { rosterFor, runStore } from './team-host.js';
+import { rosterRows, agentColor, agentInitials, cardNumbers, missingStarters } from './events/team-org.js';
 
 function el(tag, attrs = {}, ...children) {
   const n = document.createElement(tag);
@@ -27,7 +28,6 @@ function el(tag, attrs = {}, ...children) {
 }
 const inp = (attrs, value, onInput) => { const n = el('input', attrs); n.value = value ?? ''; n.addEventListener('input', () => onInput(n.value)); return n; };
 const sel = (options, value, onChange) => { const n = el('select'); for (const o of options) n.append(el('option', { value: o[0], text: o[1] })); n.value = value; n.addEventListener('change', () => onChange(n.value)); return n; };
-const pct = (v) => (v == null ? '—' : `${Math.round(v * 100)}%`);
 
 /** The engine, on the form: kind + what the kind needs. `roster` is this panel's endpoints and installed agents. */
 function engineEditor(f, roster, render) {
@@ -91,17 +91,45 @@ function agentEditor({ initial, roster, servers, existingIds, onSave, onCancel }
   return root;
 }
 
-/** One agent's card: what it is, what it runs on, what it has done (the gateway's scorecard). */
-function agentCard(a, { roster, store, editing, onEdit, onDelete, onToggle, fixed = false }) {
-  const card = el('div', { class: `entity s-entity${a.enabled === false ? ' is-off' : ''}` });
+const isDark = () => { try { return globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches === true; } catch { return false; } };
+/** The avatar: two letters on the agent's own colour — the same colour on every tab and every client (team-org.js). */
+export function agentAvatar(agentOrId, { small = false } = {}) {
+  const id = typeof agentOrId === 'string' ? agentOrId : agentOrId?.id;
+  return el('span', { class: `org-av${small ? ' sm' : ''}`, style: `background:${agentColor(id, { dark: isDark() })}`, text: agentInitials(agentOrId) });
+}
+const KIND_LABEL = { builtin: 'built-in', mine: 'yours', 'team-role': 'a team\'s role', created: 'created for a job', proposed: 'proposed', missing: 'not in the pool' };
+
+/**
+ * One row of the roster: a pool card — what it is, what it runs on, where it works, the four
+ * numbers of its record (the gateway's scorecard, attested) — or a PROPOSED card awaiting
+ * Create / Skip, or a MISSING agent a team names, with the fix.
+ */
+function agentCard(row, { roster, store, editing, onEdit, onDelete, onToggle, onAddBuiltin, fixed = false }) {
+  const a = row.agent;
+  const kind = row.kind;
+  const card = el('div', { class: `entity s-entity${a.enabled === false ? ' is-off' : ''}${kind === 'proposed' ? ' is-proposed' : ''}${kind === 'missing' ? ' is-hole' : ''}`, 'data-agent': a.id, 'data-kind': kind });
   const harnessName = (id) => roster.find((c) => c.kind === 'bridge' && (c.bridgeAgent === id || c.id === id))?.name || id;
   const providerName = (id) => roster.find((c) => c.id === id)?.name || id;
-  const head = el('div', { class: 'entity-head' },
+  const head = el('div', { class: 'entity-head', style: 'margin-bottom:8px;padding-bottom:8px' },
+    agentAvatar(a),
     el('strong', { text: a.name || a.id }),
+    el('span', { class: `org-chip${kind === 'proposed' ? ' warn' : kind === 'missing' ? ' risk' : kind === 'builtin' ? ' on' : ''}`, text: KIND_LABEL[kind] || kind }),
     el('span', { class: 'muted', text: a.purpose || '' }),
-    el('span', { class: 'chip', text: describeEngine(a.engine, { harnessName, providerName }) }),
   );
-  if (!fixed) {
+  if (kind === 'missing') {
+    head.append(el('span', { class: 'muted tiny', style: 'margin-left:auto', text: `named by ${(row.namedBy || []).map((t) => `/${t}`).join(', ')}` }));
+    card.append(head);
+    card.append(el('div', { class: 'muted tiny', text: `A team's role says agent: ${a.id}, and no card with that id is in the pool — the team will not run until it is.` }));
+    card.append(el('div', { class: 'org-row', style: 'justify-content:flex-end;gap:8px' },
+      row.fix === 'add-builtin'
+        ? el('button', { class: 'btn primary', type: 'button', text: `Add the built-in ${a.id.replace(/^./, (c) => c.toUpperCase())}`, onclick: () => onAddBuiltin(a.id) })
+        : el('span', { class: 'muted tiny', text: 'Pick another agent for that role under Teams → Edit.' })));
+    return card;
+  }
+  head.append(el('span', { class: 'org-chip k', text: describeEngine(a.engine, { harnessName, providerName }) }));
+  if (kind === 'proposed') {
+    head.append(el('span', { class: 'muted tiny', style: 'margin-left:auto', text: 'never created without you' }));
+  } else if (!fixed) {
     const toggle = el('input', { type: 'checkbox', title: 'Enabled' });
     toggle.checked = a.enabled !== false;
     toggle.addEventListener('change', () => onToggle(toggle.checked));
@@ -112,24 +140,34 @@ function agentCard(a, { roster, store, editing, onEdit, onDelete, onToggle, fixe
     );
   } else head.append(el('span', { class: 'muted tiny', style: 'margin-left:auto', text: 'built in' }));
   card.append(head);
-  card.append(el('div', { class: 'muted tiny', text: `tools: ${(a.grants || ['none']).join(', ')}${a.skills?.length ? ` · skills: ${a.skills.join(', ')}` : ''}${a.workdir ? ` · in ${a.workdir}` : ''} · applies to ${(a.appliesTo || ['jobs']).join(', ')}` }));
-  // The record — the capability strip's observed half (pillars §8): tasks done/failed,
-  // rating, the engines it ran on and how it did on each. From the gateway; absent is
-  // "no record yet", not an error.
-  const rec = el('div', { class: 'muted tiny', text: 'record: …' });
-  card.append(rec);
-  store.scorecard(a.id).then((r) => {
-    const s = r.ok ? r.data?.summary : null;
-    if (!s || !s.entries) { rec.textContent = 'record: nothing yet'; return; }
-    const engines = (s.byEngine || []).slice(0, 4).map((e) => `${e.id}${e.model ? `/${e.model}` : ''} ${e.tasks} (${pct(e.rating?.avg)})`).join(' · ');
-    rec.textContent = `record: ${s.jobsDone} done, ${s.jobsFailed} failed · rated ${pct(s.rating?.avg)} (${s.rating?.count || 0})${s.engineIndependence != null ? ` · engine-independence ${pct(s.engineIndependence)}` : ''}${s.scm?.commits ? ` · ${s.scm.commits} commits, ${s.scm.prs} PRs, ${s.scm.merged} merged` : ''}${engines ? ` · on: ${engines}` : ''}${r.data?.attested?.ok ? ' · attested' : ''}`;
-  });
+  card.append(el('div', { class: 'org-row' },
+    ...(a.grants || ['none']).map((g) => el('span', { class: 'org-chip k', text: g })),
+    ...(a.skills?.length ? [el('span', { class: 'tiny faint', style: 'margin-left:4px', text: 'skills' }), ...a.skills.map((k) => el('span', { class: 'org-chip k', text: k }))] : []),
+    ...(a.workdir ? [el('span', { class: 'muted tiny', text: `in ${a.workdir}` })] : []),
+  ));
+  const where = row.where || { teams: [], jobs: [] };
+  if (where.teams.length || where.jobs.length) {
+    card.append(el('div', { class: 'org-row' },
+      el('span', { class: 'tiny', text: 'On' }),
+      ...where.teams.map((t) => el('a', { class: 'org-chip', href: '#teams', text: `/${t.team}` })),
+      ...where.jobs.map((j) => el('span', { class: 'org-chip', title: j.title, text: `${j.title}: ${j.job} · ${j.status}` })),
+    ));
+  }
+  if (kind === 'proposed') return card;
+  // The record — the four numbers every client shows (team-org.js cardNumbers), from the
+  // gateway; "—" is "nothing yet", never a zero that reads as a bad score.
+  const nums = el('div', { class: 'org-nums' });
+  const draw = (tiles) => { nums.innerHTML = ''; for (const t of tiles) nums.append(el('div', {}, el('b', { text: t.value }), el('span', { text: t.label }), el('i', { text: t.detail }))); };
+  draw(cardNumbers(null));
+  if (!fixed) store.scorecard(a.id).then((r) => draw(cardNumbers(r.ok ? r.data?.summary : null, { attested: r.ok ? r.data?.attested : null }))).catch(() => {});
+  card.append(nums);
   return card;
 }
 
-export function renderAgents(root, { settings, onChange, editing = null, license = null }) {
+export function renderAgents(root, { settings, onChange, editing = null, license = null, filter = 'all' }) {
   root.innerHTML = '';
   const list = (Array.isArray(settings.agentPool) ? settings.agentPool : []).filter((a) => a && a.id);
+  const teams = (Array.isArray(settings.teams) ? settings.teams : []).filter((t) => t && t.name);
   const roster = rosterFor(settings, license, { like: settings.activeAgentId || '' });
   const servers = (Array.isArray(settings.mcpServers) ? settings.mcpServers : []).filter((x) => x && x.id);
   const store = runStore(settings);
@@ -137,41 +175,51 @@ export function renderAgents(root, { settings, onChange, editing = null, license
     await saveSettings({ ...(await getSettings()), agentPool: next });
     onChange?.(next);
   };
+  const again = (patch) => renderAgents(root, { settings, onChange, license, filter, ...patch });
+  const { rows, counts } = rosterRows(list, { teams });
   const starters = starterAgents().filter((a) => !list.some((x) => x.id === a.id));
   const actions = el('div', { class: 'card-actions' });
-  if (starters.length) actions.append(el('button', { class: 'btn', type: 'button', text: `+ ${starters.length === 7 ? 'the engineering org' : `${starters.length} starter${starters.length > 1 ? 's' : ''}`}`, title: starters.map((a) => a.name).join(', '), onclick: () => persist([...list, ...starters.map((a) => ({ ...a, createdAt: Date.now() }))]) }));
-  actions.append(el('button', { class: 'btn primary', type: 'button', text: '+ New agent', ...(editing ? { disabled: '' } : {}), onclick: () => renderAgents(root, { settings, onChange, license, editing: { index: -1, agent: blankAgent() } }) }));
+  if (starters.length) actions.append(el('button', { class: 'btn', type: 'button', text: `+ ${starters.length === starterAgents().length ? 'the engineering org' : `${starters.length} starter${starters.length > 1 ? 's' : ''}`}`, title: starters.map((a) => a.name).join(', '), onclick: () => persist([...list, ...starters.map((a) => ({ ...a, createdAt: Date.now() }))]) }));
+  actions.append(el('button', { class: 'btn primary', type: 'button', text: '+ New agent', ...(editing ? { disabled: '' } : {}), onclick: () => again({ editing: { index: -1, agent: blankAgent() } }) }));
   root.append(el('div', { class: 'card-head' },
-    el('h2', {}, 'Agents ', el('span', { class: 'sub', text: `— the ones you define${list.length ? ` · ${list.length}` : ''}` })),
+    el('h2', {}, 'Agents ', el('span', { class: 'sub', text: `— the roster${rows.length ? ` · ${rows.length}` : ''}` })),
     actions,
   ));
   root.append(el('p', { class: 'muted' },
-    'An agent is yours: a name, a specialty, a prompt, the skills and grants it carries, and an engine — a model from Models, a coding agent from Agent Tools, or auto, where the recruiter picks by policy. '
-    + 'A team role can stand for an agent (Teams → a role → Agent), so one agent serves many teams and an edit lands everywhere. '
-    + 'Each keeps a scorecard of the work it has actually done — written by the runner, attested by the gateway, never by the agent. Shared with the desktop app.'));
+    'Every agent that can be put on a team is here: the built-in org, the ones you define, and every team role — a role you write into a team becomes a card here when the team is saved, so nothing that runs is invisible. '
+    + 'Each carries a prompt, skills, grants and an engine — a model from Models, a coding agent from Agent Tools, or auto — and keeps a record of the work it has actually done, written by the runner and attested by the gateway. Shared with the desktop app.'));
+  // The filter bar — counts from the roster, so a hole or a proposal is visible before it is looked for.
+  const FILTERS = [['all', 'All'], ['builtin', 'Built-in'], ['mine', 'Yours'], ['team-role', 'Team roles'], ['created', 'Created'], ['proposed', 'Proposed'], ['missing', 'Missing'], ['onTeam', 'On a team']];
+  root.append(el('div', { class: 'org-filters' },
+    ...FILTERS.filter(([k]) => k === 'all' || counts[k]).map(([k, label]) => el('button', { type: 'button', class: `org-chip${filter === k ? ' on' : ''}${k === 'missing' ? ' risk' : k === 'proposed' ? ' warn' : ''}`, 'data-filter': k, text: `${label} ${counts[k] ?? 0}`, onclick: () => again({ filter: k }) })),
+  ));
   if (editing) {
     root.append(agentEditor({
       initial: editing.agent, roster, servers,
       existingIds: new Set(list.filter((_, j) => j !== editing.index).map((a) => a.id)),
-      onCancel: () => renderAgents(root, { settings, onChange, license }),
+      onCancel: () => again({ editing: null }),
       onSave: (agent) => {
         const stamped = { ...agent, createdAt: editing.agent.createdAt || Date.now() };
         persist(editing.index < 0 ? [...list, stamped] : list.map((x, j) => (j === editing.index ? stamped : x)));
       },
     }));
   }
-  root.append(agentCard(assistantAgent(), { roster, store, editing, fixed: true }));
-  list.forEach((a, i) => {
-    root.append(agentCard(a, {
+  const shown = rows.filter((r) => filter === 'all' || (filter === 'onTeam' ? r.where.teams.length : r.kind === filter));
+  if (filter === 'all' || filter === 'builtin') root.append(agentCard({ kind: 'builtin', agent: assistantAgent(), where: { teams: [], jobs: [] } }, { roster, store, editing, fixed: true }));
+  for (const row of shown) {
+    const i = list.findIndex((x) => x.id === row.agent.id);
+    root.append(agentCard(row, {
       roster, store, editing,
-      onEdit: () => renderAgents(root, { settings, onChange, license, editing: { index: i, agent: a } }),
+      onEdit: () => again({ editing: { index: i, agent: list[i] } }),
       onToggle: (on) => persist(list.map((x, j) => (j === i ? { ...x, enabled: on } : x))),
+      onAddBuiltin: (id) => persist([...list, ...missingStarters({ roles: [{ id, agent: id }] }, list).map((a) => ({ ...a, createdAt: Date.now() }))]),
       onDelete: async () => {
         const { confirmDelete } = await import('./confirm-modal.js');
-        if (!(await confirmDelete({ title: 'Delete agent?', body: `${a.name || a.id} will be removed from every client. Teams whose roles stand for it will not run until the role is changed. Its scorecard stays on the gateway.`, confirmLabel: 'Delete' }))) return;
+        const named = row.where.teams.map((t) => `/${t.team}`).join(', ');
+        if (!(await confirmDelete({ title: 'Delete agent?', body: `${row.agent.name || row.agent.id} will be removed from every client.${named ? ` ${named} will not run until the role is changed.` : ''} Its scorecard stays on the gateway.`, confirmLabel: 'Delete' }))) return;
         await persist(list.filter((_, j) => j !== i));
       },
     }));
-  });
-  if (!list.length && !editing) root.append(el('p', { class: 'muted tiny', text: `Nothing defined yet. ${describeAgent(starters[0] || {}) ? 'Add the engineering org to start — Architect, Implementer, Reviewer, Tester, Librarian, Scribe, Release — or make your own.' : ''}` }));
+  }
+  if (!list.length && !editing) root.append(el('p', { class: 'muted tiny', text: 'Nothing defined yet. Add the engineering org to start — Executive, Architect, Implementer, Reviewer, Tester, Librarian, Scribe, Release — or make your own; adding a starter team under Teams brings its agents here too.' }));
 }

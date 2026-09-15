@@ -23,6 +23,18 @@ import { withinReach, sourceGuardFor, sourcePolicySettings, sourceUrlsOf } from 
 import { swarmCandidates } from './notes-swarm-router.js';
 import { canUseAgent } from './license.js';
 import { getTarget, resolveTarget, getSettings, saveSettings } from './store.js';
+import { promoteRoles, upsertAgents } from './events/team-org.js';
+
+/**
+ * A team is saved WITH its cards (F8 §17.1): every inline role becomes a pool agent
+ * (`promoteRoles`) and both sections are written in one update, so the Agents tab shows
+ * everything that can run. The chat card and Settings → Teams save through the same shaping.
+ */
+export async function persistTeam(saved, settings, update) {
+  const pool = (settings.agentPool || []).filter((a) => a?.id);
+  const { team, agents } = promoteRoles(saved, pool);
+  return update({ teams: [...(settings.teams || []).filter((t) => t?.name !== team.name), team], ...(agents.length ? { agentPool: upsertAgents(pool, agents) } : {}) });
+}
 import { normalizeGatewayUrl, getGatewayToken, handshakeGatewayToken } from './gateway.js';
 
 const FLUSH_EVERY_MS = 400;

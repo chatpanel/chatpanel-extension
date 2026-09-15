@@ -34,7 +34,8 @@ let changed = null;
 const root = new El('div');
 const button = (r, re) => r.find((n) => n.tagName === 'BUTTON' && re.test(n.textContent));
 
-const dispose = mod.renderTeams(root, { settings, onChange: (t) => { changed = t; } });
+let pool = null;
+const dispose = mod.renderTeams(root, { settings, onChange: (t, p) => { changed = t; pool = p; } });
 assert.ok(button(root, /research starter/), 'a starter is offered when none is saved');
 assert.ok(button(root, /New team/), 'the form can be opened');
 button(root, /New team/).click();
@@ -50,7 +51,15 @@ button(root, /Save team/).click();
 await new Promise((r) => setTimeout(r, 10));
 assert.ok(changed, 'saving reaches onChange');
 assert.equal(changed[0].name, 'mine', 'the name is lowercased to an identifier');
-assert.deepEqual(changed[0].roles[0].grants, ['web', 'mcp:srv-a']);
+// F8 §17.1: the inline role became a pool card, and the team points at it — nothing that
+// runs is invisible on the Agents tab.
+assert.equal(changed[0].roles[0].agent, 'mine-worker', 'the role stands for its card');
+assert.equal(changed[0].roles[0].grants, undefined, 'grants live on the card');
+assert.ok(Array.isArray(pool) && pool.length === 1, 'the pool was written in the same save');
+assert.equal(pool[0].id, 'mine-worker');
+assert.deepEqual(pool[0].grants, ['web', 'mcp:srv-a']);
+assert.equal(pool[0].prompt, 'Do the thing.');
+assert.equal(pool[0].createdBy, 'team:mine');
 assert.equal(changed[0].budget.tokens, 20000, 'the blank team\'s budget stands');
 assert.ok(changed[0].createdAt);
 
@@ -67,5 +76,36 @@ const errs = root2.all((n) => n.tagName === 'LI').map((n) => n.textContent);
 assert.ok(errs.some((e) => /prompt/.test(e)), `errors name the field: ${errs.join(' | ')}`);
 assert.ok(button(root2, /Edit/), 'a saved team can be edited');
 
-dispose(); dispose2(); // each card polls the gateway until disposed
+// A starter brings its agents; a team whose role names an agent not in the pool is a HOLE,
+// drawn on the card with the fix, and the shape is drawn from the roles.
+changed = null; pool = null;
+const root3 = new El('div');
+const dispose3 = mod.renderTeams(root3, { settings, onChange: (t, p) => { changed = t; pool = p; } });
+button(root3, /feature starter/).click();
+await new Promise((r) => setTimeout(r, 10));
+assert.equal(changed[0].name, 'feature');
+assert.deepEqual(pool.map((a) => a.id).sort(), ['architect', 'implementer', 'reviewer', 'scribe', 'tester'], 'the starter team brought the org it stands on');
+const root4 = new El('div');
+const dispose4 = mod.renderTeams(root4, { settings: { ...settings, teams: changed, agentPool: pool.filter((a) => a.id !== 'tester') }, onChange: () => {} });
+const holeNode = root4.find((n) => n.attrs['data-role'] === 'tester');
+assert.ok(holeNode && /hole/.test(holeNode.className), 'the missing tester is drawn as a hole in the shape');
+assert.ok(root4.find((n) => n.attrs['data-health'] === 'hole'), 'the card says the team is not ready');
+assert.ok(button(root4, /Add the built-in Tester/), 'and offers the fix');
+const cols = root4.all((n) => n.className === 'org-col');
+assert.ok(cols.length >= 4, `columns by dependency, the judge, and you: ${cols.length}`);
+const root5 = new El('div');
+const dispose5 = mod.renderTeams(root5, { settings: { ...settings, teams: changed, agentPool: pool }, onChange: () => {} });
+assert.ok(root5.find((n) => n.attrs['data-health'] === 'ready'), 'with the org present the team is ready');
+
+// A team saved before roles were cards offers to promote them, and the promotion writes both sections.
+changed = null; pool = null;
+const root6 = new El('div');
+const dispose6 = mod.renderTeams(root6, { settings: { ...settings, teams: [{ name: 'old', roles: [{ id: 'a', prompt: 'Do a.', grants: ['web'] }], budget: { tokens: 5 } }] }, onChange: (t, p) => { changed = t; pool = p; } });
+assert.ok(root6.find((n) => n.attrs['data-health'] === 'inline'), 'an inline role is named');
+button(root6, /Make it cards/).click();
+await new Promise((r) => setTimeout(r, 10));
+assert.equal(changed[0].roles[0].agent, 'old-a');
+assert.equal(pool[0].id, 'old-a');
+
+dispose(); dispose2(); dispose3(); dispose4(); dispose5(); dispose6(); // each card polls the gateway until disposed
 console.log('settings-teams: ok');

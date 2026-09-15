@@ -1042,9 +1042,9 @@ async function toolsetFor(
     // the person sees which role is working (F8 — the shared `teams` section, so the desktop
     // has the team at its next open and reads the run's board from the gateway).
     confirmTeamSave: async (detail) => ((await confirmPageAction(detail, { title: 'Save this team?', iconName: 'agent', scopeLabel: null })) === 'allow' ? 'allow' : 'deny'),
-    saveTeam: async (team) => {
-      state.settings = await updateSettings({ teams: [...(state.settings.teams || []).filter((t) => t?.name !== team.name), team] });
-      toast(`👥 Saved team /${team.name}`);
+    saveTeam: async (saved) => {
+      state.settings = await (await import('./js/team-host.js')).persistTeam(saved, state.settings, updateSettings);
+      toast(`👥 Saved team /${saved.name}`);
     },
     // The EXECUTIVE's asks (a project's first jobs, a follow-up round, a new agent, more
     // budget, closing) come to the same card, with the loop's own two answers as the buttons.

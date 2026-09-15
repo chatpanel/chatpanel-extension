@@ -1458,3 +1458,37 @@ hr.sep { border: none; border-top: 1px solid var(--border); margin: 16px 0 14px;
 @media (max-width: 860px) { .board { grid-template-columns: 1fr; } .board-threads { border-right: 0; border-bottom: 1px solid var(--border); max-height: 260px; } }
 
 .blane-ho { width: auto; padding: 1px 6px; font-size: 11px; border-radius: 6px; margin-left: 4px; }
+
+/* The org (F8 §17) — the same drawing the desktop makes: one colour per agent, a team as its
+   shape (columns by dependency, the judge last, you at the end), a hole dashed red. */
+.org-av { width: 26px; height: 26px; border-radius: 8px; display: inline-grid; place-items: center; font: 600 11px/1 var(--mono); color: #fff; flex: 0 0 auto; }
+.org-av.sm { width: 20px; height: 20px; font-size: 9.5px; border-radius: 6px; }
+.org-filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 0 0 12px; }
+.org-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 99px; font-size: 11.5px; border: 1px solid var(--border-strong); color: var(--muted); white-space: nowrap; background: none; cursor: default; }
+button.org-chip { cursor: pointer; }
+.org-chip.on { color: var(--accent); background: var(--accent-weak); border-color: transparent; font-weight: 600; }
+.org-chip.warn { color: #b45309; background: rgba(180,83,9,.12); border-color: transparent; }
+.org-chip.risk { color: var(--danger); background: var(--danger-weak); border-color: transparent; }
+.org-chip.good { color: var(--ok); background: rgba(21,163,74,.12); border-color: transparent; }
+.org-chip.k { font-family: var(--mono); font-size: 11px; }
+.org-row { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.org-nums { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
+.org-nums div { display: grid; }
+.org-nums b { font: 500 15px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
+.org-nums span { font-size: 10.5px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
+.org-nums i { font-style: normal; font-size: 11px; color: var(--muted); }
+.s-entity.is-proposed { border-style: dashed; border-color: #b45309; }
+.s-entity.is-hole { border-style: dashed; border-color: var(--danger); }
+.org-shape { display: flex; align-items: center; overflow-x: auto; padding: 8px 2px; gap: 0; }
+.org-col { display: grid; gap: 6px; align-content: center; }
+.org-col-lb { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); text-align: center; }
+.org-arrow { width: 30px; flex: 0 0 auto; position: relative; height: 20px; }
+.org-arrow::before { content: ''; position: absolute; left: 4px; right: 4px; top: 50%; border-top: 1.5px solid var(--border-strong); }
+.org-arrow::after { content: ''; position: absolute; right: 4px; top: 50%; width: 6px; height: 6px; border-top: 1.5px solid var(--border-strong); border-right: 1.5px solid var(--border-strong); transform: translateY(-50%) rotate(45deg); }
+.org-node { display: flex; align-items: center; gap: 7px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 5px 9px 5px 6px; background: var(--elev); min-width: 150px; }
+.org-node .n { font-size: 12.5px; font-weight: 600; line-height: 1.2; }
+.org-node .e { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+.org-node.judge { border-style: double; border-width: 3px; }
+.org-node.hole { border-style: dashed; border-color: var(--danger); background: var(--danger-weak); }
+.org-node.hole .n { color: var(--danger); }
+.org-node.person { border-color: #7c4dff; }
